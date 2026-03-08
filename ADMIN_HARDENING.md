@@ -19,7 +19,7 @@ The current user-space sandbox is entirely self-serve: it protects against accid
 
 **What it solves:** The user-space sandbox intercepts `sbatch`/`srun` via PATH shadowing, but an agent calling `/usr/bin/sbatch` by absolute path bypasses the wrappers. Admin-managed wrappers replace the standard binaries inside the sandbox so there is no unsandboxed Slurm binary reachable by the agent.
 
-**Effort:** Medium. **Category:** Admin-enforced.
+**Effort:** Medium. **Category:** Self-serve — strengthens the sandbox for users who opt in, but doesn't force anyone to use it.
 
 ### Concept
 
@@ -337,7 +337,7 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 
 | # | Improvement | Effort | Category | What It Closes |
 |---|---|---|---|---|
-| 1 | Admin-managed Slurm wrappers | Medium | Admin-enforced | Agent bypassing Slurm wrappers by absolute path |
+| 1 | Admin-managed Slurm wrappers | Medium | Self-serve | Agent bypassing Slurm wrappers by absolute path |
 | 2 | Dedicated `${USER}_ai` accounts | High | Admin-enforced | Same-UID credential access; OS-level separation |
 | 3 | Network isolation | Medium-high | Admin-enforced | Data exfiltration via network |
 | 4 | Kernel upgrade + Landlock | High | Self-serve | Simpler/stronger filesystem restrictions |
