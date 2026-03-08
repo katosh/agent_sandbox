@@ -4,6 +4,8 @@ The [bubblewrap sandbox](README.md) is fully user-space — no root or admin inv
 
 This document is a menu of **independent improvements** an admin can adopt to close remaining gaps. Each section is self-contained: pick what fits your threat model and effort budget. They are ordered roughly from least to most effort.
 
+> **Our priority:** Section 1 (Admin-Managed Slurm Wrappers) is the improvement we'd most like to see. It closes the main gap in the current setup — Slurm PATH shadowing — with moderate admin effort and no workflow changes for users.
+
 ### Self-serve vs. admin-enforced
 
 Each improvement falls into one of two categories:
@@ -101,32 +103,127 @@ Inside the sandbox:
 
 ---
 
-## 2. Dedicated `${USER}_ai` Accounts
+## 2. Admin-Provided Sandbox Tools (bwrap or Firejail)
 
-**What it solves:** True user separation. No amount of bubblewrap can prevent a process from accessing files owned by the same UID. A dedicated OS account (`dotto_ai`) runs the agent under a different UID, so filesystem permissions enforce isolation without any sandbox at all.
+**What it solves:** When users install and configure bwrap themselves, they control the sandbox policy — and can weaken it. An admin-provided sandbox tool with a fixed policy turns the sandbox from self-serve to admin-enforced.
+
+**Effort:** Low-medium. **Category:** Admin-enforced.
+
+### Admin-installed bwrap with a fixed-policy wrapper
+
+The admin installs bwrap system-wide and provides a **setuid wrapper** that calls bwrap with hardcoded arguments. Users invoke the wrapper instead of raw bwrap, and cannot loosen the restrictions:
+
+```bash
+# /usr/bin/sandbox-agent — admin-provided wrapper (setuid root or capabilities)
+# Users call this instead of bwrap directly.
+# The sandbox policy is compiled in — users cannot change mount rules,
+# re-expose hidden paths, or weaken environment filtering.
+
+exec bwrap \
+    --ro-bind /usr /usr \
+    --ro-bind /lib /lib \
+    --ro-bind /lib64 /lib64 \
+    --tmpfs "$HOME" \
+    --bind "$PROJECT_DIR" "$PROJECT_DIR" \
+    --ro-bind /dev/null /etc/slurm/.submit-token \
+    # ... admin-defined policy ...
+    -- "$@"
+```
+
+Since the wrapper controls the bwrap arguments, the admin decides:
+- Which paths are visible, read-only, or writable
+- Which environment variables are blocked
+- Whether network namespaces are used
+- Which Slurm binaries are overlaid
+
+Users get a single command (`sandbox-agent -- claude`) with no configuration to manage or misconfigure.
+
+### Firejail
+
+[Firejail](https://firejail.wordpress.com/) is designed for exactly this model. It installs **setuid root** and the admin defines security profiles that users cannot override. The [README](README.md) notes that Firejail requires root — but that's the point in an admin-hardening context.
+
+On top of the filesystem restrictions bwrap provides, Firejail adds:
+
+| Feature | bwrap (user-space) | Firejail (admin-installed) |
+|---|---|---|
+| Filesystem isolation | Mount namespaces | Mount namespaces + whitelisting |
+| Network isolation | Not available (shares host) | Built-in; `--net=none` or `--netfilter` |
+| Seccomp filters | Not available | Built-in; restricts which syscalls the process can make |
+| Capability dropping | Not available | Built-in; removes Linux capabilities |
+| Profile inheritance | Manual (scripts must propagate) | Automatic; child processes inherit restrictions |
+| Admin control | Users run raw bwrap, can change args | Admin defines profiles users can't override |
+
+**Example Firejail profile for agent sandboxing:**
+
+```ini
+# /etc/firejail/claude-agent.profile
+# Admin-defined, users cannot override
+
+# Filesystem
+whitelist /fh/fast
+read-only /fh/fast
+# Project dir made writable at runtime via --whitelist=
+blacklist ${HOME}/.ssh
+blacklist ${HOME}/.aws
+blacklist ${HOME}/.gnupg
+
+# Network — allow only Slurm controller and munge
+net none
+# Or more selectively:
+# netfilter /etc/firejail/slurm-only.net
+
+# Seccomp — drop dangerous syscalls
+seccomp
+
+# Capabilities — drop all unnecessary
+caps.drop all
+
+# Environment
+rmenv GITHUB_PAT
+rmenv AWS_SECRET_ACCESS_KEY
+# ...
+```
+
+```bash
+# User runs:
+firejail --profile=/etc/firejail/claude-agent.profile -- claude
+```
+
+### Which to choose
+
+- **bwrap wrapper**: Minimal change from the current setup. Same tool, same mount semantics, just admin-controlled arguments. Good if bwrap is already deployed.
+- **Firejail**: More features (network, seccomp, capabilities) out of the box. Requires installing a new tool but provides stronger guarantees with less custom scripting.
+
+Either approach promotes the sandbox from self-serve to admin-enforced.
+
+---
+
+## 3. Dedicated `${USER}_ai` Accounts
+
+**What it solves:** True user separation. No amount of bubblewrap can prevent a process from accessing files owned by the same UID. A dedicated OS account (`alice_ai`) runs the agent under a different UID, so filesystem permissions enforce isolation without any sandbox at all.
 
 **Effort:** High (new accounts, group structure, Slurm associations, ACLs). **Category:** Admin-enforced.
 
 ### Account and Group Structure
 
 ```
-User account:   dotto        (UID 1001, primary group: dotto)
-Agent account:  dotto_ai     (UID 2001, primary group: dotto_ai)
-Lab AI group:   setty_m_ai   (GID 3001)
+User account:   alice        (UID 1001, primary group: alice)
+Agent account:  alice_ai     (UID 2001, primary group: alice_ai)
+Lab AI group:   mylab_ai     (GID 3001)
 ```
 
 **Group memberships:**
 
 | Account | Groups | Purpose |
 |---|---|---|
-| `dotto` | `dotto`, `dotto_ai`, `setty_m` | Human can read agent output (via `dotto_ai` group) |
-| `dotto_ai` | `dotto_ai`, `setty_m_ai` | Agent creates files owned by `dotto_ai`; lab-wide agent collaboration via `setty_m_ai` |
+| `alice` | `alice`, `alice_ai`, `mylab` | Human can read agent output (via `alice_ai` group) |
+| `alice_ai` | `alice_ai`, `mylab_ai` | Agent creates files owned by `alice_ai`; lab-wide agent collaboration via `mylab_ai` |
 
 This means:
-- Files the agent creates are owned by `dotto_ai:dotto_ai`
-- The human (`dotto`) is in the `dotto_ai` group, so they can read/manage agent output
-- Multiple agents in the lab share `setty_m_ai` for cross-user collaboration
-- The agent **cannot** read `dotto`'s private files (SSH keys, credentials) because it's a different UID
+- Files the agent creates are owned by `alice_ai:alice_ai`
+- The human (`alice`) is in the `alice_ai` group, so they can read/manage agent output
+- Multiple agents in the lab share `mylab_ai` for cross-user collaboration
+- The agent **cannot** read `alice`'s private files (SSH keys, credentials) because it's a different UID
 
 ### Slurm Association
 
@@ -134,7 +231,7 @@ Create a separate Slurm account and QOS with resource limits:
 
 ```bash
 sacctmgr add account ai_agents Description="AI agent jobs"
-sacctmgr add user dotto_ai Account=ai_agents
+sacctmgr add user alice_ai Account=ai_agents
 
 # Optional: limit resources via QOS
 sacctmgr add qos agent_qos \
@@ -142,7 +239,7 @@ sacctmgr add qos agent_qos \
     MaxJobsPerUser=10 \
     MaxSubmitJobsPerUser=20 \
     Priority=10
-sacctmgr modify user dotto_ai set DefaultQOS=agent_qos
+sacctmgr modify user alice_ai set DefaultQOS=agent_qos
 ```
 
 ### File Permissions
@@ -151,28 +248,28 @@ Use POSIX ACLs on shared data directories so agents can read lab data but not pr
 
 ```bash
 # Lab shared data: agents can read
-setfacl -R -m g:setty_m_ai:rX /fh/fast/setty_m/shared_data
+setfacl -R -m g:mylab_ai:rX /fh/fast/mylab/shared_data
 
 # User private dirs: no agent access (default — different UID, no group overlap)
-# dotto_ai cannot read /home/dotto/.ssh — OS enforces this
+# alice_ai cannot read /home/alice/.ssh — OS enforces this
 
 # Agent workspace: both human and agent can read/write
-mkdir -p /fh/fast/setty_m/user/dotto/agent_workspace
-chown dotto_ai:dotto_ai /fh/fast/setty_m/user/dotto/agent_workspace
-chmod 2775 /fh/fast/setty_m/user/dotto/agent_workspace
+mkdir -p /fh/fast/mylab/user/alice/agent_workspace
+chown alice_ai:alice_ai /fh/fast/mylab/user/alice/agent_workspace
+chmod 2775 /fh/fast/mylab/user/alice/agent_workspace
 ```
 
 ### Role of bwrap with Dedicated Accounts
 
-OS user separation handles credential isolation — the agent physically cannot read `dotto`'s SSH keys or AWS credentials because they're owned by a different UID. However, bwrap remains useful for **fine-grained write restriction within allowed paths**: the agent account may have write access to multiple project directories, but bwrap can restrict a given session to only one.
+OS user separation handles credential isolation — the agent physically cannot read `alice`'s SSH keys or AWS credentials because they're owned by a different UID. However, bwrap remains useful for **fine-grained write restriction within allowed paths**: the agent account may have write access to multiple project directories, but bwrap can restrict a given session to only one.
 
 ---
 
-## 3. Network Isolation
+## 4. Network Isolation
 
 **What it solves:** The current sandbox shares the host network stack (required for munge authentication and Slurm communication). This means an agent could use `curl` or `wget` to exfiltrate data.
 
-**Effort:** Medium-high (requires root, iptables/nftables or network namespace configuration). **Category:** Admin-enforced.
+**Effort:** Medium-high (requires root, iptables/nftables or network namespace configuration). **Category:** Admin-enforced. **Requires:** Dedicated `${USER}_ai` accounts (Section 3) — iptables UID filtering needs a separate agent UID.
 
 ### Option A: Per-UID iptables Rules
 
@@ -180,18 +277,18 @@ Block outbound network for agent UIDs, allowing only what's needed:
 
 ```bash
 # Allow loopback and established connections
-iptables -A OUTPUT -m owner --uid-owner dotto_ai -o lo -j ACCEPT
-iptables -A OUTPUT -m owner --uid-owner dotto_ai -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -m owner --uid-owner alice_ai -o lo -j ACCEPT
+iptables -A OUTPUT -m owner --uid-owner alice_ai -m state --state ESTABLISHED,RELATED -j ACCEPT
 
 # Allow munge (unix socket — no iptables rule needed, it's local)
 # Allow Slurm controller communication
-iptables -A OUTPUT -m owner --uid-owner dotto_ai -d <slurmctld_ip> -p tcp --dport 6817 -j ACCEPT
+iptables -A OUTPUT -m owner --uid-owner alice_ai -d <slurmctld_ip> -p tcp --dport 6817 -j ACCEPT
 
 # Allow DNS
-iptables -A OUTPUT -m owner --uid-owner dotto_ai -p udp --dport 53 -j ACCEPT
+iptables -A OUTPUT -m owner --uid-owner alice_ai -p udp --dport 53 -j ACCEPT
 
 # Block everything else
-iptables -A OUTPUT -m owner --uid-owner dotto_ai -j DROP
+iptables -A OUTPUT -m owner --uid-owner alice_ai -j DROP
 ```
 
 ### Option B: Network Namespace with Socket Forwarding
@@ -207,16 +304,16 @@ socat UNIX-LISTEN:/run/netns/agent_ns/munge.sock,fork \
       UNIX-CONNECT:/run/munge/munge.socket.2 &
 
 # Run agent in namespace
-ip netns exec agent_ns su - dotto_ai -c "claude"
+ip netns exec agent_ns su - alice_ai -c "claude"
 ```
 
 This is more complex but provides stronger isolation — the agent has no network interfaces at all, just the munge socket.
 
-**Complements:** Pairs naturally with dedicated `${USER}_ai` accounts (the iptables rules key off UID).
+**Complements:** Pairs naturally with dedicated `${USER}_ai` accounts (the iptables rules key off UID). Firejail (Section 2) includes built-in network isolation, which may be simpler than manual iptables setup.
 
 ---
 
-## 4. Kernel Upgrade and Landlock
+## 5. Kernel Upgrade and Landlock
 
 **What it solves:** The current kernel (4.15) doesn't support [Landlock](https://docs.kernel.org/userspace-api/landlock.html), a Linux Security Module available since kernel 5.13. Landlock provides per-process filesystem access rules without requiring mount namespaces.
 
@@ -236,16 +333,16 @@ struct landlock_ruleset_attr ruleset_attr = {
 
 int ruleset_fd = landlock_create_ruleset(&ruleset_attr, ...);
 
-// Allow read access to /fh/fast/setty_m
+// Allow read access to /fh/fast/mylab
 landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &(struct landlock_path_beneath_attr){
     .allowed_access = LANDLOCK_ACCESS_FS_READ_FILE,
-    .parent_fd = open("/fh/fast/setty_m", O_PATH)
+    .parent_fd = open("/fh/fast/mylab", O_PATH)
 });
 
 // Allow write access to project dir only
 landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &(struct landlock_path_beneath_attr){
     .allowed_access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE,
-    .parent_fd = open("/fh/fast/setty_m/user/dotto/project", O_PATH)
+    .parent_fd = open("/fh/fast/mylab/user/alice/project", O_PATH)
 });
 
 // Enforce — cannot be undone by the process
@@ -275,11 +372,11 @@ uname -r
 
 ---
 
-## 5. Audit Logging
+## 6. Audit Logging
 
 **What it solves:** Visibility into what the agent did — which files it accessed, which jobs it submitted, and what commands it ran. Useful for compliance, forensics, and debugging.
 
-**Effort:** Low-medium (auditd rules + Slurm accounting config). **Category:** Admin-enforced. **Requires:** Dedicated `${USER}_ai` accounts (Section 2) — auditd filters on UID, so without a separate agent UID there is no way to distinguish agent activity from human activity in the audit log.
+**Effort:** Low-medium (auditd rules + Slurm accounting config). **Category:** Admin-enforced. **Requires:** Dedicated `${USER}_ai` accounts (Section 3) — auditd filters on UID, so without a separate agent UID there is no way to distinguish agent activity from human activity in the audit log.
 
 ### File Access Auditing with auditd
 
@@ -288,13 +385,13 @@ Log all file access by agent accounts:
 ```bash
 # /etc/audit/rules.d/agent-audit.rules
 
-# Log file opens by dotto_ai
+# Log file opens by alice_ai
 -a always,exit -F arch=b64 -S open,openat -F uid=2001 -k agent_file_access
 
-# Log process execution by dotto_ai
+# Log process execution by alice_ai
 -a always,exit -F arch=b64 -S execve -F uid=2001 -k agent_exec
 
-# Log network connections by dotto_ai
+# Log network connections by alice_ai
 -a always,exit -F arch=b64 -S connect -F uid=2001 -k agent_network
 ```
 
@@ -316,7 +413,7 @@ ausearch -k agent_exec --uid 2001 -ts today
 
 ### Slurm Job Accounting
 
-With dedicated Slurm accounts (Section 2), all agent jobs are automatically tracked:
+With dedicated Slurm accounts (Section 3), all agent jobs are automatically tracked:
 
 ```bash
 # All jobs submitted by agent accounts
@@ -338,9 +435,10 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 | # | Improvement | Effort | Category | What It Closes |
 |---|---|---|---|---|
 | 1 | Admin-managed Slurm wrappers | Medium | Self-serve | Agent bypassing Slurm wrappers by absolute path |
-| 2 | Dedicated `${USER}_ai` accounts | High | Admin-enforced | Same-UID credential access; OS-level separation |
-| 3 | Network isolation | Medium-high | Admin-enforced | Data exfiltration via network |
-| 4 | Kernel upgrade + Landlock | High | Self-serve | Simpler/stronger filesystem restrictions |
-| 5 | Audit logging | Low-medium | Admin-enforced (requires #2) | Visibility, compliance, forensics |
+| 2 | Admin-provided sandbox tools | Low-medium | Admin-enforced | Users weakening their own sandbox config |
+| 3 | Dedicated `${USER}_ai` accounts | High | Admin-enforced | Same-UID credential access; OS-level separation |
+| 4 | Network isolation | Medium-high | Admin-enforced (requires #3) | Data exfiltration via network |
+| 5 | Kernel upgrade + Landlock | High | Self-serve | Simpler/stronger filesystem restrictions |
+| 6 | Audit logging | Low-medium | Admin-enforced (requires #3) | Visibility, compliance, forensics |
 
-Sections 1, 3, and 4 are independent. Section 5 requires Section 2 (dedicated accounts).
+Sections 1, 2, and 5 are independent. Sections 4 and 6 require Section 3 (dedicated accounts).
