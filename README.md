@@ -23,7 +23,7 @@ Containers (Docker, Singularity/Apptainer) solve isolation, but they introduce f
 | **Software stack** | Must install tools inside the image, or map `/app` — versions may conflict | Directly uses `/app`, lmod, your Homebrew — everything just works. |
 | **Image maintenance** | Must rebuild images when tools change | Nothing to rebuild. |
 | **Starting Claude** | Need to map in Claude's data dir, node binary, socket files... | `bwrap-sandbox.sh -- claude` — that's it. |
-| **Slurm integration** | Either Slurm is inaccessible inside the container (making the HPC login node pointless for an interactive agent), or jobs escape the container and run unsandboxed on compute nodes — defeating the isolation entirely | `sbatch`/`srun` are transparently wrapped so compute-node jobs inherit the same sandbox restrictions |
+| **Slurm integration** | Either Slurm is inaccessible inside the container — making interactive agents on the login node pointless since they can't submit compute jobs — or jobs escape the container and run unsandboxed on compute nodes, defeating the isolation entirely | `sbatch`/`srun` are transparently wrapped so compute-node jobs inherit the same sandbox restrictions |
 
 Bubblewrap gives you **container-grade filesystem isolation** with none of the path-mapping headaches. The agent sees the exact same filesystem as you, minus the secrets.
 
