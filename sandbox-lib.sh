@@ -56,6 +56,7 @@ HOME_SYMLINKS=()
 HOME_WRITABLE=(
     ".claude"
     ".claude.json"
+    ".cache/uv"
 )
 
 BLOCKED_FILES=(
