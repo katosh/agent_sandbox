@@ -193,6 +193,36 @@ ALLOWED_CREDENTIALS=(
 
 These are un-blocked (overriding `BLOCKED_ENV_VARS`) so the agent can use them inside the sandbox.
 
+#### Allow SSH keys (e.g., for private Git repos)
+
+If the agent needs to clone or push to private repositories over SSH, you can expose your SSH keys inside the sandbox:
+
+```bash
+# In sandbox.conf — add to HOME_READONLY:
+HOME_READONLY=(
+    ".dotfiles"
+    ".linuxbrew"
+    ".local/bin"
+    # ... existing entries ...
+    ".ssh"                 # ← add this
+)
+```
+
+> **Warning — understand the trade-offs before enabling this.**
+>
+> Exposing `~/.ssh` gives the agent access to **all** your SSH private keys. This means the agent can, in principle:
+>
+> - **Authenticate to any host** your keys grant access to — GitHub, remote clusters, production servers, etc.
+> - **Push code, delete branches, or modify repositories** you have write access to — not just the project it's working on.
+> - **Connect to remote machines** via SSH and execute commands there, entirely outside the sandbox's filesystem restrictions.
+>
+> The sandbox cannot limit *which* SSH operations the agent performs once the keys are visible — it only controls filesystem access, not network connections or SSH authentication.
+>
+> **Alternatives to consider:**
+> - **Deploy keys:** Create a read-only [GitHub deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys) scoped to a single repository, place it in your project directory, and configure `GIT_SSH_COMMAND` to use it — no need to expose `~/.ssh` at all.
+> - **HTTPS + token:** Use HTTPS cloning with a fine-grained personal access token (limited to specific repos) via the `ALLOWED_CREDENTIALS` mechanism instead.
+> - **Read-only mount:** Note that `HOME_READONLY` mounts the directory read-only, so the agent cannot modify or delete your keys — but it *can* read and use them for authentication.
+
 #### Allow GitHub CLI
 
 ```bash
