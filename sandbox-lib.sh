@@ -235,6 +235,40 @@ build_bwrap_args() {
         BWRAP_ARGS+=(--ro-bind "$claude_md_overlay" "$claude_md_resolved")
     fi
 
+    # --- Settings overlay: inject sandbox permissions ---
+    # Merges the user's settings.json with sandbox-specific permission
+    # rules so that tools already restricted by bwrap (Bash, Edit, Write,
+    # etc.) are auto-allowed without prompting.
+    local settings_overlay="$SANDBOX_DIR/.settings-overlay"
+    local sandbox_settings="$SANDBOX_DIR/sandbox-settings.json"
+    local user_settings="$HOME/.claude/settings.json"
+
+    if [[ -f "$sandbox_settings" ]]; then
+        # Ensure target exists for the bind mount
+        [[ -f "$user_settings" ]] || echo '{}' > "$user_settings"
+
+        # Merge: keep all user settings, add sandbox allow rules
+        python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        user = json.load(f)
+except (ValueError, IOError):
+    user = {}
+with open(sys.argv[2]) as f:
+    sandbox = json.load(f)
+user.setdefault('permissions', {})
+existing = user['permissions'].get('allow', [])
+for rule in sandbox.get('permissions', {}).get('allow', []):
+    if rule not in existing:
+        existing.append(rule)
+user['permissions']['allow'] = existing
+json.dump(user, sys.stdout, indent=2)
+" "$user_settings" "$sandbox_settings" > "$settings_overlay"
+
+        BWRAP_ARGS+=(--ro-bind "$settings_overlay" "$user_settings")
+    fi
+
     # --- Scratch filesystems (read-only) ---
     for scratch in "${SCRATCH_MOUNTS[@]}"; do
         if [[ -d "$scratch" ]]; then

@@ -57,7 +57,7 @@ echo "→ Installing sandbox scripts to $SANDBOX_DIR/"
 
 mkdir -p "$SANDBOX_DIR/bin"
 
-for file in sandbox-lib.sh bwrap-sandbox.sh sbatch-sandbox.sh srun-sandbox.sh sandbox-claude.md; do
+for file in sandbox-lib.sh bwrap-sandbox.sh sbatch-sandbox.sh srun-sandbox.sh sandbox-claude.md sandbox-settings.json; do
     cp "$SCRIPT_DIR/$file" "$SANDBOX_DIR/$file"
 done
 

@@ -357,6 +357,28 @@ The sandbox-specific instructions live in `~/.claude/sandbox/sandbox-claude.md`.
 $EDITOR ~/.claude/sandbox/sandbox-claude.md
 ```
 
+### Sandbox Permissions (settings.json)
+
+The sandbox also overlays Claude Code's `~/.claude/settings.json` to **auto-allow tools that are already restricted by bwrap**. Since the sandbox enforces filesystem isolation at the kernel level, Claude Code's own permission prompts for file and shell operations are redundant — the agent can't escape the sandbox regardless of what it runs.
+
+By default, the sandbox adds these to the `allow` list:
+
+| Tool | Why safe inside the sandbox |
+|---|---|
+| `Bash` | Filesystem is read-only except the project dir |
+| `Read` | Only mounted paths are visible |
+| `Edit` / `Write` | Can only write to the project dir and `~/.claude` |
+| `Glob` / `Grep` | Search is read-only |
+| `NotebookEdit` | Same write restrictions as `Edit` |
+
+The user's existing `settings.json` rules (including `deny` rules) are preserved — the sandbox only **adds** to the `allow` list.
+
+To customize the sandbox permissions:
+
+```bash
+$EDITOR ~/.claude/sandbox/sandbox-settings.json
+```
+
 ---
 
 ## Troubleshooting
