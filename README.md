@@ -37,7 +37,7 @@ This sandbox solves the Slurm problem with a two-layer approach. First, wrapper 
 
 #### Limitations of the Slurm Wrappers
 
-The Slurm wrappers provide **strong default protection** but are not fully kernel-enforced. They work by:
+The Slurm wrappers provide strong default protection but are not fully kernel-enforced. They work by:
 
 1. **PATH shadowing** — `sbatch`/`srun` resolve to sandbox wrappers via PATH ordering.
 2. **Binary relocation** — the real ELF binaries at `/usr/bin/sbatch` and `/usr/bin/srun` are moved to an obscure internal path (`/tmp/.sandbox-slurm-real/`) and replaced with redirector scripts that funnel calls back through the sandbox wrappers.
