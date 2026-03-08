@@ -279,7 +279,7 @@ uname -r
 
 **What it solves:** Visibility into what the agent did — which files it accessed, which jobs it submitted, and what commands it ran. Useful for compliance, forensics, and debugging.
 
-**Effort:** Low-medium (auditd rules + Slurm accounting config). **Category:** Admin-enforced.
+**Effort:** Low-medium (auditd rules + Slurm accounting config). **Category:** Admin-enforced. **Requires:** Dedicated `${USER}_ai` accounts (Section 2) — auditd filters on UID, so without a separate agent UID there is no way to distinguish agent activity from human activity in the audit log.
 
 ### File Access Auditing with auditd
 
@@ -329,7 +329,7 @@ sreport cluster AccountUtilizationByUser Accounts=ai_agents Start=2024-01-01
 
 The separate account/QOS makes it trivial to query, report on, and set limits for agent workloads without any custom tooling.
 
-**Complements:** Pairs with dedicated `${USER}_ai` accounts for UID-based audit rules and with Slurm account/QOS for job-level tracking.
+**Complements:** Downstream of dedicated `${USER}_ai` accounts — both auditd and Slurm accounting depend on having a separate UID/account to filter on.
 
 ---
 
@@ -341,6 +341,6 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 | 2 | Dedicated `${USER}_ai` accounts | High | Admin-enforced | Same-UID credential access; OS-level separation |
 | 3 | Network isolation | Medium-high | Admin-enforced | Data exfiltration via network |
 | 4 | Kernel upgrade + Landlock | High | Self-serve | Simpler/stronger filesystem restrictions |
-| 5 | Audit logging | Low-medium | Admin-enforced | Visibility, compliance, forensics |
+| 5 | Audit logging | Low-medium | Admin-enforced (requires #2) | Visibility, compliance, forensics |
 
-All sections are independent and complementary.
+Sections 1, 3, and 4 are independent. Section 5 requires Section 2 (dedicated accounts).
