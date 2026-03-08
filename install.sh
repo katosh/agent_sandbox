@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# install.sh — Set up the bubblewrap sandbox for Claude Code
+#
+# What this script does:
+#   1. Installs bubblewrap via Homebrew (if missing)
+#   2. Copies sandbox scripts to ~/.claude/sandbox/
+#   3. Creates a default sandbox.conf (won't overwrite yours)
+#   4. Installs sandbox-claude.md (agent instructions, only visible inside sandbox)
+#   5. Runs a quick smoke test
+#
+# Usage:
+#   git clone git@github.com:settylab/agent_container.git
+#   bash agent_container/install.sh
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SANDBOX_DIR="$HOME/.claude/sandbox"
+
+echo "╔═══════════════════════════════════════════════╗"
+echo "║  Bubblewrap Sandbox Installer                  ║"
+echo "╚═══════════════════════════════════════════════╝"
+echo ""
+
+# ── Step 1: Homebrew + bubblewrap ───────────────────────────────
+
+if ! command -v brew &>/dev/null; then
+    echo "ERROR: Homebrew (Linuxbrew) not found."
+    echo ""
+    echo "Install it first:"
+    echo '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+    echo ""
+    echo "Then add it to your PATH and re-run this script."
+    exit 1
+fi
+
+if ! command -v bwrap &>/dev/null; then
+    echo "→ Installing bubblewrap via Homebrew..."
+    brew install bubblewrap
+    echo "  ✓ bubblewrap installed: $(bwrap --version)"
+else
+    echo "✓ bubblewrap already installed: $(bwrap --version)"
+fi
+
+# Verify kernel supports user namespaces
+if [[ -f /proc/sys/kernel/unprivileged_userns_clone ]]; then
+    if [[ "$(cat /proc/sys/kernel/unprivileged_userns_clone)" != "1" ]]; then
+        echo "WARNING: Unprivileged user namespaces are disabled on this kernel."
+        echo "  bwrap may not work. Contact your sysadmin."
+    fi
+fi
+
+# ── Step 2: Copy scripts ───────────────────────────────────────
+
+echo ""
+echo "→ Installing sandbox scripts to $SANDBOX_DIR/"
+
+mkdir -p "$SANDBOX_DIR/bin"
+
+for file in sandbox-lib.sh bwrap-sandbox.sh sbatch-sandbox.sh srun-sandbox.sh sandbox-claude.md; do
+    cp "$SCRIPT_DIR/$file" "$SANDBOX_DIR/$file"
+done
+
+for file in sbatch srun; do
+    cp "$SCRIPT_DIR/bin/$file" "$SANDBOX_DIR/bin/$file"
+done
+
+chmod +x "$SANDBOX_DIR/bwrap-sandbox.sh"
+chmod +x "$SANDBOX_DIR/sbatch-sandbox.sh"
+chmod +x "$SANDBOX_DIR/srun-sandbox.sh"
+chmod +x "$SANDBOX_DIR/bin/sbatch"
+chmod +x "$SANDBOX_DIR/bin/srun"
+
+echo "  ✓ Scripts installed"
+
+# ── Step 3: Config file ────────────────────────────────────────
+
+if [[ -f "$SANDBOX_DIR/sandbox.conf" ]]; then
+    echo "  ✓ sandbox.conf already exists (not overwriting)"
+    echo "    Compare with latest: diff $SANDBOX_DIR/sandbox.conf $SCRIPT_DIR/sandbox.conf"
+else
+    cp "$SCRIPT_DIR/sandbox.conf" "$SANDBOX_DIR/sandbox.conf"
+    echo "  ✓ Created sandbox.conf — edit to customize permissions"
+fi
+
+# ── Step 4: Agent awareness ─────────────────────────────────────
+# The sandbox dynamically overlays CLAUDE.md with sandbox instructions
+# at startup (via sandbox-lib.sh). No modification to the user's
+# CLAUDE.md is needed — the agent only sees the instructions when
+# running inside the sandbox.
+
+echo "  ✓ Agent instructions installed (sandbox-claude.md)"
+echo "    Only visible to the agent when running inside the sandbox."
+echo "    Edit $SANDBOX_DIR/sandbox-claude.md to customize."
+
+# ── Step 5: Smoke test ──────────────────────────────────────────
+
+echo ""
+echo "→ Running smoke test..."
+
+FAIL=0
+
+# Test 1: basic execution
+if "$SANDBOX_DIR/bwrap-sandbox.sh" -- bash -c 'echo ok' &>/dev/null; then
+    echo "  ✓ Sandbox starts and runs commands"
+else
+    echo "  ✗ Sandbox failed to start"
+    FAIL=1
+fi
+
+# Test 2: home is blanked
+if "$SANDBOX_DIR/bwrap-sandbox.sh" -- bash -c 'test -d ~/.ssh' 2>/dev/null; then
+    echo "  ✗ ~/.ssh is visible (should be hidden!)"
+    FAIL=1
+else
+    echo "  ✓ ~/.ssh is hidden"
+fi
+
+# Test 3: project dir is writable
+TESTFILE="$PWD/.sandbox-install-test-$$"
+if "$SANDBOX_DIR/bwrap-sandbox.sh" --project-dir "$PWD" -- bash -c "touch '$TESTFILE' && rm '$TESTFILE'" 2>/dev/null; then
+    echo "  ✓ Project directory is writable"
+else
+    echo "  ✗ Project directory is not writable"
+    FAIL=1
+fi
+
+# Test 4: slurm accessible
+if "$SANDBOX_DIR/bwrap-sandbox.sh" -- bash -c 'command -v squeue &>/dev/null' 2>/dev/null; then
+    echo "  ✓ Slurm commands accessible"
+else
+    echo "  ⚠ Slurm commands not found (may be OK if not on gizmo)"
+fi
+
+# Test 5: sbatch/srun resolve to wrappers
+if "$SANDBOX_DIR/bwrap-sandbox.sh" -- bash -c 'which sbatch | grep -q sandbox' 2>/dev/null; then
+    echo "  ✓ sbatch/srun shadowed by sandbox wrappers"
+else
+    echo "  ✗ sbatch not shadowed — PATH issue"
+    FAIL=1
+fi
+
+if [[ $FAIL -ne 0 ]]; then
+    echo ""
+    echo "⚠ Some tests failed. Check the output above."
+    exit 1
+fi
+
+# ── Step 6: Suggest shell alias ───────────────────────────────────
+
+ALIAS_LINE="alias claude-sandbox='~/.claude/sandbox/bwrap-sandbox.sh -- claude'"
+ALIAS_ALREADY=false
+
+# Check common shell rc files
+for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.dotfiles/.bashrc" "$HOME/.dotfiles/.zshrc"; do
+    if [[ -f "$rc" ]] && grep -qF "claude-sandbox" "$rc" 2>/dev/null; then
+        ALIAS_ALREADY=true
+        break
+    fi
+done
+
+echo ""
+echo "════════════════════════════════════════════════"
+echo "  Installation complete!"
+echo ""
+echo "  Start Claude Code in a sandbox:"
+echo "    cd /your/project/dir"
+echo "    ~/.claude/sandbox/bwrap-sandbox.sh -- claude"
+echo ""
+echo "  Customize permissions:"
+echo "    \$EDITOR ~/.claude/sandbox/sandbox.conf"
+
+if [[ "$ALIAS_ALREADY" == false ]]; then
+    echo ""
+    echo "  ── Optional: add a shell alias ──"
+    echo ""
+    echo "  For quick access, add this to your shell rc file:"
+    echo ""
+    echo "    $ALIAS_LINE"
+    echo ""
+    echo "  Then you can just run:  claude-sandbox"
+fi
+echo "════════════════════════════════════════════════"

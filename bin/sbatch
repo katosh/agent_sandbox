@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Sandbox sbatch — shadows /usr/bin/sbatch inside the sandbox.
+# Delegates to sbatch-sandbox.sh which wraps jobs in bwrap.
+exec "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/../sbatch-sandbox.sh" "$@"
