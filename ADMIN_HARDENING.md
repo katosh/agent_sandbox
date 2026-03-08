@@ -189,12 +189,12 @@ rmenv AWS_SECRET_ACCESS_KEY
 firejail --profile=/etc/firejail/claude-agent.profile -- claude
 ```
 
-### Which to choose
+### Tradeoffs
 
-- **bwrap wrapper**: Minimal change from the current setup. Same tool, same mount semantics, just admin-controlled arguments. Good if bwrap is already deployed.
-- **Firejail**: More features (network, seccomp, capabilities) out of the box. Requires installing a new tool but provides stronger guarantees with less custom scripting.
+- **bwrap wrapper**: Same tool and mount semantics as the current user-space setup, just with admin-controlled arguments. Both bwrap and Firejail would need to be installed system-wide.
+- **Firejail**: More features (network, seccomp, capabilities) out of the box. Provides stronger guarantees with less custom scripting.
 
-Either approach promotes the sandbox from self-serve to admin-enforced.
+Either approach would promote the sandbox from self-serve to admin-enforced.
 
 ---
 
