@@ -46,7 +46,40 @@ fi
 if [[ -f /proc/sys/kernel/unprivileged_userns_clone ]]; then
     if [[ "$(cat /proc/sys/kernel/unprivileged_userns_clone)" != "1" ]]; then
         echo "WARNING: Unprivileged user namespaces are disabled on this kernel."
-        echo "  bwrap may not work. Contact your sysadmin."
+        echo "  bwrap may not work. Ask your sysadmin to run:"
+        echo "    sudo sysctl -w kernel.unprivileged_userns_clone=1"
+    fi
+fi
+
+# Check for AppArmor restriction on unprivileged user namespaces
+# Ubuntu 24.04+ restricts userns even when unprivileged_userns_clone=1
+if [[ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+    if [[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" == "1" ]]; then
+        BWRAP_PATH="$(command -v bwrap)"
+        echo ""
+        echo "WARNING: AppArmor restricts unprivileged user namespaces on this system."
+        echo "  Ubuntu 24.04+ enables kernel.apparmor_restrict_unprivileged_userns=1"
+        echo "  by default, which blocks bwrap even when unprivileged_userns_clone=1."
+        echo ""
+        echo "  bwrap will fail with: 'setting up uid map: Permission denied'"
+        echo ""
+        echo "  Ask your sysadmin to apply ONE of these fixes:"
+        echo ""
+        echo "  Option 1 — AppArmor profile for bwrap (recommended, scoped):"
+        echo "    Create /etc/apparmor.d/bwrap with:"
+        echo ""
+        echo "      abi <abi/4.0>,"
+        echo "      include <tunables/global>"
+        echo "      profile bwrap $BWRAP_PATH flags=(unconfined) {"
+        echo "        userns,"
+        echo "      }"
+        echo ""
+        echo "    Then: sudo apparmor_parser -r /etc/apparmor.d/bwrap"
+        echo ""
+        echo "  Option 2 — Disable the restriction globally (easier, broader):"
+        echo "    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"
+        echo "    # To persist: echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/99-userns.conf"
+        echo ""
     fi
 fi
 

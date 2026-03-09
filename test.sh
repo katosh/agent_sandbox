@@ -47,6 +47,27 @@ if [[ ! -x "$BWRAP_SANDBOX" ]]; then
     exit 1
 fi
 
+# Check for AppArmor userns restriction (Ubuntu 24.04+)
+if [[ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] \
+   && [[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" == "1" ]]; then
+    BWRAP_PATH="$(command -v bwrap)"
+    echo "ERROR: AppArmor blocks unprivileged user namespaces on this system."
+    echo "  bwrap will fail with 'setting up uid map: Permission denied'."
+    echo ""
+    echo "  Ask your sysadmin to create /etc/apparmor.d/bwrap with:"
+    echo ""
+    echo "    abi <abi/4.0>,"
+    echo "    include <tunables/global>"
+    echo "    profile bwrap $BWRAP_PATH flags=(unconfined) {"
+    echo "      userns,"
+    echo "    }"
+    echo ""
+    echo "  Then: sudo apparmor_parser -r /etc/apparmor.d/bwrap"
+    echo ""
+    echo "  Or disable globally: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"
+    exit 1
+fi
+
 # ── 1. Basic sandbox ─────────────────────────────────────────────
 
 echo "1. Basic sandbox functionality"

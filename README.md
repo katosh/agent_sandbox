@@ -50,7 +50,7 @@ Under normal operation (including calling `/usr/bin/sbatch` by absolute path), t
 
 ### Prerequisites
 
-- Fred Hutch gizmo account (or similar HPC with Linux kernel ≥ 3.8 and `kernel.unprivileged_userns_clone = 1`)
+- Fred Hutch gizmo account (or similar HPC with Linux kernel ≥ 3.8 and `kernel.unprivileged_userns_clone = 1`). On Ubuntu 24.04+, AppArmor may also need configuration — see [Troubleshooting](#setting-up-uid-map-permission-denied-ubuntu-2404).
 - [Homebrew (Linuxbrew)](https://brew.sh/) — for installing bubblewrap in user space
 
 ### One-Command Setup
@@ -406,6 +406,21 @@ Install bubblewrap: `brew install bubblewrap`
 
 ### "bwrap: Creating new namespace failed: Operation not permitted"
 The kernel doesn't allow unprivileged user namespaces. Check: `cat /proc/sys/kernel/unprivileged_userns_clone` — it must be `1`. On gizmo, this is enabled by default.
+
+### "setting up uid map: Permission denied" (Ubuntu 24.04+)
+Ubuntu 24.04 sets `kernel.apparmor_restrict_unprivileged_userns = 1` by default, which blocks bwrap even when `unprivileged_userns_clone = 1`. This requires a sysadmin fix:
+
+**Option 1 — AppArmor profile (recommended):** Create `/etc/apparmor.d/bwrap`:
+```
+abi <abi/4.0>,
+include <tunables/global>
+profile bwrap /path/to/bwrap flags=(unconfined) {
+  userns,
+}
+```
+Replace `/path/to/bwrap` with the output of `which bwrap`. Then run `sudo apparmor_parser -r /etc/apparmor.d/bwrap`.
+
+**Option 2 — Disable globally:** `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (persist with `/etc/sysctl.d/99-userns.conf`).
 
 ### Slurm commands fail with "Authentication error"
 The munge socket at `/run/munge/` must be accessible. The sandbox binds `/run` by default. If you're on a non-standard setup, check that `/run/munge/munge.socket.2` exists.
