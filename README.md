@@ -50,8 +50,9 @@ Under normal operation (including calling `/usr/bin/sbatch` by absolute path), t
 
 ### Prerequisites
 
-- Fred Hutch gizmo account (or similar HPC with Linux kernel ≥ 3.8 and `kernel.unprivileged_userns_clone = 1`). On Ubuntu 24.04+, AppArmor may also need configuration — see [Troubleshooting](#setting-up-uid-map-permission-denied-ubuntu-2404).
-- [Homebrew (Linuxbrew)](https://brew.sh/) — for installing bubblewrap in user space
+- Fred Hutch gizmo account (or similar HPC with Linux kernel ≥ 3.8)
+- **Bubblewrap backend** (default): requires `kernel.unprivileged_userns_clone = 1` and [Homebrew](https://brew.sh/) for installation. On Ubuntu 24.04+, AppArmor may also need configuration — see [Troubleshooting](#setting-up-uid-map-permission-denied-ubuntu-2404).
+- **Landlock backend** (fallback): requires kernel ≥ 5.13 (Ubuntu 22.04+). Works without root, even when AppArmor blocks user namespaces. No Homebrew needed — uses Python 3 only.
 
 ### One-Command Setup
 
@@ -75,16 +76,34 @@ The installer:
 ```
 ~/.claude/sandbox/
 ├── sandbox.conf          # ← Your permissions config — edit this
-├── sandbox-lib.sh        # Core library (builds bwrap arguments)
-├── bwrap-sandbox.sh      # Main entry point
+├── sandbox-lib.sh        # Core library (config loading, backend detection)
+├── sandbox-exec.sh       # Main entry point (auto-selects backend)
+├── bwrap-sandbox.sh      # Backward-compatible entry point (delegates to sandbox-exec.sh)
 ├── sbatch-sandbox.sh     # Slurm sbatch wrapper
 ├── srun-sandbox.sh       # Slurm srun wrapper
 ├── sandbox-claude.md     # Agent instructions (overlaid into CLAUDE.md inside sandbox)
-├── test.sh               # Test suite (28 tests)
+├── test.sh               # Test suite
+├── backends/
+│   ├── bwrap.sh          # Bubblewrap backend (mount namespace isolation)
+│   ├── landlock.sh       # Landlock backend (LSM filesystem restrictions)
+│   └── landlock-sandbox.py  # Landlock syscall helper (Python)
 └── bin/
     ├── sbatch            # Shadows /usr/bin/sbatch inside sandbox
     └── srun              # Shadows /usr/bin/srun inside sandbox
 ```
+
+### Backends
+
+The sandbox supports two backends, auto-detected at startup:
+
+| Backend | How it works | Requirements | Blocked paths show as |
+|---|---|---|---|
+| **bwrap** (default) | Mount namespace isolation — hides paths entirely | `unprivileged_userns_clone=1`, no AppArmor userns restriction | `ENOENT` (No such file) |
+| **landlock** (fallback) | Landlock LSM — restricts filesystem access | Kernel ≥ 5.13, Python 3 | `EACCES` (Permission denied) |
+
+Both provide equivalent security. The auto-detection tries bwrap first (stronger isolation), then falls back to Landlock (works without admin help on Ubuntu 24.04+).
+
+To force a backend: set `SANDBOX_BACKEND="landlock"` in `sandbox.conf` or use `--backend landlock` on the command line.
 
 ### Updating
 
@@ -454,18 +473,14 @@ Mamba root (`$MAMBA_ROOT_PREFIX`) is read-only. Create environments outside the 
 
 ---
 
-## Appendix: Why Bubblewrap?
-
-We evaluated several sandboxing approaches for this environment (Linux 4.15, shared HPC, no root access):
+## Appendix: Sandbox Backend Comparison
 
 | Tool | Available? | Pros | Cons |
 |---|---|---|---|
-| **[Bubblewrap](https://github.com/containers/bubblewrap)** | ✅ Yes (Homebrew) | Lightweight, user-space, per-mount control, no root needed | Not a full container; no image caching |
-| **[Landlock](https://docs.kernel.org/userspace-api/landlock.html)** | ❌ No | Elegant LSM-based filesystem restrictions | Requires kernel ≥ 5.13 (we have 4.15) |
+| **[Bubblewrap](https://github.com/containers/bubblewrap)** | ✅ Yes (Homebrew) | Strongest isolation (mount namespace), paths hidden entirely, supports file overlays | Requires unprivileged user namespaces; blocked by AppArmor on Ubuntu 24.04+ |
+| **[Landlock](https://docs.kernel.org/userspace-api/landlock.html)** | ✅ Yes (kernel ≥ 5.13) | No root needed, works on Ubuntu 24.04 despite AppArmor, pure kernel LSM | Blocked paths return EACCES not ENOENT; no mount overlays |
 | **[Firejail](https://firejail.wordpress.com/)** | ❌ No | Feature-rich, profile-based | Requires setuid root or CAP_SYS_ADMIN |
 | **[Apptainer/Singularity](https://apptainer.org/)** | ✅ Yes (lmod) | Full container, HPC-native | Heavy — requires container images, path mapping |
 | **Docker** | ❌ No | Industry standard | Requires root daemon; not available on shared HPC |
 
-Bubblewrap is the clear winner for this use case: it runs as an unprivileged user, gives fine-grained mount control, adds negligible overhead, and keeps paths identical inside and outside the sandbox. It works because the gizmo kernel has `CONFIG_USER_NS=y` and `kernel.unprivileged_userns_clone = 1`, allowing unprivileged user namespace creation.
-
-Bubblewrap is the same tool that Flatpak uses to sandbox desktop applications on Linux. It's mature, widely deployed, and maintained as part of the [containers](https://github.com/containers) project.
+The sandbox auto-detects the best available backend. Bubblewrap is preferred for its stronger isolation (mount namespace hides paths entirely). Landlock is the fallback for systems where AppArmor blocks unprivileged user namespaces — it provides equivalent security through a different mechanism (LSM-based access control).
