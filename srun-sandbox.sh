@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# srun-sandbox.sh — Drop-in srun that wraps commands in bwrap on the compute node
+# srun-sandbox.sh — Drop-in srun that wraps commands in the sandbox on the compute node
 #
 # Accepts the same arguments as real srun. Separates srun flags from the
-# command, then runs:  /usr/bin/srun [flags] bwrap [args] -- command
+# command, then runs:  /usr/bin/srun [flags] sandbox-exec.sh -- command
 #
 # Works with or without a -- separator:
 #   srun-sandbox.sh -n 4 python train.py
@@ -10,11 +10,14 @@
 
 set -euo pipefail
 
-# Inside the sandbox, the real srun lives at an obscure internal path
-# (see SLURM_REAL_DIR in sandbox-lib.sh).  /usr/bin/srun is overlaid
-# with the shadow script, so we must use the relocated binary.
+# Inside the sandbox, the real srun may be at a relocated path (bwrap)
+# or at its original location (landlock).
 if [[ "${SANDBOX_ACTIVE:-}" == "1" ]]; then
-    REAL_SRUN="${REAL_SRUN:-/tmp/.sandbox-slurm-real/srun}"
+    if [[ "${SANDBOX_BACKEND:-bwrap}" == "bwrap" ]]; then
+        REAL_SRUN="${REAL_SRUN:-/tmp/.sandbox-slurm-real/srun}"
+    else
+        REAL_SRUN="${REAL_SRUN:-/usr/bin/srun}"
+    fi
 else
     REAL_SRUN="${REAL_SRUN:-/usr/bin/srun}"
 fi
@@ -24,7 +27,6 @@ source "$SCRIPT_DIR/sandbox-lib.sh"
 PROJECT_DIR="${SANDBOX_PROJECT_DIR:-$(pwd)}"
 
 # ── Known srun flags that consume a value argument ──────────────
-# (flags using --flag=value don't need to be listed here)
 SRUN_VALUE_FLAGS=(
     -A --account -c --cpus-per-task -D --chdir -d --dependency
     -e --error -J --job-name -n --ntasks -N --nodes -o --output
@@ -52,14 +54,12 @@ USER_CMD=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --)
-            # Explicit separator — everything after is the command
             shift
             USER_CMD=("$@")
             break
             ;;
         -*)
             SRUN_FLAGS+=("$1")
-            # If this flag takes a separate value arg (not --flag=val)
             if [[ "$1" != *=* ]] && is_value_flag "$1"; then
                 if [[ $# -gt 1 ]]; then
                     shift
@@ -69,7 +69,6 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         *)
-            # First non-flag argument = start of user command
             USER_CMD=("$@")
             break
             ;;
@@ -77,11 +76,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#USER_CMD[@]} -eq 0 ]]; then
-    # No command — pass through to real srun (will show usage/error)
     exec "$REAL_SRUN" "${SRUN_FLAGS[@]}"
 fi
 
-build_bwrap_args "$PROJECT_DIR"
+detect_backend
+backend_prepare "$PROJECT_DIR"
 
-exec "$REAL_SRUN" "${SRUN_FLAGS[@]}" \
-    "$BWRAP" "${BWRAP_ARGS[@]}" -- "${USER_CMD[@]}"
+if [[ "$SANDBOX_BACKEND" == "bwrap" ]]; then
+    exec "$REAL_SRUN" "${SRUN_FLAGS[@]}" \
+        "$BWRAP" "${BWRAP_ARGS[@]}" -- "${USER_CMD[@]}"
+else
+    # For landlock: run sandbox-exec.sh on the compute node
+    exec "$REAL_SRUN" "${SRUN_FLAGS[@]}" \
+        "$SCRIPT_DIR/sandbox-exec.sh" --project-dir "$PROJECT_DIR" -- "${USER_CMD[@]}"
+fi

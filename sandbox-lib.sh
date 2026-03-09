@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# sandbox-lib.sh — Core bwrap argument builder
+# sandbox-lib.sh — Core sandbox library (backend-agnostic)
 #
-# Sourced by bwrap-sandbox.sh, sbatch-sandbox.sh, srun-sandbox.sh.
-# Reads configuration from sandbox.conf, then provides:
+# Sourced by sandbox-exec.sh, bwrap-sandbox.sh, sbatch-sandbox.sh, srun-sandbox.sh.
+# Reads configuration from sandbox.conf, detects the best available backend,
+# and provides:
 #
-#   build_bwrap_args PROJECT_DIR   — populates the BWRAP_ARGS array
-#   BWRAP                          — resolved path to the bwrap binary
-#   validate_project_dir DIR       — checks DIR is allowed
+#   detect_backend            — sets SANDBOX_BACKEND (bwrap or landlock)
+#   validate_project_dir DIR  — checks DIR is allowed
+#   backend_available         — can this backend work?
+#   backend_prepare DIR       — set up the sandbox for DIR
+#   backend_exec CMD...       — run CMD inside the sandbox (execs)
+#   backend_dry_run CMD...    — print what would be run
 
 set -euo pipefail
 
@@ -43,7 +47,6 @@ HOME_READONLY=(
     ".local/bin"
     ".local/share/jupyter"
     ".local/share/claude"
-    ".local/state/claude"
     ".cache/claude"
     ".cache/claude-cli-nodejs"
     "micromamba"
@@ -56,13 +59,11 @@ HOME_SYMLINKS=()
 HOME_WRITABLE=(
     ".claude"
     ".claude.json"
+    ".local/state/claude"
     ".cache/uv"
 )
 
-BLOCKED_FILES=(
-    # Claude's own auth token is not blocked — it needs this to function.
-    # Add files here to block specific items inside writable directories.
-)
+BLOCKED_FILES=()
 
 EXTRA_BLOCKED_PATHS=()
 
@@ -78,25 +79,20 @@ BLOCKED_ENV_VARS=(
 ALLOWED_CREDENTIALS=()
 
 PASSTHROUGH_ENV_VARS=(
-    # lmod infrastructure
     BASH_ENV
     LMOD_CMD LMOD_DIR LMOD_PKG LMOD_ROOT LMOD_PACKAGE_PATH
     LMOD_VERSION LMOD_sys LMOD_COLORIZE
     MODULEPATH MODULEPATH_ROOT MODULESHOME
-    # lmod loaded-module state
     LOADEDMODULES _LMFILES_
     LD_LIBRARY_PATH LIBRARY_PATH CPATH
     PKG_CONFIG_PATH CMAKE_PREFIX_PATH
     PYTHONPATH R_LIBS_SITE
-    # Conda / Mamba
     MAMBA_EXE MAMBA_ROOT_PREFIX
     CONDA_EXE CONDA_PREFIX CONDA_DEFAULT_ENV
     CONDA_SHLVL CONDA_PYTHON_EXE CONDA_PROMPT_MODIFIER
     _CE_CONDA _CE_M
-    # Shell basics
     LANG LC_ALL SHELL USER LOGNAME EDITOR TERM
     MANPATH INFOPATH
-    # Homebrew
     HOMEBREW_PREFIX HOMEBREW_CELLAR HOMEBREW_REPOSITORY
 )
 
@@ -107,34 +103,11 @@ if [[ -f "$SANDBOX_CONF" ]]; then
     source "$SANDBOX_CONF"
 fi
 
-# ── Resolve bwrap binary ────────────────────────────────────────
-
-if [[ -n "${BWRAP:-}" ]]; then
-    : # user override
-elif command -v bwrap &>/dev/null; then
-    BWRAP="$(command -v bwrap)"
-else
-    BWRAP="$HOME/.linuxbrew/bin/bwrap"
-fi
-
-if [[ ! -x "$BWRAP" ]]; then
-    echo "Error: bwrap not found at $BWRAP" >&2
-    echo "Install it:  brew install bubblewrap" >&2
-    exit 1
-fi
-
-# Internal path where real Slurm binaries are mounted inside the
-# sandbox.  Intentionally obscure and outside any PATH so the agent
-# cannot accidentally call the unsandboxed binaries.  Referenced by
-# sbatch-sandbox.sh and srun-sandbox.sh when SANDBOX_ACTIVE=1.
-SLURM_REAL_DIR="/tmp/.sandbox-slurm-real"
-
 # ── Helpers ─────────────────────────────────────────────────────
 
 validate_project_dir() {
     local dir="$1"
     for parent in "${ALLOWED_PROJECT_PARENTS[@]}"; do
-        # Expand $HOME in parent
         parent="${parent/\$HOME/$HOME}"
         if [[ "$dir" == "$parent"* ]]; then
             return 0
@@ -147,233 +120,71 @@ validate_project_dir() {
     return 1
 }
 
-# ── Main builder ────────────────────────────────────────────────
+# ── Backend detection ───────────────────────────────────────────
 
-# build_bwrap_args PROJECT_DIR
-#   Populates the global BWRAP_ARGS array with all bwrap flags.
-build_bwrap_args() {
-    local project_dir="${1:?build_bwrap_args requires PROJECT_DIR}"
-    BWRAP_ARGS=()
+# SANDBOX_BACKEND can be set in sandbox.conf or environment.
+# Values: auto (default), bwrap, landlock
+SANDBOX_BACKEND="${SANDBOX_BACKEND:-auto}"
 
-    # --- Kernel filesystems ---
-    BWRAP_ARGS+=(--proc /proc)
-    BWRAP_ARGS+=(--dev /dev)
-    BWRAP_ARGS+=(--tmpfs /tmp)
-
-    # --- Read-only system mounts ---
-    for mount in "${READONLY_MOUNTS[@]}"; do
-        if [[ -d "$mount" || -f "$mount" ]]; then
-            BWRAP_ARGS+=(--ro-bind "$mount" "$mount")
+detect_backend() {
+    if [[ "$SANDBOX_BACKEND" != "auto" ]]; then
+        # User explicitly requested a backend
+        if [[ ! -f "$SANDBOX_DIR/backends/${SANDBOX_BACKEND}.sh" ]]; then
+            echo "Error: Unknown backend '$SANDBOX_BACKEND'" >&2
+            echo "  Available: bwrap, landlock" >&2
+            exit 1
         fi
-    done
-
-    # --- Slurm binary isolation ---
-    # Mount real sbatch/srun at an obscure internal path, then overlay
-    # the originals in /usr/bin with small redirector scripts.  This
-    # prevents the agent from bypassing the wrappers by calling
-    # /usr/bin/sbatch or /usr/bin/srun directly.
-    #
-    # We generate dedicated overlay scripts (not reusing bin/) because
-    # bin/sbatch uses a relative path that only works from $SANDBOX_DIR/bin.
-    for bin in sbatch srun; do
-        if [[ -x "/usr/bin/$bin" ]]; then
-            local overlay="$SANDBOX_DIR/.${bin}-overlay"
-            cat > "$overlay" <<SLURM_EOF
-#!/usr/bin/env bash
-exec "$SANDBOX_DIR/${bin}-sandbox.sh" "\$@"
-SLURM_EOF
-            chmod +x "$overlay"
-            BWRAP_ARGS+=(--ro-bind "/usr/bin/$bin" "$SLURM_REAL_DIR/$bin")
-            BWRAP_ARGS+=(--ro-bind "$overlay" "/usr/bin/$bin")
+        # shellcheck disable=SC1090
+        source "$SANDBOX_DIR/backends/${SANDBOX_BACKEND}.sh"
+        if ! backend_available; then
+            echo "Error: Requested backend '$SANDBOX_BACKEND' is not available on this system." >&2
+            exit 1
         fi
-    done
-
-    # --- Blank home, then selectively re-mount ---
-    # This is the core security mechanism: everything in $HOME is hidden,
-    # then only safe subdirectories are added back.
-    BWRAP_ARGS+=(--tmpfs "$HOME")
-
-    # Read-only home subdirectories
-    for subdir in "${HOME_READONLY[@]}"; do
-        local full_path="$HOME/$subdir"
-        if [[ -e "$full_path" ]]; then
-            BWRAP_ARGS+=(--ro-bind "$full_path" "$full_path")
-        fi
-    done
-
-    # Dotfile symlinks (only if dotfiles dir is set and exists)
-    if [[ -n "$DOTFILES_DIR" && -d "$DOTFILES_DIR" ]]; then
-        for name in "${HOME_SYMLINKS[@]}"; do
-            if [[ -e "$DOTFILES_DIR/$name" ]]; then
-                BWRAP_ARGS+=(--symlink "$DOTFILES_DIR/$name" "$HOME/$name")
-            fi
-        done
+        return
     fi
 
-    # Writable home subdirectories (and files)
-    for subdir in "${HOME_WRITABLE[@]}"; do
-        local full_path="$HOME/$subdir"
-        if [[ -e "$full_path" ]]; then
-            BWRAP_ARGS+=(--bind "$full_path" "$full_path")
-        fi
-    done
-
-    # Protect the sandbox scripts from modification inside the sandbox.
-    # This overlays the writable ~/.claude bind with a read-only mount
-    # for the sandbox directory, preventing the agent from tampering with
-    # the wrapper scripts or config.
-    BWRAP_ARGS+=(--ro-bind "$SANDBOX_DIR" "$SANDBOX_DIR")
-
-    # --- CLAUDE.md overlay: inject sandbox instructions ---
-    # Merges the user's real CLAUDE.md with sandbox-specific instructions
-    # so the agent knows its restrictions. Only visible inside the sandbox.
-    #
-    # This must come BEFORE --remount-ro $HOME because if CLAUDE.md is a
-    # symlink (e.g. via a dotfiles manager), bwrap needs to create
-    # intermediate directories at the symlink target — which requires
-    # the $HOME tmpfs to still be writable.
-    local claude_md_overlay="$SANDBOX_DIR/.claude-md-overlay"
-    local sandbox_snippet="$SANDBOX_DIR/sandbox-claude.md"
-    local claude_md_path="$HOME/.claude/CLAUDE.md"
-
-    # Resolve symlink to find the actual file (for reading and for
-    # determining the correct overlay target inside the sandbox)
-    local claude_md_resolved="$claude_md_path"
-    if [[ -L "$claude_md_path" ]]; then
-        claude_md_resolved="$(readlink -f "$claude_md_path")"
+    # Auto-detect: try bwrap first, then landlock
+    # shellcheck disable=SC1090
+    source "$SANDBOX_DIR/backends/bwrap.sh"
+    if backend_available; then
+        SANDBOX_BACKEND=bwrap
+        return
     fi
 
-    if [[ -f "$sandbox_snippet" ]]; then
-        {
-            if [[ -f "$claude_md_resolved" ]]; then
-                cat "$claude_md_resolved"
-            fi
-            cat "$sandbox_snippet"
-        } > "$claude_md_overlay"
-        # Ensure the target file exists so bwrap can bind onto it.
-        # Creates an empty CLAUDE.md if the user doesn't have one yet —
-        # harmless, and avoids bwrap creating an opaque mount-point file.
-        [[ -f "$claude_md_resolved" ]] || touch "$claude_md_resolved"
-        # Overlay the resolved target (not the symlink) so bwrap can bind it
-        BWRAP_ARGS+=(--ro-bind "$claude_md_overlay" "$claude_md_resolved")
+    # shellcheck disable=SC1090
+    source "$SANDBOX_DIR/backends/landlock.sh"
+    if backend_available; then
+        SANDBOX_BACKEND=landlock
+        return
     fi
 
-    # --- Settings overlay: inject sandbox permissions ---
-    # Merges the user's settings.json with sandbox-specific permission
-    # rules so that tools already restricted by bwrap (Bash, Edit, Write,
-    # etc.) are auto-allowed without prompting.
-    #
-    # Same ordering requirement as CLAUDE.md — must precede --remount-ro.
-    local settings_overlay="$SANDBOX_DIR/.settings-overlay"
-    local sandbox_settings="$SANDBOX_DIR/sandbox-settings.json"
-    local user_settings="$HOME/.claude/settings.json"
-
-    # Resolve symlink (same reason as CLAUDE.md — bwrap can't mount
-    # over a symlink, so we target the resolved path directly)
-    local user_settings_resolved="$user_settings"
-    if [[ -L "$user_settings" ]]; then
-        user_settings_resolved="$(readlink -f "$user_settings")"
-    fi
-
-    if [[ -f "$sandbox_settings" ]]; then
-        # Ensure target exists so bwrap can bind onto it.
-        # Creates a minimal settings.json if the user doesn't have one yet.
-        [[ -f "$user_settings_resolved" ]] || echo '{}' > "$user_settings_resolved"
-
-        # Merge: keep all user settings, add sandbox allow rules
-        python3 -c "
-import json, sys
-try:
-    with open(sys.argv[1]) as f:
-        user = json.load(f)
-except (ValueError, IOError):
-    user = {}
-with open(sys.argv[2]) as f:
-    sandbox = json.load(f)
-user.setdefault('permissions', {})
-existing = user['permissions'].get('allow', [])
-for rule in sandbox.get('permissions', {}).get('allow', []):
-    if rule not in existing:
-        existing.append(rule)
-user['permissions']['allow'] = existing
-json.dump(user, sys.stdout, indent=2)
-" "$user_settings_resolved" "$sandbox_settings" > "$settings_overlay"
-
-        BWRAP_ARGS+=(--ro-bind "$settings_overlay" "$user_settings_resolved")
-    fi
-
-    # Now that all HOME mounts/symlinks are in place, remount the tmpfs
-    # base read-only so stray writes to $HOME fail loudly instead of
-    # silently succeeding on ephemeral tmpfs. The bind mounts above
-    # remain unaffected since --remount-ro is non-recursive.
-    BWRAP_ARGS+=(--remount-ro "$HOME")
-
-    # Block specific files (overlay with /dev/null)
-    for blocked in "${BLOCKED_FILES[@]}"; do
-        blocked="${blocked/\$HOME/$HOME}"
-        if [[ -e "$blocked" ]]; then
-            BWRAP_ARGS+=(--ro-bind /dev/null "$blocked")
-        fi
-    done
-
-    # --- Scratch filesystems (read-only) ---
-    for scratch in "${SCRATCH_MOUNTS[@]}"; do
-        if [[ -d "$scratch" ]]; then
-            BWRAP_ARGS+=(--ro-bind "$scratch" "$scratch")
-        fi
-    done
-
-    # --- Extra blocked paths (overlaid with empty tmpfs) ---
-    for blocked in "${EXTRA_BLOCKED_PATHS[@]}"; do
-        if [[ -d "$blocked" ]]; then
-            BWRAP_ARGS+=(--tmpfs "$blocked")
-        fi
-    done
-
-    # --- Project directory: read-write overlay ---
-    # This must come AFTER the read-only mount of its parent filesystem
-    # so it overlays correctly.
-    BWRAP_ARGS+=(--bind "$project_dir" "$project_dir")
-
-    # --- Runtime: munge socket for Slurm auth ---
-    BWRAP_ARGS+=(--dev-bind /run /run)
-    if [[ -L /var/run ]]; then
-        BWRAP_ARGS+=(--symlink /run /var/run)
-    elif [[ -d /var/run ]]; then
-        BWRAP_ARGS+=(--dev-bind /var/run /var/run)
-    fi
-
-    # --- Cleanup & working directory ---
-    BWRAP_ARGS+=(--die-with-parent)
-    BWRAP_ARGS+=(--chdir "$project_dir")
-
-    # --- Environment: pass through useful vars ---
-    BWRAP_ARGS+=(--setenv HOME "$HOME")
-    BWRAP_ARGS+=(--setenv SANDBOX_ACTIVE 1)
-    BWRAP_ARGS+=(--setenv SANDBOX_PROJECT_DIR "$project_dir")
-
-    # Pass through HPC / tool environment if set
-    for var in "${PASSTHROUGH_ENV_VARS[@]}"; do
-        if [[ -n "${!var:-}" ]]; then
-            BWRAP_ARGS+=(--setenv "$var" "${!var}")
-        fi
-    done
-
-    # Prepend sandbox bin dir to PATH so that sbatch/srun resolve to the
-    # sandbox wrappers by default. The wrappers call the relocated real
-    # binaries at $SLURM_REAL_DIR internally, avoiding recursion.
-    BWRAP_ARGS+=(--setenv PATH "$SANDBOX_DIR/bin:${PATH}")
-
-    # --- Block dangerous env vars ---
-    for var in "${BLOCKED_ENV_VARS[@]}"; do
-        BWRAP_ARGS+=(--unsetenv "$var")
-    done
-
-    # --- Allow specific credentials back through ---
-    # (must come AFTER the block loop to override)
-    for var in "${ALLOWED_CREDENTIALS[@]}"; do
-        if [[ -n "${!var:-}" ]]; then
-            BWRAP_ARGS+=(--setenv "$var" "${!var}")
-        fi
-    done
+    echo "Error: No sandbox backend available." >&2
+    echo "" >&2
+    echo "  Tried:" >&2
+    echo "    bwrap    — not found or user namespaces blocked (AppArmor?)" >&2
+    echo "    landlock — not available (kernel < 5.13 or Landlock disabled)" >&2
+    echo "" >&2
+    echo "  Install bubblewrap:  brew install bubblewrap" >&2
+    echo "  Or ensure kernel ≥ 5.13 with Landlock enabled." >&2
+    exit 1
 }
+
+# ── Legacy compatibility ────────────────────────────────────────
+# These functions are kept so that existing code that sources sandbox-lib.sh
+# and calls build_bwrap_args() directly (e.g., srun-sandbox.sh) still works.
+# New code should use detect_backend + backend_prepare + backend_exec.
+
+# Detect on source if not already done (for scripts that source sandbox-lib.sh
+# and immediately call build_bwrap_args).
+_BACKEND_DETECTED=false
+
+build_bwrap_args() {
+    if [[ "$_BACKEND_DETECTED" == false ]]; then
+        detect_backend
+        _BACKEND_DETECTED=true
+    fi
+    backend_prepare "$1"
+}
+
+# Expose BWRAP for legacy callers (resolved by bwrap backend)
+# This is a no-op if landlock backend is loaded.
