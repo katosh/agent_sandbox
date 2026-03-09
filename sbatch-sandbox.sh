@@ -1,28 +1,31 @@
 #!/usr/bin/env bash
-# sbatch-sandbox.sh — Submit Slurm jobs that run inside the bwrap sandbox
+# sbatch-sandbox.sh — Submit Slurm jobs that run inside the sandbox
 #
-# Drop-in replacement for sbatch. The job itself executes inside a
-# bubblewrap sandbox on the compute node.
+# Drop-in replacement for sbatch. The job itself executes inside the
+# sandbox on the compute node (using whichever backend is available).
 #
 # Usage:
 #   sbatch-sandbox.sh [sbatch-flags] --wrap="command"
 #   sbatch-sandbox.sh [sbatch-flags] script.sh [script-args]
 #
-# Since bwrap and all sandbox scripts live on NFS, they're available
-# on every compute node without extra setup.
+# Since sandbox scripts live on NFS, they're available on every compute
+# node without extra setup.
 
 set -euo pipefail
 
-# Inside the sandbox, the real sbatch lives at an obscure internal path
-# (see SLURM_REAL_DIR in sandbox-lib.sh).  /usr/bin/sbatch is overlaid
-# with the shadow script, so we must use the relocated binary.
+# Inside the sandbox, the real sbatch may be at a relocated path (bwrap)
+# or at its original location (landlock).
 if [[ "${SANDBOX_ACTIVE:-}" == "1" ]]; then
-    REAL_SBATCH="${REAL_SBATCH:-/tmp/.sandbox-slurm-real/sbatch}"
+    if [[ "${SANDBOX_BACKEND:-bwrap}" == "bwrap" ]]; then
+        REAL_SBATCH="${REAL_SBATCH:-/tmp/.sandbox-slurm-real/sbatch}"
+    else
+        REAL_SBATCH="${REAL_SBATCH:-/usr/bin/sbatch}"
+    fi
 else
     REAL_SBATCH="${REAL_SBATCH:-/usr/bin/sbatch}"
 fi
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-BWRAP_SANDBOX="$SCRIPT_DIR/bwrap-sandbox.sh"
+SANDBOX_EXEC="$SCRIPT_DIR/sandbox-exec.sh"
 
 # Project dir: inherit from sandbox env, or use $PWD
 PROJECT_DIR="${SANDBOX_PROJECT_DIR:-$(pwd)}"
@@ -67,12 +70,12 @@ while [[ $# -gt 0 ]] && [[ "$parse_done" == false ]]; do
 done
 
 if [[ -n "$WRAP_CMD" ]]; then
-    # --wrap mode: wrap the command in bwrap
+    # --wrap mode: wrap the command in sandbox
     exec "$REAL_SBATCH" "${SBATCH_FLAGS[@]}" \
-        --wrap="$BWRAP_SANDBOX --project-dir '$PROJECT_DIR' -- bash -c '${WRAP_CMD//\'/\'\\\'\'}'"
+        --wrap="$SANDBOX_EXEC --project-dir '$PROJECT_DIR' -- bash -c '${WRAP_CMD//\'/\'\\\'\'}'"
 
 elif [[ -n "$SCRIPT_PATH" ]]; then
-    # Script mode: create a wrapper that runs the original inside bwrap
+    # Script mode: create a wrapper that runs the original inside sandbox
     SCRIPT_PATH="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)/$(basename "$SCRIPT_PATH")"
 
     if [[ ! -f "$SCRIPT_PATH" ]]; then
@@ -92,7 +95,7 @@ ${SBATCH_DIRECTIVES}
 
 # --- Sandbox wrapper (auto-generated) ---
 # Original script: $SCRIPT_PATH
-exec "$BWRAP_SANDBOX" --project-dir "$PROJECT_DIR" -- bash "$SCRIPT_PATH" ${SCRIPT_ARGS[*]+"${SCRIPT_ARGS[*]}"}
+exec "$SANDBOX_EXEC" --project-dir "$PROJECT_DIR" -- bash "$SCRIPT_PATH" ${SCRIPT_ARGS[*]+"${SCRIPT_ARGS[*]}"}
 WRAPPER_EOF
 
     chmod +x "$WRAPPER"

@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# sandbox-exec.sh — Run a command inside the sandbox (auto-selects backend)
+#
+# Usage:
+#   sandbox-exec.sh [OPTIONS] -- CMD [ARGS...]
+#
+# Options:
+#   --project-dir DIR   Directory with write access (default: $PWD)
+#   --backend BACKEND   Force a specific backend (bwrap, landlock, auto)
+#   --dry-run           Print the sandbox command without executing
+#   --help              Show this help
+#
+# Examples:
+#   sandbox-exec.sh -- claude                        # Claude Code sandboxed
+#   sandbox-exec.sh -- bash                          # interactive shell
+#   sandbox-exec.sh --backend landlock -- bash       # force Landlock backend
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+PROJECT_DIR=""
+DRY_RUN=false
+BACKEND_OVERRIDE=""
+
+usage() {
+    echo "Usage: sandbox-exec.sh [--project-dir DIR] [--backend BACKEND] [--dry-run] -- CMD [ARGS...]"
+    echo ""
+    echo "Options:"
+    echo "  --project-dir DIR   Directory with write access (default: \$PWD)"
+    echo "  --backend BACKEND   Force backend: bwrap, landlock, auto (default: auto)"
+    echo "  --dry-run           Print the sandbox command without executing"
+    echo "  --help              Show this help"
+    echo ""
+    echo "Examples:"
+    echo "  sandbox-exec.sh -- claude              # Claude Code in sandbox"
+    echo "  sandbox-exec.sh -- bash                # interactive shell"
+    echo "  sandbox-exec.sh --backend landlock -- cmd  # force Landlock"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --project-dir)
+            PROJECT_DIR="$2"
+            shift 2
+            ;;
+        --backend)
+            BACKEND_OVERRIDE="$2"
+            shift 2
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            echo "Error: Unknown option '$1'" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Apply backend override before sourcing sandbox-lib.sh
+if [[ -n "$BACKEND_OVERRIDE" ]]; then
+    export SANDBOX_BACKEND="$BACKEND_OVERRIDE"
+fi
+
+source "$SCRIPT_DIR/sandbox-lib.sh"
+
+# Default to current directory
+if [[ -z "$PROJECT_DIR" ]]; then
+    PROJECT_DIR="$(pwd)"
+fi
+
+# Resolve to absolute path
+PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+
+# Validate
+if [[ ! -d "$PROJECT_DIR" ]]; then
+    echo "Error: Project directory does not exist: $PROJECT_DIR" >&2
+    exit 1
+fi
+
+validate_project_dir "$PROJECT_DIR"
+
+if [[ $# -eq 0 ]]; then
+    echo "Error: No command specified after --" >&2
+    echo "Hint: sandbox-exec.sh -- bash       (interactive shell)" >&2
+    echo "      sandbox-exec.sh -- claude      (Claude Code)" >&2
+    exit 1
+fi
+
+# Detect and load backend
+detect_backend
+_BACKEND_DETECTED=true
+
+# Prepare sandbox
+backend_prepare "$PROJECT_DIR"
+
+if [[ "$DRY_RUN" == true ]]; then
+    backend_dry_run "$@"
+    exit 0
+fi
+
+backend_exec "$@"

@@ -1,6 +1,6 @@
 # Admin Hardening Options
 
-The [bubblewrap sandbox](README.md) is fully user-space — no root or admin involvement needed. It provides kernel-enforced filesystem isolation for AI coding agents, with Slurm job wrapping as a default-on soft boundary.
+The [sandbox](README.md) is fully user-space — no root or admin involvement needed. Both backends (bubblewrap and Landlock) provide kernel-enforced filesystem isolation for AI coding agents, with Slurm job wrapping as a default-on soft boundary.
 
 This document describes **independent improvements** that could close remaining gaps. Each section is self-contained and can be evaluated against your site's threat model and effort budget. They are ordered roughly from least to most effort.
 
@@ -19,7 +19,7 @@ The current user-space sandbox is entirely self-serve: it protects against accid
 
 ## 1. Admin-Managed Slurm Wrappers
 
-**What it solves:** The user-space sandbox intercepts `sbatch`/`srun` via PATH shadowing and binary relocation (real binaries moved to an obscure internal path, `/usr/bin/` overlaid with redirectors). This prevents accidental bypass, but the underlying Slurm boundary is soft because the munge authentication socket is mounted inside the sandbox. An agent could bypass the wrappers by calling the relocated binaries directly, finding other Slurm binaries on the filesystem (e.g. `salloc`, module-loaded copies), talking to `slurmrestd` via `curl`, or crafting raw Slurm RPCs. Admin-managed wrappers with credential gating close this gap — even if the agent finds a Slurm binary, it can't authenticate without the credential.
+**What it solves:** The user-space sandbox intercepts `sbatch`/`srun` via PATH shadowing (both backends) and binary relocation (bwrap only — real binaries moved to an obscure internal path, `/usr/bin/` overlaid with redirectors). With the Landlock backend, only PATH shadowing is available — the real `/usr/bin/sbatch` remains directly callable. Even with bwrap, the underlying Slurm boundary is soft because the munge authentication socket is mounted inside the sandbox. An agent could bypass the wrappers by calling the real binaries directly (trivial with Landlock, requires path discovery with bwrap), finding other Slurm binaries on the filesystem (e.g. `salloc`, module-loaded copies), talking to `slurmrestd` via `curl`, or crafting raw Slurm RPCs. Admin-managed wrappers with credential gating close this gap for both backends — even if the agent finds a Slurm binary, it can't authenticate without the credential.
 
 **Effort:** Medium. **Category:** Self-serve — strengthens the sandbox for users who opt in, but doesn't force anyone to use it.
 
@@ -27,10 +27,10 @@ The current user-space sandbox is entirely self-serve: it protects against accid
 
 The admin would provide **sandboxed versions** of `sbatch` and `srun` that:
 - Accept the same flags as the real commands — fully transparent to users and scripts
-- Wrap every job in `bwrap-sandbox.sh` before submission
+- Wrap every job in the sandbox before submission
 - Call the real Slurm binary internally to actually submit
 
-Inside the bwrap sandbox, these sandboxed versions **replace** the standard binaries via bind-mount overlay. The agent (and any scripts it runs) just calls `sbatch` as normal and gets the sandboxed version — no script changes needed.
+Inside the sandbox, these sandboxed versions **replace** the standard binaries via bind-mount overlay (bwrap) or PATH shadowing (Landlock). The agent (and any scripts it runs) just calls `sbatch` as normal and gets the sandboxed version — no script changes needed.
 
 The standard Slurm binaries are gated behind a credential (token file, env var, or socket) that is hidden inside the sandbox. Even if the agent discovers the real binary path, it can't submit without the credential.
 
@@ -105,7 +105,7 @@ Inside the sandbox:
 
 ## 2. Admin-Provided Sandbox Tools (bwrap or Firejail)
 
-**What it solves:** When users install and configure bwrap themselves, they control the sandbox policy — and can weaken it. An admin-provided sandbox tool with a fixed policy turns the sandbox from self-serve to admin-enforced.
+**What it solves:** When users install and configure the sandbox themselves, they control the policy — and can weaken it. An admin-provided sandbox tool with a fixed policy turns the sandbox from self-serve to admin-enforced. This also solves the Landlock self-protection problem (see below) — scripts installed to an admin-owned path cannot be modified by the agent.
 
 **Effort:** Low-medium. **Category:** Admin-enforced.
 
@@ -195,6 +195,19 @@ firejail --profile=/etc/firejail/claude-agent.profile -- claude
 - **Firejail**: More features (network, seccomp, capabilities) out of the box. Provides stronger guarantees with less custom scripting.
 
 Either approach would promote the sandbox from self-serve to admin-enforced.
+
+### Why this matters more for the Landlock backend
+
+With the **bwrap** backend, the sandbox directory (`~/.claude/sandbox/`) is bind-mounted read-only inside the mount namespace — the agent cannot modify the wrapper scripts even though they live under the writable `~/.claude/` tree. Bwrap also **relocates the real Slurm binaries** (`/usr/bin/sbatch`, `/usr/bin/srun`) to an obscure internal path and overlays redirector scripts, so even absolute-path calls go through the sandbox wrappers.
+
+With the **Landlock** backend, neither of these protections is possible — Landlock has no mount namespace, so:
+
+- **Sandbox self-protection:** Landlock rules are *additive*. Granting write access to `~/.claude/` (which Claude Code requires) also grants write access to `~/.claude/sandbox/`. There is no "exclude" or "deny" mechanism, and relocating the scripts elsewhere doesn't help if any ancestor directory is writable.
+- **Slurm binary relocation:** The real `/usr/bin/sbatch` and `/usr/bin/srun` remain in place and directly callable. Slurm wrapping relies on PATH shadowing only — the sandbox prepends its `bin/` directory to PATH so that `sbatch` resolves to the wrapper first, but an agent that calls `/usr/bin/sbatch` directly bypasses the wrappers entirely.
+
+The *current* sandbox session is always safe regardless — Landlock rules are kernel-enforced and irrevocable once applied via `landlock_restrict_self()`. The risk is that a modified sandbox script could weaken *future* sessions or *submitted Slurm jobs* (since the Slurm wrappers run the sandbox scripts on compute nodes).
+
+For Landlock deployments where this matters, admin-installing the sandbox scripts to a root-owned path (e.g. `/opt/claude-sandbox/`) is the simplest fix. Landlock's default-deny model means the agent cannot write there unless explicitly granted access. Section 1 (Admin-Managed Slurm Wrappers) addresses the Slurm bypass directly by gating the real binaries behind a credential.
 
 ---
 
@@ -313,50 +326,13 @@ This is more complex but provides stronger isolation — the agent has no networ
 
 ---
 
-## 5. Kernel Upgrade and Landlock
+## 5. Kernel Upgrade (for Landlock)
 
-**What it solves:** The current kernel (4.15) doesn't support [Landlock](https://docs.kernel.org/userspace-api/landlock.html), a Linux Security Module available since kernel 5.13. Landlock provides per-process filesystem access rules without requiring mount namespaces.
+**What it solves:** Clusters running older kernels (< 5.13) cannot use the Landlock backend. Upgrading to kernel ≥ 5.13 enables Landlock as a sandbox backend, which is particularly valuable on Ubuntu 24.04+ where AppArmor blocks the unprivileged user namespaces that bwrap requires.
 
-**Effort:** High (kernel upgrade across the cluster). **Category:** Self-serve (process restricts itself) or admin-enforced (if configured via system policy).
+**Effort:** High (kernel upgrade across the cluster). **Category:** Enables self-serve Landlock sandbox.
 
-### What Landlock Provides
-
-Landlock lets an unprivileged process restrict its own filesystem access using a ruleset:
-
-```c
-// Pseudocode — Landlock access rule model
-struct landlock_ruleset_attr ruleset_attr = {
-    .handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE |
-                         LANDLOCK_ACCESS_FS_WRITE_FILE |
-                         LANDLOCK_ACCESS_FS_EXECUTE
-};
-
-int ruleset_fd = landlock_create_ruleset(&ruleset_attr, ...);
-
-// Allow read access to /fh/fast/mylab
-landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &(struct landlock_path_beneath_attr){
-    .allowed_access = LANDLOCK_ACCESS_FS_READ_FILE,
-    .parent_fd = open("/fh/fast/mylab", O_PATH)
-});
-
-// Allow write access to project dir only
-landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &(struct landlock_path_beneath_attr){
-    .allowed_access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE,
-    .parent_fd = open("/fh/fast/mylab/user/alice/project", O_PATH)
-});
-
-// Enforce — cannot be undone by the process
-landlock_restrict_self(ruleset_fd, 0);
-```
-
-Once enforced, the process (and all its children) cannot access anything outside the ruleset. Unlike bwrap, Landlock doesn't use mount namespaces — it works with the real filesystem, just restricts what the process can see.
-
-### How It Complements bwrap
-
-- **bwrap** provides mount-namespace isolation: the agent sees a curated filesystem. Good for hiding paths entirely (e.g., `~/.ssh` doesn't exist).
-- **Landlock** provides access-control isolation: the agent sees the real filesystem but can't access restricted paths. Good for fine-grained rules without mount overhead.
-
-On kernel >= 5.13, you could use Landlock instead of bwrap for simpler setups, or layer it on top of bwrap for defense in depth.
+**Note:** The sandbox already supports Landlock as a first-class backend — auto-detected alongside bwrap. This section is only relevant for clusters still on older kernels. See `backends/landlock-sandbox.py` for the implementation.
 
 ### Kernel Version Check
 
@@ -365,10 +341,17 @@ uname -r
 # 4.15.0-213-generic  ← too old for Landlock
 
 # Landlock requires:
-# - Kernel >= 5.13
+# - Kernel >= 5.13 (Ubuntu 22.04+ ships 5.15+)
 # - CONFIG_SECURITY_LANDLOCK=y
 # - LSM boot parameter includes "landlock"
 ```
+
+### How Landlock Complements bwrap
+
+- **bwrap** provides mount-namespace isolation: the agent sees a curated filesystem. Paths are hidden entirely (ENOENT). Supports file overlays, Slurm binary relocation, and sandbox self-protection.
+- **Landlock** provides LSM-based access control: the agent sees the real filesystem but can't access restricted paths (EACCES). No root or admin help needed — works even when AppArmor blocks user namespaces. No mount namespace means no file overlays, no Slurm binary relocation, and no sandbox self-protection.
+
+On systems where both are available, auto-detection will select bwrap (for its mount-namespace features). On systems where bwrap is blocked, Landlock provides equivalent filesystem isolation with no admin intervention required.
 
 ---
 
@@ -429,10 +412,10 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 | # | Improvement | Effort | Category | What It Closes |
 |---|---|---|---|---|
 | 1 | Admin-managed Slurm wrappers | Medium | Self-serve | Agent submitting unsandboxed Slurm jobs (via relocated binaries, other Slurm CLIs, REST API, or raw munge RPCs) |
-| 2 | Admin-provided sandbox tools | Low-medium | Admin-enforced | Users weakening their own sandbox config |
+| 2 | Admin-provided sandbox tools | Low-medium | Admin-enforced | Users weakening their own sandbox config; also provides sandbox self-protection for Landlock backend |
 | 3 | Dedicated `${USER}_ai` accounts | High | Admin-enforced | Same-UID credential access; OS-level separation |
 | 4 | Network isolation | Medium-high | Admin-enforced (requires #3) | Data exfiltration via network |
-| 5 | Kernel upgrade + Landlock | High | Self-serve | Simpler/stronger filesystem restrictions |
+| 5 | Kernel upgrade (for Landlock) | High | Self-serve | Enables Landlock backend on older kernels |
 | 6 | Audit logging | Low-medium | Admin-enforced (requires #3) | Visibility, compliance, forensics |
 
 Sections 1, 2, and 5 are independent. Sections 4 and 6 require Section 3 (dedicated accounts).

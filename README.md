@@ -39,10 +39,10 @@ This sandbox solves the Slurm problem with a two-layer approach. First, wrapper 
 
 The Slurm wrappers provide strong default protection but are not fully kernel-enforced. They work by:
 
-1. **PATH shadowing** — `sbatch`/`srun` resolve to sandbox wrappers via PATH ordering.
-2. **Binary relocation** — the real ELF binaries at `/usr/bin/sbatch` and `/usr/bin/srun` are moved to an obscure internal path (`/tmp/.sandbox-slurm-real/`) and replaced with redirector scripts that funnel calls back through the sandbox wrappers.
+1. **PATH shadowing** (both backends) — `sbatch`/`srun` resolve to sandbox wrappers via PATH ordering.
+2. **Binary relocation** (bwrap only) — the real ELF binaries at `/usr/bin/sbatch` and `/usr/bin/srun` are moved to an obscure internal path (`/tmp/.sandbox-slurm-real/`) and replaced with redirector scripts that funnel calls back through the sandbox wrappers. Landlock cannot do this — it has no mount namespace to overlay files — so the real binaries remain at `/usr/bin/` and are directly callable.
 
-Under normal operation (including calling `/usr/bin/sbatch` by absolute path), the agent always hits the sandbox wrappers. **This is a soft boundary** — Slurm authentication (munge) is available inside the sandbox, so a determined bypass is possible. See [Admin Hardening Options](ADMIN_HARDENING.md) for approaches that can close this gap. In practice, the wrappers cover the paths an agent would use autonomously.
+With **bwrap**, even calling `/usr/bin/sbatch` by absolute path hits the sandbox wrappers. With **Landlock**, only PATH shadowing is available — an agent that calls `/usr/bin/sbatch` directly bypasses the wrappers. **This is a soft boundary** in both cases — Slurm authentication (munge) is available inside the sandbox. See [Admin Hardening Options](ADMIN_HARDENING.md) for approaches that can close this gap. In practice, the PATH-based wrappers cover the paths an agent would use autonomously.
 
 ---
 
@@ -50,8 +50,9 @@ Under normal operation (including calling `/usr/bin/sbatch` by absolute path), t
 
 ### Prerequisites
 
-- Fred Hutch gizmo account (or similar HPC with Linux kernel ≥ 3.8 and `kernel.unprivileged_userns_clone = 1`). On Ubuntu 24.04+, AppArmor may also need configuration — see [Troubleshooting](#setting-up-uid-map-permission-denied-ubuntu-2404).
-- [Homebrew (Linuxbrew)](https://brew.sh/) — for installing bubblewrap in user space
+- Fred Hutch gizmo account (or similar HPC with Linux kernel ≥ 3.8)
+- **Bubblewrap backend**: requires `kernel.unprivileged_userns_clone = 1` and [Homebrew](https://brew.sh/) for installation. On Ubuntu 24.04+, AppArmor may also need configuration — see [Troubleshooting](#setting-up-uid-map-permission-denied-ubuntu-2404).
+- **Landlock backend**: requires kernel ≥ 5.13 (Ubuntu 22.04+). Works without root, even when AppArmor blocks user namespaces. No Homebrew needed — uses Python 3 only.
 
 ### One-Command Setup
 
@@ -75,16 +76,34 @@ The installer:
 ```
 ~/.claude/sandbox/
 ├── sandbox.conf          # ← Your permissions config — edit this
-├── sandbox-lib.sh        # Core library (builds bwrap arguments)
-├── bwrap-sandbox.sh      # Main entry point
+├── sandbox-lib.sh        # Core library (config loading, backend detection)
+├── sandbox-exec.sh       # Main entry point (auto-selects backend)
+├── bwrap-sandbox.sh      # Backward-compatible entry point (delegates to sandbox-exec.sh)
 ├── sbatch-sandbox.sh     # Slurm sbatch wrapper
 ├── srun-sandbox.sh       # Slurm srun wrapper
 ├── sandbox-claude.md     # Agent instructions (overlaid into CLAUDE.md inside sandbox)
-├── test.sh               # Test suite (28 tests)
+├── test.sh               # Test suite
+├── backends/
+│   ├── bwrap.sh          # Bubblewrap backend (mount namespace isolation)
+│   ├── landlock.sh       # Landlock backend (LSM filesystem restrictions)
+│   └── landlock-sandbox.py  # Landlock syscall helper (Python)
 └── bin/
     ├── sbatch            # Shadows /usr/bin/sbatch inside sandbox
     └── srun              # Shadows /usr/bin/srun inside sandbox
 ```
+
+### Backends
+
+The sandbox supports two backends, auto-detected at startup:
+
+| Backend | How it works | Requirements | Blocked paths show as |
+|---|---|---|---|
+| **bwrap** | Mount namespace isolation — hides paths entirely | `unprivileged_userns_clone=1`, no AppArmor userns restriction | `ENOENT` (No such file) |
+| **landlock** | Landlock LSM — kernel-enforced filesystem ACLs | Kernel ≥ 5.13, Python 3 | `EACCES` (Permission denied) |
+
+Both provide kernel-enforced filesystem isolation. The auto-detection picks whichever backend works on your system. Each has trade-offs — see [Backend Comparison](#appendix-sandbox-backend-comparison) for details.
+
+To force a backend: set `SANDBOX_BACKEND="landlock"` in `sandbox.conf` or use `--backend landlock` on the command line.
 
 ### Updating
 
@@ -99,7 +118,7 @@ Your `sandbox.conf` is never overwritten, so your customizations are preserved.
 
 ### Running Tests
 
-The test suite verifies filesystem isolation, environment blocking, Slurm binary isolation, overlay generation, and self-protection:
+The test suite verifies filesystem isolation, environment blocking, Slurm binary isolation, and overlay generation:
 
 ```bash
 bash ~/agent_container/test.sh            # run all tests
@@ -320,7 +339,7 @@ Layer 3: Selective re-mount (read-only)
 Layer 4: Writable mounts
     ~/.claude (session data + auth), project directory
 
-Layer 5: Read-only sandbox overlay
+Layer 5: Read-only sandbox overlay (bwrap only)
     ~/.claude/sandbox/ → read-only (protects wrapper scripts)
 
 Layer 6: CLAUDE.md + settings.json overlays
@@ -375,9 +394,9 @@ The wrappers pass all flags through unchanged and call the real Slurm binaries i
 
 ### Protection
 
-The sandbox directory (`~/.claude/sandbox/`) is mounted **read-only** inside the sandbox. The agent cannot modify the wrapper scripts, config, or bin stubs.
+**Bwrap backend:** The sandbox directory (`~/.claude/sandbox/`) is mounted **read-only** — the agent cannot modify wrapper scripts, config, or bin stubs. The real Slurm binaries at `/usr/bin/sbatch` and `/usr/bin/srun` are **relocated** to an obscure internal path and replaced with redirector scripts, so even calling `/usr/bin/sbatch` by absolute path goes through the sandbox wrappers.
 
-The real Slurm binaries at `/usr/bin/sbatch` and `/usr/bin/srun` are **relocated** inside the sandbox to an obscure internal path and replaced with redirector scripts. This means even calling `/usr/bin/sbatch` by absolute path still goes through the sandbox wrappers. The agent would need to discover and call the internal path directly to bypass the wrappers — something it has no reason to do unless specifically instructed.
+**Landlock backend:** Neither self-protection nor binary relocation is possible — Landlock has no mount namespace to overlay files or make subdirectories read-only. The Slurm wrappers work via PATH shadowing only, and the real `/usr/bin/sbatch` remains directly callable. See [Admin Hardening](ADMIN_HARDENING.md#why-this-matters-more-for-the-landlock-backend) for mitigations.
 
 ---
 
@@ -443,29 +462,26 @@ Mamba root (`$MAMBA_ROOT_PREFIX`) is read-only. Create environments outside the 
 
 | Threat | Protection | Strength |
 |---|---|---|
-| Agent reads SSH keys | `~/.ssh` hidden by tmpfs blanking | **Hard** — kernel-enforced mount namespace |
-| Agent reads API tokens from env | `BLOCKED_ENV_VARS` unset in sandbox | **Hard** — bwrap `--unsetenv` |
-| Agent reads `~/.aws` credentials | Hidden by tmpfs blanking | **Hard** |
-| Agent writes to other projects | NFS mounted read-only; only project dir writable | **Hard** |
-| Agent reads other users' data | Only mounted paths are visible | **Hard** |
-| Slurm job bypasses sandbox | `sbatch`/`srun` replaced at PATH and `/usr/bin/` level; real binaries relocated | **Soft** — covers normal usage; munge auth still available (see [Admin Hardening](ADMIN_HARDENING.md)) |
+| Agent reads SSH keys | Hidden (bwrap: ENOENT) or blocked (Landlock: EACCES) | **Hard** — kernel-enforced |
+| Agent reads API tokens from env | `BLOCKED_ENV_VARS` removed from environment | **Hard** — kernel-enforced |
+| Agent reads `~/.aws` credentials | Hidden or blocked (same as SSH keys) | **Hard** |
+| Agent writes to other projects | Only project dir is writable | **Hard** |
+| Agent reads other users' data | Only explicitly allowed paths are accessible | **Hard** |
+| Slurm job bypasses sandbox | PATH shadowing (both backends) + binary relocation (bwrap only) | **Soft** — Landlock has PATH shadowing only; munge auth available in both (see [Admin Hardening](ADMIN_HARDENING.md)) |
+| Agent tampers with sandbox scripts | Read-only bind mount (bwrap) / not protected (Landlock) | **Hard** (bwrap) / **None** (Landlock) — see [Admin Hardening](ADMIN_HARDENING.md#why-this-matters-more-for-the-landlock-backend) |
 
-**Bottom line:** Filesystem isolation is kernel-enforced. Slurm wrapping covers normal code paths but is ultimately soft because munge authentication is available inside the sandbox. See [Admin Hardening Options](ADMIN_HARDENING.md) for stronger approaches.
+**Bottom line:** Filesystem isolation is kernel-enforced with both backends. Slurm wrapping covers normal code paths but is a soft boundary. With Landlock, the sandbox scripts themselves are not protected from modification — the current session is safe (kernel rules are irrevocable), but future sessions or Slurm jobs could be affected. See [Admin Hardening Options](ADMIN_HARDENING.md) for stronger approaches.
 
 ---
 
-## Appendix: Why Bubblewrap?
-
-We evaluated several sandboxing approaches for this environment (Linux 4.15, shared HPC, no root access):
+## Appendix: Sandbox Backend Comparison
 
 | Tool | Available? | Pros | Cons |
 |---|---|---|---|
-| **[Bubblewrap](https://github.com/containers/bubblewrap)** | ✅ Yes (Homebrew) | Lightweight, user-space, per-mount control, no root needed | Not a full container; no image caching |
-| **[Landlock](https://docs.kernel.org/userspace-api/landlock.html)** | ❌ No | Elegant LSM-based filesystem restrictions | Requires kernel ≥ 5.13 (we have 4.15) |
+| **[Bubblewrap](https://github.com/containers/bubblewrap)** | ✅ Yes (Homebrew) | Mount namespace isolation, paths hidden entirely (ENOENT), file overlays, Slurm binary relocation, sandbox self-protection | Requires unprivileged user namespaces; blocked by AppArmor on Ubuntu 24.04+ without admin help |
+| **[Landlock](https://docs.kernel.org/userspace-api/landlock.html)** | ✅ Yes (kernel ≥ 5.13) | No root or admin needed, works on Ubuntu 24.04 despite AppArmor, pure kernel LSM, no Homebrew dependency | No mount namespace — blocked paths return EACCES not ENOENT, no file overlays, no Slurm binary relocation, no sandbox self-protection (see [Admin Hardening](ADMIN_HARDENING.md#why-this-matters-more-for-the-landlock-backend)) |
 | **[Firejail](https://firejail.wordpress.com/)** | ❌ No | Feature-rich, profile-based | Requires setuid root or CAP_SYS_ADMIN |
 | **[Apptainer/Singularity](https://apptainer.org/)** | ✅ Yes (lmod) | Full container, HPC-native | Heavy — requires container images, path mapping |
 | **Docker** | ❌ No | Industry standard | Requires root daemon; not available on shared HPC |
 
-Bubblewrap is the clear winner for this use case: it runs as an unprivileged user, gives fine-grained mount control, adds negligible overhead, and keeps paths identical inside and outside the sandbox. It works because the gizmo kernel has `CONFIG_USER_NS=y` and `kernel.unprivileged_userns_clone = 1`, allowing unprivileged user namespace creation.
-
-Bubblewrap is the same tool that Flatpak uses to sandbox desktop applications on Linux. It's mature, widely deployed, and maintained as part of the [containers](https://github.com/containers) project.
+The sandbox auto-detects the best available backend. Both bubblewrap and Landlock provide kernel-enforced filesystem isolation through different mechanisms — mount namespaces (bwrap) vs. LSM access control (Landlock). Each has trade-offs: bwrap provides mount-namespace features (hidden paths, file overlays, Slurm binary relocation, sandbox self-protection), while Landlock works without admin help on Ubuntu 24.04+ and has no external dependencies beyond Python 3. With Landlock, Slurm wrapping relies on PATH shadowing only (no binary relocation), and the sandbox scripts are not protected from modification.

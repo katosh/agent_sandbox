@@ -1,7 +1,7 @@
 
 # Sandbox Environment
 
-You are running inside a bubblewrap filesystem sandbox (`SANDBOX_ACTIVE=1`).
+You are running inside a filesystem sandbox (`SANDBOX_ACTIVE=1`).
 
 **Write access:** Only `$SANDBOX_PROJECT_DIR` and `~/.claude/`. All other paths are read-only.
 
