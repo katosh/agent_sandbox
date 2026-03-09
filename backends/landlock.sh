@@ -10,13 +10,17 @@
 #
 # Key differences from bwrap:
 #   - Blocked paths return EACCES (not ENOENT) — functionally equivalent
-#   - No mount namespace — cannot overlay files or relocate binaries
+#   - No mount namespace — cannot overlay files or relocate binaries.
+#     This means:
+#       * Slurm wrapping relies on PATH shadowing only — the real
+#         /usr/bin/sbatch and /usr/bin/srun remain directly callable.
+#       * Sandbox self-protection not possible — Landlock rules are
+#         additive, so can't make a subdir read-only when parent is
+#         writable. An agent could modify sandbox scripts to weaken
+#         future sessions or submitted Slurm jobs.
+#     See ADMIN_HARDENING.md §2 for mitigations.
 #   - CLAUDE.md/settings.json merging uses in-place swap with backup/restore
-#   - Slurm wrapping relies on PATH shadowing only (no /usr/bin overlay)
 #   - Environment filtering done in shell (not via bwrap --unsetenv/--setenv)
-#   - Sandbox self-protection not possible (Landlock rules are additive;
-#     can't make a subdir read-only when parent is writable).
-#     This also affects Slurm wrappers — see ADMIN_HARDENING.md §2.
 
 LANDLOCK_SANDBOX="$SANDBOX_DIR/backends/landlock-sandbox.py"
 

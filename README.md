@@ -39,10 +39,10 @@ This sandbox solves the Slurm problem with a two-layer approach. First, wrapper 
 
 The Slurm wrappers provide strong default protection but are not fully kernel-enforced. They work by:
 
-1. **PATH shadowing** — `sbatch`/`srun` resolve to sandbox wrappers via PATH ordering.
-2. **Binary relocation** — the real ELF binaries at `/usr/bin/sbatch` and `/usr/bin/srun` are moved to an obscure internal path (`/tmp/.sandbox-slurm-real/`) and replaced with redirector scripts that funnel calls back through the sandbox wrappers.
+1. **PATH shadowing** (both backends) — `sbatch`/`srun` resolve to sandbox wrappers via PATH ordering.
+2. **Binary relocation** (bwrap only) — the real ELF binaries at `/usr/bin/sbatch` and `/usr/bin/srun` are moved to an obscure internal path (`/tmp/.sandbox-slurm-real/`) and replaced with redirector scripts that funnel calls back through the sandbox wrappers. Landlock cannot do this — it has no mount namespace to overlay files — so the real binaries remain at `/usr/bin/` and are directly callable.
 
-Under normal operation (including calling `/usr/bin/sbatch` by absolute path), the agent always hits the sandbox wrappers. **This is a soft boundary** — Slurm authentication (munge) is available inside the sandbox, so a determined bypass is possible. See [Admin Hardening Options](ADMIN_HARDENING.md) for approaches that can close this gap. In practice, the wrappers cover the paths an agent would use autonomously.
+With **bwrap**, even calling `/usr/bin/sbatch` by absolute path hits the sandbox wrappers. With **Landlock**, only PATH shadowing is available — an agent that calls `/usr/bin/sbatch` directly bypasses the wrappers. **This is a soft boundary** in both cases — Slurm authentication (munge) is available inside the sandbox. See [Admin Hardening Options](ADMIN_HARDENING.md) for approaches that can close this gap. In practice, the PATH-based wrappers cover the paths an agent would use autonomously.
 
 ---
 
@@ -394,9 +394,9 @@ The wrappers pass all flags through unchanged and call the real Slurm binaries i
 
 ### Protection
 
-With the **bwrap** backend, the sandbox directory (`~/.claude/sandbox/`) is mounted **read-only** inside the sandbox. The agent cannot modify the wrapper scripts, config, or bin stubs. With the **Landlock** backend, self-protection of the sandbox directory is not possible — see [Admin Hardening](ADMIN_HARDENING.md#why-this-matters-more-for-the-landlock-backend) for details and mitigations.
+**Bwrap backend:** The sandbox directory (`~/.claude/sandbox/`) is mounted **read-only** — the agent cannot modify wrapper scripts, config, or bin stubs. The real Slurm binaries at `/usr/bin/sbatch` and `/usr/bin/srun` are **relocated** to an obscure internal path and replaced with redirector scripts, so even calling `/usr/bin/sbatch` by absolute path goes through the sandbox wrappers.
 
-The real Slurm binaries at `/usr/bin/sbatch` and `/usr/bin/srun` are **relocated** inside the sandbox to an obscure internal path and replaced with redirector scripts. This means even calling `/usr/bin/sbatch` by absolute path still goes through the sandbox wrappers. The agent would need to discover and call the internal path directly to bypass the wrappers — something it has no reason to do unless specifically instructed.
+**Landlock backend:** Neither self-protection nor binary relocation is possible — Landlock has no mount namespace to overlay files or make subdirectories read-only. The Slurm wrappers work via PATH shadowing only, and the real `/usr/bin/sbatch` remains directly callable. See [Admin Hardening](ADMIN_HARDENING.md#why-this-matters-more-for-the-landlock-backend) for mitigations.
 
 ---
 
@@ -462,14 +462,15 @@ Mamba root (`$MAMBA_ROOT_PREFIX`) is read-only. Create environments outside the 
 
 | Threat | Protection | Strength |
 |---|---|---|
-| Agent reads SSH keys | `~/.ssh` hidden by tmpfs blanking | **Hard** — kernel-enforced mount namespace |
-| Agent reads API tokens from env | `BLOCKED_ENV_VARS` unset in sandbox | **Hard** — bwrap `--unsetenv` |
-| Agent reads `~/.aws` credentials | Hidden by tmpfs blanking | **Hard** |
-| Agent writes to other projects | NFS mounted read-only; only project dir writable | **Hard** |
-| Agent reads other users' data | Only mounted paths are visible | **Hard** |
-| Slurm job bypasses sandbox | `sbatch`/`srun` replaced at PATH and `/usr/bin/` level; real binaries relocated | **Soft** — covers normal usage; munge auth still available (see [Admin Hardening](ADMIN_HARDENING.md)) |
+| Agent reads SSH keys | Hidden (bwrap: ENOENT) or blocked (Landlock: EACCES) | **Hard** — kernel-enforced |
+| Agent reads API tokens from env | `BLOCKED_ENV_VARS` removed from environment | **Hard** — kernel-enforced |
+| Agent reads `~/.aws` credentials | Hidden or blocked (same as SSH keys) | **Hard** |
+| Agent writes to other projects | Only project dir is writable | **Hard** |
+| Agent reads other users' data | Only explicitly allowed paths are accessible | **Hard** |
+| Slurm job bypasses sandbox | PATH shadowing (both backends) + binary relocation (bwrap only) | **Soft** — Landlock has PATH shadowing only; munge auth available in both (see [Admin Hardening](ADMIN_HARDENING.md)) |
+| Agent tampers with sandbox scripts | Read-only bind mount (bwrap) / not protected (Landlock) | **Hard** (bwrap) / **None** (Landlock) — see [Admin Hardening](ADMIN_HARDENING.md#why-this-matters-more-for-the-landlock-backend) |
 
-**Bottom line:** Filesystem isolation is kernel-enforced. Slurm wrapping covers normal code paths but is ultimately soft because munge authentication is available inside the sandbox. See [Admin Hardening Options](ADMIN_HARDENING.md) for stronger approaches.
+**Bottom line:** Filesystem isolation is kernel-enforced with both backends. Slurm wrapping covers normal code paths but is a soft boundary. With Landlock, the sandbox scripts themselves are not protected from modification — the current session is safe (kernel rules are irrevocable), but future sessions or Slurm jobs could be affected. See [Admin Hardening Options](ADMIN_HARDENING.md) for stronger approaches.
 
 ---
 
@@ -477,10 +478,10 @@ Mamba root (`$MAMBA_ROOT_PREFIX`) is read-only. Create environments outside the 
 
 | Tool | Available? | Pros | Cons |
 |---|---|---|---|
-| **[Bubblewrap](https://github.com/containers/bubblewrap)** | ✅ Yes (Homebrew) | Mount namespace isolation, paths hidden entirely (ENOENT), supports file overlays, sandbox self-protection | Requires unprivileged user namespaces; blocked by AppArmor on Ubuntu 24.04+ without admin help |
-| **[Landlock](https://docs.kernel.org/userspace-api/landlock.html)** | ✅ Yes (kernel ≥ 5.13) | No root or admin needed, works on Ubuntu 24.04 despite AppArmor, pure kernel LSM, no Homebrew dependency | Blocked paths return EACCES not ENOENT; no mount overlays; no sandbox self-protection (see [Admin Hardening](ADMIN_HARDENING.md#why-this-matters-more-for-the-landlock-backend)) |
+| **[Bubblewrap](https://github.com/containers/bubblewrap)** | ✅ Yes (Homebrew) | Mount namespace isolation, paths hidden entirely (ENOENT), file overlays, Slurm binary relocation, sandbox self-protection | Requires unprivileged user namespaces; blocked by AppArmor on Ubuntu 24.04+ without admin help |
+| **[Landlock](https://docs.kernel.org/userspace-api/landlock.html)** | ✅ Yes (kernel ≥ 5.13) | No root or admin needed, works on Ubuntu 24.04 despite AppArmor, pure kernel LSM, no Homebrew dependency | No mount namespace — blocked paths return EACCES not ENOENT, no file overlays, no Slurm binary relocation, no sandbox self-protection (see [Admin Hardening](ADMIN_HARDENING.md#why-this-matters-more-for-the-landlock-backend)) |
 | **[Firejail](https://firejail.wordpress.com/)** | ❌ No | Feature-rich, profile-based | Requires setuid root or CAP_SYS_ADMIN |
 | **[Apptainer/Singularity](https://apptainer.org/)** | ✅ Yes (lmod) | Full container, HPC-native | Heavy — requires container images, path mapping |
 | **Docker** | ❌ No | Industry standard | Requires root daemon; not available on shared HPC |
 
-The sandbox auto-detects the best available backend. Both bubblewrap and Landlock provide kernel-enforced filesystem isolation through different mechanisms — mount namespaces (bwrap) vs. LSM access control (Landlock). Each has trade-offs: bwrap hides paths entirely and supports self-protection of the sandbox scripts, while Landlock works without admin help on Ubuntu 24.04+ and has no external dependencies beyond Python 3.
+The sandbox auto-detects the best available backend. Both bubblewrap and Landlock provide kernel-enforced filesystem isolation through different mechanisms — mount namespaces (bwrap) vs. LSM access control (Landlock). Each has trade-offs: bwrap provides mount-namespace features (hidden paths, file overlays, Slurm binary relocation, sandbox self-protection), while Landlock works without admin help on Ubuntu 24.04+ and has no external dependencies beyond Python 3. With Landlock, Slurm wrapping relies on PATH shadowing only (no binary relocation), and the sandbox scripts are not protected from modification.
