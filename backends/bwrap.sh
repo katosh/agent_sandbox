@@ -45,9 +45,12 @@ backend_prepare() {
 
     # --- Read-only system mounts ---
     for mount in "${READONLY_MOUNTS[@]}"; do
-        if [[ -d "$mount" || -f "$mount" ]]; then
-            BWRAP_ARGS+=(--ro-bind "$mount" "$mount")
-        fi
+        expand_safe_mounts "$mount"
+        for safe_mount in "${_SAFE_MOUNTS[@]}"; do
+            if [[ -d "$safe_mount" || -f "$safe_mount" ]]; then
+                BWRAP_ARGS+=(--ro-bind "$safe_mount" "$safe_mount")
+            fi
+        done
     done
 
     # --- Slurm binary isolation ---

@@ -19,111 +19,102 @@ The current user-space sandbox is entirely self-serve: it protects against accid
 
 ## 1. Admin-Managed Slurm Wrappers
 
-**What it solves:** The user-space Slurm wrappers are a soft boundary — they rely on PATH shadowing (both backends) and binary relocation (bwrap only). An agent can bypass them by calling the real binaries directly (trivial with Landlock since `/usr/bin/sbatch` is unchanged), using other Slurm CLIs (`salloc`, module-loaded copies), or talking to `slurmrestd`/munge directly. Admin-managed wrappers with **credential gating** close this gap — even if the agent finds a Slurm binary, it can't authenticate without the credential.
+**What it solves:** The user-space Slurm wrappers are a soft boundary — they rely on PATH shadowing (both backends) and binary relocation (bwrap only). An agent can bypass them by calling real binaries directly or using other Slurm CLIs. This section describes a vault-and-gateway approach that strengthens Slurm isolation for both backends.
 
-**Effort:** Medium. **Category:** Self-serve — strengthens the sandbox for users who opt in, but doesn't force anyone to use it.
+**Effort:** Medium. **Category:** Self-serve — strengthens the sandbox for users who opt in.
 
-### Concept
+### Design: sandbox vault + token-gated gateway
 
-1. The admin **gates the real Slurm binaries** behind a credential (token file, env var, or socket)
-2. The admin provides **sandboxed versions** of `sbatch`/`srun` that wrap every job in the sandbox before submission
-3. The credential is **hidden inside the sandbox** so the agent can't access it directly
+Move the real Slurm binaries into a **vault directory** (`/sandbox-vault/`) that the sandbox never grants access to. Gate `/usr/bin/sbatch` with a **submit token** stored in the vault — processes that can't read the vault can't authenticate.
 
-Outside the sandbox, the credential exists and Slurm works normally. Inside the sandbox, only the sandboxed wrappers (which call the real binary internally) can submit jobs.
+#### Vault
 
-### Setup
+```
+/sandbox-vault/              # root-owned, 0755
+└── slurm/
+    ├── sbatch-real          # real Slurm binaries (moved from /usr/bin/)
+    ├── srun-real
+    └── .submit-token        # random secret, readable by users
+```
 
-**Step 1 — Move the real binaries and gate them.** Replace `/usr/bin/sbatch` with a gateway that checks for a token:
+The sandbox scripts **hardcode a deny** for `/sandbox-vault/` — not in `sandbox.conf`, not user-configurable:
+
+- **bwrap**: the vault is never bind-mounted (invisible inside namespace)
+- **Landlock**: the vault is never added to `--ro` or `--rw` rules
+
+If a user puts `/` in `READONLY_MOUNTS`, the sandbox scripts expand it to individual top-level directories, excluding the vault. This is already implemented in `expand_safe_mounts()` in `sandbox-lib.sh`.
+
+#### Gateway
+
+The admin replaces `/usr/bin/sbatch` with a gateway that requires the submit token:
 
 ```bash
 #!/bin/bash
 # /usr/bin/sbatch — gateway wrapper (admin-installed)
-SUBMIT_TOKEN="/etc/slurm/.submit-token"
-if [[ ! -r "$SUBMIT_TOKEN" ]]; then
-    echo "sbatch: direct submission not available in this environment." >&2
-    echo "Hint: use the sandboxed sbatch on your PATH." >&2
+TOKEN="$(cat /sandbox-vault/slurm/.submit-token 2>/dev/null)" || {
+    echo "sbatch: submission blocked (cannot read submit token)." >&2
     exit 1
-fi
-exec /usr/libexec/slurm/sbatch-real "$@"
+}
+exec /sandbox-vault/slurm/sbatch-real "$@"
 ```
 
-```bash
-# One-time admin setup
-mkdir -p /usr/libexec/slurm
-mv /usr/bin/sbatch /usr/libexec/slurm/sbatch-real
-mv /usr/bin/srun   /usr/libexec/slurm/srun-real
-install -m 0755 gateway-sbatch /usr/bin/sbatch
-install -m 0755 gateway-srun   /usr/bin/srun
-echo "submit-allowed" > /etc/slurm/.submit-token
-chmod 0644 /etc/slurm/.submit-token
-```
+Outside the sandbox, the vault is readable — the gateway reads the token and execs the real binary. Inside the sandbox, the vault is blocked — the `cat` fails and submission is denied.
 
-Outside the sandbox, the token exists — the gateway passes through transparently.
+#### How sandboxed processes can still submit
 
-**Step 2 — Install sandboxed sbatch/srun.** Place sandboxed versions at a central location (e.g., `/app/slurm-sandbox/bin/`):
+The agent needs to submit Slurm jobs *through* the sandbox wrappers (which ensure every job runs sandboxed on the compute node). The wrappers run inside the sandbox, so they also can't read the vault. How they authenticate depends on the backend:
+
+**bwrap:** The real binary is relocated to `/tmp/.sandbox-slurm-real/sbatch` inside the mount namespace (existing mechanism). The wrapper calls it directly, bypassing the gateway entirely. This is the strongest approach — the agent never sees the real binary path.
+
+**Landlock:** Cannot relocate binaries (no mount namespace). Instead, `sandbox-exec.sh` reads the submit token from the vault *before* applying Landlock restrictions and injects it as the env var `_SANDBOX_SUBMIT_TOKEN`. The gateway accepts this as an alternative authentication path:
 
 ```bash
 #!/bin/bash
-# /app/slurm-sandbox/bin/sbatch — sandboxed sbatch (admin-installed)
-REAL_SBATCH="/usr/libexec/slurm/sbatch-real"
-SANDBOX_EXEC="$HOME/.claude/sandbox/sandbox-exec.sh"
-PROJECT_DIR="${SANDBOX_PROJECT_DIR:-$(pwd)}"
-
-# ... parse sbatch flags, wrap job command in sandbox-exec.sh ...
-
-exec "$REAL_SBATCH" "${SBATCH_FLAGS[@]}" \
-    --wrap="$SANDBOX_EXEC --project-dir '$PROJECT_DIR' -- $WRAPPED_CMD"
+# /usr/bin/sbatch — gateway wrapper (Landlock-aware variant)
+# Accept either: (a) direct vault read, or (b) injected token env var.
+# The expected token hash is baked in at install time so the gateway
+# doesn't need vault access at check time (it may be Landlock-restricted).
+EXPECTED_HASH="<sha256 of token, set by admin at install>"
+ACTUAL_HASH="$(echo -n "${_SANDBOX_SUBMIT_TOKEN:-}" | sha256sum | cut -d' ' -f1)"
+if [[ "$ACTUAL_HASH" == "$EXPECTED_HASH" ]]; then
+    exec /usr/libexec/slurm/sbatch-real "$@"
+fi
+# Fallback: try reading token directly (works outside sandbox)
+cat /sandbox-vault/slurm/.submit-token &>/dev/null && \
+    exec /sandbox-vault/slurm/sbatch-real "$@"
+echo "sbatch: submission blocked." >&2
+exit 1
 ```
 
-**Step 3 — Hide the credential inside the sandbox.** How this works depends on the backend:
+> **Landlock caveat:** The injected env var is discoverable by a determined agent (`env`, `/proc/self/environ`). This makes Landlock's Slurm protection weaker than bwrap's binary relocation. For stronger isolation, combine with network restrictions (§4) or use the admin-enforced approach (§2).
 
-#### bwrap backend
-
-Overlay the sandboxed versions at `/usr/bin/` and hide the token via bind mounts:
+### Setup
 
 ```bash
-# Add to bwrap arguments:
---ro-bind /app/slurm-sandbox/bin/sbatch /usr/bin/sbatch   # overlay: sbatch → sandboxed version
---ro-bind /app/slurm-sandbox/bin/srun   /usr/bin/srun     # overlay: srun → sandboxed version
---ro-bind /dev/null /etc/slurm/.submit-token              # hide token
+# Create the vault and generate a submit token
+mkdir -p /sandbox-vault/slurm
+head -c 32 /dev/urandom | base64 > /sandbox-vault/slurm/.submit-token
+chmod 0644 /sandbox-vault/slurm/.submit-token
+
+# Move real Slurm binaries
+mv /usr/bin/sbatch /sandbox-vault/slurm/sbatch-real
+mv /usr/bin/srun   /sandbox-vault/slurm/srun-real
+# (For Landlock variant: also copy to /usr/libexec/slurm/ so the
+# gateway can exec them from inside a Landlock-restricted process)
+
+# Install gateway wrappers
+install -m 0755 gateway-sbatch /usr/bin/sbatch
+install -m 0755 gateway-srun   /usr/bin/srun
 ```
 
-Inside the sandbox:
-- `sbatch` → sandboxed version (bind-mount overlay) → wraps in sandbox, calls real binary
-- `/usr/bin/sbatch` directly → sandboxed version (same overlay)
-- `/usr/libexec/slurm/sbatch-real` directly → real binary, but **fails** (token hidden)
+### Result
 
-#### Landlock backend
-
-Landlock cannot overlay files, so the approach is different — block *read access* to the token file by not granting Landlock rules for its directory:
-
-```bash
-# In backends/landlock.sh, do NOT add --ro for /etc/slurm/
-# Landlock is default-deny, so /etc/slurm/.submit-token is inaccessible
-# unless explicitly granted.
-#
-# The sandboxed wrappers at /app/slurm-sandbox/bin/ run OUTSIDE the
-# Landlock ruleset (they're invoked by the real sbatch gateway on the
-# compute node, not inside the sandboxed process), so they can read
-# the token and submit normally.
-```
-
-The admin also installs the sandboxed wrappers to PATH (e.g. `/app/slurm-sandbox/bin/` added to system PATH before `/usr/bin/`), so they shadow the gateway:
-
-Inside the sandbox:
-- `sbatch` → sandboxed version (PATH shadow) → wraps in sandbox, calls real binary
-- `/usr/bin/sbatch` directly → gateway → tries to read token → **EACCES** (Landlock blocks `/etc/slurm/`)
-- `/usr/libexec/slurm/sbatch-real` directly → real binary, but still needs munge (which can also be blocked — see below)
-
-This is slightly weaker than bwrap (the agent could discover `/usr/libexec/slurm/sbatch-real` and call it if munge is accessible), but combined with munge socket blocking it closes the gap completely.
-
-### Alternative credentials to gate on
-
-| Credential | How to block in bwrap | How to block in Landlock | Notes |
-|---|---|---|---|
-| Token file (`/etc/slurm/.submit-token`) | `--ro-bind /dev/null <path>` | Don't grant `--ro` for `/etc/slurm/` | Simplest; easy to audit |
-| Environment variable (`SLURM_SUBMIT_KEY`) | `BLOCKED_ENV_VARS` in `sandbox.conf` | Same (env filtering works in both) | Easy but env vars are more discoverable |
-| Munge socket (`/run/munge/munge.socket.2`) | Don't mount `/run/munge/` | Don't grant `--ro` or `--rw` for `/run/munge/` | Strongest; blocks all direct Slurm auth. Sandboxed wrappers must submit via slurmrestd or a helper daemon |
+| Agent action | bwrap | Landlock |
+|---|---|---|
+| `sbatch` (PATH shadow) | Wrapper → relocated binary → submits sandboxed job ✓ | Wrapper → gateway (token from env) → submits sandboxed job ✓ |
+| `/usr/bin/sbatch` (direct) | Gateway → can't read vault → **blocked** ✗ | Gateway → no token, can't read vault → **blocked** ✗ |
+| Real binary in vault | **ENOENT** (not mounted) ✗ | **EACCES** (vault denied) ✗ |
+| `curl` to `slurmrestd` | Works if exposed (see §4) | Works if exposed (see §4) |
 
 ---
 
@@ -428,7 +419,7 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 
 | # | Improvement | Effort | Category | What It Closes |
 |---|---|---|---|---|
-| 1 | Admin-managed Slurm wrappers | Medium | Self-serve | Agent submitting unsandboxed Slurm jobs (via relocated binaries, other Slurm CLIs, REST API, or raw munge RPCs) |
+| 1 | Admin-managed Slurm wrappers | Medium | Self-serve | Agent submitting unsandboxed Slurm jobs — vault + token-gated gateway (bwrap: strong; Landlock: soft, env var discoverable) |
 | 2 | Admin-provided sandbox tools | Low-medium | Admin-enforced | Users weakening their own sandbox config; also provides sandbox self-protection for Landlock backend |
 | 3 | Dedicated `${USER}_ai` accounts | High | Admin-enforced | Same-UID credential access; OS-level separation |
 | 4 | Network isolation | Medium-high | Admin-enforced (requires #3) | Data exfiltration via network |
