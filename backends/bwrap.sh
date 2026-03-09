@@ -187,22 +187,22 @@ json.dump(user, sys.stdout, indent=2)
     BWRAP_ARGS+=(--chdir "$project_dir")
 
     # --- Environment ---
-    BWRAP_ARGS+=(--setenv HOME "$HOME")
+    # Inherit the host environment, then block sensitive vars.
+    # This is more robust than --clearenv + explicit passthrough,
+    # which breaks whenever a new tool or module adds env vars.
     BWRAP_ARGS+=(--setenv SANDBOX_ACTIVE 1)
     BWRAP_ARGS+=(--setenv SANDBOX_BACKEND bwrap)
     BWRAP_ARGS+=(--setenv SANDBOX_PROJECT_DIR "$project_dir")
-
-    for var in "${PASSTHROUGH_ENV_VARS[@]}"; do
-        if [[ -n "${!var:-}" ]]; then
-            BWRAP_ARGS+=(--setenv "$var" "${!var}")
-        fi
-    done
-
     BWRAP_ARGS+=(--setenv PATH "$SANDBOX_DIR/bin:${PATH}")
 
     for var in "${BLOCKED_ENV_VARS[@]}"; do
         BWRAP_ARGS+=(--unsetenv "$var")
     done
+
+    # Also block any SSH_* vars not in the explicit blocklist
+    while IFS='=' read -r name _; do
+        [[ "$name" == SSH_* ]] && BWRAP_ARGS+=(--unsetenv "$name")
+    done < <(env)
 
     for var in "${ALLOWED_CREDENTIALS[@]}"; do
         if [[ -n "${!var:-}" ]]; then
