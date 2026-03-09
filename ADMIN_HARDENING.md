@@ -43,6 +43,17 @@ The bypass token must be readable by normal users but hidden from sandboxed proc
 
 An **eBPF LSM program** solves this for both backends uniformly. It attaches to the kernel's `file_open` hook and denies read access to the token file for any process with `no_new_privs` set. Both bwrap and Landlock set `PR_SET_NO_NEW_PRIVS` on the sandboxed process — an irrevocable kernel flag that persists across `fork()` and `exec()`, cannot be unset, and is a process attribute (not a file or env var). Normal user processes do not have it set. The eBPF program (kernel 5.7+, Ubuntu 24.04 supports this) checks this flag at file open time — kernel-enforced, independent of both sandbox backends, and unforgeable even if an agent rewrites every sandbox script.
 
+#### Heterogeneous clusters (bwrap-only nodes)
+
+On older nodes where only bwrap is available (e.g., Ubuntu 18.04, kernel 4.15), eBPF LSM is not supported. On these nodes, bwrap can hide the token via its mount namespace instead. Set `SANDBOX_BYPASS_TOKEN` in `sandbox.conf` and the bwrap backend will automatically overlay the file with `/dev/null` — the sandboxed process reads an empty file rather than the real token. Combined with an admin-owned installation (Section 2), the agent cannot modify `sandbox.conf` to remove the block.
+
+```bash
+# In sandbox.conf (admin-owned):
+SANDBOX_BYPASS_TOKEN="/etc/slurm/.sandbox-bypass-token"
+```
+
+The eBPF program is only needed on nodes that use the Landlock backend, where the additive-only permission model makes it impossible to hide a file under an already-granted parent directory. On a heterogeneous cluster, deploy the eBPF program on Landlock nodes (kernel ≥ 5.7) and rely on bwrap's automatic token hiding on older bwrap-only nodes. The `SANDBOX_BYPASS_TOKEN` setting works with both — bwrap hides it via mount namespace, and the path can also be used to configure the eBPF program's protected inode.
+
 ### Setup
 
 ```bash

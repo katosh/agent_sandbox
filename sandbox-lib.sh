@@ -65,6 +65,12 @@ BLOCKED_FILES=()
 
 EXTRA_BLOCKED_PATHS=()
 
+# Path to the Slurm sandbox bypass token (see ADMIN_HARDENING.md §1).
+# When set, the bwrap backend automatically hides this file from the sandbox
+# (overlays it with /dev/null). For the Landlock backend, use the eBPF LSM
+# program instead (see admin/token_protect.bpf.c).
+SANDBOX_BYPASS_TOKEN=""
+
 BLOCKED_ENV_VARS=(
     "GITHUB_PAT" "GITHUB_TOKEN" "GH_TOKEN"
     "OPENAI_API_KEY" "ANTHROPIC_API_KEY" "ZENODO_TOKEN" "HF_TOKEN"

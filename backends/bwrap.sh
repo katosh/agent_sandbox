@@ -154,6 +154,11 @@ json.dump(user, sys.stdout, indent=2)
         fi
     done
 
+    # Hide the sandbox bypass token if configured (see ADMIN_HARDENING.md §1)
+    if [[ -n "${SANDBOX_BYPASS_TOKEN:-}" && -e "$SANDBOX_BYPASS_TOKEN" ]]; then
+        BWRAP_ARGS+=(--ro-bind /dev/null "$SANDBOX_BYPASS_TOKEN")
+    fi
+
     for scratch in "${SCRATCH_MOUNTS[@]}"; do
         if [[ -d "$scratch" ]]; then
             BWRAP_ARGS+=(--ro-bind "$scratch" "$scratch")
