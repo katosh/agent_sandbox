@@ -250,6 +250,10 @@ SLURM_EOF
             fi
             cat "$sandbox_snippet"
         } > "$claude_md_overlay"
+        # Ensure the target file exists so bwrap can bind onto it.
+        # Creates an empty CLAUDE.md if the user doesn't have one yet —
+        # harmless, and avoids bwrap creating an opaque mount-point file.
+        [[ -f "$claude_md_resolved" ]] || touch "$claude_md_resolved"
         # Overlay the resolved target (not the symlink) so bwrap can bind it
         BWRAP_ARGS+=(--ro-bind "$claude_md_overlay" "$claude_md_resolved")
     fi
@@ -272,7 +276,8 @@ SLURM_EOF
     fi
 
     if [[ -f "$sandbox_settings" ]]; then
-        # Ensure target exists for the bind mount
+        # Ensure target exists so bwrap can bind onto it.
+        # Creates a minimal settings.json if the user doesn't have one yet.
         [[ -f "$user_settings_resolved" ]] || echo '{}' > "$user_settings_resolved"
 
         # Merge: keep all user settings, add sandbox allow rules
