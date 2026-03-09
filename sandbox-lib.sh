@@ -47,8 +47,6 @@ HOME_READONLY=(
     ".local/bin"
     ".local/share/jupyter"
     ".local/share/claude"
-    ".cache/claude"
-    ".cache/claude-cli-nodejs"
     "micromamba"
     ".condarc"
     ".mambarc"
@@ -60,7 +58,7 @@ HOME_WRITABLE=(
     ".claude"
     ".claude.json"
     ".local/state/claude"
-    ".cache/uv"
+    ".cache"
 )
 
 BLOCKED_FILES=()
@@ -96,12 +94,6 @@ PASSTHROUGH_ENV_VARS=(
     HOMEBREW_PREFIX HOMEBREW_CELLAR HOMEBREW_REPOSITORY
 )
 
-# ── Sandbox vault (hardcoded, not user-configurable) ───────────
-# Admin-managed directory for secrets that must never be accessible
-# from inside the sandbox: real Slurm binaries, munge socket, etc.
-# See ADMIN_HARDENING.md §1.
-SANDBOX_VAULT="/sandbox-vault"
-
 # ── Load user config ────────────────────────────────────────────
 
 if [[ -f "$SANDBOX_CONF" ]]; then
@@ -110,31 +102,6 @@ if [[ -f "$SANDBOX_CONF" ]]; then
 fi
 
 # ── Helpers ─────────────────────────────────────────────────────
-
-# Expand a mount path into safe entries, filtering out the sandbox vault.
-# If path is "/", enumerates top-level directories excluding the vault.
-# Returns entries via the _SAFE_MOUNTS array.
-expand_safe_mounts() {
-    local mount="$1"
-    _SAFE_MOUNTS=()
-
-    if [[ "$mount" == "$SANDBOX_VAULT" || "$mount" == "$SANDBOX_VAULT"/* ]]; then
-        echo "WARNING: refusing to grant access to $SANDBOX_VAULT (hardcoded deny)" >&2
-        return
-    fi
-
-    if [[ "$mount" == "/" ]]; then
-        # Expand / to top-level directories, excluding the vault
-        local dir
-        for dir in /*/; do
-            dir="${dir%/}"
-            [[ "$dir" == "$SANDBOX_VAULT" ]] && continue
-            [[ -d "$dir" ]] && _SAFE_MOUNTS+=("$dir")
-        done
-    else
-        _SAFE_MOUNTS+=("$mount")
-    fi
-}
 
 validate_project_dir() {
     local dir="$1"

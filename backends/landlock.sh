@@ -142,19 +142,14 @@ json.dump(user, sys.stdout, indent=2)
 
     # Read-only system mounts
     for mount in "${READONLY_MOUNTS[@]}"; do
-        expand_safe_mounts "$mount"
-        for safe_mount in "${_SAFE_MOUNTS[@]}"; do
-            if [[ -d "$safe_mount" ]]; then
-                LANDLOCK_ARGS+=(--ro "$safe_mount")
-            fi
-        done
+        if [[ -d "$mount" ]]; then
+            LANDLOCK_ARGS+=(--ro "$mount")
+        fi
     done
 
     # Kernel/virtual filesystems
     for vfs in /proc /dev /tmp /run; do
-        if [[ "$vfs" != "$SANDBOX_VAULT" && "$vfs" != "$SANDBOX_VAULT"/* ]]; then
-            [[ -d "$vfs" ]] && LANDLOCK_ARGS+=(--rw "$vfs")
-        fi
+        [[ -d "$vfs" ]] && LANDLOCK_ARGS+=(--rw "$vfs")
     done
     [[ -d /var/run && ! -L /var/run ]] && LANDLOCK_ARGS+=(--rw /var/run)
 
@@ -181,10 +176,7 @@ json.dump(user, sys.stdout, indent=2)
 
     # Scratch filesystems (read-only)
     for scratch in "${SCRATCH_MOUNTS[@]}"; do
-        expand_safe_mounts "$scratch"
-        for safe_mount in "${_SAFE_MOUNTS[@]}"; do
-            [[ -d "$safe_mount" ]] && LANDLOCK_ARGS+=(--ro "$safe_mount")
-        done
+        [[ -d "$scratch" ]] && LANDLOCK_ARGS+=(--ro "$scratch")
     done
 
     # Project directory: writable

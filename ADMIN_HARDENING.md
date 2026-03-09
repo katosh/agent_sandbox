@@ -2,9 +2,11 @@
 
 The [sandbox](README.md) is fully user-space — no root or admin involvement needed. Both backends (bubblewrap and Landlock) provide kernel-enforced filesystem isolation for AI coding agents, with Slurm job wrapping as a default-on soft boundary.
 
-This document describes **independent improvements** that could close remaining gaps. Each section is self-contained and can be evaluated against your site's threat model and effort budget. They are ordered roughly from least to most effort.
+> **Ubuntu 24.04 consideration:** A potential OS upgrade to Ubuntu 24.04 would enable AppArmor's restriction on unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`), which prevents bubblewrap from working. In that scenario, the sandbox would automatically use the **Landlock** backend. Landlock provides equivalent kernel-enforced filesystem isolation, but its permission model is **additive only** — you can grant access to paths but cannot carve out exceptions under an already-granted parent. This makes it harder to hide files (like tokens or binaries) from the sandbox using filesystem permissions alone, which is why the hardening approaches below rely on mechanisms outside the filesystem layer (eBPF LSM, Slurm plugins) rather than trying to hide paths.
 
-> **Our priority:** Section 1 (Admin-Managed Slurm Wrappers) is the improvement we'd most like to see. It closes the main gap in the current setup — Slurm PATH shadowing — with moderate admin effort and no workflow changes for users.
+This document describes **improvements** that could close remaining gaps. Sections 1 and 2 are independent and can be deployed individually. Sections 3–5 build on each other (4 and 5 require 3). They are ordered roughly from least to most effort.
+
+> **Our priority:** Section 1 (sandbox-by-default Slurm submission) is the improvement we'd most like to see. It closes the main gap in the current setup — Slurm PATH shadowing — with moderate admin effort and no workflow changes for users.
 
 ### Self-serve vs. admin-enforced
 
@@ -17,205 +19,102 @@ The current user-space sandbox is entirely self-serve: it protects against accid
 
 ---
 
-## 1. Admin-Managed Slurm Wrappers
+## 1. Sandbox-by-Default Slurm Submission
 
-**What it solves:** The user-space Slurm wrappers are a soft boundary — they rely on PATH shadowing (both backends) and binary relocation (bwrap only). An agent can bypass them by calling real binaries directly or using other Slurm CLIs. This section describes a vault-and-gateway approach that strengthens Slurm isolation for both backends.
+**What it solves:** The user-space Slurm wrappers are a soft boundary — PATH shadowing and binary relocation can be bypassed. Instead of trying to *block* submission, this approach ensures every Slurm job is **sandboxed by default** at the scheduler level. No matter how the agent submits a job, it runs inside the sandbox. Legitimate unsandboxed jobs require a token that only non-sandboxed processes can access.
 
-**Effort:** Medium. **Category:** Self-serve — strengthens the sandbox for users who opt in.
+**Effort:** Medium. **Category:** Admin-enforced.
 
-### Design: sandbox vault + token-gated gateway
+### Design: Slurm job submit plugin + eBPF-protected token
 
-Move the real Slurm binaries into a **vault directory** (`/sandbox-vault/`) that the sandbox never grants access to. Gate `/usr/bin/sbatch` with a **submit token** stored in the vault — processes that can't read the vault can't authenticate.
+#### Job submit plugin
 
-#### Vault
+A **Slurm job submit plugin** (`job_submit.lua` or C plugin) intercepts every `sbatch`/`srun` submission:
 
-```
-/sandbox-vault/              # root-owned, 0755
-└── slurm/
-    ├── sbatch-real          # real Slurm binaries (moved from /usr/bin/)
-    ├── srun-real
-    └── .submit-token        # random secret, readable by users
-```
+1. Check if the submission carries a valid **bypass token** (e.g., via `--export=_SANDBOX_BYPASS=<token>`)
+2. **Valid token** → job runs as submitted (user is outside the sandbox)
+3. **No token or invalid** → plugin prepends `sandbox-exec.sh --project-dir $PWD --` to the job command
 
-The sandbox scripts **hardcode a deny** for `/sandbox-vault/` — not in `sandbox.conf`, not user-configurable:
+This makes sandboxing the *default* for all jobs. The agent doesn't need to be blocked from calling Slurm — any job it submits will be sandboxed regardless of how it gets there.
 
-- **bwrap**: the vault is never bind-mounted (invisible inside namespace)
-- **Landlock**: the vault is never added to `--ro` or `--rw` rules
+#### Why eBPF LSM for token protection
 
-If a user puts `/` in `READONLY_MOUNTS`, the sandbox scripts expand it to individual top-level directories, excluding the vault. This is already implemented in `expand_safe_mounts()` in `sandbox-lib.sh`.
+The bypass token must be readable by normal users but hidden from sandboxed processes. This is straightforward with bwrap (don't bind-mount the file), but Landlock's permission model is **additive only** — you can grant access to paths but cannot revoke access to a file under an already-granted parent directory. If `/etc` is in `READONLY_MOUNTS` (which it is by default), a Landlock-sandboxed process can read anything in `/etc`, including the token. There is no way to carve out an exception.
 
-#### Gateway
-
-The admin replaces `/usr/bin/sbatch` with a gateway that requires the submit token:
-
-```bash
-#!/bin/bash
-# /usr/bin/sbatch — gateway wrapper (admin-installed)
-TOKEN="$(cat /sandbox-vault/slurm/.submit-token 2>/dev/null)" || {
-    echo "sbatch: submission blocked (cannot read submit token)." >&2
-    exit 1
-}
-exec /sandbox-vault/slurm/sbatch-real "$@"
-```
-
-Outside the sandbox, the vault is readable — the gateway reads the token and execs the real binary. Inside the sandbox, the vault is blocked — the `cat` fails and submission is denied.
-
-#### How sandboxed processes can still submit
-
-The agent needs to submit Slurm jobs *through* the sandbox wrappers (which ensure every job runs sandboxed on the compute node). The wrappers run inside the sandbox, so they also can't read the vault. How they authenticate depends on the backend:
-
-**bwrap:** The real binary is relocated to `/tmp/.sandbox-slurm-real/sbatch` inside the mount namespace (existing mechanism). The wrapper calls it directly, bypassing the gateway entirely. This is the strongest approach — the agent never sees the real binary path.
-
-**Landlock:** Cannot relocate binaries (no mount namespace). Instead, `sandbox-exec.sh` reads the submit token from the vault *before* applying Landlock restrictions and injects it as the env var `_SANDBOX_SUBMIT_TOKEN`. The gateway accepts this as an alternative authentication path:
-
-```bash
-#!/bin/bash
-# /usr/bin/sbatch — gateway wrapper (Landlock-aware variant)
-# Accept either: (a) direct vault read, or (b) injected token env var.
-# The expected token hash is baked in at install time so the gateway
-# doesn't need vault access at check time (it may be Landlock-restricted).
-EXPECTED_HASH="<sha256 of token, set by admin at install>"
-ACTUAL_HASH="$(echo -n "${_SANDBOX_SUBMIT_TOKEN:-}" | sha256sum | cut -d' ' -f1)"
-if [[ "$ACTUAL_HASH" == "$EXPECTED_HASH" ]]; then
-    exec /usr/libexec/slurm/sbatch-real "$@"
-fi
-# Fallback: try reading token directly (works outside sandbox)
-cat /sandbox-vault/slurm/.submit-token &>/dev/null && \
-    exec /sandbox-vault/slurm/sbatch-real "$@"
-echo "sbatch: submission blocked." >&2
-exit 1
-```
-
-> **Landlock caveat:** The injected env var is discoverable by a determined agent (`env`, `/proc/self/environ`). This makes Landlock's Slurm protection weaker than bwrap's binary relocation. For stronger isolation, combine with network restrictions (§4) or use the admin-enforced approach (§2).
+An **eBPF LSM program** solves this for both backends uniformly. It attaches to the kernel's `file_open` hook and denies read access to the token file for any process with `no_new_privs` set. Both bwrap and Landlock set `PR_SET_NO_NEW_PRIVS` on the sandboxed process — an irrevocable kernel flag that persists across `fork()` and `exec()`, cannot be unset, and is a process attribute (not a file or env var). Normal user processes do not have it set. The eBPF program (kernel 5.7+, Ubuntu 24.04 supports this) checks this flag at file open time — kernel-enforced, independent of both sandbox backends, and unforgeable even if an agent rewrites every sandbox script.
 
 ### Setup
 
 ```bash
-# Create the vault and generate a submit token
-mkdir -p /sandbox-vault/slurm
-head -c 32 /dev/urandom | base64 > /sandbox-vault/slurm/.submit-token
-chmod 0644 /sandbox-vault/slurm/.submit-token
+# Generate a bypass token
+head -c 32 /dev/urandom | base64 > /etc/slurm/.sandbox-bypass-token
+chmod 0644 /etc/slurm/.sandbox-bypass-token
 
-# Move real Slurm binaries
-mv /usr/bin/sbatch /sandbox-vault/slurm/sbatch-real
-mv /usr/bin/srun   /sandbox-vault/slurm/srun-real
-# (For Landlock variant: also copy to /usr/libexec/slurm/ so the
-# gateway can exec them from inside a Landlock-restricted process)
+# Install the job submit plugin (see admin/job_submit.lua for a
+# working example). Edit SANDBOX_EXEC path to match your install.
+cp admin/job_submit.lua /etc/slurm/job_submit.lua
 
-# Install gateway wrappers
-install -m 0755 gateway-sbatch /usr/bin/sbatch
-install -m 0755 gateway-srun   /usr/bin/srun
+# Enable in slurm.conf:
+#   JobSubmitPlugins=lua
+# Then: scontrol reconfigure
+
+# Load eBPF LSM program (deny read access to the token file
+# when current->no_new_privs is set)
 ```
+
+An example `job_submit.lua` is provided in `admin/job_submit.lua`. It intercepts batch jobs, checks for the bypass token in `_SANDBOX_BYPASS`, and wraps unvalidated jobs in `sandbox-exec.sh`. The token is cleared from the job environment after validation so it doesn't leak to the compute node.
 
 ### Result
 
-| Agent action | bwrap | Landlock |
-|---|---|---|
-| `sbatch` (PATH shadow) | Wrapper → relocated binary → submits sandboxed job ✓ | Wrapper → gateway (token from env) → submits sandboxed job ✓ |
-| `/usr/bin/sbatch` (direct) | Gateway → can't read vault → **blocked** ✗ | Gateway → no token, can't read vault → **blocked** ✗ |
-| Real binary in vault | **ENOENT** (not mounted) ✗ | **EACCES** (vault denied) ✗ |
-| `curl` to `slurmrestd` | Works if exposed (see §4) | Works if exposed (see §4) |
+| Scenario | What happens |
+|---|---|
+| Agent calls `sbatch` (any method) | No bypass token → plugin wraps job in `sandbox-exec.sh` → **sandboxed** |
+| Agent tries to read token file | eBPF LSM checks `no_new_privs` → **EACCES** |
+| User outside sandbox | Reads token → passes to sbatch → **unsandboxed** ✓ |
+| `curl` to `slurmrestd` | Works if exposed (see §4 for network isolation) |
 
 ---
 
-## 2. Admin-Provided Sandbox Tools (bwrap or Firejail)
+## 2. Admin-Owned Sandbox Installation
 
-**What it solves:** When users install and configure the sandbox themselves, they control the policy — and can weaken it. An admin-provided sandbox tool with a fixed policy turns the sandbox from self-serve to admin-enforced. This also solves the Landlock self-protection problem (see below) — scripts installed to an admin-owned path cannot be modified by the agent.
+**What it solves:** Two problems at once — **sandbox self-protection** and **policy enforcement**.
+
+With the Landlock backend (which becomes the only option if the OS is upgraded to Ubuntu 24.04), there is no mount namespace. Unlike bwrap, Landlock cannot make the sandbox directory read-only. If the sandbox scripts live in the user's home directory, an agent could modify them — weakening future sessions or Slurm job wrappers. The *current* session is always safe (Landlock rules are irrevocable once applied), but future sessions and submitted Slurm jobs are at risk. Additionally, when users install and configure the sandbox themselves, they control the policy and can weaken it.
+
+An admin-owned installation solves both: scripts are tamper-proof (the agent can't write to admin-owned paths) and policy is centrally managed.
 
 **Effort:** Low-medium. **Category:** Admin-enforced.
 
-### Admin-installed bwrap with a fixed-policy wrapper
+### Setup
 
-If bwrap were installed system-wide, the admin could provide a **setuid wrapper** that calls bwrap with hardcoded arguments. Users would invoke the wrapper instead of raw bwrap and could not loosen the restrictions:
+Install the sandbox scripts to a **root-owned path** (e.g., `/opt/claude-sandbox/`). Landlock's default-deny means the agent can't write to paths outside its granted directories — the project directory and `~/.claude` are writable but `/opt/` is not.
 
 ```bash
-# /usr/bin/sandbox-agent — admin-provided wrapper (setuid root or capabilities)
-# Users call this instead of bwrap directly.
-# The sandbox policy is compiled in — users cannot change mount rules,
-# re-expose hidden paths, or weaken environment filtering.
+# One-time admin setup
+cp -r agent_container /opt/claude-sandbox
+chown -R root:root /opt/claude-sandbox
+chmod -R 755 /opt/claude-sandbox
 
-exec bwrap \
-    --ro-bind /usr /usr \
-    --ro-bind /lib /lib \
-    --ro-bind /lib64 /lib64 \
-    --tmpfs "$HOME" \
-    --bind "$PROJECT_DIR" "$PROJECT_DIR" \
-    --ro-bind /dev/null /etc/slurm/.submit-token \
-    # ... admin-defined policy ...
-    -- "$@"
+# Users point their install at the admin-managed copy
+ln -sf /opt/claude-sandbox ~/.claude/sandbox
 ```
 
-Since the wrapper controls the bwrap arguments, the admin would control:
-- Which paths are visible, read-only, or writable
-- Which environment variables are blocked
-- Whether network namespaces are used
-- Which Slurm binaries are overlaid
+The admin controls which paths are visible, which environment variables are blocked, and the Slurm wrapper behavior. Users get sandboxing without managing or misconfiguring policy. The agent cannot tamper with the scripts, sandbox.conf, or Slurm wrappers — even across sessions.
 
-Users would get a single command (`sandbox-agent -- claude`) with no configuration to manage or misconfigure.
+### Firejail (optional, for stronger isolation)
 
-### Firejail
+[Firejail](https://firejail.wordpress.com/) installs **setuid root**, so it can create mount namespaces even when AppArmor blocks unprivileged user namespaces. The admin defines security profiles that users cannot override:
 
-[Firejail](https://firejail.wordpress.com/) is designed for exactly this model. It installs **setuid root** and the admin defines security profiles that users cannot override. The [README](README.md) notes that Firejail requires root — in an admin-hardening context, that's an advantage rather than a limitation.
-
-On top of the filesystem restrictions bwrap provides, Firejail adds:
-
-| Feature | bwrap (user-space) | Firejail (admin-installed) |
+| Feature | Landlock sandbox | Firejail (admin-installed) |
 |---|---|---|
-| Filesystem isolation | Mount namespaces | Mount namespaces + whitelisting |
+| Filesystem isolation | LSM-based ACLs (EACCES) | Mount namespaces + whitelisting (ENOENT) |
 | Network isolation | Not available (shares host) | Built-in; `--net=none` or `--netfilter` |
-| Seccomp filters | Not available | Built-in; restricts which syscalls the process can make |
+| Seccomp filters | Not available | Built-in; restricts syscalls |
 | Capability dropping | Not available | Built-in; removes Linux capabilities |
-| Profile inheritance | Manual (scripts must propagate) | Automatic; child processes inherit restrictions |
-| Admin control | Users run raw bwrap, can change args | Admin defines profiles users can't override |
+| Self-protection | Requires admin-owned path | Automatic; mount namespace hides scripts |
+| Admin control | Admin owns the script directory | Admin defines profiles users can't override |
 
-**Example Firejail profile for agent sandboxing:**
-
-```ini
-# /etc/firejail/claude-agent.profile
-# Admin-defined, users cannot override
-
-# Filesystem
-whitelist /fh/fast
-read-only /fh/fast
-# Project dir made writable at runtime via --whitelist=
-blacklist ${HOME}/.ssh
-blacklist ${HOME}/.aws
-blacklist ${HOME}/.gnupg
-
-# Network — allow only Slurm controller and munge
-net none
-# Or more selectively:
-# netfilter /etc/firejail/slurm-only.net
-
-# Seccomp — drop dangerous syscalls
-seccomp
-
-# Capabilities — drop all unnecessary
-caps.drop all
-
-# Environment
-rmenv GITHUB_PAT
-rmenv AWS_SECRET_ACCESS_KEY
-# ...
-```
-
-```bash
-# User runs:
-firejail --profile=/etc/firejail/claude-agent.profile -- claude
-```
-
-### Tradeoffs
-
-- **bwrap wrapper**: Same tool and mount semantics as the current user-space setup, just with admin-controlled arguments. Both bwrap and Firejail would need to be installed system-wide.
-- **Firejail**: More features (network, seccomp, capabilities) out of the box. Provides stronger guarantees with less custom scripting.
-
-Either approach would promote the sandbox from self-serve to admin-enforced.
-
-### Why this matters more for the Landlock backend
-
-Landlock has no mount namespace, so unlike bwrap it cannot make the sandbox directory read-only or relocate Slurm binaries. This means an agent could modify the sandbox scripts (weakening future sessions or Slurm job wrappers), and `/usr/bin/sbatch` remains directly callable. The *current* session is always safe — Landlock rules are irrevocable once applied — but future sessions are at risk.
-
-Admin-installing the sandbox scripts to a root-owned path (e.g. `/opt/claude-sandbox/`) is the simplest fix — Landlock's default-deny means the agent can't write there. Section 1 addresses the Slurm bypass by gating the real binaries behind a credential that Landlock blocks access to.
+Firejail is more effort to deploy but provides stronger guarantees (network isolation, seccomp, mount-namespace hiding) that Landlock alone cannot offer.
 
 ---
 
@@ -280,9 +179,9 @@ chown alice_ai:alice_ai /fh/fast/mylab/user/alice/agent_workspace
 chmod 2775 /fh/fast/mylab/user/alice/agent_workspace
 ```
 
-### Role of bwrap with Dedicated Accounts
+### Role of the Sandbox with Dedicated Accounts
 
-OS user separation handles credential isolation — the agent physically cannot read `alice`'s SSH keys or AWS credentials because they're owned by a different UID. However, bwrap remains useful for **fine-grained write restriction within allowed paths**: the agent account may have write access to multiple project directories, but bwrap can restrict a given session to only one.
+OS user separation handles credential isolation — the agent physically cannot read `alice`'s SSH keys or AWS credentials because they're owned by a different UID. However, the sandbox remains useful for **fine-grained write restriction within allowed paths**: the agent account may have write access to multiple project directories, but the sandbox can restrict a given session to only one.
 
 ---
 
@@ -334,36 +233,7 @@ This is more complex but provides stronger isolation — the agent has no networ
 
 ---
 
-## 5. Kernel Upgrade (for Landlock)
-
-**What it solves:** Clusters running older kernels (< 5.13) cannot use the Landlock backend. Upgrading to kernel ≥ 5.13 enables Landlock as a sandbox backend, which is particularly valuable on Ubuntu 24.04+ where AppArmor blocks the unprivileged user namespaces that bwrap requires.
-
-**Effort:** High (kernel upgrade across the cluster). **Category:** Enables self-serve Landlock sandbox.
-
-**Note:** The sandbox already supports Landlock as a first-class backend — auto-detected alongside bwrap. This section is only relevant for clusters still on older kernels. See `backends/landlock-sandbox.py` for the implementation.
-
-### Kernel Version Check
-
-```bash
-uname -r
-# 4.15.0-213-generic  ← too old for Landlock
-
-# Landlock requires:
-# - Kernel >= 5.13 (Ubuntu 22.04+ ships 5.15+)
-# - CONFIG_SECURITY_LANDLOCK=y
-# - LSM boot parameter includes "landlock"
-```
-
-### How Landlock Complements bwrap
-
-- **bwrap** provides mount-namespace isolation: the agent sees a curated filesystem. Paths are hidden entirely (ENOENT). Supports file overlays, Slurm binary relocation, and sandbox self-protection.
-- **Landlock** provides LSM-based access control: the agent sees the real filesystem but can't access restricted paths (EACCES). No root or admin help needed — works even when AppArmor blocks user namespaces. No mount namespace means no file overlays, no Slurm binary relocation, and no sandbox self-protection.
-
-On systems where both are available, auto-detection will select bwrap (for its mount-namespace features). On systems where bwrap is blocked, Landlock provides equivalent filesystem isolation with no admin intervention required.
-
----
-
-## 6. Audit Logging
+## 5. Audit Logging
 
 **What it solves:** Visibility into what the agent did — which files it accessed, which jobs it submitted, and what commands it ran. Useful for compliance, forensics, and debugging.
 
@@ -419,11 +289,10 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 
 | # | Improvement | Effort | Category | What It Closes |
 |---|---|---|---|---|
-| 1 | Admin-managed Slurm wrappers | Medium | Self-serve | Agent submitting unsandboxed Slurm jobs — vault + token-gated gateway (bwrap: strong; Landlock: soft, env var discoverable) |
-| 2 | Admin-provided sandbox tools | Low-medium | Admin-enforced | Users weakening their own sandbox config; also provides sandbox self-protection for Landlock backend |
+| 1 | Sandbox-by-default Slurm submission | Medium | Admin-enforced | Agent submitting unsandboxed Slurm jobs — job submit plugin sandboxes all jobs unless caller provides bypass token (eBPF LSM protects token from `no_new_privs` processes) |
+| 2 | Admin-owned sandbox installation | Low-medium | Admin-enforced | Users weakening their own sandbox config; sandbox self-protection (critical for Landlock — no mount namespace to hide scripts) |
 | 3 | Dedicated `${USER}_ai` accounts | High | Admin-enforced | Same-UID credential access; OS-level separation |
 | 4 | Network isolation | Medium-high | Admin-enforced (requires #3) | Data exfiltration via network |
-| 5 | Kernel upgrade (for Landlock) | High | Self-serve | Enables Landlock backend on older kernels |
-| 6 | Audit logging | Low-medium | Admin-enforced (requires #3) | Visibility, compliance, forensics |
+| 5 | Audit logging | Low-medium | Admin-enforced (requires #3) | Visibility, compliance, forensics |
 
-Sections 1, 2, and 5 are independent. Sections 4 and 6 require Section 3 (dedicated accounts).
+Sections 1 and 2 are independent and can be deployed individually. Sections 4 and 5 require Section 3 (dedicated accounts).
