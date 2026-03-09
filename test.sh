@@ -301,21 +301,24 @@ if ! command -v sbatch &>/dev/null; then
     echo ""
 else
     # PATH shadow (works for both backends)
+    # The sandbox prepends $SANDBOX_DIR/bin to PATH, so sbatch/srun should
+    # resolve there instead of /usr/bin/.
+    EXPECTED_BIN_DIR="$SCRIPT_DIR/bin"
     if sandbox bash -c 'which sbatch 2>/dev/null'; then
-        if echo "$OUTPUT" | grep -q sandbox; then
+        if [[ "$OUTPUT" == "$EXPECTED_BIN_DIR/sbatch" ]]; then
             pass "sbatch resolves to sandbox wrapper via PATH"
         else
-            fail "sbatch does not resolve to sandbox wrapper" "$OUTPUT"
+            fail "sbatch does not resolve to sandbox wrapper" "got: $OUTPUT, expected: $EXPECTED_BIN_DIR/sbatch"
         fi
     else
         fail "sbatch not found inside sandbox"
     fi
 
     if sandbox bash -c 'which srun 2>/dev/null'; then
-        if echo "$OUTPUT" | grep -q sandbox; then
+        if [[ "$OUTPUT" == "$EXPECTED_BIN_DIR/srun" ]]; then
             pass "srun resolves to sandbox wrapper via PATH"
         else
-            fail "srun does not resolve to sandbox wrapper" "$OUTPUT"
+            fail "srun does not resolve to sandbox wrapper" "got: $OUTPUT, expected: $EXPECTED_BIN_DIR/srun"
         fi
     else
         fail "srun not found inside sandbox"
