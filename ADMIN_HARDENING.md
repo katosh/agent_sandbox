@@ -58,11 +58,11 @@ cp admin/job_submit.lua /etc/slurm/job_submit.lua
 #   JobSubmitPlugins=lua
 # Then: scontrol reconfigure
 
-# Load eBPF LSM program (deny read access to the token file
-# when current->no_new_privs is set)
+# Build and load eBPF LSM program (see admin/token_protect.bpf.c
+# and admin/README.md for build instructions)
 ```
 
-An example `job_submit.lua` is provided in `admin/job_submit.lua`. It intercepts batch jobs, checks for the bypass token in `_SANDBOX_BYPASS`, and wraps unvalidated jobs in `sandbox-exec.sh`. The token is cleared from the job environment after validation so it doesn't leak to the compute node.
+Working examples are provided in `admin/`: `job_submit.lua` (Slurm plugin) and `token_protect.bpf.c` (eBPF program). The plugin intercepts batch jobs, checks for the bypass token in `_SANDBOX_BYPASS`, and wraps unvalidated jobs in `sandbox-exec.sh`. The token is cleared from the job environment after validation so it doesn't leak to the compute node. See `admin/README.md` for full setup instructions.
 
 ### Result
 
