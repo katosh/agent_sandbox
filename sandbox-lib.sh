@@ -73,6 +73,9 @@ EXTRA_BLOCKED_PATHS=()
 # or NCCL inter-GPU communication via /tmp sockets).
 PRIVATE_TMP=true
 
+# Path to the Slurm bypass token file.  bwrap/firejail hide it inside
+# the sandbox.  If empty and /etc/slurm/sandbox-wrapper.conf exists,
+# TOKEN_FILE from that file is used automatically.
 SANDBOX_BYPASS_TOKEN=""
 
 BLOCKED_ENV_VARS=(
@@ -124,6 +127,16 @@ fi
 # Restore explicit backend override (env/CLI takes precedence over config)
 if [[ -n "$_SANDBOX_BACKEND_OVERRIDE" ]]; then
     SANDBOX_BACKEND="$_SANDBOX_BACKEND_OVERRIDE"
+fi
+
+# Auto-discover bypass token from admin wrapper config if not set explicitly
+if [[ -z "${SANDBOX_BYPASS_TOKEN:-}" && -f /etc/slurm/sandbox-wrapper.conf ]]; then
+    # TOKEN_FILE is the admin-side name for the same path
+    _wrapper_token=$(bash -c 'source /etc/slurm/sandbox-wrapper.conf 2>/dev/null; echo "$TOKEN_FILE"')
+    if [[ -n "$_wrapper_token" ]]; then
+        SANDBOX_BYPASS_TOKEN="$_wrapper_token"
+    fi
+    unset _wrapper_token
 fi
 
 # ── Helpers ─────────────────────────────────────────────────────
