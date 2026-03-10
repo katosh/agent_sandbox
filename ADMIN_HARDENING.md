@@ -148,20 +148,23 @@ Option A is stronger — it prevents the user systemd instance from starting at 
 
 The Landlock backend also installs a **seccomp filter** that blocks dangerous syscalls (`io_uring_setup`, `process_vm_writev`, `kexec_load`, etc.) as defense-in-depth. The filter does not block `connect()` itself (which would break munge authentication), but reduces the kernel attack surface.
 
-### Firejail (optional, for stronger isolation)
+### Firejail (alternative for Landlock-only nodes)
 
-[Firejail](https://firejail.wordpress.com/) installs **setuid root**, so it can create mount namespaces even when AppArmor blocks unprivileged user namespaces. The admin defines security profiles that users cannot override:
+On nodes where AppArmor blocks unprivileged user namespaces (Ubuntu 24.04+), bwrap cannot work without an admin-created AppArmor profile. [Firejail](https://firejail.wordpress.com/) is an alternative that installs **setuid root**, so it can create mount namespaces regardless of AppArmor settings. The admin defines security profiles that users cannot override.
 
-| Feature | Landlock sandbox | Firejail (admin-installed) |
+Firejail closes the remaining gaps that Landlock alone cannot address (confirmed by penetration testing):
+
+| Gap (pentest finding) | Landlock | Firejail |
 |---|---|---|
-| Filesystem isolation | LSM-based ACLs (EACCES) | Mount namespaces + whitelisting (ENOENT) |
-| Network isolation | Not available (shares host) | Built-in; `--net=none` or `--netfilter` |
-| Seccomp filters | Basic denylist (io_uring, kexec, etc.) | Full allowlist; restricts all syscalls |
-| Unix socket isolation | Not available (Landlock limitation) | Mount namespace hides sockets |
-| Self-protection | Requires admin-owned path | Automatic; mount namespace hides scripts |
-| Admin control | Admin owns the script directory | Admin defines profiles users can't override |
+| Unix socket `connect()` (D-Bus, snapd, MariaDB) | Cannot block — leaks service info | Mount namespace hides sockets entirely |
+| Host process visibility (`ps aux`) | Shared PID namespace — all host processes visible | `--unshare-pid` isolates process list |
+| Network exfiltration (`curl`, `wget`) | Shares host network — full outbound access | `--net=none` or `--netfilter` for controlled egress |
+| Credential exfiltration chain | OAuth tokens readable + network open | Network isolation breaks the chain |
+| Sandbox script tampering | Writable under `~/.claude/` (additive-only rules) | Mount namespace makes scripts invisible/read-only |
+| `settings.json` / `CLAUDE.md` writability | Cannot make files read-only under writable parent | Mount overlays (same as bwrap) |
+| Seccomp coverage | Basic denylist (io_uring, kexec, memfd_create) | Full syscall allowlist |
 
-Firejail is more effort to deploy but provides stronger guarantees (network isolation, seccomp, mount-namespace hiding) that Landlock alone cannot offer.
+If Firejail is available, the sandbox could use it as a third backend — combining Firejail's mount/network/PID namespace isolation with the existing Landlock-style filesystem rules defined in `sandbox.conf`.
 
 ---
 
