@@ -81,8 +81,8 @@ All components have been end-to-end tested on an Ubuntu 24.04 VM (kernel 6.8, Sl
 
 - **eBPF LSM program** — compiled with clang/libbpf, loaded via `bpftool prog loadall ... autoattach`. Normal processes can read the token file; processes with `PR_SET_NO_NEW_PRIVS` get `EACCES`.
 - **Slurm job submit plugin** — jobs without a bypass token are wrapped in `sandbox-exec.sh`; jobs with a valid `_SANDBOX_BYPASS` token pass through unsandboxed; the token is cleared from the job environment after validation.
-- **Combined flow (both backends)** — verified with both Landlock and bwrap. A sandboxed job cannot read the bypass token (eBPF denies it via `no_new_privs` check), so any Slurm job it submits lacks the token and gets sandboxed by the plugin. Sandboxed jobs show `SANDBOX_ACTIVE=1`, hidden `~/.ssh`, and `EACCES`/`ENOENT` on the token file. Unsandboxed jobs (valid token) see all files normally.
-- **Sandbox test suite** — 27/27 pass (bwrap), 21/21 pass + 3 skipped (Landlock — skips are for bwrap-only features like `/usr/bin` overlays and self-protection).
+- **Combined flow (all backends)** — verified with bwrap, firejail, and Landlock. A sandboxed job cannot read the bypass token (eBPF denies it via `no_new_privs` check), so any Slurm job it submits lacks the token and gets sandboxed by the plugin. Sandboxed jobs show `SANDBOX_ACTIVE=1`, hidden `~/.ssh`, and `EACCES`/`ENOENT` on the token file. Unsandboxed jobs (valid token) see all files normally.
+- **Sandbox test suite** — 104 total: 38/38 pass (bwrap), 37/37 pass + 3 skipped (firejail), 29/29 pass + 4 skipped (Landlock). Skips are for backend-specific features (binary relocation, self-protection, /tmp isolation).
 
 The test setup used a single-node Slurm cluster (slurmctld + slurmd + slurmdbd with MariaDB). bwrap on Ubuntu 24.04 requires an AppArmor profile to allow unprivileged user namespaces (the installer prints the needed profile if this is the issue).
 
@@ -152,17 +152,19 @@ The Landlock backend also installs a **seccomp filter** that blocks dangerous sy
 
 On nodes where AppArmor blocks unprivileged user namespaces (Ubuntu 24.04+), bwrap cannot work without an admin-created AppArmor profile. [Firejail](https://firejail.wordpress.com/) is now implemented as a third sandbox backend. It installs **setuid root**, so it can create mount namespaces regardless of AppArmor settings. The sandbox auto-detects firejail when bwrap is unavailable (priority: bwrap > firejail > landlock).
 
-Firejail closes the remaining gaps that Landlock alone cannot address (confirmed by penetration testing):
+Firejail closes the remaining gaps that Landlock alone cannot address. A full penetration test has been conducted — see `findings_firejail.md` for the detailed report (43 tests, 26 blocked, 16 escaped/leaked post-remediation). Key comparison:
 
 | Gap (pentest finding) | Landlock | Firejail |
 |---|---|---|
-| Unix socket `connect()` (D-Bus, snapd, MariaDB) | Cannot block — leaks service info | Mount namespace hides sockets entirely |
+| Unix socket `connect()` (D-Bus, snapd, MariaDB) | Cannot block — leaks service info | Mount namespace hides sockets; snapd/systemd-notify/lxd-installer explicitly blacklisted |
 | Host process visibility (`ps aux`) | Shared PID namespace — all host processes visible | PID namespace isolates process list (default) |
+| `/tmp` cross-session leakage | Shared host `/tmp` | `--private-tmp` gives clean tmpfs |
 | Network exfiltration (`curl`, `wget`) | Shares host network — full outbound access | `--net=none` or `--netfilter` for controlled egress |
 | Credential exfiltration chain | OAuth tokens readable + network open | Network isolation breaks the chain |
 | Sandbox script tampering | Writable under `~/.claude/` (additive-only rules) | Mount namespace makes scripts invisible/read-only |
 | `settings.json` / `CLAUDE.md` writability | Cannot make files read-only under writable parent | In-place swap with backup/restore (like landlock) |
-| Seccomp coverage | Custom BPF denylist (io_uring, kexec, memfd_create) | Built-in `--seccomp` (default denylist; io_uring not blocked in v0.9.72) |
+| Seccomp coverage | Custom BPF denylist (io_uring, kexec, memfd_create) | Built-in `--seccomp` + `--caps.drop=all` + `--nonewprivs` (io_uring not blocked in v0.9.72) |
+| Internal state exposure | N/A | `/run/firejail/mnt/seccomp/` readable (firejail design limitation — reveals BPF filter) |
 
 #### Admin setup for Slurm nodes
 
