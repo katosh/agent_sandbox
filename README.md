@@ -1,4 +1,4 @@
-# Sandboxing Claude Code Agents on Gizmo
+# Sandboxing Claude Code Agents on HPC
 
 > **Disclaimer:** This sandbox is a best-effort, user-space isolation layer. It is **not** a security product and comes with **no guarantees**. It reduces the attack surface of AI coding agents on shared HPC systems, but it cannot prevent all possible bypasses — see the [Security Summary](#security-summary) and [Admin Hardening Options](ADMIN_HARDENING.md) for known limitations. Use at your own risk.
 
@@ -21,7 +21,7 @@ Containers (Docker, Singularity/Apptainer) solve isolation, but they introduce f
 | Problem | Container Impact | Sandbox |
 |---|---|---|
 | **Filesystem mapping** | Must explicitly map every NFS path, home dir, scratch — get it wrong and paths differ inside vs. outside | Same filesystem, same paths. No mapping needed. |
-| **Path consistency** | Scripts that reference `/fh/fast/...` may break inside the container if mounts differ | All paths are identical inside and outside. |
+| **Path consistency** | Scripts that reference NFS paths may break inside the container if mounts differ | All paths are identical inside and outside. |
 | **Software stack** | Must install tools inside the image, or map `/app` — versions may conflict | Directly uses `/app`, lmod, your Homebrew — everything just works. |
 | **Image maintenance** | Must rebuild images when tools change | Nothing to rebuild. |
 | **Starting Claude** | Must install and configure Claude Code inside each container image | `sandbox-exec.sh -- claude` — that's it. |
@@ -50,7 +50,7 @@ With **bwrap**, even calling `/usr/bin/sbatch` by absolute path hits the sandbox
 
 ### Prerequisites
 
-- Fred Hutch gizmo account (or similar HPC with Linux kernel ≥ 3.8)
+- Linux HPC with Slurm (kernel ≥ 3.8)
 - **Bubblewrap backend**: requires `kernel.unprivileged_userns_clone = 1` and [Homebrew](https://brew.sh/) for installation. On Ubuntu 24.04+, AppArmor may also need configuration — see [Troubleshooting](#setting-up-uid-map-permission-denied-ubuntu-2404).
 - **Firejail backend**: requires `firejail` installed with setuid root (`sudo apt install firejail`). Works when AppArmor blocks unprivileged user namespaces (which breaks bwrap). See [Known Limitations](#known-limitations) for the `/etc/passwd` UID filtering issue.
 - **Landlock backend**: requires kernel ≥ 5.13 (Ubuntu 22.04+). Works without root, even when AppArmor blocks user namespaces. No Homebrew needed — uses Python 3 only.
@@ -143,7 +143,7 @@ alias claude-sandbox='~/.claude/sandbox/sandbox-exec.sh -- claude'
 ### Start Claude Code in a Sandbox
 
 ```bash
-cd /fh/fast/setty_m/user/$USER/my-project
+cd /path/to/my-project
 
 # With the alias:
 claude-sandbox
@@ -176,7 +176,7 @@ That's it. Claude starts in your project directory with full read access to the 
 ~/.claude/sandbox/sandbox-exec.sh -- bash -c 'module avail 2>&1 | head -5'
 
 # Writing outside project dir fails
-~/.claude/sandbox/sandbox-exec.sh -- touch /fh/fast/setty_m/user/$USER/other-project/test
+~/.claude/sandbox/sandbox-exec.sh -- touch /path/to/other-project/test
 # → touch: cannot touch '...': Read-only file system  (bwrap)
 # → touch: cannot touch '...': Permission denied      (firejail/landlock)
 
@@ -206,8 +206,8 @@ If there are directories under your lab's fast storage that contain restricted d
 ```bash
 # In sandbox.conf:
 EXTRA_BLOCKED_PATHS=(
-    "/fh/fast/setty_m/clinical_restricted"
-    "/fh/fast/setty_m/user/someone_else/private"
+    "/shared/lab/clinical_restricted"
+    "/shared/lab/user/someone_else/private"
 )
 ```
 
@@ -287,8 +287,8 @@ If you have shared data outside the lab's fast directory:
 READONLY_MOUNTS=(
     "/usr" "/lib" "/lib64" "/bin" "/sbin" "/etc"
     "/app"
-    "/fh/fast/setty_m"
-    "/fh/fast/other_lab/shared_data"    # ← add this
+    "/shared/lab"
+    "/shared/other_lab/data"    # ← add this
 )
 ```
 
@@ -330,7 +330,7 @@ Layer 3: Selective re-mount (read-only) ~/.bashrc, ~/.gitconfig, ...
 Layer 4: Writable mounts                ~/.claude, project directory
 Layer 5: Slurm binary relocation        /usr/bin/sbatch → sandbox redirector
 Layer 6: CLAUDE.md + settings overlays  merged with sandbox instructions
-Layer 7: NFS storage (read-only)        /fh/fast/setty_m → entire tree
+Layer 7: NFS storage (read-only)        /shared/lab_data → entire tree
 Layer 8: Project dir (writable overlay) writable on top of Layer 7
 ```
 
@@ -424,7 +424,7 @@ $EDITOR ~/.claude/sandbox/sandbox-claude.md
 Install bubblewrap: `brew install bubblewrap`
 
 ### "bwrap: Creating new namespace failed: Operation not permitted"
-The kernel doesn't allow unprivileged user namespaces. Check: `cat /proc/sys/kernel/unprivileged_userns_clone` — it must be `1`. On gizmo, this is enabled by default.
+The kernel doesn't allow unprivileged user namespaces. Check: `cat /proc/sys/kernel/unprivileged_userns_clone` — it must be `1`.
 
 ### "setting up uid map: Permission denied" (Ubuntu 24.04+)
 Ubuntu 24.04 sets `kernel.apparmor_restrict_unprivileged_userns = 1` by default, which blocks bwrap even when `unprivileged_userns_clone = 1`. This requires a sysadmin fix:
@@ -451,13 +451,23 @@ The munge socket at `/run/munge/` must be accessible. Bwrap binds `/run` by defa
 By design. Only `$SANDBOX_PROJECT_DIR` and `~/.claude/` are writable. If the agent needs to write somewhere else, either change `--project-dir` or add the path to `HOME_WRITABLE` in `sandbox.conf`.
 
 ### Module commands don't work
-The sandbox passes through `BASH_ENV=/app/lmod/lmod/init/bash` which auto-initializes lmod in bash scripts. If using a different shell, source the appropriate lmod init file.
+The sandbox passes through `BASH_ENV` (typically pointing to the lmod init script, e.g. `/app/lmod/lmod/init/bash`) which auto-initializes lmod in bash scripts. If `module` isn't available, check that `BASH_ENV` is set correctly for your site's lmod installation. For non-bash shells, source the appropriate lmod init file.
 
 ### "No such file or directory" for a tool
 The tool's directory isn't mounted. Check if it's under a path in `READONLY_MOUNTS` or `HOME_READONLY`. Add it to the appropriate list in `sandbox.conf`.
 
 ### Can't create new conda/mamba environments
-Mamba root (`$MAMBA_ROOT_PREFIX`) is read-only. Create environments outside the sandbox, then use them inside it.
+Mamba root (`$MAMBA_ROOT_PREFIX`) is read-only by default. Either create environments outside the sandbox and use them inside, or add the mamba root to `HOME_WRITABLE` in `sandbox.conf` to make it writable.
+
+### eBPF token protection not blocking reads
+If verification step 2 (simulated sandboxed read) prints "FAIL: readable":
+1. Check the program is loaded: `sudo bpftool prog show | grep deny_token_read`
+2. Check the map has values: `sudo bpftool map dump id $(sudo bpftool map show | grep protected_file | head -1 | awk '{print $1}' | tr -d ':')`
+3. If `dev` is 0 or doesn't match the kernel encoding, re-run `load-token-protect.sh`. Note: `stat -c %d` returns old-format `dev_t`; the kernel uses `new_encode_dev` (`major << 20 | minor`). The loader script handles this.
+4. If reloading after an update, remove old pins first: `sudo rm -rf /sys/fs/bpf/token_protect`
+
+### eBPF: "bpf" not in active LSM list
+Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,apparmor,bpf`. Check current list: `cat /sys/kernel/security/lsm`.
 
 ---
 
