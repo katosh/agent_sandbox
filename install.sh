@@ -2,7 +2,7 @@
 # install.sh — Set up the sandbox for Claude Code
 #
 # What this script does:
-#   1. Detects available sandbox backend (bwrap or landlock)
+#   1. Detects available sandbox backends (bwrap, firejail, landlock)
 #   2. Installs bubblewrap via Homebrew if needed (and available)
 #   3. Copies sandbox scripts to ~/.claude/sandbox/
 #   4. Creates a default sandbox.conf (won't overwrite yours)
@@ -23,20 +23,19 @@ echo "║  Sandbox Installer                            ║"
 echo "╚═══════════════════════════════════════════════╝"
 echo ""
 
-# ── Step 1: Detect / install backend ─────────────────────────────
+# ── Step 1: Detect / install backends ────────────────────────────
 
-DETECTED_BACKEND=""
-BWRAP_AVAILABLE=false
-LANDLOCK_AVAILABLE=false
+AVAILABLE_BACKENDS=()
+BWRAP_BLOCKED=false
 
 # Check bwrap
 if command -v bwrap &>/dev/null; then
     if bwrap --ro-bind / / true 2>/dev/null; then
-        BWRAP_AVAILABLE=true
+        AVAILABLE_BACKENDS+=(bwrap)
         echo "✓ bubblewrap available: $(bwrap --version)"
     else
+        BWRAP_BLOCKED=true
         echo "⚠ bubblewrap installed but cannot create namespaces"
-        # Check why
         if [[ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] \
            && [[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" == "1" ]]; then
             BWRAP_PATH="$(command -v bwrap)"
@@ -68,44 +67,45 @@ elif command -v brew &>/dev/null; then
     echo "→ Installing bubblewrap via Homebrew..."
     brew install bubblewrap
     if bwrap --ro-bind / / true 2>/dev/null; then
-        BWRAP_AVAILABLE=true
+        AVAILABLE_BACKENDS+=(bwrap)
         echo "  ✓ bubblewrap installed: $(bwrap --version)"
     else
         echo "  ⚠ bubblewrap installed but cannot create namespaces"
     fi
 fi
 
+# Check firejail
+if command -v firejail &>/dev/null; then
+    if firejail --noprofile --quiet -- true 2>/dev/null; then
+        AVAILABLE_BACKENDS+=(firejail)
+        echo "✓ firejail available: $(firejail --version 2>&1 | head -1)"
+    fi
+fi
+
 # Check Landlock
 if [[ "$(uname -s)" == "Linux" ]] && command -v python3 &>/dev/null; then
     if python3 "$SCRIPT_DIR/backends/landlock-sandbox.py" --check 2>/dev/null; then
-        LANDLOCK_AVAILABLE=true
+        AVAILABLE_BACKENDS+=(landlock)
         LANDLOCK_ABI=$(python3 "$SCRIPT_DIR/backends/landlock-sandbox.py" --check 2>/dev/null)
         echo "✓ Landlock available: $LANDLOCK_ABI"
     fi
 fi
 
-# Select backend
-if [[ "$BWRAP_AVAILABLE" == true ]]; then
-    DETECTED_BACKEND=bwrap
-elif [[ "$LANDLOCK_AVAILABLE" == true ]]; then
-    DETECTED_BACKEND=landlock
-    echo ""
-    echo "→ Using Landlock backend (bwrap not available)"
-    echo "  Note: Landlock blocks access with EACCES instead of hiding paths (ENOENT)."
-    echo "  Functionally equivalent for security — the agent cannot read blocked files."
-else
+if [[ ${#AVAILABLE_BACKENDS[@]} -eq 0 ]]; then
     echo ""
     echo "ERROR: No sandbox backend available."
     echo ""
     echo "  Options:"
     echo "    1. Install bubblewrap: brew install bubblewrap"
-    echo "    2. Use a Linux kernel ≥ 5.13 with Landlock enabled"
+    echo "    2. Install firejail: sudo apt install firejail"
+    echo "    3. Use a Linux kernel ≥ 5.13 with Landlock enabled"
     echo ""
     exit 1
 fi
 
 echo ""
-echo "  Selected backend: $DETECTED_BACKEND"
+echo "  Available backends: ${AVAILABLE_BACKENDS[*]}"
+echo "  (sandbox-exec.sh auto-selects the best one at runtime)"
 
 # ── Step 2: Copy scripts ───────────────────────────────────────
 
@@ -123,7 +123,7 @@ for file in sbatch srun; do
     cp "$SCRIPT_DIR/bin/$file" "$SANDBOX_DIR/bin/$file"
 done
 
-for file in bwrap.sh landlock.sh landlock-sandbox.py; do
+for file in bwrap.sh firejail.sh landlock.sh landlock-sandbox.py; do
     cp "$SCRIPT_DIR/backends/$file" "$SANDBOX_DIR/backends/$file"
 done
 
@@ -158,9 +158,9 @@ echo ""
 echo "→ Running test suite..."
 echo ""
 
-if ! bash "$SANDBOX_DIR/test.sh" --backend "$DETECTED_BACKEND"; then
+if ! bash "$SANDBOX_DIR/test.sh"; then
     echo ""
-    echo "⚠ Some tests failed. Run 'bash $SANDBOX_DIR/test.sh --backend $DETECTED_BACKEND --verbose' for details."
+    echo "⚠ Some tests failed. Run 'bash $SANDBOX_DIR/test.sh --verbose' for details."
     exit 1
 fi
 
@@ -178,7 +178,7 @@ done
 
 echo ""
 echo "════════════════════════════════════════════════"
-echo "  Installation complete! (backend: $DETECTED_BACKEND)"
+echo "  Installation complete! (backends: ${AVAILABLE_BACKENDS[*]})"
 echo ""
 echo "  Start Claude Code in a sandbox:"
 echo "    cd /your/project/dir"
