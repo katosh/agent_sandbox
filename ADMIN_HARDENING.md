@@ -146,7 +146,19 @@ KillUserProcesses=yes
 
 Option A is stronger — it prevents the user systemd instance from starting at all. Verify with `systemd-run --user -- id` (should fail with "Failed to connect to bus").
 
-The Landlock backend also installs a **seccomp filter** that blocks dangerous syscalls (`io_uring_setup`, `process_vm_writev`, `kexec_load`, etc.) as defense-in-depth. The filter does not block `connect()` itself (which would break munge authentication), but reduces the kernel attack surface.
+The Landlock backend also installs a **seccomp filter** that blocks dangerous syscalls as defense-in-depth. The filter does not block `connect()` itself (which would break munge authentication), but reduces the kernel attack surface.
+
+#### Seccomp filter — HPC compatibility trade-offs
+
+The Landlock seccomp filter blocks `io_uring` (kernel I/O bypass) and `kexec_load/kexec_file_load` (kernel replacement). Several other syscalls were **intentionally removed** from the blocklist to avoid breaking legitimate HPC workloads:
+
+| Syscall | HPC use case | Security risk (accepted) |
+|---|---|---|
+| `memfd_create` | GPU drivers (CUDA, ROCm), JIT compilers (Julia, Numba, PyTorch JIT) | Anonymous executable memory regions |
+| `userfaultfd` | Java ZGC/Shenandoah GC, QEMU live migration | Kernel race exploitation (CVE-2021-22555 and others) |
+| `process_vm_readv/writev` | MPI shared-memory transport, debuggers (gdb, strace) | Cross-process memory access (mitigated by PID namespace in bwrap/firejail) |
+
+These syscalls are commonly used by GPU compute, MPI multi-rank jobs, and JVM-based bioinformatics tools. Blocking them would silently break `sbatch` jobs using CUDA, multi-rank MPI, or Java pipelines. The filesystem sandbox (Landlock rules) remains the primary isolation mechanism — seccomp is defense-in-depth only.
 
 ### Firejail backend (implemented — `backends/firejail.sh`)
 
@@ -188,6 +200,12 @@ sudo find /var/lib/slurm /var/log/slurm /var/spool/slurmd \
 #    Force firejail for testing:
 SANDBOX_BACKEND=firejail ./sandbox-exec.sh -- bash
 ```
+
+#### HPC compatibility notes (firejail)
+
+**`/tmp` isolation** (`--private-tmp`): Enabled by default for security. Each sandbox session gets a clean tmpfs at `/tmp`, preventing cross-session data leakage. However, this breaks inter-process communication through `/tmp` — notably MPI shared-memory transport (OpenMPI, MPICH) and NCCL inter-GPU sockets. Users running multi-rank MPI or multi-GPU workloads should set `PRIVATE_TMP=false` in `sandbox.conf`.
+
+**Supplementary groups**: The sandbox preserves group membership (no `--nogroups`). HPC file access relies on supplementary groups (e.g., lab group for `/fh/fast/setty_m/`), so dropping them would silently break access to group-owned data.
 
 ---
 

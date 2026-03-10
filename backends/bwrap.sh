@@ -41,7 +41,14 @@ backend_prepare() {
     # --- Kernel filesystems ---
     BWRAP_ARGS+=(--proc /proc)
     BWRAP_ARGS+=(--dev /dev)
-    BWRAP_ARGS+=(--tmpfs /tmp)
+
+    # /tmp isolation: default is private tmpfs. Set PRIVATE_TMP=false in
+    # sandbox.conf for MPI/NCCL workloads that need shared /tmp.
+    if [[ "${PRIVATE_TMP:-true}" == "true" ]]; then
+        BWRAP_ARGS+=(--tmpfs /tmp)
+    else
+        BWRAP_ARGS+=(--bind /tmp /tmp)
+    fi
 
     # --- Read-only system mounts ---
     for mount in "${READONLY_MOUNTS[@]}"; do

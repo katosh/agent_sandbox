@@ -9,6 +9,13 @@ You are running inside a filesystem sandbox (`SANDBOX_ACTIVE=1`).
 
 **Slurm:** `sbatch` and `srun` are automatically sandboxed — compute-node jobs inherit the same read/write restrictions. Just use them normally.
 
+**`/tmp` isolation:** `/tmp` is isolated by default (`PRIVATE_TMP=true`) with the bwrap and firejail backends. Each sandbox session gets a clean, private `/tmp`. This means:
+- MPI shared-memory transport (OpenMPI, MPICH) between ranks on the same node may fail if it uses `/tmp` for inter-process communication.
+- NCCL inter-GPU communication via `/tmp` sockets will not work across sandbox boundaries.
+- Any multi-process workflow that coordinates through `/tmp` files or sockets needs shared `/tmp`.
+
+If the user needs MPI multi-rank jobs, NCCL multi-GPU, or other inter-process `/tmp` communication, tell them to set `PRIVATE_TMP=false` in `~/.claude/sandbox/sandbox.conf`. This trades `/tmp` isolation for HPC compatibility. The Landlock backend does not isolate `/tmp` (no mount namespace).
+
 **If something is blocked that you need**, tell the user which setting to change in `~/.claude/sandbox/sandbox.conf`.
 
 ## Sandbox Integrity

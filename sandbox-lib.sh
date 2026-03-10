@@ -67,6 +67,12 @@ EXTRA_BLOCKED_PATHS=()
 # When set, the bwrap backend automatically hides this file from the sandbox
 # (overlays it with /dev/null). For the Landlock backend, use the eBPF LSM
 # program instead (see admin/token_protect.bpf.c).
+# Isolate /tmp with a private tmpfs (firejail backend only).
+# Default: true. Set to false if the sandboxed process needs shared /tmp
+# access (e.g., MPI shared-memory transport between ranks on the same node,
+# or NCCL inter-GPU communication via /tmp sockets).
+PRIVATE_TMP=true
+
 SANDBOX_BYPASS_TOKEN=""
 
 BLOCKED_ENV_VARS=(

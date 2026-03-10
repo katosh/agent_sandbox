@@ -164,12 +164,21 @@ json.dump(user, sys.stdout, indent=2)
         --caps.drop=all
         --nonewprivs
         --seccomp
-        --nogroups
         --nosound
         --no3d
         --restrict-namespaces
-        --private-tmp
+        # Note: --nogroups is intentionally omitted. HPC file access relies
+        # on supplementary group membership (e.g., lab groups for /fh/fast/).
+        # Dropping groups would silently break access to group-owned data.
     )
+
+    # --private-tmp: isolate /tmp with a clean tmpfs.
+    # Enabled by default for security (prevents cross-session /tmp leakage).
+    # Disable via PRIVATE_TMP=false in sandbox.conf if MPI, NCCL, or other
+    # multi-process frameworks need shared /tmp for inter-rank communication.
+    if [[ "${PRIVATE_TMP:-true}" == "true" ]]; then
+        FIREJAIL_ARGS+=(--private-tmp)
+    fi
 
     # PID namespace is enabled by default in firejail (no flag needed).
     # --restrict-namespaces prevents the sandboxed process from creating

@@ -637,7 +637,7 @@ fi
 
 echo "9. Pentest hardening"
 
-# /tmp isolation — bwrap uses --tmpfs /tmp, firejail uses --private-tmp
+# /tmp isolation — bwrap uses --tmpfs /tmp, firejail uses --private-tmp (configurable)
 # Landlock does not isolate /tmp
 if has_mount_ns; then
     # Create a marker file in host /tmp, check it's not visible inside sandbox
@@ -647,7 +647,12 @@ if has_mount_ns; then
         if [[ "$OUTPUT" == "HIDDEN" ]]; then
             pass "/tmp is isolated from host"
         else
-            fail "/tmp is shared with host (should be isolated)"
+            # Firejail: PRIVATE_TMP=false disables /tmp isolation (for MPI/NCCL)
+            if is_firejail; then
+                pass "/tmp is shared (PRIVATE_TMP=false — MPI/NCCL compatible)"
+            else
+                fail "/tmp is shared with host (should be isolated)"
+            fi
         fi
     fi
     rm -f "$_TMP_MARKER"

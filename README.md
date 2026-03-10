@@ -503,6 +503,8 @@ The sandbox auto-detects the best available backend (bwrap → firejail → land
 |---|---|---|
 | **Firejail** | Filters `/etc/passwd`, removing UIDs in dynamic range (~1000–64999). Breaks Slurm if `slurm` user has high UID. | Assign slurm a system UID: `sudo usermod -u 120 slurm` |
 | **Firejail** | Default seccomp (v0.9.72) doesn't block `io_uring_setup`/`enter`/`register` | Landlock backend's custom seccomp does block these |
+| **bwrap/Firejail** | `/tmp` isolated by default (`PRIVATE_TMP=true`) — breaks MPI shared-memory transport and NCCL inter-GPU sockets | Set `PRIVATE_TMP=false` in `sandbox.conf` for HPC multi-process workloads |
+| **Landlock** | Seccomp allows `memfd_create`, `userfaultfd`, `process_vm_readv/writev` for HPC compatibility | Accepted trade-off — these are needed by CUDA, MPI, and Java GC. See [Admin Hardening](ADMIN_HARDENING.md) |
 | **Landlock** | Cannot block `AF_UNIX connect()` — agent can reach D-Bus, systemd sockets | Use bwrap or firejail; or see [Admin Hardening](ADMIN_HARDENING.md) |
 | **Landlock** | No sandbox self-protection — agent can modify wrapper scripts | Current session is safe (kernel rules are irrevocable), but future sessions could be affected |
 | **All** | Network not isolated — agent can make HTTP requests, SSH connections | Do not expose `~/.ssh`; consider network policy at admin level |

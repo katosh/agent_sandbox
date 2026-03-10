@@ -80,28 +80,41 @@ AUDIT_ARCH_AARCH64 = 0xC00000B7
 # Dangerous syscalls to block, keyed by audit architecture.
 # These expand the kernel attack surface without being needed by
 # normal scientific computing workloads.
+#
+# HPC compatibility: the following syscalls are intentionally NOT blocked
+# because they are used by legitimate HPC software:
+#
+#   memfd_create     — GPU drivers (CUDA, ROCm), JIT compilers (Julia,
+#                      Numba, PyTorch JIT), some Python C extensions.
+#                      Risk: can create anonymous executable memory regions.
+#
+#   userfaultfd      — Java ZGC/Shenandoah garbage collectors, QEMU live
+#                      migration, some memory-mapped databases.
+#                      Risk: kernel attack surface (CVE-2021-22555 and
+#                      others used userfaultfd for race exploitation).
+#
+#   process_vm_readv — MPI shared-memory transport (cross-rank data
+#   process_vm_writev  transfer on same node), debuggers (gdb, strace).
+#                      Risk: can read/write memory of same-UID processes
+#                      (mitigated by PID namespace in bwrap/firejail).
+#
+# These were removed from the blocklist to avoid breaking GPU compute,
+# MPI multi-rank jobs, and JVM-based workloads. The filesystem sandbox
+# (Landlock rules) remains the primary isolation mechanism.
 _BLOCKED_SYSCALLS = {
     AUDIT_ARCH_X86_64: {
         "io_uring_setup":      425,
         "io_uring_enter":      426,
         "io_uring_register":   427,
-        "process_vm_writev":   311,
-        "process_vm_readv":    310,
-        "userfaultfd":         323,
         "kexec_load":          246,
         "kexec_file_load":     320,
-        "memfd_create":        319,
     },
     AUDIT_ARCH_AARCH64: {
         "io_uring_setup":      425,
         "io_uring_enter":      426,
         "io_uring_register":   427,
-        "process_vm_writev":   271,
-        "process_vm_readv":    270,
-        "userfaultfd":         282,
         "kexec_load":          104,
         "kexec_file_load":     294,
-        "memfd_create":        279,
     },
 }
 
