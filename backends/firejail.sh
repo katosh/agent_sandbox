@@ -132,10 +132,10 @@ backend_prepare() {
     # /run/munge and /run/systemd/resolve remain accessible
     # (read-only by default in firejail's mount namespace).
 
-    # --- Passwd filtering (block NSS daemon sockets to cut LDAP path) ---
-    # Firejail cannot overlay individual files under /etc like bwrap.
-    # Instead, blacklist sockets used by NSS daemons that proxy LDAP/AD
-    # queries: nscd (caching), nslcd (LDAP), sssd (AD/LDAP/Kerberos).
+    # --- Passwd filtering (block NSS daemon sockets) ---
+    # Blacklist sockets used by NSS daemons that proxy LDAP/AD queries:
+    # nscd (caching), nslcd (LDAP), sssd (AD/LDAP/Kerberos).
+    # Without these sockets, getent passwd returns only local users.
     if [[ "${FILTER_PASSWD:-true}" == "true" ]]; then
         for _nss_sock in /run/nscd /run/nslcd /var/run/nscd /var/run/nslcd \
                          /run/sssd /var/lib/sss/pipes; do

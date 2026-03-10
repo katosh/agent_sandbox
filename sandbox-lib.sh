@@ -76,8 +76,8 @@ PRIVATE_TMP=true
 # Filter /etc/passwd inside the sandbox to prevent LDAP/AD user enumeration.
 # When true, generates a minimal /etc/passwd (system UIDs < 1000 + current
 # user) and overrides nsswitch.conf to use "files" only (no ldap/sss).
-# bwrap: full support (overlays both files via --ro-bind).
-# firejail: blocks NSS daemon sockets (nscd, nslcd, sssd) to cut LDAP path.
+# bwrap: overlays /etc/passwd + /etc/nsswitch.conf via --ro-bind.
+# firejail: blocks NSS daemon sockets (nscd, nslcd, sssd).
 # landlock: not supported (no mount namespace).
 FILTER_PASSWD=true
 
