@@ -6,7 +6,7 @@ The [sandbox](README.md) is fully user-space — no root or admin involvement ne
 
 This document describes **improvements** that could close remaining gaps. Sections 1 and 2 are independent and can be deployed individually. Sections 3–5 build on each other (4 and 5 require 3). They are ordered roughly from least to most effort.
 
-> **Our priority:** Section 1 (sandbox-by-default Slurm submission) is the improvement we'd most like to see. It closes the main gap in the current setup — Slurm PATH shadowing — with moderate admin effort and no workflow changes for users.
+> **Our priority:** Section 1 (enforcing sandbox on agent-submitted Slurm jobs) is the improvement we'd most like to see. It closes the main gap in the current setup — Slurm PATH shadowing — with moderate admin effort and no workflow changes for users.
 
 ### Self-serve vs. admin-enforced
 
@@ -19,9 +19,9 @@ The current user-space sandbox is entirely self-serve: it protects against accid
 
 ---
 
-## 1. Sandbox-by-Default Slurm Submission
+## 1. Enforce Sandbox on Agent-Submitted Slurm Jobs
 
-**What it solves:** The user-space Slurm wrappers are a soft boundary — PATH shadowing and binary relocation can be bypassed. Instead of trying to *block* submission, this approach ensures every Slurm job is **sandboxed by default** at the scheduler level. No matter how the agent submits a job, it runs inside the sandbox. Legitimate unsandboxed jobs require a token that only non-sandboxed processes can access.
+**What it solves:** The user-space Slurm wrappers are a soft boundary — PATH shadowing and binary relocation can be bypassed. Instead of trying to *block* submission, this approach ensures every Slurm job submitted from the sandbox is **sandboxed on the compute node** too. No matter how the agent submits a job, it runs inside the sandbox. Legitimate unsandboxed jobs require a token that only non-sandboxed processes can access.
 
 **Effort:** Medium. **Category:** Admin-enforced.
 
@@ -399,7 +399,7 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 
 | # | Improvement | Effort | Category | What It Closes |
 |---|---|---|---|---|
-| 1 | Sandbox-by-default Slurm submission | Medium | Admin-enforced | Agent submitting unsandboxed Slurm jobs — job submit plugin sandboxes all jobs unless caller provides bypass token (eBPF LSM protects token from `no_new_privs` processes) |
+| 1 | Enforce sandbox on agent-submitted Slurm jobs | Medium | Admin-enforced | Agent submitting unsandboxed Slurm jobs — job submit plugin sandboxes all jobs unless caller provides bypass token (eBPF LSM protects token from `no_new_privs` processes) |
 | 2 | Admin-owned sandbox installation | Low-medium | Admin-enforced | Users weakening their own sandbox config; sandbox self-protection; systemd-run escape on Landlock nodes (disable `user@.service`) |
 | 3 | Dedicated `${USER}_ai` accounts | High | Admin-enforced | Same-UID credential access; OS-level separation |
 | 4 | Network isolation | Medium-high | Admin-enforced (requires #3) | Data exfiltration via network |

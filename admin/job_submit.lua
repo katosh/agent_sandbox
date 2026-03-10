@@ -1,4 +1,4 @@
--- job_submit.lua — Slurm job submit plugin for sandbox-by-default
+-- job_submit.lua — Slurm job submit plugin enforcing sandbox on agent jobs
 --
 -- Place in /etc/slurm/job_submit.lua and enable with:
 --   JobSubmitPlugins=lua   (in slurm.conf, then: scontrol reconfigure)

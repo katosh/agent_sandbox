@@ -1,12 +1,12 @@
-# Admin Hardening: Sandbox-by-Default Slurm Submission
+# Admin Hardening: Enforce Sandbox on Agent-Submitted Slurm Jobs
 
 This directory contains the components for Section 1 of
 [ADMIN_HARDENING.md](../ADMIN_HARDENING.md) — system-wide Slurm wrappers
-that sandbox jobs by default, a job submit plugin for server-side
+that ensure agent-submitted Slurm jobs stay sandboxed, a job submit plugin for server-side
 enforcement, and an eBPF LSM program that protects the bypass token from
 sandboxed processes.
 
-End-to-end tested on Ubuntu 24.04 (kernel 6.8, Slurm 23.11, Landlock backend) with a single-node Slurm cluster (slurmctld + slurmd + slurmdbd + MariaDB). All components — eBPF token protection, job submit plugin wrapping, and combined sandbox-by-default flow — verified working.
+End-to-end tested on Ubuntu 24.04 (kernel 6.8, Slurm 23.11, Landlock backend) with a single-node Slurm cluster (slurmctld + slurmd + slurmdbd + MariaDB). All components — eBPF token protection, job submit plugin wrapping, and combined sandbox enforcement flow — verified working.
 
 ## Components
 
@@ -129,7 +129,7 @@ at the `REAL_SBATCH`/`REAL_SRUN` paths configured in `sandbox-wrapper.conf`.
 
 ## How it works
 
-The system enforces sandbox-by-default through three layers:
+The system enforces sandbox on agent-submitted jobs through three layers:
 
 1. **System-wide Slurm wrappers** — replace `/usr/bin/sbatch` and
    `/usr/bin/srun`. Each wrapper tries to read the eBPF-protected token

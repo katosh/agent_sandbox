@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sbatch-token-wrapper.sh — System-wide sbatch wrapper for sandbox-by-default
+# sbatch-token-wrapper.sh — System-wide sbatch wrapper enforcing sandbox on agent jobs
 #
 # Replaces /usr/bin/sbatch (or shadows it via PATH). Reads the eBPF-
 # protected bypass token and injects it as an environment variable so

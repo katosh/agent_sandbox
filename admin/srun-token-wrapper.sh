@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# srun-token-wrapper.sh — System-wide srun wrapper for sandbox-by-default
+# srun-token-wrapper.sh — System-wide srun wrapper enforcing sandbox on agent jobs
 #
 # Replaces /usr/bin/srun (or shadows it via PATH). Tries to read the
 # eBPF-protected bypass token:
