@@ -37,11 +37,15 @@ A **Slurm job submit plugin** (`job_submit.lua` or C plugin) intercepts every `s
 
 This makes sandboxing the *default* for all jobs. The agent doesn't need to be blocked from calling Slurm — any job it submits will be sandboxed regardless of how it gets there.
 
-#### Why eBPF LSM for token protection
+#### Token protection per backend
 
-The bypass token must be readable by normal users but hidden from sandboxed processes. This is straightforward with bwrap (don't bind-mount the file), but Landlock's permission model is **additive only** — you can grant access to paths but cannot revoke access to a file under an already-granted parent directory. If `/etc` is in `READONLY_MOUNTS` (which it is by default), a Landlock-sandboxed process can read anything in `/etc`, including the token. There is no way to carve out an exception.
+The bypass token must be readable by normal users but hidden from sandboxed processes:
 
-An **eBPF LSM program** solves this for both backends uniformly. It attaches to the kernel's `file_open` hook and denies read access to the token file for any process with `no_new_privs` set. Both bwrap and Landlock set `PR_SET_NO_NEW_PRIVS` on the sandboxed process — an irrevocable kernel flag that persists across `fork()` and `exec()`, cannot be unset, and is a process attribute (not a file or env var). Normal user processes do not have it set. The eBPF program (kernel 5.7+, Ubuntu 24.04 supports this) checks this flag at file open time — kernel-enforced, independent of both sandbox backends, and unforgeable even if an agent rewrites every sandbox script.
+- **bwrap** — overlays the token file with `/dev/null` via `--ro-bind`. The sandboxed process reads an empty file.
+- **firejail** — uses `--blacklist` to hide the token file inside the mount namespace.
+- **Landlock** — cannot hide the file. Landlock's permission model is **additive only**: you can grant access to paths but cannot revoke access to a file under an already-granted parent directory. If `/etc` is in `READONLY_MOUNTS` (which it is by default), a Landlock-sandboxed process can read anything in `/etc`, including the token.
+
+For the Landlock backend, an **eBPF LSM program** is needed. It attaches to the kernel's `file_open` hook and denies read access to the token file for any process with `no_new_privs` set. All three sandbox backends set `PR_SET_NO_NEW_PRIVS` on the sandboxed process — an irrevocable kernel flag that persists across `fork()` and `exec()`, cannot be unset, and is a process attribute (not a file or env var). Normal user processes do not have it set. The eBPF program (kernel 5.7+, Ubuntu 24.04 supports this) checks this flag at file open time — kernel-enforced and unforgeable even if an agent rewrites every sandbox script.
 
 #### Heterogeneous clusters (bwrap-only nodes)
 
@@ -52,7 +56,7 @@ On older nodes where only bwrap is available (e.g., Ubuntu 18.04, kernel 4.15), 
 SANDBOX_BYPASS_TOKEN="/etc/slurm/.sandbox-bypass-token"
 ```
 
-The eBPF program is only needed on nodes that use the Landlock backend, where the additive-only permission model makes it impossible to hide a file under an already-granted parent directory. On a heterogeneous cluster, deploy the eBPF program on Landlock nodes (kernel ≥ 5.7) and rely on bwrap's automatic token hiding on older bwrap-only nodes. The `SANDBOX_BYPASS_TOKEN` setting works with both — bwrap hides it via mount namespace, and the path can also be used to configure the eBPF program's protected inode.
+The eBPF program is only needed on nodes that use the Landlock backend, where the additive-only permission model makes it impossible to hide a file under an already-granted parent directory. Both bwrap and firejail can hide the token natively — bwrap overlays the file with `/dev/null` via `--ro-bind`, firejail uses `--blacklist`. On a heterogeneous cluster, deploy the eBPF program only on Landlock-only nodes (kernel ≥ 5.7) and rely on native token hiding elsewhere. The `SANDBOX_BYPASS_TOKEN` setting works with all three backends — bwrap and firejail hide it via their respective mechanisms, and the path is also used to configure the eBPF program's protected inode.
 
 ### Setup
 
