@@ -746,11 +746,11 @@ if is_firejail; then
 fi
 
 # SANDBOX_BYPASS_TOKEN — verify the token file is hidden inside the sandbox
-# bwrap overlays with /dev/null; firejail blacklists; landlock relies on eBPF
+# bwrap overlays with /dev/null; firejail blacklists; landlock relies on eBPF LSM
 if has_mount_ns; then
+    # Mount-namespace backends: test with a temp token file
     _TOKEN_FILE="/tmp/.sandbox-test-bypass-token-$$"
     echo "test-bypass-secret" > "$_TOKEN_FILE"
-    # Run sandbox with SANDBOX_BYPASS_TOKEN set
     _TOKEN_RAW=$(SANDBOX_BYPASS_TOKEN="$_TOKEN_FILE" \
         timeout 15 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
         --project-dir "$PROJECT_DIR" -- cat "$_TOKEN_FILE" 2>&1) || true
@@ -763,7 +763,39 @@ if has_mount_ns; then
     fi
     rm -f "$_TOKEN_FILE"
 else
-    skip "SANDBOX_BYPASS_TOKEN hiding — Landlock uses eBPF instead (see ADMIN_HARDENING.md §1)"
+    # Landlock: cannot hide files via mount namespace. Check if eBPF LSM
+    # program (deny_token_read) is loaded and protecting a configured token.
+    _EBPF_LOADED=false
+    if command -v bpftool &>/dev/null; then
+        if sudo -n bpftool prog list 2>/dev/null | grep -q 'deny_token_read'; then
+            _EBPF_LOADED=true
+        fi
+    fi
+
+    if [[ "$_EBPF_LOADED" == "true" ]]; then
+        # eBPF is loaded — find the configured token path and test it
+        # Source sandbox.conf to get SANDBOX_BYPASS_TOKEN
+        _TOKEN_PATH=""
+        if [[ -f "$SCRIPT_DIR/sandbox.conf" ]]; then
+            _TOKEN_PATH=$(bash -c "source '$SCRIPT_DIR/sandbox.conf' 2>/dev/null; echo \"\$SANDBOX_BYPASS_TOKEN\"")
+        fi
+        if [[ -n "$_TOKEN_PATH" && -f "$_TOKEN_PATH" ]]; then
+            # Landlock sets NO_NEW_PRIVS — eBPF should deny the read
+            if sandbox cat "$_TOKEN_PATH" 2>&1; then
+                fail "SANDBOX_BYPASS_TOKEN readable despite eBPF (Landlock)"
+            else
+                if echo "$OUTPUT" | grep -qi "permission denied\|operation not permitted"; then
+                    pass "SANDBOX_BYPASS_TOKEN protected by eBPF LSM (Landlock)"
+                else
+                    pass "SANDBOX_BYPASS_TOKEN not readable (Landlock + eBPF)"
+                fi
+            fi
+        else
+            skip "SANDBOX_BYPASS_TOKEN — eBPF loaded but no token path configured in sandbox.conf"
+        fi
+    else
+        skip "SANDBOX_BYPASS_TOKEN — Landlock needs eBPF LSM (not loaded; see ADMIN_HARDENING.md §1)"
+    fi
 fi
 
 echo ""
