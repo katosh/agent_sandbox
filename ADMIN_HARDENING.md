@@ -85,13 +85,17 @@ KillUserProcesses=yes
 
 Option A is stronger — it prevents the user systemd instance from starting at all. Verify with `systemd-run --user -- id` (should fail with "Failed to connect to bus").
 
-### Prevent user enumeration via LDAP/AD (bwrap/firejail)
+### User enumeration via LDAP/AD
 
 On Active Directory or LDAP-managed clusters, `getent passwd` reveals all users in the directory (~10k+ entries), not just the 30-odd system accounts in `/etc/passwd`. An agent could enumerate the entire organization.
 
-The bwrap and firejail backends can prevent this by overlaying `/etc/nsswitch.conf` to remove `ldap` from the `passwd` line, while providing a minimal `/etc/passwd` containing only system users and the current user. Munge and Slurm are unaffected — munge uses a unix socket, and Slurm resolves its own user from `slurm.conf`. The Landlock backend cannot do this (no mount namespace).
+The sandbox mitigates this automatically via `FILTER_PASSWD=true` (default in `sandbox.conf`):
 
-This is not yet implemented but could be added as an option in `sandbox.conf` (e.g. `FILTER_PASSWD=true`).
+- **bwrap**: full prevention — overlays `/etc/passwd` (system UIDs + current user only) and `/etc/nsswitch.conf` (`passwd: files` only, no ldap/sss). Also skips binding the nscd socket.
+- **firejail**: partial — blacklists the nscd socket to cut the common LDAP lookup path. Direct nss_ldap queries may still work on some systems.
+- **landlock**: not supported — no mount namespace to overlay files.
+
+Munge and Slurm are unaffected — munge uses a unix socket, and Slurm resolves its own user from `slurm.conf`. No admin action required.
 
 The Landlock backend also installs a **seccomp filter** that blocks dangerous syscalls as defense-in-depth. The filter does not block `connect()` itself (which would break munge authentication), but reduces the kernel attack surface.
 

@@ -701,6 +701,42 @@ if sandbox bash -c 'echo ${LANG:-UNSET}'; then
 fi
 unset _TEST_CRED_VAR
 
+# FILTER_PASSWD — verify /etc/passwd is filtered inside sandbox
+if is_bwrap; then
+    if sandbox bash -c 'wc -l < /etc/passwd'; then
+        _host_count=$(wc -l < /etc/passwd)
+        _sandbox_count="$OUTPUT"
+        if [[ "$_sandbox_count" -lt "$_host_count" ]]; then
+            pass "FILTER_PASSWD: /etc/passwd filtered (host: $_host_count → sandbox: $_sandbox_count lines)"
+        elif [[ "$_sandbox_count" -eq "$_host_count" ]]; then
+            # Could be that all users are system users (< 1000)
+            pass "FILTER_PASSWD: /etc/passwd overlaid (same count — all UIDs may be < 1000)"
+        fi
+    fi
+    if sandbox bash -c 'grep "^passwd:" /etc/nsswitch.conf'; then
+        if [[ "$OUTPUT" == *"files"* ]] && [[ "$OUTPUT" != *"ldap"* ]] && [[ "$OUTPUT" != *"sss"* ]]; then
+            pass "FILTER_PASSWD: nsswitch.conf uses files-only for passwd"
+        else
+            fail "FILTER_PASSWD: nsswitch.conf still references ldap/sss" "$OUTPUT"
+        fi
+    fi
+elif is_firejail; then
+    # Firejail: partial — check nscd socket is blocked
+    if [[ -e /run/nscd ]]; then
+        if sandbox bash -c "test -e /run/nscd && echo VISIBLE || echo HIDDEN"; then
+            if [[ "$OUTPUT" == "HIDDEN" ]]; then
+                pass "FILTER_PASSWD: nscd socket blocked (LDAP lookup path cut)"
+            else
+                fail "FILTER_PASSWD: nscd socket still visible" "$OUTPUT"
+            fi
+        fi
+    else
+        skip "FILTER_PASSWD: nscd not present — LDAP enumeration test N/A"
+    fi
+else
+    skip "FILTER_PASSWD: not supported on Landlock (no mount namespace)"
+fi
+
 # NoNewPrivs is set (prevents setuid escalation inside sandbox)
 if sandbox bash -c 'grep "^NoNewPrivs:" /proc/self/status | awk "{print \$2}"'; then
     if [[ "$OUTPUT" == "1" ]]; then

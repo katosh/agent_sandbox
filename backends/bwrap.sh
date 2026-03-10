@@ -149,8 +149,10 @@ SLURM_EOF
         BWRAP_ARGS+=(--ro-bind /run/munge /run/munge)
     fi
 
-    # nscd socket (required for user/group lookups on NFS/LDAP systems)
-    if [[ -d /run/nscd ]]; then
+    # nscd socket (required for user/group lookups on NFS/LDAP systems).
+    # When FILTER_PASSWD is enabled, skip nscd — we overlay nsswitch.conf
+    # to use "files" only, so nscd is unnecessary and would leak LDAP data.
+    if [[ -d /run/nscd ]] && [[ "${FILTER_PASSWD:-true}" != "true" ]]; then
         BWRAP_ARGS+=(--ro-bind /run/nscd /run/nscd)
     fi
 
@@ -163,6 +165,17 @@ SLURM_EOF
         BWRAP_ARGS+=(--symlink /run /var/run)
     elif [[ -d /var/run ]]; then
         BWRAP_ARGS+=(--tmpfs /var/run)
+    fi
+
+    # --- Passwd filtering (LDAP/AD user enumeration prevention) ---
+    # Overlay /etc/passwd and /etc/nsswitch.conf with filtered versions
+    # that contain only system accounts + current user and disable LDAP.
+    if [[ "${FILTER_PASSWD:-true}" == "true" ]]; then
+        generate_filtered_passwd
+        if [[ -n "${_FILTERED_PASSWD:-}" && -f "${_FILTERED_PASSWD:-}" ]]; then
+            BWRAP_ARGS+=(--ro-bind "$_FILTERED_PASSWD" /etc/passwd)
+            BWRAP_ARGS+=(--ro-bind "$_FILTERED_NSSWITCH" /etc/nsswitch.conf)
+        fi
     fi
 
     BWRAP_ARGS+=(--unshare-pid)

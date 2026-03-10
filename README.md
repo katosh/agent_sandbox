@@ -364,6 +364,7 @@ The sandbox inherits your shell environment, then:
 | **Network** | Not isolated (any backend) — Slurm needs network for job submission and munge authentication |
 | **PID namespace** | Isolated by bwrap (`--unshare-pid`) and firejail (default). Not isolated by Landlock. |
 | **`/run`** | Partially isolated. Firejail blacklists `/run/dbus`, `/run/user`, `/run/systemd/private`, `/run/containerd` but allows munge socket. Bwrap exposes only `/run/munge`. Landlock allows all of `/run`. |
+| **User enumeration** | bwrap: filtered (`FILTER_PASSWD=true` overlays minimal `/etc/passwd` + files-only nsswitch). Firejail: partially filtered (nscd blocked). Landlock: not filtered. |
 
 ---
 
@@ -515,5 +516,6 @@ The sandbox auto-detects the best available backend (bwrap → firejail → land
 | **Landlock** | Cannot block `AF_UNIX connect()` — agent can reach D-Bus, systemd sockets | Use bwrap or firejail; or see [Admin Hardening](ADMIN_HARDENING.md) |
 | **Landlock** | No sandbox self-protection — agent can modify wrapper scripts | Current session is safe (kernel rules are irrevocable), but future sessions could be affected |
 | **All** | `/dev/shm` is writable and shared (IPC namespace not isolated by default) — could be used for covert cross-sandbox communication | `firejail --ipc-namespace`, `bwrap --unshare-ipc` |
-| **All** | User enumeration via LDAP/AD — `getent passwd` reveals all users on the directory (not just `/etc/passwd`) | See [Admin Hardening](ADMIN_HARDENING.md) for nsswitch overlay approach (bwrap/firejail only) |
+| **Landlock** | User enumeration via LDAP/AD — `getent passwd` reveals all directory users | No mount namespace; set `FILTER_PASSWD=false` if LDAP lookups are needed |
+| **Firejail** | User enumeration via LDAP/AD partially mitigated — nscd socket blocked but direct nss_ldap may still work | `FILTER_PASSWD=true` (default) blocks nscd; bwrap provides full coverage |
 | **All** | Network not isolated — agent can make HTTP requests, SSH connections | Do not expose `~/.ssh`; consider network policy at admin level |

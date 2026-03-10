@@ -73,6 +73,14 @@ EXTRA_BLOCKED_PATHS=()
 # or NCCL inter-GPU communication via /tmp sockets).
 PRIVATE_TMP=true
 
+# Filter /etc/passwd inside the sandbox to prevent LDAP/AD user enumeration.
+# When true, generates a minimal /etc/passwd (system UIDs < 1000 + current
+# user) and overrides nsswitch.conf to use "files" only (no ldap/sss).
+# bwrap: full support (overlays both files via --ro-bind).
+# firejail: partial (blacklists nscd socket to cut LDAP lookup path).
+# landlock: not supported (no mount namespace).
+FILTER_PASSWD=true
+
 # Path to the Slurm bypass token file.  bwrap/firejail hide it inside
 # the sandbox.  If empty and /etc/slurm/sandbox-wrapper.conf exists,
 # TOKEN_FILE from that file is used automatically.
@@ -154,6 +162,43 @@ validate_project_dir() {
     echo "  Allowed prefixes: ${ALLOWED_PROJECT_PARENTS[*]}" >&2
     echo "  Edit ALLOWED_PROJECT_PARENTS in $SANDBOX_CONF to allow more." >&2
     return 1
+}
+
+# ── Passwd filtering (LDAP/AD user enumeration prevention) ────────
+#
+# Generates a minimal /etc/passwd and /etc/nsswitch.conf for use inside
+# the sandbox.  The filtered passwd contains only system accounts
+# (UID < 1000) and the current user.  The filtered nsswitch.conf
+# replaces "ldap", "sss", and "compat" with "files" for the passwd
+# and group databases, so getent only returns local entries.
+#
+# Sets _FILTERED_PASSWD and _FILTERED_NSSWITCH to the generated paths.
+# Backends that support file overlays (bwrap) use these directly.
+
+generate_filtered_passwd() {
+    [[ "${FILTER_PASSWD:-true}" == "true" ]] || return 0
+
+    local tmpdir="$SANDBOX_DIR/.passwd-filter"
+    mkdir -p "$tmpdir"
+
+    local my_uid
+    my_uid="$(id -u)"
+
+    # Minimal passwd: system accounts (UID < 1000) + current user
+    awk -F: "(\$3 < 1000) || (\$3 == $my_uid)" /etc/passwd > "$tmpdir/passwd"
+
+    # nsswitch.conf: replace ldap/sss/compat with files-only for passwd/group
+    if [[ -f /etc/nsswitch.conf ]]; then
+        sed -E \
+            -e 's/^(passwd|group):.*$/\1:         files/' \
+            /etc/nsswitch.conf > "$tmpdir/nsswitch.conf"
+    else
+        printf 'passwd:         files\ngroup:          files\nhosts:          files dns\n' \
+            > "$tmpdir/nsswitch.conf"
+    fi
+
+    _FILTERED_PASSWD="$tmpdir/passwd"
+    _FILTERED_NSSWITCH="$tmpdir/nsswitch.conf"
 }
 
 # ── Config directory overlay ──────────────────────────────────────
