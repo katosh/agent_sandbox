@@ -21,98 +21,18 @@ The current user-space sandbox is entirely self-serve: it protects against accid
 
 ## 1. Enforce Sandbox on Agent-Submitted Slurm Jobs
 
-**What it solves:** The user-space Slurm wrappers are a soft boundary — PATH shadowing and binary relocation can be bypassed. Instead of trying to *block* submission, this approach ensures every Slurm job submitted from the sandbox is **sandboxed on the compute node** too. No matter how the agent submits a job, it runs inside the sandbox. Legitimate unsandboxed jobs require a token that only non-sandboxed processes can access. Users who do not use the sandbox are unaffected — their workflow does not change.
+**What it solves:** The user-space Slurm wrappers are a soft boundary — PATH shadowing and binary relocation can be bypassed. This approach ensures every Slurm job submitted from within the sandbox is **sandboxed on the compute node** too, using a Slurm job submit plugin and an eBPF LSM-protected bypass token. Users who do not use the sandbox are unaffected — their workflow does not change.
 
 **Effort:** Medium. **Category:** Admin-enforced.
-
-### Design: Slurm job submit plugin + eBPF-protected token
-
-#### Job submit plugin
-
-A **Slurm job submit plugin** (`job_submit.lua` or C plugin) intercepts every `sbatch`/`srun` submission:
-
-1. Check if the job environment contains a valid **bypass token** (`_SANDBOX_BYPASS`)
-2. **Valid token** → job runs as submitted (user is outside the sandbox)
-3. **No token or invalid** → plugin prepends `sandbox-exec.sh --project-dir $PWD --` to the job command
-
-This makes sandboxing the *default* for all jobs. The agent doesn't need to be blocked from calling Slurm — any job it submits will be sandboxed regardless of how it gets there.
-
-#### Token protection per backend
-
-The bypass token must be readable by normal users but hidden from sandboxed processes:
-
-- **bwrap** — overlays the token file with `/dev/null` via `--ro-bind`. The sandboxed process reads an empty file.
-- **firejail** — uses `--blacklist` to hide the token file inside the mount namespace.
-- **Landlock** — cannot hide the file. Landlock's permission model is **additive only**: you can grant access to paths but cannot revoke access to a file under an already-granted parent directory. If `/etc` is in `READONLY_MOUNTS` (which it is by default), a Landlock-sandboxed process can read anything in `/etc`, including the token.
-
-For the Landlock backend, an **eBPF LSM program** is needed. It attaches to the kernel's `file_open` hook and denies read access to the token file for any process with `no_new_privs` set. All three sandbox backends set `PR_SET_NO_NEW_PRIVS` on the sandboxed process — an irrevocable kernel flag that persists across `fork()` and `exec()`, cannot be unset, and is a process attribute (not a file or env var). Normal user processes do not have it set. The eBPF program (kernel 5.7+, Ubuntu 24.04 supports this) checks this flag at file open time — kernel-enforced and unforgeable even if an agent rewrites every sandbox script.
-
-#### Heterogeneous clusters (bwrap-only nodes)
-
-On older nodes where only bwrap is available (e.g., Ubuntu 18.04, kernel 4.15), eBPF LSM is not supported. On these nodes, bwrap can hide the token via its mount namespace instead. Set `SANDBOX_BYPASS_TOKEN` in `sandbox.conf` and the bwrap backend will automatically overlay the file with `/dev/null` — the sandboxed process reads an empty file rather than the real token. Combined with an admin-owned installation (Section 2), the agent cannot modify `sandbox.conf` to remove the block.
-
-```bash
-# In sandbox.conf (admin-owned):
-SANDBOX_BYPASS_TOKEN="/etc/slurm/.sandbox-bypass-token"
-```
-
-The eBPF program is only needed on nodes that use the Landlock backend, where the additive-only permission model makes it impossible to hide a file under an already-granted parent directory. Both bwrap and firejail can hide the token natively — bwrap overlays the file with `/dev/null` via `--ro-bind`, firejail uses `--blacklist`. On a heterogeneous cluster, deploy the eBPF program only on Landlock-only nodes (kernel ≥ 5.7) and rely on native token hiding elsewhere. The `SANDBOX_BYPASS_TOKEN` setting works with all three backends — bwrap and firejail hide it via their respective mechanisms, and the path is also used to configure the eBPF program's protected inode.
-
-### Setup
-
-```bash
-# 1. Generate a bypass token
-head -c 32 /dev/urandom | base64 > /etc/slurm/.sandbox-bypass-token
-chmod 0644 /etc/slurm/.sandbox-bypass-token
-
-# 2. Build and load eBPF LSM program — must be active BEFORE deploying
-#    the wrappers (see admin/token_protect.bpf.c and admin/README.md)
-
-# 3. Install the job submit plugin (see admin/job_submit.lua for a
-#    working example). Edit SANDBOX_EXEC path to match your install.
-cp admin/job_submit.lua /etc/slurm/job_submit.lua
-# Enable in slurm.conf:  JobSubmitPlugins=lua
-# Then: scontrol reconfigure
-
-# 4. Install system-wide sbatch/srun wrappers (deploy last — depends
-#    on eBPF and plugin being active).
-mkdir -p /usr/libexec/slurm
-mv /usr/bin/sbatch /usr/libexec/slurm/sbatch
-mv /usr/bin/srun /usr/libexec/slurm/srun
-cp admin/sbatch-token-wrapper.sh /usr/bin/sbatch
-cp admin/srun-token-wrapper.sh /usr/bin/srun
-cp admin/sandbox-wrapper.conf /etc/slurm/sandbox-wrapper.conf
-chmod +x /usr/bin/sbatch /usr/bin/srun
-```
-
-Working examples are provided in `admin/`:
-
-- `sbatch-token-wrapper.sh` / `srun-token-wrapper.sh` — system-wide wrappers that replace `/usr/bin/sbatch` and `/usr/bin/srun`. They read the eBPF-protected token and either inject it (sbatch) or pass through (srun) for normal users. Sandboxed processes cannot read the token, so sbatch jobs get wrapped by the plugin and srun commands get wrapped in `sandbox-exec.sh`.
-- `job_submit.lua` — Slurm job submit plugin (server-side enforcement for sbatch). Wraps unvalidated jobs in `sandbox-exec.sh`. Clears the token from the job environment after validation so it doesn't leak to the compute node.
-- `token_protect.bpf.c` — eBPF LSM program that denies token file reads for `no_new_privs` processes.
-- `sandbox-wrapper.conf` — shared configuration for the wrappers (token path, real binary locations, sandbox-exec.sh path). Deployed to `/etc/slurm/`.
-
-See `admin/README.md` for full setup instructions.
-
-### Tested
-
-All components have been end-to-end tested on an Ubuntu 24.04 VM (kernel 6.8, Slurm 23.11) with both sandbox backends:
-
-- **eBPF LSM program** — compiled with clang/libbpf, loaded via `bpftool prog loadall ... autoattach`. Normal processes can read the token file; processes with `PR_SET_NO_NEW_PRIVS` get `EACCES`.
-- **Slurm job submit plugin** — jobs without a bypass token are wrapped in `sandbox-exec.sh`; jobs with a valid `_SANDBOX_BYPASS` token pass through unsandboxed; the token is cleared from the job environment after validation.
-- **Combined flow (all backends)** — verified with bwrap, firejail, and Landlock. A sandboxed job cannot read the bypass token (eBPF denies it via `no_new_privs` check), so any Slurm job it submits lacks the token and gets sandboxed by the plugin. Sandboxed jobs show `SANDBOX_ACTIVE=1`, hidden `~/.ssh`, and `EACCES`/`ENOENT` on the token file. Unsandboxed jobs (valid token) see all files normally.
-- **Sandbox test suite** — 126 total: 39/39 pass (bwrap), 38/38 pass + 3 skipped (firejail), 30/30 pass + 4 skipped (Landlock), 12/12 pass (admin wrappers). 119 passed, 0 failed, 7 skipped. Skips are for backend-specific features (binary relocation, self-protection, /tmp isolation). Admin wrapper tests are dry-run (no job submission — works on busy HPC clusters) and auto-detected via `sandbox-wrapper.conf`.
-
-The test setup used a single-node Slurm cluster (slurmctld + slurmd + slurmdbd with MariaDB). bwrap on Ubuntu 24.04 requires an AppArmor profile to allow unprivileged user namespaces (the installer prints the needed profile if this is the issue).
-
-### Result
 
 | Scenario | What happens |
 |---|---|
 | Agent calls `sbatch` (any method) | No bypass token → plugin wraps job in `sandbox-exec.sh` → **sandboxed** |
 | Agent tries to read token file | eBPF LSM checks `no_new_privs` → **EACCES** |
-| User outside sandbox | Reads token → passes to sbatch → **unsandboxed** ✓ |
+| User outside sandbox | Reads token → passes to sbatch → **unsandboxed** |
 | `curl` to `slurmrestd` | Works if exposed (see §4 for network isolation) |
+
+Design, setup instructions, components, and verification steps are in [`admin/README.md`](admin/README.md).
 
 ---
 
@@ -144,11 +64,11 @@ The admin controls which paths are visible, which environment variables are bloc
 
 This also protects `sandbox.conf` and the sandbox scripts from tampering — even across sessions. The `CLAUDE.md` and `settings.json` overlays are not affected by this, since they live in a separate per-sandbox config directory (`CLAUDE_CONFIG_DIR`) that is rebuilt on each sandbox start from the user's real config.
 
-### Disable systemd user instances (Landlock nodes)
+### Disable systemd user instances (Landlock-only nodes)
 
-On nodes using the Landlock backend, there is a critical escape vector: Landlock restricts filesystem access but **cannot block Unix domain socket `connect()`**. This is a fundamental kernel limitation (not available in any Landlock ABI version as of kernel 6.11). A sandboxed process can connect to `/run/user/<UID>/systemd/private` and use `systemd-run --user` to execute commands outside the sandbox — at least 5 independent tools can trigger this (`systemd-run`, `busctl`, `gdbus`, `python3-dbus`, `systemctl --user`).
+This is only relevant on nodes where neither bwrap nor firejail is installed, so the sandbox falls back to the Landlock backend. Landlock restricts filesystem access but **cannot block Unix domain socket `connect()`** (not available in any Landlock ABI version as of kernel 6.11). A sandboxed process can connect to `/run/user/<UID>/systemd/private` and use `systemd-run --user` to execute commands outside the sandbox.
 
-The **bwrap backend is not affected** — it replaces `/run` with a tmpfs and only bind-mounts the munge and nscd sockets.
+Both **bwrap** and **firejail** are unaffected — they replace `/run` with a tmpfs or blacklist the socket.
 
 On HPC compute nodes, systemd user instances are typically unnecessary. Disabling them removes the escape target:
 

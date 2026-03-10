@@ -200,3 +200,12 @@ sudo grep 'job_submit/sandbox' /var/log/slurm/slurmctld.log | tail -1
 srun --help | head -1
 # → shows real srun help (wrapper passed through)
 ```
+
+## Tested
+
+End-to-end tested on Ubuntu 24.04 (kernel 6.8, Slurm 23.11) with a single-node Slurm cluster (slurmctld + slurmd + slurmdbd + MariaDB):
+
+- **eBPF LSM** — normal processes read the token; `no_new_privs` processes get `EACCES`
+- **Job submit plugin** — jobs without token are wrapped; valid `_SANDBOX_BYPASS` passes through; token cleared after validation
+- **Combined flow** — verified with bwrap, firejail, and Landlock. Sandboxed jobs show `SANDBOX_ACTIVE=1`, hidden `~/.ssh`, `EACCES` on token file. Unsandboxed jobs see all files normally.
+- **Test suite** — 119 passed, 0 failed, 7 skipped (backend-specific features). Admin wrapper tests are dry-run (no job submission).
