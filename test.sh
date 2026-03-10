@@ -745,6 +745,27 @@ if is_firejail; then
     fi
 fi
 
+# SANDBOX_BYPASS_TOKEN — verify the token file is hidden inside the sandbox
+# bwrap overlays with /dev/null; firejail blacklists; landlock relies on eBPF
+if has_mount_ns; then
+    _TOKEN_FILE="/tmp/.sandbox-test-bypass-token-$$"
+    echo "test-bypass-secret" > "$_TOKEN_FILE"
+    # Run sandbox with SANDBOX_BYPASS_TOKEN set
+    _TOKEN_RAW=$(SANDBOX_BYPASS_TOKEN="$_TOKEN_FILE" \
+        timeout 15 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- cat "$_TOKEN_FILE" 2>&1) || true
+    _TOKEN_OUT=$(echo "$_TOKEN_RAW" | grep -v \
+        -e '^Warning:' -e '^Parent pid' -e '^Child process' -e '^Parent is shutting')
+    if echo "$_TOKEN_OUT" | grep -q "test-bypass-secret"; then
+        fail "SANDBOX_BYPASS_TOKEN is readable inside sandbox"
+    else
+        pass "SANDBOX_BYPASS_TOKEN is hidden inside sandbox"
+    fi
+    rm -f "$_TOKEN_FILE"
+else
+    skip "SANDBOX_BYPASS_TOKEN hiding — Landlock uses eBPF instead (see ADMIN_HARDENING.md §1)"
+fi
+
 echo ""
 
 # ── Per-backend summary ──────────────────────────────────────────
