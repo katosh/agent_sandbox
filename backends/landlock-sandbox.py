@@ -3,11 +3,15 @@
 
 Usage:
     landlock-sandbox.py --check
-    landlock-sandbox.py [--ro PATH]... [--rw PATH]... [--deny PATH]... -- CMD [ARGS...]
+    landlock-sandbox.py [--ro PATH]... [--rw PATH]... [--no-seccomp] -- CMD [ARGS...]
 
 Landlock restricts filesystem access for the current process and all descendants.
 Unlike bwrap, it does not create a new mount namespace — restricted paths return
 EACCES instead of ENOENT.
+
+A basic seccomp filter is also applied (unless --no-seccomp is given) to block
+dangerous syscalls like io_uring_setup and process_vm_writev that are not needed
+by normal workloads but expand the kernel attack surface.
 """
 
 import argparse
@@ -48,6 +52,147 @@ SYS_LANDLOCK_ADD_RULE       = 445
 SYS_LANDLOCK_RESTRICT_SELF  = 446
 
 PR_SET_NO_NEW_PRIVS = 38
+
+# --- Seccomp constants (from linux/seccomp.h, linux/bpf_common.h) ---
+
+SECCOMP_SET_MODE_FILTER = 1
+SECCOMP_RET_ALLOW = 0x7FFF0000
+SECCOMP_RET_ERRNO = 0x00050000  # | errno
+SECCOMP_RET_LOG   = 0x7FFC0000  # allow but log (for debugging)
+
+# BPF instruction encoding
+BPF_LD  = 0x00
+BPF_JMP = 0x05
+BPF_RET = 0x06
+BPF_W   = 0x00
+BPF_ABS = 0x20
+BPF_JEQ = 0x10
+BPF_K   = 0x00
+
+# struct seccomp_data offsets
+SECCOMP_DATA_NR = 0       # syscall number
+SECCOMP_DATA_ARCH = 4     # audit architecture
+
+# Audit architectures
+AUDIT_ARCH_X86_64  = 0xC000003E
+AUDIT_ARCH_AARCH64 = 0xC00000B7
+
+# Dangerous syscalls to block, keyed by audit architecture.
+# These expand the kernel attack surface without being needed by
+# normal scientific computing workloads.
+_BLOCKED_SYSCALLS = {
+    AUDIT_ARCH_X86_64: {
+        "io_uring_setup":      425,
+        "io_uring_enter":      426,
+        "io_uring_register":   427,
+        "process_vm_writev":   311,
+        "process_vm_readv":    310,
+        "userfaultfd":         323,
+        "kexec_load":          246,
+        "kexec_file_load":     320,
+    },
+    AUDIT_ARCH_AARCH64: {
+        "io_uring_setup":      425,
+        "io_uring_enter":      426,
+        "io_uring_register":   427,
+        "process_vm_writev":   271,
+        "process_vm_readv":    270,
+        "userfaultfd":         282,
+        "kexec_load":          104,
+        "kexec_file_load":     294,
+    },
+}
+
+
+def _bpf_stmt(code, k):
+    """Encode a BPF statement: struct sock_filter { u16 code; u8 jt; u8 jf; u32 k; }"""
+    return struct.pack("HBBI", code, 0, 0, k)
+
+
+def _bpf_jump(code, k, jt, jf):
+    """Encode a BPF jump instruction."""
+    return struct.pack("HBBI", code, jt, jf, k)
+
+
+def install_seccomp_filter():
+    """Install a seccomp-bpf filter blocking dangerous syscalls.
+
+    Returns True if installed, False if seccomp is not available.
+    The filter uses a denylist approach: block specific dangerous syscalls,
+    allow everything else. This is less restrictive than a full allowlist
+    but avoids breaking legitimate tools (Slurm, conda, module, etc.).
+    """
+    import platform
+    machine = platform.machine()
+    if machine == "x86_64":
+        audit_arch = AUDIT_ARCH_X86_64
+    elif machine == "aarch64":
+        audit_arch = AUDIT_ARCH_AARCH64
+    else:
+        print(f"Warning: seccomp not supported on {machine}, skipping", file=sys.stderr)
+        return False
+
+    blocked = _BLOCKED_SYSCALLS.get(audit_arch, {})
+    if not blocked:
+        return False
+
+    # Build BPF program:
+    #   1. Load architecture, verify it matches
+    #   2. Load syscall number
+    #   3. Compare against each blocked syscall
+    #   4. Default: allow
+    insns = b""
+
+    # Load arch
+    insns += _bpf_stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_ARCH)
+    # Jump over the rest if arch doesn't match (allow everything on unknown arch)
+    insns += _bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, audit_arch, 1, 0)
+    insns += _bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW)
+
+    # Load syscall number
+    insns += _bpf_stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR)
+
+    # For each blocked syscall: if match, return EPERM
+    blocked_list = list(blocked.values())
+    for i, nr in enumerate(blocked_list):
+        # If this is the last one, jf goes to ALLOW (1 insn away)
+        # Otherwise jf goes to next comparison
+        remaining = len(blocked_list) - i - 1
+        insns += _bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, nr, remaining + 1, 0)
+
+    # Default: allow
+    insns += _bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW)
+    # Block: return EPERM (1)
+    insns += _bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | 1)
+
+    # struct sock_fprog { unsigned short len; struct sock_filter *filter; }
+    n_insns = len(insns) // 8
+    filter_buf = ctypes.create_string_buffer(insns)
+
+    class SockFprog(ctypes.Structure):
+        _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.c_void_p)]
+
+    prog = SockFprog(n_insns, ctypes.addressof(filter_buf))
+
+    # __NR_seccomp: 317 on x86_64, 277 on aarch64
+    NR_SECCOMP = 317 if audit_arch == AUDIT_ARCH_X86_64 else 277
+
+    # PR_SET_NO_NEW_PRIVS must be set before seccomp (already done by Landlock)
+    ret = libc().syscall(
+        ctypes.c_long(NR_SECCOMP),
+        ctypes.c_ulong(SECCOMP_SET_MODE_FILTER),
+        ctypes.c_ulong(0),
+        ctypes.byref(prog),
+    )
+    if ret < 0:
+        errno = ctypes.get_errno()
+        if errno == 38:  # ENOSYS
+            print("Warning: seccomp not supported by kernel, skipping", file=sys.stderr)
+        else:
+            print(f"Warning: seccomp filter install failed (errno={errno}), skipping", file=sys.stderr)
+        return False
+
+    return True
 
 
 def _get_libc():
@@ -220,6 +365,8 @@ def main():
                         metavar="PATH", help="Read-only (+ execute) path")
     parser.add_argument("--rw", action="append", default=[],
                         metavar="PATH", help="Read-write path")
+    parser.add_argument("--no-seccomp", action="store_true",
+                        help="Skip seccomp filter installation")
     parser.add_argument("rest", nargs=argparse.REMAINDER)
 
     args = parser.parse_args()
@@ -264,6 +411,10 @@ def main():
     # --- Restrict self ---
     landlock_restrict_self(ruleset_fd)
     os.close(ruleset_fd)
+
+    # --- Seccomp filter ---
+    if not args.no_seccomp:
+        install_seccomp_filter()
 
     # --- Exec ---
     os.execvp(cmd[0], cmd)

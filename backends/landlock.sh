@@ -19,6 +19,10 @@
 #         writable. An agent could modify sandbox scripts to weaken
 #         future sessions or submitted Slurm jobs.
 #     See ADMIN_HARDENING.md §2 for mitigations.
+#   - Cannot block Unix socket connect() — Landlock controls file
+#     operations but not AF_UNIX socket connections. If systemd user
+#     instances are running, systemd-run --user can escape the sandbox.
+#     See ADMIN_HARDENING.md §0 for the fix (disable user@.service).
 #   - CLAUDE.md/settings.json merging uses in-place swap with backup/restore
 #   - Environment filtering done in shell (not via bwrap --unsetenv/--setenv)
 
@@ -148,10 +152,15 @@ json.dump(user, sys.stdout, indent=2)
     done
 
     # Kernel/virtual filesystems
-    for vfs in /proc /dev /tmp /run; do
+    for vfs in /proc /dev /tmp; do
         [[ -d "$vfs" ]] && LANDLOCK_ARGS+=(--rw "$vfs")
     done
-    [[ -d /var/run && ! -L /var/run ]] && LANDLOCK_ARGS+=(--rw /var/run)
+
+    # Selectively grant /run subdirs — granting all of /run exposes
+    # D-Bus and systemd user sockets, allowing full sandbox escape
+    # via systemd-run --user (pentest finding, 2026-03).
+    [[ -d /run/munge ]] && LANDLOCK_ARGS+=(--ro /run/munge)
+    [[ -d /run/nscd ]]  && LANDLOCK_ARGS+=(--ro /run/nscd)
 
     # Read-only home subdirectories (directories only — Landlock rules
     # apply to directory trees, not individual files)
@@ -174,6 +183,7 @@ json.dump(user, sys.stdout, indent=2)
         fi
     done
 
+
     # Scratch filesystems (read-only)
     for scratch in "${SCRATCH_MOUNTS[@]}"; do
         [[ -d "$scratch" ]] && LANDLOCK_ARGS+=(--ro "$scratch")
@@ -193,6 +203,11 @@ json.dump(user, sys.stdout, indent=2)
     for var in "${BLOCKED_ENV_VARS[@]}"; do
         unset "$var" 2>/dev/null || true
     done
+
+    # Also block any SSH_* vars not in the explicit blocklist
+    while IFS='=' read -r name _; do
+        [[ "$name" == SSH_* ]] && unset "$name" 2>/dev/null || true
+    done < <(env)
 
     for var in "${!_saved_creds[@]}"; do
         export "$var=${_saved_creds[$var]}"

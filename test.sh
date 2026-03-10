@@ -3,19 +3,20 @@
 #
 # Runs from the repo directory or the installed ~/.claude/sandbox/.
 # Tests cover filesystem isolation, environment blocking, Slurm binary
-# isolation, overlay generation, and sbatch/srun wrapping.
+# isolation, overlay generation, sbatch/srun wrapping, and security
+# hardening (attack vector tests).
 #
 # Usage:
-#   bash test.sh                          # run all tests (auto-detect backend)
+#   bash test.sh [PROJECT_DIR]            # test all available backends
 #   bash test.sh --verbose                # show command output on failure
-#   bash test.sh --backend bwrap          # force bwrap backend
-#   bash test.sh --backend landlock       # force landlock backend
+#   bash test.sh --backend bwrap          # test only bwrap backend
+#   bash test.sh --backend landlock       # test only landlock backend
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SANDBOX_EXEC="$SCRIPT_DIR/sandbox-exec.sh"
-PROJECT_DIR="$SCRIPT_DIR"   # use the repo itself as the writable project dir
+PROJECT_DIR=""
 
 VERBOSE=false
 BACKEND_FLAG=""
@@ -24,28 +25,36 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --verbose) VERBOSE=true; shift ;;
         --backend) BACKEND_FLAG="$2"; shift 2 ;;
-        *) shift ;;
+        -*) shift ;;
+        *) PROJECT_DIR="$1"; shift ;;
     esac
 done
+
+# Default project dir: use the repo itself
+[[ -z "$PROJECT_DIR" ]] && PROJECT_DIR="$SCRIPT_DIR"
+
+# ── Helpers ───────────────────────────────────────────────────────
 
 PASS=0
 FAIL=0
 SKIP=0
 
-# ── Helpers ───────────────────────────────────────────────────────
-
 pass() { ((PASS++)); echo "  ✓ $1"; }
 fail() { ((FAIL++)); echo "  ✗ $1"; [[ "$VERBOSE" == true && -n "${2:-}" ]] && echo "    $2"; }
 skip() { ((SKIP++)); echo "  ⊘ $1 (skipped)"; }
 
+# Current backend being tested (set by run_tests)
+CURRENT_BACKEND=""
+
 # Run a command inside the sandbox. Returns the exit code.
 # Captures stdout+stderr in $OUTPUT.
 sandbox() {
-    local backend_args=()
-    [[ -n "$BACKEND_FLAG" ]] && backend_args+=(--backend "$BACKEND_FLAG")
-    OUTPUT=$(timeout 15 "$SANDBOX_EXEC" "${backend_args[@]}" --project-dir "$PROJECT_DIR" -- "$@" 2>&1)
+    OUTPUT=$(timeout 15 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- "$@" 2>&1)
     return $?
 }
+
+is_bwrap() { [[ "$CURRENT_BACKEND" == "bwrap" ]]; }
+is_landlock() { [[ "$CURRENT_BACKEND" == "landlock" ]]; }
 
 # ── Pre-flight ────────────────────────────────────────────────────
 
@@ -59,44 +68,53 @@ if [[ ! -x "$SANDBOX_EXEC" ]]; then
     exit 1
 fi
 
-# Detect which backend will be used
+# Detect available backends
+AVAILABLE_BACKENDS=()
+
+check_bwrap() {
+    timeout 5 "$SANDBOX_EXEC" --backend bwrap --dry-run --project-dir "$PROJECT_DIR" -- true &>/dev/null
+}
+
+check_landlock() {
+    timeout 5 "$SANDBOX_EXEC" --backend landlock --dry-run --project-dir "$PROJECT_DIR" -- true &>/dev/null
+}
+
 if [[ -n "$BACKEND_FLAG" ]]; then
-    DETECTED_BACKEND="$BACKEND_FLAG"
+    AVAILABLE_BACKENDS=("$BACKEND_FLAG")
 else
-    # Quick detection: try to figure out which backend would be selected
-    DETECTED_BACKEND=$(timeout 5 "$SANDBOX_EXEC" --dry-run --project-dir "$PROJECT_DIR" -- true 2>&1 | grep '^# Backend:' | awk '{print $3}') || true
-    if [[ -z "$DETECTED_BACKEND" ]]; then
-        echo "ERROR: Could not detect sandbox backend. Run with --verbose for details."
-        timeout 5 "$SANDBOX_EXEC" --dry-run --project-dir "$PROJECT_DIR" -- true 2>&1 || true
-        exit 1
+    if check_bwrap; then
+        AVAILABLE_BACKENDS+=(bwrap)
+    fi
+    if check_landlock; then
+        AVAILABLE_BACKENDS+=(landlock)
     fi
 fi
 
-echo "Backend: $DETECTED_BACKEND"
-echo ""
-
-# Check for AppArmor userns restriction (Ubuntu 24.04+)
-# Only error if bwrap actually fails — an AppArmor profile may already be in place.
-if [[ "$DETECTED_BACKEND" == "bwrap" ]] \
-   && [[ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] \
-   && [[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" == "1" ]] \
-   && ! bwrap --ro-bind / / true 2>/dev/null; then
-    BWRAP_PATH="$(command -v bwrap 2>/dev/null || echo '/usr/bin/bwrap')"
-    echo "ERROR: AppArmor blocks unprivileged user namespaces on this system."
-    echo "  bwrap will fail with 'setting up uid map: Permission denied'."
-    echo ""
-    echo "  Use --backend landlock instead, or ask your sysadmin to create"
-    echo "  /etc/apparmor.d/bwrap with:"
-    echo ""
-    echo "    abi <abi/4.0>,"
-    echo "    include <tunables/global>"
-    echo "    profile bwrap $BWRAP_PATH flags=(unconfined) {"
-    echo "      userns,"
-    echo "    }"
-    echo ""
-    echo "  Then: sudo apparmor_parser -r /etc/apparmor.d/bwrap"
+if [[ ${#AVAILABLE_BACKENDS[@]} -eq 0 ]]; then
+    echo "ERROR: No sandbox backends available."
+    timeout 5 "$SANDBOX_EXEC" --dry-run --project-dir "$PROJECT_DIR" -- true 2>&1 || true
     exit 1
 fi
+
+echo "Available backends: ${AVAILABLE_BACKENDS[*]}"
+echo ""
+
+# Track overall results across all backends
+TOTAL_PASS=0
+TOTAL_FAIL=0
+TOTAL_SKIP=0
+ANY_FAIL=false
+
+run_tests() {
+CURRENT_BACKEND="$1"
+PASS=0
+FAIL=0
+SKIP=0
+
+echo "┌───────────────────────────────────────────────"
+echo "│  Testing backend: $CURRENT_BACKEND"
+echo "└───────────────────────────────────────────────"
+echo ""
 
 # ── 1. Basic sandbox ─────────────────────────────────────────────
 
@@ -129,10 +147,10 @@ if sandbox bash -c 'echo $SANDBOX_PROJECT_DIR'; then
 fi
 
 if sandbox bash -c 'echo $SANDBOX_BACKEND'; then
-    if [[ "$OUTPUT" == "$DETECTED_BACKEND" ]]; then
-        pass "SANDBOX_BACKEND=$DETECTED_BACKEND"
+    if [[ "$OUTPUT" == "$CURRENT_BACKEND" ]]; then
+        pass "SANDBOX_BACKEND=$CURRENT_BACKEND"
     else
-        fail "SANDBOX_BACKEND wrong: $OUTPUT (expected $DETECTED_BACKEND)"
+        fail "SANDBOX_BACKEND wrong: $OUTPUT (expected $CURRENT_BACKEND)"
     fi
 fi
 
@@ -147,7 +165,7 @@ test_blocked_dir() {
     local dir="$1"
     local name="$2"
 
-    if [[ "$DETECTED_BACKEND" == "bwrap" ]]; then
+    if [[ "$CURRENT_BACKEND" == "bwrap" ]]; then
         if sandbox test -d "$dir"; then
             fail "$name is visible (should be hidden)"
         else
@@ -279,7 +297,7 @@ if [[ -L "$SETTINGS" ]]; then
 fi
 
 # Landlock-specific: verify backup was restored after sandbox exit
-if [[ "$DETECTED_BACKEND" == "landlock" ]]; then
+if [[ "$CURRENT_BACKEND" == "landlock" ]]; then
     if [[ -e "$CLAUDE_MD" && ! -f "${CLAUDE_MD}.sandbox-backup" ]]; then
         pass "CLAUDE.md backup was cleaned up after sandbox exit"
     elif [[ -e "$CLAUDE_MD" ]]; then
@@ -327,7 +345,7 @@ else
     fi
 
     # bwrap-specific: /usr/bin/ overlay and binary relocation
-    if [[ "$DETECTED_BACKEND" == "bwrap" ]]; then
+    if [[ "$CURRENT_BACKEND" == "bwrap" ]]; then
         if sandbox bash -c 'file /usr/bin/sbatch'; then
             if echo "$OUTPUT" | grep -qi "script\|text"; then
                 pass "/usr/bin/sbatch is overlaid with redirector script"
@@ -372,8 +390,8 @@ else
             fi
         fi
     else
-        skip "/usr/bin/ overlay — not applicable for $DETECTED_BACKEND backend"
-        skip "Binary relocation — not applicable for $DETECTED_BACKEND backend"
+        skip "/usr/bin/ overlay — not applicable for $CURRENT_BACKEND backend"
+        skip "Binary relocation — not applicable for $CURRENT_BACKEND backend"
     fi
 
     echo ""
@@ -392,7 +410,7 @@ else
         fail "sbatch --wrap via PATH failed" "$OUTPUT"
     fi
 
-    if [[ "$DETECTED_BACKEND" == "bwrap" ]]; then
+    if [[ "$CURRENT_BACKEND" == "bwrap" ]]; then
         if sandbox /usr/bin/sbatch --wrap="echo sandbox-test-bypass" 2>&1; then
             if echo "$OUTPUT" | grep -q "Submitted batch job"; then
                 pass "/usr/bin/sbatch bypass attempt routed through sandbox"
@@ -405,9 +423,7 @@ else
     fi
 
     # No infinite recursion
-    backend_args=()
-    [[ -n "$BACKEND_FLAG" ]] && backend_args+=(--backend "$BACKEND_FLAG")
-    if timeout 10 "$SANDBOX_EXEC" "${backend_args[@]}" --project-dir "$PROJECT_DIR" -- \
+    if timeout 10 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- \
         sbatch --wrap="echo recursion-test" &>/dev/null; then
         pass "No infinite recursion in sbatch wrapper"
     else
@@ -421,7 +437,7 @@ echo ""
 
 echo "7. Sandbox self-protection"
 
-if [[ "$DETECTED_BACKEND" == "landlock" ]]; then
+if [[ "$CURRENT_BACKEND" == "landlock" ]]; then
     # Landlock rules are additive — can't make a subdir read-only when its
     # parent ($HOME/.claude) is writable.  See ADMIN_HARDENING.md §2.
     skip "Sandbox self-protection — not supported with Landlock backend (see ADMIN_HARDENING.md)"
@@ -432,9 +448,7 @@ else
     trap "rm -rf '$PROTECTION_PROJECT'" EXIT
 
     protection_sandbox() {
-        local backend_args=()
-        [[ -n "$BACKEND_FLAG" ]] && backend_args+=(--backend "$BACKEND_FLAG")
-        OUTPUT=$(timeout 15 "$SANDBOX_EXEC" "${backend_args[@]}" --project-dir "$PROTECTION_PROJECT" -- "$@" 2>&1)
+        OUTPUT=$(timeout 15 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$PROTECTION_PROJECT" -- "$@" 2>&1)
         return $?
     }
 
@@ -452,17 +466,167 @@ else
     fi
 fi
 
+# ── 8. Security hardening ─────────────────────────────────────────
+
+echo "8. Security hardening (attack vectors)"
+
+# SSH env vars should not leak
+export SSH_AUTH_SOCK="/tmp/ssh-test/agent.123"
+export SSH_CONNECTION="1.2.3.4 1234 5.6.7.8 22"
+export SSH_CLIENT="1.2.3.4 1234 22"
+export SSH_TTY="/dev/pts/99"
+
+if sandbox bash -c 'echo ${SSH_AUTH_SOCK:-UNSET}'; then
+    if [[ "$OUTPUT" == "UNSET" ]]; then
+        pass "SSH_AUTH_SOCK is blocked"
+    else
+        fail "SSH_AUTH_SOCK leaked into sandbox" "$OUTPUT"
+    fi
+fi
+
+if sandbox bash -c 'echo ${SSH_CONNECTION:-UNSET}'; then
+    if [[ "$OUTPUT" == "UNSET" ]]; then
+        pass "SSH_CONNECTION is blocked"
+    else
+        fail "SSH_CONNECTION leaked into sandbox" "$OUTPUT"
+    fi
+fi
+
+unset SSH_AUTH_SOCK SSH_CONNECTION SSH_CLIENT SSH_TTY
+
+# systemd-run escape — should fail on bwrap (sockets not visible)
+if command -v systemd-run &>/dev/null; then
+    ESCAPE_FILE="/tmp/.sandbox-escape-test-$$"
+    rm -f "$ESCAPE_FILE"
+    if sandbox bash -c "systemd-run --user --collect --wait -- touch '$ESCAPE_FILE' 2>&1"; then
+        if [[ -f "$ESCAPE_FILE" ]]; then
+            fail "systemd-run --user ESCAPED the sandbox (created file on host)"
+            rm -f "$ESCAPE_FILE"
+        else
+            pass "systemd-run --user did not escape"
+        fi
+    else
+        if [[ -f "$ESCAPE_FILE" ]]; then
+            fail "systemd-run --user ESCAPED the sandbox (created file on host)"
+            rm -f "$ESCAPE_FILE"
+        else
+            if [[ "$CURRENT_BACKEND" == "landlock" ]]; then
+                # Landlock can't block Unix socket connect() — this is a known limitation.
+                # If systemd user instances are disabled (ADMIN_HARDENING.md §2), systemd-run
+                # fails with "Failed to connect to bus". If they're still running, systemd-run
+                # may have succeeded but the escape file might be in a different location.
+                if echo "$OUTPUT" | grep -qi "connect\|masked\|refused"; then
+                    pass "systemd-run --user blocked (user@.service disabled)"
+                else
+                    skip "systemd-run --user — inconclusive on Landlock (see ADMIN_HARDENING.md §2)"
+                fi
+            else
+                pass "systemd-run --user blocked (sockets not accessible)"
+            fi
+        fi
+    fi
+    rm -f "$ESCAPE_FILE"
+else
+    skip "systemd-run not available — escape test"
+fi
+
+# /run/user sockets should not be accessible (bwrap: tmpfs, landlock: restricted)
+if [[ "$CURRENT_BACKEND" == "bwrap" ]]; then
+    if sandbox bash -c "ls /run/user/ 2>&1"; then
+        fail "/run/user/ is visible in bwrap sandbox"
+    else
+        pass "/run/user/ is hidden (tmpfs /run)"
+    fi
+
+    if sandbox bash -c "ls /run/dbus/ 2>&1"; then
+        fail "/run/dbus/ is visible in bwrap sandbox"
+    else
+        pass "/run/dbus/ is hidden (tmpfs /run)"
+    fi
+fi
+
+# PID namespace isolation (bwrap only — landlock does not have PID ns)
+if [[ "$CURRENT_BACKEND" == "bwrap" ]]; then
+    if sandbox bash -c 'ps aux 2>/dev/null | wc -l'; then
+        PROC_COUNT="$OUTPUT"
+        # Inside a PID namespace, we should see very few processes
+        # (bwrap, bash, ps, wc — typically < 10)
+        if [[ "$PROC_COUNT" -lt 20 ]]; then
+            pass "PID namespace isolates host processes ($PROC_COUNT visible)"
+        else
+            fail "PID namespace not working — $PROC_COUNT processes visible"
+        fi
+    else
+        skip "Could not check PID namespace"
+    fi
+fi
+
+# Seccomp filter (landlock only — bwrap doesn't install one currently)
+if [[ "$CURRENT_BACKEND" == "landlock" ]]; then
+    if sandbox bash -c 'grep "^Seccomp:" /proc/self/status'; then
+        SECCOMP_MODE=$(echo "$OUTPUT" | awk '{print $2}')
+        if [[ "$SECCOMP_MODE" == "2" ]]; then
+            pass "Seccomp filter is active (mode 2)"
+        else
+            fail "Seccomp filter not active (mode $SECCOMP_MODE)"
+        fi
+    fi
+
+    # io_uring_setup should be blocked
+    if sandbox python3 -c "
+import ctypes, ctypes.util
+libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+ret = libc.syscall(ctypes.c_long(425), ctypes.c_uint32(1), ctypes.c_void_p(0))
+errno_val = ctypes.get_errno()
+print('BLOCKED' if errno_val == 1 else 'ALLOWED')
+" 2>&1; then
+        if [[ "$OUTPUT" == "BLOCKED" ]]; then
+            pass "io_uring_setup blocked by seccomp"
+        else
+            fail "io_uring_setup not blocked by seccomp" "$OUTPUT"
+        fi
+    else
+        skip "Could not test io_uring_setup"
+    fi
+fi
+
 echo ""
 
-# ── Summary ───────────────────────────────────────────────────────
+# ── Per-backend summary ──────────────────────────────────────────
 
 TOTAL=$((PASS + FAIL + SKIP))
 echo "════════════════════════════════════════════════"
-echo "  Backend: $DETECTED_BACKEND"
+echo "  Backend: $CURRENT_BACKEND"
 echo "  Results: $PASS passed, $FAIL failed, $SKIP skipped (out of $TOTAL)"
 echo "════════════════════════════════════════════════"
+echo ""
 
-if [[ $FAIL -gt 0 ]]; then
+TOTAL_PASS=$((TOTAL_PASS + PASS))
+TOTAL_FAIL=$((TOTAL_FAIL + FAIL))
+TOTAL_SKIP=$((TOTAL_SKIP + SKIP))
+[[ $FAIL -gt 0 ]] && ANY_FAIL=true
+}
+
+# ── Run tests for each available backend ─────────────────────────
+
+for backend in "${AVAILABLE_BACKENDS[@]}"; do
+    run_tests "$backend"
+done
+
+# ── Overall summary ──────────────────────────────────────────────
+
+if [[ ${#AVAILABLE_BACKENDS[@]} -gt 1 ]]; then
+    GRAND_TOTAL=$((TOTAL_PASS + TOTAL_FAIL + TOTAL_SKIP))
+    echo "╔═══════════════════════════════════════════════╗"
+    echo "║  Overall Results                              ║"
+    echo "╠═══════════════════════════════════════════════╣"
+    printf "║  Backends tested: %-27s ║\n" "${AVAILABLE_BACKENDS[*]}"
+    printf "║  %3d passed, %d failed, %d skipped (of %d)     ║\n" \
+        "$TOTAL_PASS" "$TOTAL_FAIL" "$TOTAL_SKIP" "$GRAND_TOTAL"
+    echo "╚═══════════════════════════════════════════════╝"
+fi
+
+if [[ "$ANY_FAIL" == true ]]; then
     echo ""
     echo "  Some tests failed. Run with --verbose for details."
     exit 1

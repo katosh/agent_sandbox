@@ -123,6 +123,29 @@ ln -sf /opt/claude-sandbox ~/.claude/sandbox
 
 The admin controls which paths are visible, which environment variables are blocked, and the Slurm wrapper behavior. Users get sandboxing without managing or misconfiguring policy. The agent cannot tamper with the scripts, sandbox.conf, or Slurm wrappers — even across sessions.
 
+### Disable systemd user instances (Landlock nodes)
+
+On nodes using the Landlock backend, there is a critical escape vector: Landlock restricts filesystem access but **cannot block Unix domain socket `connect()`**. This is a fundamental kernel limitation (not available in any Landlock ABI version as of kernel 6.11). A sandboxed process can connect to `/run/user/<UID>/systemd/private` and use `systemd-run --user` to execute commands outside the sandbox — at least 5 independent tools can trigger this (`systemd-run`, `busctl`, `gdbus`, `python3-dbus`, `systemctl --user`).
+
+The **bwrap backend is not affected** — it replaces `/run` with a tmpfs and only bind-mounts the munge and nscd sockets.
+
+On HPC compute nodes, systemd user instances are typically unnecessary. Disabling them removes the escape target:
+
+```bash
+# Option A: Mask the user@ template service (recommended)
+systemctl mask user@.service
+
+# Option B: Limit via logind
+# /etc/systemd/logind.conf.d/no-user-sessions.conf
+[Login]
+UserTasksMax=0
+KillUserProcesses=yes
+```
+
+Option A is stronger — it prevents the user systemd instance from starting at all. Verify with `systemd-run --user -- id` (should fail with "Failed to connect to bus").
+
+The Landlock backend also installs a **seccomp filter** that blocks dangerous syscalls (`io_uring_setup`, `process_vm_writev`, `kexec_load`, etc.) as defense-in-depth. The filter does not block `connect()` itself (which would break munge authentication), but reduces the kernel attack surface.
+
 ### Firejail (optional, for stronger isolation)
 
 [Firejail](https://firejail.wordpress.com/) installs **setuid root**, so it can create mount namespaces even when AppArmor blocks unprivileged user namespaces. The admin defines security profiles that users cannot override:
@@ -131,8 +154,8 @@ The admin controls which paths are visible, which environment variables are bloc
 |---|---|---|
 | Filesystem isolation | LSM-based ACLs (EACCES) | Mount namespaces + whitelisting (ENOENT) |
 | Network isolation | Not available (shares host) | Built-in; `--net=none` or `--netfilter` |
-| Seccomp filters | Not available | Built-in; restricts syscalls |
-| Capability dropping | Not available | Built-in; removes Linux capabilities |
+| Seccomp filters | Basic denylist (io_uring, kexec, etc.) | Full allowlist; restricts all syscalls |
+| Unix socket isolation | Not available (Landlock limitation) | Mount namespace hides sockets |
 | Self-protection | Requires admin-owned path | Automatic; mount namespace hides scripts |
 | Admin control | Admin owns the script directory | Admin defines profiles users can't override |
 
@@ -312,7 +335,7 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 | # | Improvement | Effort | Category | What It Closes |
 |---|---|---|---|---|
 | 1 | Sandbox-by-default Slurm submission | Medium | Admin-enforced | Agent submitting unsandboxed Slurm jobs — job submit plugin sandboxes all jobs unless caller provides bypass token (eBPF LSM protects token from `no_new_privs` processes) |
-| 2 | Admin-owned sandbox installation | Low-medium | Admin-enforced | Users weakening their own sandbox config; sandbox self-protection (critical for Landlock — no mount namespace to hide scripts) |
+| 2 | Admin-owned sandbox installation | Low-medium | Admin-enforced | Users weakening their own sandbox config; sandbox self-protection; systemd-run escape on Landlock nodes (disable `user@.service`) |
 | 3 | Dedicated `${USER}_ai` accounts | High | Admin-enforced | Same-UID credential access; OS-level separation |
 | 4 | Network isolation | Medium-high | Admin-enforced (requires #3) | Data exfiltration via network |
 | 5 | Audit logging | Low-medium | Admin-enforced (requires #3) | Visibility, compliance, forensics |

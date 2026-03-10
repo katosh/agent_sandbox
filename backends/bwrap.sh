@@ -176,13 +176,29 @@ json.dump(user, sys.stdout, indent=2)
         BWRAP_ARGS+=(--bind "$project_dir" "$project_dir")
     fi
 
-    BWRAP_ARGS+=(--dev-bind /run /run)
+    # Mount /run as a tmpfs, then selectively bind only what's needed.
+    # Mounting all of /run exposes D-Bus, systemd user sockets, and
+    # containerd sockets — allowing full sandbox escape via
+    # systemd-run --user (pentest finding, 2026-03).
+    BWRAP_ARGS+=(--tmpfs /run)
+
+    # Munge socket (required for Slurm authentication)
+    if [[ -d /run/munge ]]; then
+        BWRAP_ARGS+=(--ro-bind /run/munge /run/munge)
+    fi
+
+    # nscd socket (required for user/group lookups on NFS/LDAP systems)
+    if [[ -d /run/nscd ]]; then
+        BWRAP_ARGS+=(--ro-bind /run/nscd /run/nscd)
+    fi
+
     if [[ -L /var/run ]]; then
         BWRAP_ARGS+=(--symlink /run /var/run)
     elif [[ -d /var/run ]]; then
-        BWRAP_ARGS+=(--dev-bind /var/run /var/run)
+        BWRAP_ARGS+=(--tmpfs /var/run)
     fi
 
+    BWRAP_ARGS+=(--unshare-pid)
     BWRAP_ARGS+=(--die-with-parent)
     BWRAP_ARGS+=(--chdir "$project_dir")
 
