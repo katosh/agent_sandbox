@@ -481,12 +481,12 @@ Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,a
 | Agent reads other users' data | Only explicitly allowed paths are accessible | **Hard** |
 | Agent escapes via Unix sockets | Bwrap/firejail: filesystem-based sockets (e.g. `/run/dbus`) hidden by mount namespace, but abstract sockets (`@/org/...`) remain accessible (shared network namespace). Landlock: cannot block `AF_UNIX connect` | **Partial** (bwrap/firejail) / **None** (Landlock) |
 | Agent escapes via PID namespace | Bwrap/firejail: isolated PID namespace. Landlock: host PIDs visible | **Hard** (bwrap/firejail) / **None** (Landlock) |
-| Agent uses dangerous syscalls | Firejail: built-in seccomp filter (but default seccomp doesn't block `io_uring`). Landlock: custom seccomp (kexec + io_uring). Bwrap: seccomp optional | **Hard** (landlock) / **Partial** (firejail — no io_uring coverage) |
+| Agent uses dangerous syscalls | Firejail: built-in seccomp + io_uring blocked via `--seccomp.drop`. Landlock: custom seccomp (kexec + io_uring). Bwrap: seccomp optional | **Hard** (firejail/landlock) / **None** (bwrap) |
 | Slurm job bypasses sandbox | PATH shadowing (all backends) + binary relocation (bwrap only) | **Soft** — firejail/Landlock have PATH shadowing only; munge auth available (see [Admin Hardening](ADMIN_HARDENING.md)) |
 | Agent tampers with sandbox scripts | Read-only mount (bwrap/firejail) / not protected (Landlock) | **Hard** (bwrap/firejail) / **None** (Landlock) — see [Admin Hardening](ADMIN_HARDENING.md) §2 |
 | SSH escape (if `~/.ssh` exposed) | Not protected — sandbox does not restrict network | **None** — agent can SSH to localhost or other nodes to get an unsandboxed shell. **Do not expose `~/.ssh`** unless you understand this risk. |
 
-**Bottom line:** Filesystem isolation is kernel-enforced with all three backends. Bwrap and firejail provide the strongest isolation (mount namespace hides paths, PID namespace isolates processes, filesystem-based Unix sockets are hidden — though abstract sockets remain accessible via shared network namespace). Firejail additionally includes built-in seccomp syscall filtering. Landlock provides filesystem-only isolation without mount or PID namespaces, but works without any admin privileges. Slurm wrapping covers normal code paths but is a soft boundary in all backends. See [Admin Hardening Options](ADMIN_HARDENING.md) for stronger approaches.
+**Bottom line:** Filesystem isolation is kernel-enforced with all three backends. Bwrap and firejail provide the strongest isolation (mount namespace hides paths, PID namespace isolates processes, filesystem-based Unix sockets are hidden — though abstract sockets remain accessible via shared network namespace). Firejail additionally includes built-in seccomp syscall filtering (including io_uring). Landlock provides filesystem-only isolation without mount or PID namespaces, but works without any admin privileges. Slurm wrapping covers normal code paths but is a soft boundary in all backends. See [Admin Hardening Options](ADMIN_HARDENING.md) for stronger approaches.
 
 ---
 
@@ -495,7 +495,7 @@ Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,a
 | Tool | Available? | Pros | Cons |
 |---|---|---|---|
 | **[Bubblewrap](https://github.com/containers/bubblewrap)** | ✅ Yes (Homebrew) | Mount namespace isolation, paths hidden entirely (ENOENT), file overlays, Slurm binary relocation, sandbox self-protection | Requires unprivileged user namespaces; blocked by AppArmor on Ubuntu 24.04+ without admin help |
-| **[Firejail](https://firejail.wordpress.com/)** | ✅ Yes (`apt install`) | Mount namespace (ENOENT), PID namespace, built-in seccomp, caps dropping, works when AppArmor blocks user namespaces | Requires setuid root binary; default seccomp doesn't block io_uring |
+| **[Firejail](https://firejail.wordpress.com/)** | ✅ Yes (`apt install`) | Mount namespace (ENOENT), PID namespace, built-in seccomp + io_uring blocked, caps dropping, works when AppArmor blocks user namespaces | Requires setuid root binary |
 | **[Landlock](https://docs.kernel.org/userspace-api/landlock.html)** | ✅ Yes (kernel ≥ 5.13) | No root or admin needed, works on Ubuntu 24.04 despite AppArmor, pure kernel LSM, no external dependencies (Python 3 only) | No mount namespace — blocked paths return EACCES not ENOENT, no file overlays, no PID isolation, no Slurm binary relocation, no sandbox self-protection, cannot block Unix socket connect (see [Admin Hardening](ADMIN_HARDENING.md)) |
 | **[Apptainer/Singularity](https://apptainer.org/)** | ✅ Yes (lmod) | Full container, HPC-native | Heavy — requires container images, path mapping |
 | **Docker** | ❌ No | Industry standard | Requires root daemon; not available on shared HPC |
@@ -503,14 +503,13 @@ Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,a
 The sandbox auto-detects the best available backend (bwrap → firejail → landlock). All three provide kernel-enforced filesystem isolation through different mechanisms:
 
 - **Bwrap**: mount namespaces — strongest isolation with file overlays, Slurm binary relocation, and sandbox self-protection. Requires unprivileged user namespaces.
-- **Firejail**: setuid sandbox with mount namespaces, PID namespace, seccomp, and capability dropping. Works on Ubuntu 24.04+ where AppArmor blocks bwrap. Slurm wrapping via PATH shadowing only.
+- **Firejail**: setuid sandbox with mount namespaces, PID namespace, seccomp (including io_uring), and capability dropping. Works on Ubuntu 24.04+ where AppArmor blocks bwrap. Slurm wrapping via PATH shadowing only.
 - **Landlock**: kernel LSM — weakest isolation but works everywhere with kernel ≥ 5.13 and no admin privileges. No mount/PID namespace, no seccomp (except custom filter for kexec/io_uring), PATH shadowing only for Slurm.
 
 ### Known Limitations
 
 | Backend | Limitation | Mitigation |
 |---|---|---|
-| **Firejail** | Default seccomp (v0.9.72) doesn't block `io_uring_setup`/`enter`/`register` | Landlock backend's custom seccomp does block these |
 | **bwrap/Firejail** | `/tmp` isolated by default (`PRIVATE_TMP=true`) — breaks MPI shared-memory transport and NCCL inter-GPU sockets | Set `PRIVATE_TMP=false` in `sandbox.conf` for HPC multi-process workloads |
 | **Landlock** | Seccomp allows `memfd_create`, `userfaultfd`, `process_vm_readv/writev` for HPC compatibility | Accepted trade-off — these are needed by CUDA, MPI, and Java GC. See [Admin Hardening](ADMIN_HARDENING.md) |
 | **Landlock** | Cannot block `AF_UNIX connect()` — agent can reach D-Bus, systemd sockets | Use bwrap or firejail; or see [Admin Hardening](ADMIN_HARDENING.md) |

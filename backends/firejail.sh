@@ -35,9 +35,11 @@
 #     slurm user has a high UID (e.g., 64030), sbatch fails because it can't
 #     resolve SlurmUser. Fix: assign slurm a system-range UID (< 1000):
 #       sudo usermod -u 120 slurm && sudo groupmod -g 120 slurm
-#   - Firejail's default seccomp blacklist does not include io_uring syscalls
-#     (io_uring_setup/enter/register). These are blocked by the Landlock
-#     backend's custom seccomp filter but not by firejail 0.9.72.
+#   - Firejail's default seccomp blacklist does not include io_uring syscalls.
+#     We add --seccomp.drop=io_uring_setup,io_uring_enter,io_uring_register
+#     to close this gap (matching the Landlock backend's custom seccomp).
+#     Note: firejail 0.9.72 seccomp is broken on aarch64 (filter loads but
+#     doesn't block). Works correctly on x86_64.
 #
 # CLAUDE.md/settings.json: handled by prepare_config_dir() in sandbox-lib.sh.
 #   CLAUDE_CONFIG_DIR points to a per-session directory with merged config,
@@ -69,7 +71,7 @@ backend_prepare() {
         --quiet
         --caps.drop=all
         --nonewprivs
-        --seccomp
+        --seccomp.drop=io_uring_setup,io_uring_enter,io_uring_register
         --nosound
         --no3d
         --restrict-namespaces

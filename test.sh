@@ -592,9 +592,9 @@ print('BLOCKED' if ctypes.get_errno() == 1 else 'ALLOWED')
         skip "Could not test kexec_load"
     fi
 
-    # io_uring_setup — blocked by landlock's custom seccomp filter.
-    # Firejail's default seccomp (v0.9.72) does not include io_uring;
-    # this is version-dependent and may be fixed in newer releases.
+    # io_uring_setup — blocked by landlock's custom seccomp and firejail's
+    # --seccomp.drop. Note: firejail 0.9.72 seccomp is broken on aarch64
+    # (filter loads but doesn't block); works on x86_64.
     # syscall number: 425 (same on x86_64 and aarch64)
     if sandbox python3 -c "
 import ctypes, ctypes.util
@@ -604,8 +604,8 @@ print('BLOCKED' if ctypes.get_errno() == 1 else 'ALLOWED')
 " 2>&1; then
         if [[ "$OUTPUT" == *"BLOCKED"* ]]; then
             pass "io_uring_setup blocked by seccomp"
-        elif is_firejail; then
-            skip "io_uring_setup not in firejail's default seccomp (version-dependent)"
+        elif is_firejail && [[ "$(uname -m)" == "aarch64" ]]; then
+            skip "io_uring_setup — firejail seccomp broken on aarch64 (works on x86_64)"
         else
             fail "io_uring_setup not blocked by seccomp" "$OUTPUT"
         fi
