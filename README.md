@@ -511,7 +511,7 @@ The sandbox auto-detects the best available backend (bwrap → firejail → land
 | Backend | Limitation | Mitigation |
 |---|---|---|
 | **bwrap/Firejail** | `/tmp` isolated by default (`PRIVATE_TMP=true`) — breaks MPI shared-memory transport and NCCL inter-GPU sockets | Set `PRIVATE_TMP=false` in `sandbox.conf` for HPC multi-process workloads |
-| **Landlock** | Seccomp allows `memfd_create`, `userfaultfd`, `process_vm_readv/writev` for HPC compatibility | Accepted trade-off — these are needed by CUDA, MPI, and Java GC. See [Admin Hardening](ADMIN_HARDENING.md) |
+| **All** | `memfd_create`, `userfaultfd`, `process_vm_readv/writev` not blocked by any backend (HPC compatibility) | Accepted trade-off — needed by CUDA, MPI, Java GC. `process_vm_readv/writev` mitigated by PID namespace in bwrap/firejail. See [Admin Hardening](ADMIN_HARDENING.md) |
 | **Landlock** | Cannot block `AF_UNIX connect()` — agent can reach D-Bus, systemd sockets | Use bwrap or firejail; or see [Admin Hardening](ADMIN_HARDENING.md) |
 | **Landlock** | No sandbox self-protection — agent can modify wrapper scripts | Current session is safe (kernel rules are irrevocable), but future sessions could be affected |
 | **All** | `/dev/shm` is writable and shared (IPC namespace not isolated by default) — could be used for covert cross-sandbox communication | `firejail --ipc-namespace`, `bwrap --unshare-ipc` |
