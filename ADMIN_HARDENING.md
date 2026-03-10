@@ -21,7 +21,7 @@ The current user-space sandbox is entirely self-serve: it protects against accid
 
 ## 1. Enforce Sandbox on Agent-Submitted Slurm Jobs
 
-**What it solves:** The user-space Slurm wrappers are a soft boundary — PATH shadowing and binary relocation can be bypassed. Instead of trying to *block* submission, this approach ensures every Slurm job submitted from the sandbox is **sandboxed on the compute node** too. No matter how the agent submits a job, it runs inside the sandbox. Legitimate unsandboxed jobs require a token that only non-sandboxed processes can access.
+**What it solves:** The user-space Slurm wrappers are a soft boundary — PATH shadowing and binary relocation can be bypassed. Instead of trying to *block* submission, this approach ensures every Slurm job submitted from the sandbox is **sandboxed on the compute node** too. No matter how the agent submits a job, it runs inside the sandbox. Legitimate unsandboxed jobs require a token that only non-sandboxed processes can access. Users who do not use the sandbox are unaffected — their workflow does not change.
 
 **Effort:** Medium. **Category:** Admin-enforced.
 
