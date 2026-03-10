@@ -70,7 +70,11 @@ This is only relevant on nodes where neither bwrap nor firejail is installed, so
 
 Both **bwrap** and **firejail** are unaffected — they replace `/run` with a tmpfs or blacklist the socket.
 
-On HPC compute nodes, systemd user instances are typically unnecessary. Disabling them removes the escape target:
+**Current state on gizmo Ubuntu 18 nodes:** `systemd-run --user` works — the escape is viable. The user systemd instance runs gpg-agent sockets (on-demand) but no D-Bus session bus or custom user services.
+
+**What is affected:** `gpg-agent` socket activation (users doing GPG signing would need to start `gpg-agent --daemon` manually) and `systemctl --user` commands.
+
+#### Setup
 
 ```bash
 # Option A: Mask the user@ template service (recommended)
