@@ -209,7 +209,7 @@ generate_filtered_passwd() {
 # eliminates in-place file swapping entirely.
 #
 # Respects an existing CLAUDE_CONFIG_DIR (reads from it, places
-# sandbox-config/ inside it).  Refuses to nest if already sandboxed.
+# sandbox-config/ inside it).
 #
 # Layout:  <config-dir>/sandbox-config/
 #            CLAUDE.md       — user's original + sandbox snippet
@@ -220,12 +220,6 @@ generate_filtered_passwd() {
 # all write the same merged content, so a single shared dir is fine.
 
 prepare_config_dir() {
-    # --- Prevent nesting ---
-    if [[ "${SANDBOX_ACTIVE:-}" == "1" ]]; then
-        echo "Error: Already inside a sandbox (SANDBOX_ACTIVE=1). Nesting is not supported." >&2
-        exit 1
-    fi
-
     # --- Determine the real config directory ---
     # Honour an existing CLAUDE_CONFIG_DIR; default to ~/.claude
     local real_claude_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"

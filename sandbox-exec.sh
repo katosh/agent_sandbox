@@ -68,6 +68,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Clear inherited sandbox env vars so Slurm jobs submitted from within a
+# sandbox can start a fresh sandbox on the compute node.  This is safe
+# because sandbox-exec.sh always sets up its own sandbox from scratch —
+# the env vars are informational, not part of the enforcement mechanism
+# (which is kernel-level: namespaces, Landlock rules, seccomp).
+unset SANDBOX_ACTIVE SANDBOX_BACKEND SANDBOX_PROJECT_DIR CLAUDE_CONFIG_DIR
+
 # Apply backend override before sourcing sandbox-lib.sh
 if [[ -n "$BACKEND_OVERRIDE" ]]; then
     export SANDBOX_BACKEND="$BACKEND_OVERRIDE"
