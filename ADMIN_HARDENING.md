@@ -86,7 +86,7 @@ All components have been end-to-end tested on an Ubuntu 24.04 VM (kernel 6.8, Sl
 - **eBPF LSM program** — compiled with clang/libbpf, loaded via `bpftool prog loadall ... autoattach`. Normal processes can read the token file; processes with `PR_SET_NO_NEW_PRIVS` get `EACCES`.
 - **Slurm job submit plugin** — jobs without a bypass token are wrapped in `sandbox-exec.sh`; jobs with a valid `_SANDBOX_BYPASS` token pass through unsandboxed; the token is cleared from the job environment after validation.
 - **Combined flow (all backends)** — verified with bwrap, firejail, and Landlock. A sandboxed job cannot read the bypass token (eBPF denies it via `no_new_privs` check), so any Slurm job it submits lacks the token and gets sandboxed by the plugin. Sandboxed jobs show `SANDBOX_ACTIVE=1`, hidden `~/.ssh`, and `EACCES`/`ENOENT` on the token file. Unsandboxed jobs (valid token) see all files normally.
-- **Sandbox test suite** — 104 total: 38/38 pass (bwrap), 37/37 pass + 3 skipped (firejail), 29/29 pass + 4 skipped (Landlock). Skips are for backend-specific features (binary relocation, self-protection, /tmp isolation).
+- **Sandbox test suite** — 114 total: 39/39 pass (bwrap), 38/38 pass + 3 skipped (firejail), 30/30 pass + 4 skipped (Landlock). 107 passed, 0 failed, 7 skipped. Skips are for backend-specific features (binary relocation, self-protection, /tmp isolation).
 
 The test setup used a single-node Slurm cluster (slurmctld + slurmd + slurmdbd with MariaDB). bwrap on Ubuntu 24.04 requires an AppArmor profile to allow unprivileged user namespaces (the installer prints the needed profile if this is the issue).
 
@@ -168,7 +168,7 @@ These syscalls are commonly used by GPU compute, MPI multi-rank jobs, and JVM-ba
 
 On nodes where AppArmor blocks unprivileged user namespaces (Ubuntu 24.04+), bwrap cannot work without an admin-created AppArmor profile. [Firejail](https://firejail.wordpress.com/) is now implemented as a third sandbox backend. It installs **setuid root**, so it can create mount namespaces regardless of AppArmor settings. The sandbox auto-detects firejail when bwrap is unavailable (priority: bwrap > firejail > landlock).
 
-Firejail closes the remaining gaps that Landlock alone cannot address. See `pentest/findings_firejail.md` for the detailed security audit report. Key comparison:
+Firejail closes the remaining gaps that Landlock alone cannot address. Key comparison:
 
 | Gap | Landlock | Firejail |
 |---|---|---|
@@ -179,7 +179,7 @@ Firejail closes the remaining gaps that Landlock alone cannot address. See `pent
 | Credential exfiltration chain | OAuth tokens readable + network open | Network isolation breaks the chain |
 | Sandbox script tampering | Writable under `~/.claude/` (additive-only rules) | Mount namespace makes scripts invisible/read-only |
 | `settings.json` / `CLAUDE.md` writability | Cannot make files read-only under writable parent | In-place swap with backup/restore (like landlock) |
-| Seccomp coverage | Custom BPF denylist (io_uring, kexec, memfd_create) | Built-in `--seccomp` + `--caps.drop=all` + `--nonewprivs` (io_uring not blocked in v0.9.72) |
+| Seccomp coverage | Custom BPF denylist (io_uring, kexec) | Built-in `--seccomp` + `--caps.drop=all` + `--nonewprivs` (io_uring not blocked in v0.9.72) |
 | Internal state exposure | N/A | `/run/firejail/mnt/seccomp/` readable (firejail design limitation — reveals BPF filter) |
 
 #### Admin setup for Slurm nodes

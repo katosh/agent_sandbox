@@ -66,7 +66,7 @@ bash agent_sandbox/install.sh
 ```
 
 The installer:
-1. Installs `bubblewrap` via Homebrew (if not already available)
+1. Installs `bubblewrap` via Homebrew (if not already available) and copies all three backend files (bwrap, firejail, landlock)
 2. Copies scripts to `~/.claude/sandbox/`
 3. Creates `~/.claude/sandbox/sandbox.conf` (your personal config — won't overwrite)
 4. Installs agent instructions (only visible inside the sandbox, your CLAUDE.md is not modified)
@@ -470,14 +470,14 @@ Mamba root (`$MAMBA_ROOT_PREFIX`) is read-only. Create environments outside the 
 | Agent reads `~/.aws` credentials | Hidden or blocked (same as SSH keys) | **Hard** |
 | Agent writes to other projects | Only project dir is writable | **Hard** |
 | Agent reads other users' data | Only explicitly allowed paths are accessible | **Hard** |
-| Agent escapes via Unix sockets | Bwrap/firejail: sockets hidden by mount namespace. Landlock: cannot block `AF_UNIX connect` | **Hard** (bwrap/firejail) / **None** (Landlock) |
+| Agent escapes via Unix sockets | Bwrap/firejail: filesystem-based sockets (e.g. `/run/dbus`) hidden by mount namespace, but abstract sockets (`@/org/...`) remain accessible (shared network namespace). Landlock: cannot block `AF_UNIX connect` | **Partial** (bwrap/firejail) / **None** (Landlock) |
 | Agent escapes via PID namespace | Bwrap/firejail: isolated PID namespace. Landlock: host PIDs visible | **Hard** (bwrap/firejail) / **None** (Landlock) |
-| Agent uses dangerous syscalls | Firejail: built-in seccomp filter. Landlock: custom seccomp (kexec + io_uring). Bwrap: seccomp optional | **Hard** (firejail/landlock) |
+| Agent uses dangerous syscalls | Firejail: built-in seccomp filter (but default seccomp doesn't block `io_uring`). Landlock: custom seccomp (kexec + io_uring). Bwrap: seccomp optional | **Hard** (landlock) / **Partial** (firejail — no io_uring coverage) |
 | Slurm job bypasses sandbox | PATH shadowing (all backends) + binary relocation (bwrap only) | **Soft** — firejail/Landlock have PATH shadowing only; munge auth available (see [Admin Hardening](ADMIN_HARDENING.md)) |
 | Agent tampers with sandbox scripts | Read-only mount (bwrap/firejail) / not protected (Landlock) | **Hard** (bwrap/firejail) / **None** (Landlock) — see [Admin Hardening](ADMIN_HARDENING.md) §2 |
 | SSH escape (if `~/.ssh` exposed) | Not protected — sandbox does not restrict network | **None** — agent can SSH to localhost or other nodes to get an unsandboxed shell. **Do not expose `~/.ssh`** unless you understand this risk. |
 
-**Bottom line:** Filesystem isolation is kernel-enforced with all three backends. Bwrap and firejail provide the strongest isolation (mount namespace hides paths, PID namespace isolates processes, Unix sockets are inaccessible). Firejail additionally includes built-in seccomp syscall filtering. Landlock provides filesystem-only isolation without mount or PID namespaces, but works without any admin privileges. Slurm wrapping covers normal code paths but is a soft boundary in all backends. See [Admin Hardening Options](ADMIN_HARDENING.md) for stronger approaches.
+**Bottom line:** Filesystem isolation is kernel-enforced with all three backends. Bwrap and firejail provide the strongest isolation (mount namespace hides paths, PID namespace isolates processes, filesystem-based Unix sockets are hidden — though abstract sockets remain accessible via shared network namespace). Firejail additionally includes built-in seccomp syscall filtering. Landlock provides filesystem-only isolation without mount or PID namespaces, but works without any admin privileges. Slurm wrapping covers normal code paths but is a soft boundary in all backends. See [Admin Hardening Options](ADMIN_HARDENING.md) for stronger approaches.
 
 ---
 
@@ -507,4 +507,5 @@ The sandbox auto-detects the best available backend (bwrap → firejail → land
 | **Landlock** | Seccomp allows `memfd_create`, `userfaultfd`, `process_vm_readv/writev` for HPC compatibility | Accepted trade-off — these are needed by CUDA, MPI, and Java GC. See [Admin Hardening](ADMIN_HARDENING.md) |
 | **Landlock** | Cannot block `AF_UNIX connect()` — agent can reach D-Bus, systemd sockets | Use bwrap or firejail; or see [Admin Hardening](ADMIN_HARDENING.md) |
 | **Landlock** | No sandbox self-protection — agent can modify wrapper scripts | Current session is safe (kernel rules are irrevocable), but future sessions could be affected |
+| **All** | `/dev/shm` is writable and shared (IPC namespace not isolated by default) — could be used for covert cross-sandbox communication | `firejail --ipc-namespace`, `bwrap --unshare-ipc` |
 | **All** | Network not isolated — agent can make HTTP requests, SSH connections | Do not expose `~/.ssh`; consider network policy at admin level |

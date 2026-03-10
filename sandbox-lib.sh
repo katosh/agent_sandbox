@@ -87,6 +87,11 @@ BLOCKED_ENV_VARS=(
 
 ALLOWED_CREDENTIALS=()
 
+# NOTE: PASSTHROUGH_ENV_VARS is currently UNUSED by all backends.
+# The actual behavior is: every environment variable is passed through
+# EXCEPT those listed in BLOCKED_ENV_VARS (which are unset).
+# This array is kept for potential future use (e.g., an allowlist mode
+# where only listed variables are forwarded), but today it has no effect.
 PASSTHROUGH_ENV_VARS=(
     BASH_ENV
     LMOD_CMD LMOD_DIR LMOD_PKG LMOD_ROOT LMOD_PACKAGE_PATH
