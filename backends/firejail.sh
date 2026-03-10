@@ -132,18 +132,17 @@ backend_prepare() {
     # /run/munge and /run/systemd/resolve remain accessible
     # (read-only by default in firejail's mount namespace).
 
-    # --- Passwd filtering (partial: block nscd to cut LDAP lookup path) ---
+    # --- Passwd filtering (block NSS daemon sockets to cut LDAP path) ---
     # Firejail cannot overlay individual files under /etc like bwrap.
-    # Instead, blacklist the nscd socket so NSS can't proxy LDAP queries.
-    # Direct nss_ldap lookups may still work on some systems, but nscd
-    # is the common path on HPC clusters.
+    # Instead, blacklist sockets used by NSS daemons that proxy LDAP/AD
+    # queries: nscd (caching), nslcd (LDAP), sssd (AD/LDAP/Kerberos).
     if [[ "${FILTER_PASSWD:-true}" == "true" ]]; then
-        if [[ -e /run/nscd ]]; then
-            FIREJAIL_ARGS+=(--blacklist=/run/nscd)
-        fi
-    else
-        # When FILTER_PASSWD is disabled, keep nscd accessible
-        true  # nscd remains visible by default (not blacklisted above)
+        for _nss_sock in /run/nscd /run/nslcd /var/run/nscd /var/run/nslcd \
+                         /run/sssd /var/lib/sss/pipes; do
+            if [[ -e "$_nss_sock" ]]; then
+                FIREJAIL_ARGS+=(--blacklist="$_nss_sock")
+            fi
+        done
     fi
 
     # Nested firejail: --nonewprivs prevents the setuid binary from

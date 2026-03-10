@@ -92,7 +92,7 @@ On Active Directory or LDAP-managed clusters, `getent passwd` reveals all users 
 The sandbox mitigates this automatically via `FILTER_PASSWD=true` (default in `sandbox.conf`):
 
 - **bwrap**: full prevention — overlays `/etc/passwd` (system UIDs + current user only) and `/etc/nsswitch.conf` (`passwd: files` only, no ldap/sss). Also skips binding the nscd socket.
-- **firejail**: partial — blacklists the nscd socket to cut the common LDAP lookup path. Direct nss_ldap queries may still work on some systems.
+- **firejail**: blocks NSS daemon sockets (nscd, nslcd, sssd) so `getent passwd` only returns local users. Direct LDAP connections (rare outside NSS) are not blocked.
 - **landlock**: not supported — no mount namespace to overlay files.
 
 Munge and Slurm are unaffected — munge uses a unix socket, and Slurm resolves its own user from `slurm.conf`. No admin action required.

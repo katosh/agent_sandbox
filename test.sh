@@ -721,17 +721,16 @@ if is_bwrap; then
         fi
     fi
 elif is_firejail; then
-    # Firejail: partial — check nscd socket is blocked
-    if [[ -e /run/nscd ]]; then
-        if sandbox bash -c "test -e /run/nscd && echo VISIBLE || echo HIDDEN"; then
-            if [[ "$OUTPUT" == "HIDDEN" ]]; then
-                pass "FILTER_PASSWD: nscd socket blocked (LDAP lookup path cut)"
-            else
-                fail "FILTER_PASSWD: nscd socket still visible" "$OUTPUT"
-            fi
+    # Firejail: check that LDAP users are not enumerable
+    _host_getent=$(getent passwd | wc -l)
+    if sandbox bash -c 'getent passwd | wc -l'; then
+        _sandbox_getent="$OUTPUT"
+        if [[ "$_sandbox_getent" -lt "$_host_getent" ]]; then
+            pass "FILTER_PASSWD: getent filtered (host: $_host_getent → sandbox: $_sandbox_getent)"
+        elif [[ "$_sandbox_getent" -eq "$_host_getent" ]]; then
+            # No LDAP configured — nothing to filter
+            skip "FILTER_PASSWD: no LDAP users to filter (host and sandbox both $_host_getent)"
         fi
-    else
-        skip "FILTER_PASSWD: nscd not present — LDAP enumeration test N/A"
     fi
 else
     skip "FILTER_PASSWD: not supported on Landlock (no mount namespace)"

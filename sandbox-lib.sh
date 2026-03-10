@@ -77,7 +77,7 @@ PRIVATE_TMP=true
 # When true, generates a minimal /etc/passwd (system UIDs < 1000 + current
 # user) and overrides nsswitch.conf to use "files" only (no ldap/sss).
 # bwrap: full support (overlays both files via --ro-bind).
-# firejail: partial (blacklists nscd socket to cut LDAP lookup path).
+# firejail: blocks NSS daemon sockets (nscd, nslcd, sssd) to cut LDAP path.
 # landlock: not supported (no mount namespace).
 FILTER_PASSWD=true
 
