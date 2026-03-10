@@ -10,6 +10,7 @@
 #   bash test.sh [PROJECT_DIR]            # test all available backends
 #   bash test.sh --verbose                # show command output on failure
 #   bash test.sh --backend bwrap          # test only bwrap backend
+#   bash test.sh --backend firejail       # test only firejail backend
 #   bash test.sh --backend landlock       # test only landlock backend
 
 set -uo pipefail
@@ -54,7 +55,10 @@ sandbox() {
 }
 
 is_bwrap() { [[ "$CURRENT_BACKEND" == "bwrap" ]]; }
+is_firejail() { [[ "$CURRENT_BACKEND" == "firejail" ]]; }
 is_landlock() { [[ "$CURRENT_BACKEND" == "landlock" ]]; }
+# Mount-namespace backends (bwrap and firejail) hide files with ENOENT
+has_mount_ns() { is_bwrap || is_firejail; }
 
 # ── Pre-flight ────────────────────────────────────────────────────
 
@@ -71,23 +75,18 @@ fi
 # Detect available backends
 AVAILABLE_BACKENDS=()
 
-check_bwrap() {
-    timeout 5 "$SANDBOX_EXEC" --backend bwrap --dry-run --project-dir "$PROJECT_DIR" -- true &>/dev/null
-}
-
-check_landlock() {
-    timeout 5 "$SANDBOX_EXEC" --backend landlock --dry-run --project-dir "$PROJECT_DIR" -- true &>/dev/null
+check_backend() {
+    timeout 5 "$SANDBOX_EXEC" --backend "$1" --dry-run --project-dir "$PROJECT_DIR" -- true &>/dev/null
 }
 
 if [[ -n "$BACKEND_FLAG" ]]; then
     AVAILABLE_BACKENDS=("$BACKEND_FLAG")
 else
-    if check_bwrap; then
-        AVAILABLE_BACKENDS+=(bwrap)
-    fi
-    if check_landlock; then
-        AVAILABLE_BACKENDS+=(landlock)
-    fi
+    for _backend in bwrap firejail landlock; do
+        if check_backend "$_backend"; then
+            AVAILABLE_BACKENDS+=("$_backend")
+        fi
+    done
 fi
 
 if [[ ${#AVAILABLE_BACKENDS[@]} -eq 0 ]]; then
@@ -165,7 +164,7 @@ test_blocked_dir() {
     local dir="$1"
     local name="$2"
 
-    if [[ "$CURRENT_BACKEND" == "bwrap" ]]; then
+    if has_mount_ns; then
         if sandbox test -d "$dir"; then
             fail "$name is visible (should be hidden)"
         else
@@ -296,8 +295,8 @@ if [[ -L "$SETTINGS" ]]; then
     pass "settings.json is a symlink — overlay handled correctly (sandbox started)"
 fi
 
-# Landlock-specific: verify backup was restored after sandbox exit
-if [[ "$CURRENT_BACKEND" == "landlock" ]]; then
+# Landlock/firejail: verify backup was restored after sandbox exit
+if is_landlock || is_firejail; then
     if [[ -e "$CLAUDE_MD" && ! -f "${CLAUDE_MD}.sandbox-backup" ]]; then
         pass "CLAUDE.md backup was cleaned up after sandbox exit"
     elif [[ -e "$CLAUDE_MD" ]]; then
@@ -437,7 +436,7 @@ echo ""
 
 echo "7. Sandbox self-protection"
 
-if [[ "$CURRENT_BACKEND" == "landlock" ]]; then
+if is_landlock; then
     # Landlock rules are additive — can't make a subdir read-only when its
     # parent ($HOME/.claude) is writable.  See ADMIN_HARDENING.md §2.
     skip "Sandbox self-protection — not supported with Landlock backend (see ADMIN_HARDENING.md)"
@@ -510,7 +509,7 @@ if command -v systemd-run &>/dev/null; then
             fail "systemd-run --user ESCAPED the sandbox (created file on host)"
             rm -f "$ESCAPE_FILE"
         else
-            if [[ "$CURRENT_BACKEND" == "landlock" ]]; then
+            if is_landlock; then
                 # Landlock can't block Unix socket connect() — this is a known limitation.
                 # If systemd user instances are disabled (ADMIN_HARDENING.md §2), systemd-run
                 # fails with "Failed to connect to bus". If they're still running, systemd-run
@@ -530,27 +529,28 @@ else
     skip "systemd-run not available — escape test"
 fi
 
-# /run/user sockets should not be accessible (bwrap: tmpfs, landlock: restricted)
-if [[ "$CURRENT_BACKEND" == "bwrap" ]]; then
+# /run/user and /run/dbus should not be accessible
+# bwrap: tmpfs /run hides everything; firejail: blacklisted explicitly
+if has_mount_ns; then
     if sandbox bash -c "ls /run/user/ 2>&1"; then
-        fail "/run/user/ is visible in bwrap sandbox"
+        fail "/run/user/ is visible in sandbox"
     else
-        pass "/run/user/ is hidden (tmpfs /run)"
+        pass "/run/user/ is hidden"
     fi
 
     if sandbox bash -c "ls /run/dbus/ 2>&1"; then
-        fail "/run/dbus/ is visible in bwrap sandbox"
+        fail "/run/dbus/ is visible in sandbox"
     else
-        pass "/run/dbus/ is hidden (tmpfs /run)"
+        pass "/run/dbus/ is hidden"
     fi
 fi
 
-# PID namespace isolation (bwrap only — landlock does not have PID ns)
-if [[ "$CURRENT_BACKEND" == "bwrap" ]]; then
+# PID namespace isolation (bwrap and firejail — landlock does not have PID ns)
+if has_mount_ns; then
     if sandbox bash -c 'ps aux 2>/dev/null | wc -l'; then
         PROC_COUNT="$OUTPUT"
         # Inside a PID namespace, we should see very few processes
-        # (bwrap, bash, ps, wc — typically < 10)
+        # (bwrap/firejail, bash, ps, wc — typically < 10)
         if [[ "$PROC_COUNT" -lt 20 ]]; then
             pass "PID namespace isolates host processes ($PROC_COUNT visible)"
         else
@@ -561,8 +561,8 @@ if [[ "$CURRENT_BACKEND" == "bwrap" ]]; then
     fi
 fi
 
-# Seccomp filter (landlock only — bwrap doesn't install one currently)
-if [[ "$CURRENT_BACKEND" == "landlock" ]]; then
+# Seccomp filter (landlock and firejail — bwrap doesn't install one currently)
+if is_landlock || is_firejail; then
     if sandbox bash -c 'grep "^Seccomp:" /proc/self/status'; then
         SECCOMP_MODE=$(echo "$OUTPUT" | awk '{print $2}')
         if [[ "$SECCOMP_MODE" == "2" ]]; then

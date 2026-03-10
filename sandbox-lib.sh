@@ -5,7 +5,7 @@
 # Reads configuration from sandbox.conf, detects the best available backend,
 # and provides:
 #
-#   detect_backend            — sets SANDBOX_BACKEND (bwrap or landlock)
+#   detect_backend            — sets SANDBOX_BACKEND (bwrap, firejail, or landlock)
 #   validate_project_dir DIR  — checks DIR is allowed
 #   backend_available         — can this backend work?
 #   backend_prepare DIR       — set up the sandbox for DIR
@@ -101,9 +101,18 @@ PASSTHROUGH_ENV_VARS=(
 
 # ── Load user config ────────────────────────────────────────────
 
+# Preserve any SANDBOX_BACKEND set via environment or --backend flag
+# so sandbox.conf cannot override an explicit backend selection.
+_SANDBOX_BACKEND_OVERRIDE="${SANDBOX_BACKEND:-}"
+
 if [[ -f "$SANDBOX_CONF" ]]; then
     # shellcheck disable=SC1090
     source "$SANDBOX_CONF"
+fi
+
+# Restore explicit backend override (env/CLI takes precedence over config)
+if [[ -n "$_SANDBOX_BACKEND_OVERRIDE" ]]; then
+    SANDBOX_BACKEND="$_SANDBOX_BACKEND_OVERRIDE"
 fi
 
 # ── Helpers ─────────────────────────────────────────────────────
@@ -126,7 +135,7 @@ validate_project_dir() {
 # ── Backend detection ───────────────────────────────────────────
 
 # SANDBOX_BACKEND can be set in sandbox.conf or environment.
-# Values: auto (picks best available), bwrap, landlock
+# Values: auto (picks best available), bwrap, firejail, landlock
 SANDBOX_BACKEND="${SANDBOX_BACKEND:-auto}"
 
 detect_backend() {
@@ -134,7 +143,7 @@ detect_backend() {
         # User explicitly requested a backend
         if [[ ! -f "$SANDBOX_DIR/backends/${SANDBOX_BACKEND}.sh" ]]; then
             echo "Error: Unknown backend '$SANDBOX_BACKEND'" >&2
-            echo "  Available: bwrap, landlock" >&2
+            echo "  Available: bwrap, firejail, landlock" >&2
             exit 1
         fi
         # shellcheck disable=SC1090
@@ -149,11 +158,19 @@ detect_backend() {
         return
     fi
 
-    # Auto-detect: try bwrap first (mount namespace), then landlock (LSM)
+    # Auto-detect: try bwrap first (mount namespace), then firejail (setuid),
+    # then landlock (LSM — weakest isolation but works everywhere ≥ 5.13)
     # shellcheck disable=SC1090
     source "$SANDBOX_DIR/backends/bwrap.sh"
     if backend_available; then
         SANDBOX_BACKEND=bwrap
+        return
+    fi
+
+    # shellcheck disable=SC1090
+    source "$SANDBOX_DIR/backends/firejail.sh"
+    if backend_available; then
+        SANDBOX_BACKEND=firejail
         return
     fi
 
@@ -165,11 +182,12 @@ detect_backend() {
     fi
 
     # Collect diagnostics for troubleshooting
-    local _host _kernel _os _userns _lsm _bwrap_path
+    local _host _kernel _os _userns _lsm _bwrap_path _firejail_path
     _host="$(hostname 2>/dev/null || echo unknown)"
     _kernel="$(uname -r 2>/dev/null || echo unknown)"
     _os="$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || echo unknown)"
     _bwrap_path="$(command -v bwrap 2>/dev/null || echo "not found")"
+    _firejail_path="$(command -v firejail 2>/dev/null || echo "not found")"
     _userns="$(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo "unknown")"
     _lsm="$(cat /sys/kernel/security/lsm 2>/dev/null || echo "unknown")"
 
@@ -180,10 +198,12 @@ detect_backend() {
     echo "  Kernel:     $_kernel" >&2
     echo "  LSMs:       $_lsm" >&2
     echo "  bwrap:      $_bwrap_path" >&2
+    echo "  firejail:   $_firejail_path" >&2
     echo "  userns max: $_userns" >&2
     echo "" >&2
     echo "  Tried:" >&2
     echo "    bwrap    — $(if [[ "$_bwrap_path" == "not found" ]]; then echo "binary not found"; elif echo "$_lsm" | grep -q apparmor && sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null | grep -q 1; then echo "blocked by AppArmor userns restriction"; else echo "failed (check user namespace support)"; fi)" >&2
+    echo "    firejail — $(if [[ "$_firejail_path" == "not found" ]]; then echo "binary not found"; else echo "failed (check setuid bit or seccomp support)"; fi)" >&2
     echo "    landlock — $(
         local _kmaj _kmin
         _kmaj="$(uname -r | cut -d. -f1)"
@@ -199,6 +219,7 @@ detect_backend() {
     echo "" >&2
     echo "  Fix:" >&2
     echo "    Install bubblewrap:  brew install bubblewrap" >&2
+    echo "    Install firejail:    sudo apt install firejail" >&2
     echo "    Or ensure kernel ≥ 5.13 with Landlock enabled." >&2
     exit 1
 }

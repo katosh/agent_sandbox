@@ -1,6 +1,6 @@
 # Admin Hardening Options
 
-The [sandbox](README.md) is fully user-space — no root or admin involvement needed. Both backends (bubblewrap and Landlock) provide kernel-enforced filesystem isolation for AI coding agents, with Slurm job wrapping as a default-on soft boundary.
+The [sandbox](README.md) is fully user-space — no root or admin involvement needed. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents, with Slurm job wrapping as a default-on soft boundary.
 
 > **Ubuntu 24.04 consideration:** A potential OS upgrade to Ubuntu 24.04 would enable AppArmor's restriction on unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`), which prevents bubblewrap from working. In that scenario, the sandbox would automatically use the **Landlock** backend. Landlock provides equivalent kernel-enforced filesystem isolation, but its permission model is **additive only** — you can grant access to paths but cannot carve out exceptions under an already-granted parent. This makes it harder to hide files (like tokens or binaries) from the sandbox using filesystem permissions alone, which is why the hardening approaches below rely on mechanisms outside the filesystem layer (eBPF LSM, Slurm plugins) rather than trying to hide paths.
 
@@ -148,23 +148,44 @@ Option A is stronger — it prevents the user systemd instance from starting at 
 
 The Landlock backend also installs a **seccomp filter** that blocks dangerous syscalls (`io_uring_setup`, `process_vm_writev`, `kexec_load`, etc.) as defense-in-depth. The filter does not block `connect()` itself (which would break munge authentication), but reduces the kernel attack surface.
 
-### Firejail (alternative for Landlock-only nodes)
+### Firejail backend (implemented — `backends/firejail.sh`)
 
-On nodes where AppArmor blocks unprivileged user namespaces (Ubuntu 24.04+), bwrap cannot work without an admin-created AppArmor profile. [Firejail](https://firejail.wordpress.com/) is an alternative that installs **setuid root**, so it can create mount namespaces regardless of AppArmor settings. The admin defines security profiles that users cannot override.
+On nodes where AppArmor blocks unprivileged user namespaces (Ubuntu 24.04+), bwrap cannot work without an admin-created AppArmor profile. [Firejail](https://firejail.wordpress.com/) is now implemented as a third sandbox backend. It installs **setuid root**, so it can create mount namespaces regardless of AppArmor settings. The sandbox auto-detects firejail when bwrap is unavailable (priority: bwrap > firejail > landlock).
 
 Firejail closes the remaining gaps that Landlock alone cannot address (confirmed by penetration testing):
 
 | Gap (pentest finding) | Landlock | Firejail |
 |---|---|---|
 | Unix socket `connect()` (D-Bus, snapd, MariaDB) | Cannot block — leaks service info | Mount namespace hides sockets entirely |
-| Host process visibility (`ps aux`) | Shared PID namespace — all host processes visible | `--unshare-pid` isolates process list |
+| Host process visibility (`ps aux`) | Shared PID namespace — all host processes visible | PID namespace isolates process list (default) |
 | Network exfiltration (`curl`, `wget`) | Shares host network — full outbound access | `--net=none` or `--netfilter` for controlled egress |
 | Credential exfiltration chain | OAuth tokens readable + network open | Network isolation breaks the chain |
 | Sandbox script tampering | Writable under `~/.claude/` (additive-only rules) | Mount namespace makes scripts invisible/read-only |
-| `settings.json` / `CLAUDE.md` writability | Cannot make files read-only under writable parent | Mount overlays (same as bwrap) |
-| Seccomp coverage | Basic denylist (io_uring, kexec, memfd_create) | Full syscall allowlist |
+| `settings.json` / `CLAUDE.md` writability | Cannot make files read-only under writable parent | In-place swap with backup/restore (like landlock) |
+| Seccomp coverage | Custom BPF denylist (io_uring, kexec, memfd_create) | Built-in `--seccomp` (default denylist; io_uring not blocked in v0.9.72) |
 
-If Firejail is available, the sandbox could use it as a third backend — combining Firejail's mount/network/PID namespace isolation with the existing Landlock-style filesystem rules defined in `sandbox.conf`.
+#### Admin setup for Slurm nodes
+
+```bash
+# 1. Install firejail
+sudo apt install firejail
+
+# 2. Ensure the slurm user has a system-range UID (< 1000)
+#    Firejail filters /etc/passwd, removing UIDs in the dynamic range
+#    (~1000–64999, except the current user). If slurm has a high UID
+#    (e.g., 6281 from LDAP or 64030 from adduser), sbatch fails inside
+#    the sandbox because it can't resolve SlurmUser from slurm.conf.
+#    For LDAP-managed environments, change the UID in the directory service.
+sudo usermod -u 120 slurm
+sudo groupmod -g 120 slurm
+# Fix ownership of slurm state dirs after UID change:
+sudo find /var/lib/slurm /var/log/slurm /var/spool/slurmd \
+    -exec chown slurm:slurm {} + 2>/dev/null
+
+# 3. The sandbox auto-detects firejail — no user config needed.
+#    Force firejail for testing:
+SANDBOX_BACKEND=firejail ./sandbox-exec.sh -- bash
+```
 
 ---
 
