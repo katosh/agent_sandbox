@@ -1,0 +1,11 @@
+#! /bin/bash --
+# Sandbox tmux — shadows /usr/bin/tmux inside the sandbox.
+# Uses sandbox-tmux.conf which sources the user's config then overrides
+# the prefix key to Ctrl-a for clean nesting within an outer tmux.
+_sandbox_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/.."
+_conf="$_sandbox_dir/sandbox-tmux.conf"
+if [[ -f "$_conf" ]]; then
+    exec /usr/bin/tmux -f "$_conf" "$@"
+else
+    exec /usr/bin/tmux "$@"
+fi

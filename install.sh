@@ -115,11 +115,11 @@ echo "→ Installing sandbox scripts to $SANDBOX_DIR/"
 mkdir -p "$SANDBOX_DIR/bin"
 mkdir -p "$SANDBOX_DIR/backends"
 
-for file in sandbox-lib.sh sandbox-exec.sh sbatch-sandbox.sh srun-sandbox.sh sandbox-claude.md sandbox-settings.json test.sh; do
+for file in sandbox-lib.sh sandbox-exec.sh sbatch-sandbox.sh srun-sandbox.sh sandbox-claude.md sandbox-settings.json sandbox-tmux.conf test.sh; do
     cp "$SCRIPT_DIR/$file" "$SANDBOX_DIR/$file"
 done
 
-for file in sbatch srun; do
+for file in sbatch srun tmux; do
     cp "$SCRIPT_DIR/bin/$file" "$SANDBOX_DIR/bin/$file"
 done
 
@@ -133,6 +133,7 @@ chmod +x "$SANDBOX_DIR/srun-sandbox.sh"
 chmod +x "$SANDBOX_DIR/test.sh"
 chmod +x "$SANDBOX_DIR/bin/sbatch"
 chmod +x "$SANDBOX_DIR/bin/srun"
+chmod +x "$SANDBOX_DIR/bin/tmux"
 
 echo "  ✓ Scripts installed"
 

@@ -641,18 +641,32 @@ else
     skip "/tmp isolation — Landlock has no mount namespace"
 fi
 
-# tmux socket blocked (exposing it would allow sandbox escape via tmux server)
+# tmux: outer socket blocked, wrapper uses sandbox config for nesting
 _tmux_sock="/tmp/tmux-$(id -u)"
 if [[ -d "$_tmux_sock" ]] && has_mount_ns; then
     if sandbox bash -c "test -d '$_tmux_sock' && echo VISIBLE || echo HIDDEN"; then
         if [[ "$OUTPUT" == "HIDDEN" ]]; then
-            pass "tmux socket blocked (prevents escape via tmux server)"
+            pass "tmux outer socket blocked (prevents escape via tmux server)"
         else
-            fail "tmux socket exposed (sandbox escape risk)" "$OUTPUT"
+            fail "tmux outer socket exposed (sandbox escape risk)" "$OUTPUT"
         fi
     fi
 elif [[ ! -d "$_tmux_sock" ]]; then
-    skip "tmux socket — no tmux session running"
+    skip "tmux outer socket — no tmux session running"
+fi
+
+# tmux wrapper uses sandbox-tmux.conf (Ctrl-a prefix for nesting)
+if sandbox bash -c 'which tmux 2>/dev/null'; then
+    if [[ "$OUTPUT" == *"bin/tmux" && "$OUTPUT" != "/usr/bin/tmux" ]]; then
+        pass "tmux shadows /usr/bin/tmux via sandbox bin/"
+    else
+        fail "tmux not shadowed by sandbox wrapper" "$OUTPUT"
+    fi
+fi
+if [[ -f "$SCRIPT_DIR/sandbox-tmux.conf" ]]; then
+    pass "sandbox-tmux.conf present"
+else
+    fail "sandbox-tmux.conf missing"
 fi
 
 # Snapd socket should be blocked (bwrap: tmpfs /run; firejail: blacklisted)
