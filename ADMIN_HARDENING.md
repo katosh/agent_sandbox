@@ -2,7 +2,7 @@
 
 The [sandbox](README.md) is fully user-space — no root or admin involvement needed. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents, with Slurm job wrapping as a default-on soft boundary.
 
-> **Ubuntu 24.04 consideration:** A potential OS upgrade to Ubuntu 24.04 would enable AppArmor's restriction on unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`), which prevents bubblewrap from working. In that scenario, the sandbox would automatically use the **Landlock** backend. Landlock provides equivalent kernel-enforced filesystem isolation, but its permission model is **additive only** — you can grant access to paths but cannot carve out exceptions under an already-granted parent. This makes it harder to hide files (like tokens or binaries) from the sandbox using filesystem permissions alone, which is why the hardening approaches below rely on mechanisms outside the filesystem layer (eBPF LSM, Slurm plugins) rather than trying to hide paths.
+> **Ubuntu 24.04 consideration:** Ubuntu 24.04 enables AppArmor's restriction on unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`), which prevents bubblewrap from working. Without admin intervention, the sandbox falls back to the **Landlock** backend, which has significant limitations (no mount namespace, no `/tmp` isolation, no sandbox self-protection, `systemd-run` escape — see the comparison table under §2). **Recommended:** Create an AppArmor profile to allow bwrap (see §2 below). This is low effort and gives users the strongest backend. Alternatively, installing firejail (setuid) also bypasses the restriction.
 >
 > **Kernel version and TIOCSTI:** Running tmux inside the bwrap sandbox requires `BIND_DEV_PTS=true` on kernels < 5.4 (bwrap's user-namespace devpts gets `ptmxmode=000`, breaking pty allocation). This binds the host's entire `/dev` into the sandbox, exposing `/dev/pts`. On kernels < 6.2, this enables the **TIOCSTI escape**: a sandboxed process can use the `TIOCSTI` ioctl to inject keystrokes into any same-user terminal outside the sandbox. `BIND_DEV_PTS` defaults to `false` — users must opt in. Upgrading to **kernel ≥ 5.4** eliminates the need (bwrap's minimal `/dev` provides working ptys without host exposure). Upgrading to **kernel ≥ 6.2** disables TIOCSTI entirely (`CONFIG_LEGACY_TIOCSTI=n` by default), making `BIND_DEV_PTS=true` safe. The current gizmo nodes run kernel 4.15.
 
@@ -107,33 +107,100 @@ The Landlock backend also installs a **seccomp filter** that blocks dangerous sy
 
 #### Seccomp filter — HPC compatibility trade-offs
 
-The Landlock seccomp filter blocks `io_uring` (kernel I/O bypass) and `kexec_load/kexec_file_load` (kernel replacement). Several other syscalls were **intentionally removed** from the blocklist to avoid breaking legitimate HPC workloads:
+The Landlock seccomp filter blocks `io_uring` and `kexec_load/kexec_file_load`. The `io_uring` block is the main security value — it has a [large kernel attack surface](https://security.googleblog.com/2023/06/learnings-from-kctf-vrps-42-linux.html) and is not needed by Claude Code itself. However, it is used by tools that an agent might invoke on behalf of the user:
 
-| Syscall | HPC use case | Security risk (accepted) |
+| Tool | Uses `io_uring` | Reference |
 |---|---|---|
-| `memfd_create` | GPU drivers (CUDA, ROCm), JIT compilers (Julia, Numba, PyTorch JIT) | Anonymous executable memory regions |
-| `userfaultfd` | Java ZGC/Shenandoah GC, QEMU live migration | Kernel race exploitation (CVE-2021-22555 and others) |
-| `process_vm_readv/writev` | MPI shared-memory transport, debuggers (gdb, strace) | Cross-process memory access (mitigated by PID namespace in bwrap/firejail) |
+| [Node.js](https://nodejs.org/) / libuv | Yes — all async file I/O on modern Linux | [libuv PR #3952](https://github.com/libuv/libuv/pull/3952) |
+| [RocksDB](https://rocksdb.org/) | Yes — parallel SST reads via `MultiGet()` | [io_posix.cc](https://github.com/facebook/rocksdb/blob/main/env/io_posix.cc) |
+| Rust [tokio-uring](https://github.com/tokio-rs/tokio-uring) | Yes — io_uring-backed async runtime | [io-uring crate](https://github.com/tokio-rs/io-uring) |
+| [QEMU](https://www.qemu.org/) | Yes — block I/O backend | [block/io_uring.c](https://github.com/QEMU/qemu/blob/master/block/io_uring.c) |
+| DuckDB, SQLite | No | — |
 
-These syscalls are commonly used by GPU compute, MPI multi-rank jobs, and JVM-based bioinformatics tools. Blocking them would silently break `sbatch` jobs using CUDA, multi-rank MPI, or Java pipelines. The filesystem sandbox (Landlock rules) remains the primary isolation mechanism — seccomp is defense-in-depth only.
+Several other syscalls were **intentionally kept unblocked** to avoid breaking legitimate HPC and data science workloads:
 
-### Firejail backend (implemented — `backends/firejail.sh`)
-
-On nodes where AppArmor blocks unprivileged user namespaces (Ubuntu 24.04+), bwrap cannot work without an admin-created AppArmor profile. [Firejail](https://firejail.wordpress.com/) is now implemented as a third sandbox backend. It installs **setuid root**, so it can create mount namespaces regardless of AppArmor settings. The sandbox auto-detects firejail when bwrap is unavailable (priority: bwrap > firejail > landlock).
-
-Firejail closes the remaining gaps that Landlock alone cannot address. Key comparison:
-
-| Gap | Landlock | Firejail |
+| Syscall | Used by | Security risk (accepted) |
 |---|---|---|
-| Unix socket `connect()` (D-Bus, snapd, MariaDB) | Cannot block — leaks service info | Mount namespace hides sockets; snapd/systemd-notify/lxd-installer explicitly blacklisted |
-| Host process visibility (`ps aux`) | Shared PID namespace — all host processes visible | PID namespace isolates process list (default) |
-| `/tmp` cross-session leakage | Shared host `/tmp` | `--private-tmp` gives clean tmpfs |
-| Network exfiltration (`curl`, `wget`) | Shares host network — full outbound access | `--net=none` or `--netfilter` for controlled egress |
-| Credential exfiltration chain | OAuth tokens readable + network open | Network isolation breaks the chain |
-| Sandbox script tampering | Writable under `~/.claude/` (additive-only rules) | Mount namespace makes scripts invisible/read-only |
-| `settings.json` / `CLAUDE.md` writability | Cannot make files read-only under writable parent | `CLAUDE_CONFIG_DIR` points to separate sandbox-config directory (no in-place modification) |
-| Seccomp coverage | Custom BPF denylist (io_uring, kexec) | Built-in `--seccomp` + `--caps.drop=all` + `--nonewprivs` (io_uring not blocked in v0.9.72) |
-| Internal state exposure | N/A | `/run/firejail/mnt/seccomp/` readable (firejail design limitation — reveals BPF filter) |
+| `memfd_create` | [CUDA](https://developer.nvidia.com/cuda-toolkit) / [ROCm](https://rocm.docs.amd.com/) GPU drivers, [PyTorch](https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/MapAllocator.cpp) shared memory, [Numba](https://numba.pydata.org/) JIT, [JAX](https://github.com/jax-ml/jax)/[XLA](https://openxla.org/xla) compiler, [OpenJDK ZGC](https://github.com/openjdk/jdk/blob/master/src/hotspot/os/linux/gc/z/zPhysicalMemoryBacking_linux.cpp) | Anonymous executable memory regions |
+| `userfaultfd` | [Java ZGC](https://wiki.openjdk.org/display/zgc) and [Shenandoah](https://wiki.openjdk.org/display/shenandoah) GC, [QEMU live migration](https://www.qemu.org/docs/master/devel/migration.html) | Kernel race exploitation ([CVE-2021-22555](https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2021-22555) and others) |
+| `process_vm_readv/writev` | [OpenMPI](https://github.com/open-mpi/ompi/blob/main/opal/mca/smsc/cma/smsc_cma_module.c) CMA transport, [strace](https://github.com/strace/strace), [gdb](https://sourceware.org/gdb/) | Cross-process memory access (mitigated by PID namespace in bwrap/firejail) |
+
+Blocking `memfd_create` would silently break CUDA, PyTorch DataLoader (shared-memory IPC), Numba-compiled functions, and JAX/XLA-compiled models. Blocking `userfaultfd` would break Java tools using ZGC (default GC since JDK 15). Blocking `process_vm_readv` would break MPI CMA shared-memory transport used by multi-rank `sbatch` jobs. The filesystem sandbox (Landlock rules) remains the primary isolation mechanism — seccomp is defense-in-depth only.
+
+### Choosing a backend on Ubuntu 24.04+ nodes
+
+On Ubuntu 24.04+, AppArmor blocks unprivileged user namespaces, so bwrap doesn't work out of the box. The admin has three options:
+
+| Option | Effort | Result |
+|---|---|---|
+| **Do nothing** | None | Sandbox falls back to Landlock (weakest — see gaps below) |
+| **Enable bwrap via AppArmor** | Low | Strongest backend — mount namespace, PID namespace, `/tmp` isolation, self-protection |
+| **Install firejail** | Low | Strong — setuid binary bypasses AppArmor; mount namespace, PID namespace, seccomp |
+
+**Recommendation:** Enable bwrap. It provides the strongest isolation, is fully unprivileged (no setuid binary on the system), and supports optional seccomp filtering. Firejail is a good alternative if bwrap's AppArmor profile is not desired.
+
+#### bwrap vs firejail comparison
+
+| Capability | bwrap | firejail |
+|---|---|---|
+| Privilege model | Unprivileged (user namespaces) | Setuid root binary |
+| Mount namespace | ✓ | ✓ |
+| PID namespace | ✓ | ✓ |
+| `/tmp` isolation | ✓ (`--tmpfs /tmp`) | ✓ (`--private-tmp`) |
+| Sandbox self-protection | ✓ (scripts read-only via bind mount) | ✓ (scripts hidden via mount namespace) |
+| User enumeration filtering | ✓ (overlays `/etc/passwd` + `nsswitch.conf`) | ✓ (blacklists NSS sockets) |
+| Slurm binary relocation | ✓ (overlays `/usr/bin/sbatch` with redirector) | PATH-based only (no overlay) |
+| Seccomp | Supported but not recommended (see below) | Built-in (`--seccomp` + `--caps.drop=all`) |
+| io_uring blocking | Not blocked (used by DuckDB, Node.js, Rust) | Not blocked in firejail v0.9.72 on aarch64 |
+| Internal state exposure | None | `/run/firejail/mnt/seccomp/` readable (reveals BPF filter) |
+| Attack surface | Minimal — no setuid | setuid root binary on every node |
+| AppArmor on Ubuntu 24.04+ | Requires admin AppArmor profile | Works without admin action |
+
+#### Enabling bwrap via AppArmor profile
+
+Create an AppArmor profile that allows bwrap to create user namespaces:
+
+```bash
+# Find bwrap path (may be /usr/bin/bwrap or ~/.linuxbrew/bin/bwrap)
+BWRAP_PATH=$(command -v bwrap)
+
+cat > /etc/apparmor.d/bwrap-sandbox << EOF
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap $BWRAP_PATH flags=(unconfined) {
+  userns,
+}
+EOF
+
+apparmor_parser -r /etc/apparmor.d/bwrap-sandbox
+```
+
+This allows bwrap (and only bwrap) to create user namespaces. Other programs remain restricted. The profile survives reboots. Verify with:
+
+```bash
+# As a regular user — should work after the profile is loaded
+bwrap --ro-bind / / -- id
+```
+
+If bwrap is installed via Homebrew (`~/.linuxbrew/bin/bwrap`), use that path in the profile. The sandbox auto-detects whichever bwrap is in `$PATH`.
+
+#### Seccomp: not recommended for bwrap
+
+bwrap supports `--seccomp FD` to load a BPF syscall filter. The Landlock backend uses a seccomp filter as **defense-in-depth** because it lacks mount namespace isolation — seccomp compensates for weaker primary isolation. bwrap does not have this problem: mount namespace + PID namespace + `no_new_privs` already provide strong containment.
+
+After accounting for HPC compatibility (keeping `memfd_create` for GPU/JIT, `userfaultfd` for JVM GC, `process_vm_readv` for MPI — see [trade-offs below](#seccomp-filter--hpc-compatibility-trade-offs)), the only syscalls a bwrap seccomp filter would add are:
+
+| Syscall | Blocked by seccomp | Already mitigated by |
+|---|---|---|
+| `kexec_load` / `kexec_file_load` | Yes | `no_new_privs` (requires `CAP_SYS_BOOT`) |
+| `io_uring_setup` / `io_uring_enter` | Yes | Nothing — real attack surface reduction |
+
+So the practical gain is blocking `io_uring` only. However, `io_uring` is used by legitimate tools an agent may invoke — [Node.js/libuv](https://github.com/libuv/libuv/pull/3952) for all async file I/O, [RocksDB](https://github.com/facebook/rocksdb/blob/main/env/io_posix.cc) for parallel reads, and Rust [tokio-uring](https://github.com/tokio-rs/tokio-uring) runtimes. An agent running data processing pipelines or user-requested tools could break silently. The risk-benefit trade-off does not favor enabling seccomp on bwrap for general HPC use. See the [seccomp trade-offs](#seccomp-filter--hpc-compatibility-trade-offs) section for the full analysis.
+
+### Firejail backend (alternative to bwrap)
+
+[Firejail](https://firejail.wordpress.com/) installs **setuid root**, so it can create mount namespaces regardless of AppArmor settings. The sandbox auto-detects firejail when bwrap is unavailable (priority: bwrap > firejail > landlock).
 
 #### Admin setup for Slurm nodes
 
@@ -153,6 +220,19 @@ The sandbox uses `--allusers` to disable firejail's `/etc/passwd` filtering, whi
 **`/tmp` isolation** (`--private-tmp`): Enabled by default for security. Each sandbox session gets a clean tmpfs at `/tmp`, preventing cross-session data leakage. However, this breaks inter-process communication through `/tmp` — notably MPI shared-memory transport (OpenMPI, MPICH) and NCCL inter-GPU sockets. Users running multi-rank MPI or multi-GPU workloads should set `PRIVATE_TMP=false` in `sandbox.conf`.
 
 **Supplementary groups**: The sandbox preserves group membership (no `--nogroups`). HPC file access relies on supplementary groups (e.g., lab group for `/fh/fast/setty_m/`), so dropping them would silently break access to group-owned data.
+
+### Landlock-only gaps (when neither bwrap nor firejail is available)
+
+If neither bwrap nor firejail is available, the sandbox falls back to Landlock, which has these gaps compared to the mount-namespace backends:
+
+| Gap | Impact |
+|---|---|
+| Unix socket `connect()` (D-Bus, snapd) | Cannot block — `systemd-run --user` escape viable |
+| Host process visibility (`ps aux`) | All host processes visible |
+| `/tmp` cross-session leakage | Shared host `/tmp` |
+| Network exfiltration | Full outbound network access |
+| Sandbox script tampering | Scripts writable under `~/.claude/` |
+| User enumeration (LDAP) | Cannot overlay `/etc/passwd` or block NSS sockets |
 
 ---
 
@@ -329,8 +409,10 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 |---|---|---|---|---|
 | 1 | Enforce sandbox on agent-submitted Slurm jobs | Medium | Admin-enforced | Agent submitting unsandboxed Slurm jobs — job submit plugin sandboxes all jobs unless caller provides bypass token (eBPF LSM protects token from `no_new_privs` processes) |
 | 2 | Admin-owned sandbox installation | Low-medium | Admin-enforced | Users weakening their own sandbox config; sandbox self-protection; systemd-run escape on Landlock nodes (disable `user@.service`) |
+| 2a | Enable bwrap via AppArmor (Ubuntu 24.04+) | Low | Admin-enforced | Landlock fallback limitations — mount namespace, PID namespace, `/tmp` isolation, self-protection |
+| 2b | Install firejail (alternative to 2a) | Low | Admin-enforced | Same as 2a, via setuid binary instead of AppArmor profile |
 | 3 | Dedicated `${USER}_ai` accounts | High | Admin-enforced | Same-UID credential access; OS-level separation |
 | 4 | Network isolation | Medium-high | Admin-enforced (requires #3) | Data exfiltration via network |
 | 5 | Audit logging | Low-medium | Admin-enforced (requires #3) | Visibility, compliance, forensics |
 
-Sections 1 and 2 are independent and can be deployed individually. Sections 4 and 5 require Section 3 (dedicated accounts).
+Sections 1 and 2 (including 2a/2b) are independent and can be deployed individually. On Ubuntu 24.04+, deploying 2a (AppArmor profile for bwrap) or 2b (firejail) is recommended — without either, the sandbox falls back to Landlock with significant gaps. Sections 4 and 5 require Section 3 (dedicated accounts).
