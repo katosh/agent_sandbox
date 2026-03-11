@@ -121,16 +121,6 @@ The key difference is not that the sandbox has no gaps (it does), but that its g
 
 **Community and ecosystem.** Apptainer has broad HPC adoption, extensive documentation, and integration with registries (Docker Hub, ORAS, library://). The sandbox is purpose-built for AI coding agents.
 
-## When to use which
-
-| Scenario | Better fit |
-|---|---|
-| Sandboxing an AI coding agent | This sandbox: purpose-built, stronger defaults, lower overhead |
-| Running a reproducible analysis pipeline | Apptainer: environment isolation, image distribution |
-| Restricting what an agent can see/modify on the host | This sandbox: fine-grained filesystem control, env var filtering |
-| Running untrusted container images | Apptainer with `--containall` + explicit seccomp (but understand the CVE history) |
-| Agent submitting containerized Slurm jobs | Combine both: the sandbox wraps Slurm submission, Apptainer provides the runtime environment inside the job |
-
 The two approaches are complementary, not competing. An agent running inside the sandbox can submit Slurm jobs that use Apptainer containers. The sandbox controls what the agent can access on the host, while Apptainer provides the reproducible environment inside the job. The sandbox's Slurm wrappers ([Admin Hardening §1](ADMIN_HARDENING.md#1-enforce-sandbox-on-agent-submitted-slurm-jobs)) ensure that submitted jobs are also sandboxed, regardless of whether they use Apptainer internally.
 
 ## Bottom line

@@ -1,12 +1,10 @@
 # Admin Hardening Options
 
-> **Disclaimer:** This document reflects personal analysis and has not been formally reviewed by a security professional. The hardening suggestions are best-effort recommendations based on publicly available documentation and testing on a limited set of systems. Your environment may differ. Review all changes with your security team before deploying to production.
+> **Disclaimer:** This document reflects personal analysis and has not been formally reviewed by a security professional. The hardening suggestions are best-effort recommendations based on publicly available documentation and testing on a limited set of systems. The environment may differ. Review all changes with your security team before deploying to production.
 
 The [sandbox](README.md) is fully user-space, requiring no root or admin involvement. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents, with Slurm job wrapping as a default-on soft boundary.
 
-> **Ubuntu 24.04 consideration:** Ubuntu 24.04 enables AppArmor's restriction on unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`), which prevents bubblewrap from working. Without admin intervention, the sandbox falls back to the **Landlock** backend, which has significant limitations (no mount namespace, no `/tmp` isolation, no sandbox self-protection, `systemd-run` escape — see the comparison table under §2). **Recommended:** Create an AppArmor profile to allow bwrap (see §2 below). This is low effort and gives users the strongest backend. Alternatively, installing firejail (setuid) also bypasses the restriction.
->
-> **Kernel version and TIOCSTI:** Running tmux inside the bwrap sandbox requires `BIND_DEV_PTS=true` on kernels < 5.4 (bwrap's user-namespace devpts gets `ptmxmode=000`, breaking pty allocation). This binds the host's entire `/dev` into the sandbox, exposing `/dev/pts`. On kernels < 6.2, this enables the **TIOCSTI escape**: a sandboxed process can use the `TIOCSTI` ioctl to inject keystrokes into any same-user terminal outside the sandbox. `BIND_DEV_PTS` defaults to `false` — users must opt in. Upgrading to **kernel ≥ 5.4** eliminates the need (bwrap's minimal `/dev` provides working ptys without host exposure). Upgrading to **kernel ≥ 6.2** disables TIOCSTI entirely (`CONFIG_LEGACY_TIOCSTI=n` by default), making `BIND_DEV_PTS=true` safe. The current gizmo nodes run kernel 4.15.
+> **Ubuntu 24.04 consideration:** Ubuntu 24.04 enables AppArmor's restriction on unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`), which prevents bubblewrap from working. Without admin intervention, the sandbox falls back to the **Landlock** backend, which has significant limitations (no mount namespace, no `/tmp` isolation, no sandbox self-protection, `systemd-run` escape; see the comparison table under §2). **Recommended:** Create an AppArmor profile to allow bwrap (see §2 below). This is low effort and gives users the strongest backend. Alternatively, installing firejail (setuid) also bypasses the restriction.
 
 This document describes **improvements** that could close remaining gaps. Sections 1 and 2 are independent and can be deployed individually. Sections 3–5 build on each other (4 and 5 require 3). They are ordered roughly from least to most effort.
 
@@ -100,10 +98,10 @@ On Active Directory or LDAP-managed clusters, `getent passwd` reveals all users 
 The sandbox mitigates this automatically via `FILTER_PASSWD=true` (default in `sandbox.conf`):
 
 - **bwrap**: overlays `/etc/passwd` (system UIDs + current user only) and `/etc/nsswitch.conf` (`passwd: files` only, no ldap/sss). NSS daemon sockets not bound.
-- **firejail**: blacklists NSS daemon sockets (nscd, nslcd, sssd) so `getent passwd` only returns local users.
-- **landlock**: not supported — no mount namespace to overlay files or block sockets.
+- **firejail**: blacklists NSS daemon sockets (nscd, nslcd, sssd) so `getent passwd` only returns local users. **Caveat:** on LDAP/AD clusters where the current user exists only in LDAP (not in local `/etc/passwd`), this breaks user/group resolution entirely, which can cause Slurm failures and shell issues. Set `FILTER_PASSWD=false` in `sandbox.conf` if this applies, or prefer the bwrap backend which handles LDAP users correctly.
+- **landlock**: not supported. No mount namespace to overlay files or block sockets.
 
-Munge and Slurm are unaffected — munge uses a unix socket, and Slurm resolves its own user from `slurm.conf`. No admin action required.
+With bwrap, munge and Slurm are unaffected (munge uses a unix socket, and Slurm resolves its own user from `slurm.conf`). With firejail, verify that the current user and the `slurm` service user are resolvable inside the sandbox when `FILTER_PASSWD=true`.
 
 The Landlock backend also installs a **seccomp filter** that blocks dangerous syscalls as defense-in-depth. The filter does not block `connect()` itself (which would break munge authentication), but reduces the kernel attack surface.
 
@@ -150,7 +148,7 @@ On Ubuntu 24.04+, AppArmor blocks unprivileged user namespaces, so bwrap doesn't
 | PID namespace | ✓ | ✓ |
 | `/tmp` isolation | ✓ (`--tmpfs /tmp`) | ✓ (`--private-tmp`) |
 | Sandbox self-protection | ✓ (scripts read-only via bind mount) | ✓ (scripts hidden via mount namespace) |
-| User enumeration filtering | ✓ (overlays `/etc/passwd` + `nsswitch.conf`) | ✓ (blacklists NSS sockets) |
+| User enumeration filtering | ✓ (overlays `/etc/passwd` + `nsswitch.conf`, LDAP-safe) | Partial (blacklists NSS sockets, but breaks LDAP-only users) |
 | Slurm binary relocation | ✓ (overlays `/usr/bin/sbatch` with redirector) | PATH-based only (no overlay) |
 | Seccomp | Supported but not recommended (see below) | Built-in (`--seccomp` + `--caps.drop=all`) |
 | io_uring blocking | Not blocked (used by Node.js, RocksDB, Rust) | Not blocked in firejail v0.9.72 on aarch64 |
