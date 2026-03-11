@@ -40,23 +40,28 @@ backend_prepare() {
 
     # --- Kernel filesystems ---
     BWRAP_ARGS+=(--proc /proc)
-    BWRAP_ARGS+=(--dev /dev)
 
-    # /dev/pts: needed for tmux and pty allocation on older kernels
-    # (< 5.4). Exposes host ptys — on kernels without TIOCSTI protection
-    # (< 6.2) a sandboxed process could inject keystrokes into same-user
-    # terminals. "auto" binds only when needed AND safe (see sandbox.conf).
+    # /dev setup: bwrap's --dev /dev creates a minimal devtmpfs with its
+    # own devpts instance.  On kernels < 5.4, the new devpts has
+    # ptmxmode=000 (kernel restriction on user-namespace devpts), making
+    # /dev/ptmx unusable — tmux and any pty allocation fail.
+    #
+    # BIND_DEV_PTS (default "auto") controls whether to use --dev-bind
+    # /dev /dev (host /dev, working ptys) instead of --dev /dev (minimal,
+    # broken ptys on old kernels).  This exposes host /dev/pts, which on
+    # kernels < 6.2 allows TIOCSTI keystroke injection into same-user
+    # terminals outside the sandbox.
+    #
+    # Auto logic:
+    #   Kernel < 5.4  → --dev-bind /dev (needed, TIOCSTI risk accepted)
+    #   Kernel 5.4–6.1 → --dev /dev   (ptys work, avoid TIOCSTI risk)
+    #   Kernel >= 6.2  → --dev-bind /dev (safe, TIOCSTI disabled)
     local _bind_devpts="${BIND_DEV_PTS:-auto}"
     if [[ "$_bind_devpts" == "auto" ]]; then
-        local _kver
+        local _kver _kmajor _kminor
         _kver="$(uname -r)"
-        local _kmajor _kminor
         _kmajor="${_kver%%.*}"
         _kminor="${_kver#*.}"; _kminor="${_kminor%%.*}"
-        # Kernel < 5.4: devpts needed (bwrap --dev doesn't provide it)
-        # Kernel >= 6.2: TIOCSTI disabled by default, safe to bind
-        # Kernel 5.4–6.1: devpts works without binding, but TIOCSTI
-        #   is still available — skip binding to avoid escape risk
         if (( _kmajor < 5 || (_kmajor == 5 && _kminor < 4) )); then
             _bind_devpts=true   # needed for pty allocation
         elif (( _kmajor > 6 || (_kmajor == 6 && _kminor >= 2) )); then
@@ -66,7 +71,9 @@ backend_prepare() {
         fi
     fi
     if [[ "$_bind_devpts" == "true" ]]; then
-        BWRAP_ARGS+=(--dev-bind /dev/pts /dev/pts)
+        BWRAP_ARGS+=(--dev-bind /dev /dev)
+    else
+        BWRAP_ARGS+=(--dev /dev)
     fi
 
     # /tmp isolation: default is private tmpfs. Set PRIVATE_TMP=false in
