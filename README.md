@@ -156,6 +156,18 @@ claude-sandbox
 
 That's it. Claude starts in your project directory with full read access to the HPC but write access **only** to that directory. Your SSH keys, API tokens, and all credentials are invisible.
 
+### Agent Teams (tmux)
+
+Claude Code agent teams require tmux. The outer tmux socket is blocked because the tmux server runs outside the sandbox — any client with socket access could run `tmux new-window 'unsandboxed command'` to escape. Instead, start a nested tmux inside the sandbox:
+
+```bash
+~/.claude/sandbox/sandbox-exec.sh -- tmux
+# Inside the nested tmux, start Claude:
+claude
+```
+
+The nested tmux uses **`Ctrl-a`** as prefix (instead of `Ctrl-b`) to avoid conflicts with the outer session. Your tmux config is loaded automatically.
+
 ### Verify the Sandbox
 
 ```bash
