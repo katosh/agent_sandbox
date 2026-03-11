@@ -167,13 +167,14 @@ SLURM_EOF
         BWRAP_ARGS+=(--tmpfs /var/run)
     fi
 
-    # --- Passwd filtering (LDAP/AD user enumeration prevention) ---
-    # Overlay /etc/passwd and /etc/nsswitch.conf with filtered versions
-    # that contain only system accounts + current user and disable LDAP.
+    # --- Passwd/group filtering (LDAP/AD user enumeration prevention) ---
+    # Overlay /etc/passwd, /etc/group, and /etc/nsswitch.conf with filtered
+    # versions containing only system accounts + current user and disable LDAP.
     if [[ "${FILTER_PASSWD:-true}" == "true" ]]; then
         generate_filtered_passwd
         if [[ -n "${_FILTERED_PASSWD:-}" && -f "${_FILTERED_PASSWD:-}" ]]; then
             BWRAP_ARGS+=(--ro-bind "$_FILTERED_PASSWD" /etc/passwd)
+            BWRAP_ARGS+=(--ro-bind "$_FILTERED_GROUP" /etc/group)
             BWRAP_ARGS+=(--ro-bind "$_FILTERED_NSSWITCH" /etc/nsswitch.conf)
         fi
     fi

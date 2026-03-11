@@ -190,11 +190,23 @@ generate_filtered_passwd() {
     # pull all LDAP/AD users — exactly what we're trying to prevent).
     awk -F: "(\$3 < 1000) || (\$3 == $my_uid)" /etc/passwd > "$tmpdir/passwd"
 
-    # Append service users that Slurm needs to resolve (SlurmUser,
-    # MungeUser).  These may be LDAP-only, so fetch via getent.
-    for _svc_user in slurm munge; do
+    # Append current user and service users via getent if they're not
+    # in the local /etc/passwd (common on LDAP/AD systems).
+    for _svc_user in "$(id -un)" slurm munge; do
         if ! grep -q "^${_svc_user}:" "$tmpdir/passwd"; then
             getent passwd "$_svc_user" >> "$tmpdir/passwd" 2>/dev/null || true
+        fi
+    done
+
+    # Minimal group: system groups (GID < 1000) + current user's groups.
+    local my_gid
+    my_gid="$(id -g)"
+    awk -F: "(\$3 < 1000) || (\$3 == $my_gid)" /etc/group > "$tmpdir/group"
+
+    # Append current user's groups and service groups via getent
+    for _svc_group in "$(id -gn)" slurm munge; do
+        if ! grep -q "^${_svc_group}:" "$tmpdir/group"; then
+            getent group "$_svc_group" >> "$tmpdir/group" 2>/dev/null || true
         fi
     done
 
@@ -209,6 +221,7 @@ generate_filtered_passwd() {
     fi
 
     _FILTERED_PASSWD="$tmpdir/passwd"
+    _FILTERED_GROUP="$tmpdir/group"
     _FILTERED_NSSWITCH="$tmpdir/nsswitch.conf"
 }
 
