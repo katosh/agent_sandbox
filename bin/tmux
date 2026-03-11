@@ -1,9 +1,16 @@
 #! /bin/bash --
 # Sandbox tmux — shadows /usr/bin/tmux inside the sandbox.
-# Uses sandbox-tmux.conf which sources the user's config then overrides
-# the prefix key to Ctrl-a for clean nesting within an outer tmux.
+# Uses sandbox-tmux.conf which sets the prefix key to Ctrl-a for clean
+# nesting within an outer tmux.
 _sandbox_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/.."
 _conf="$_sandbox_dir/sandbox-tmux.conf"
+
+# Fall back to xterm-256color when the current TERM has no terminfo
+# (e.g. xterm-ghostty on systems without Ghostty's terminfo installed).
+if ! infocmp "$TERM" &>/dev/null 2>&1; then
+    export TERM=xterm-256color
+fi
+
 if [[ -f "$_conf" ]]; then
     exec /usr/bin/tmux -f "$_conf" "$@"
 else
