@@ -16,7 +16,7 @@ An agent working on one project shouldn't be able to read your SSH keys, exfiltr
 
 ### Why Not a Full Container?
 
-Containers (Docker, Singularity/Apptainer) are designed for reproducibility, not containment. Apptainer's default configuration shares PID space, network, home directory, `/tmp`, and environment variables with the host, and applies no seccomp filter. The isolation is not actually stronger out of the box. On top of that, containers introduce significant friction on HPC:
+Docker provides strong isolation but requires root and is unavailable on shared HPC. Apptainer (the HPC container runtime) was designed for reproducibility, not containment. Its default configuration shares PID space, network, home directory, `/tmp`, and environment variables with the host, and applies no seccomp filter. The isolation is not actually stronger out of the box. See the [detailed comparison](APPTAINER_COMPARISON.md). On top of that, containers introduce significant friction on HPC:
 
 | Problem | Container Impact | Sandbox |
 |---|---|---|
