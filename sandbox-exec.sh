@@ -87,8 +87,10 @@ if [[ -z "$PROJECT_DIR" ]]; then
     PROJECT_DIR="$(pwd)"
 fi
 
-# Resolve to absolute path
-PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+# Resolve to absolute, physical path (follow symlinks).
+# This ensures the project path inside the sandbox matches the path
+# Claude Code sees outside, so session resume works across both.
+PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
 
 # Validate
 if [[ ! -d "$PROJECT_DIR" ]]; then
