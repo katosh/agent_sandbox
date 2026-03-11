@@ -1,6 +1,8 @@
 # Admin Hardening Options
 
-The [sandbox](README.md) is fully user-space — no root or admin involvement needed. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents, with Slurm job wrapping as a default-on soft boundary.
+> **Disclaimer:** This document reflects personal analysis and has not been formally reviewed by a security professional. The hardening suggestions are best-effort recommendations based on publicly available documentation and testing on a limited set of systems. Your environment may differ. Review all changes with your security team before deploying to production.
+
+The [sandbox](README.md) is fully user-space, requiring no root or admin involvement. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents, with Slurm job wrapping as a default-on soft boundary.
 
 > **Ubuntu 24.04 consideration:** Ubuntu 24.04 enables AppArmor's restriction on unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`), which prevents bubblewrap from working. Without admin intervention, the sandbox falls back to the **Landlock** backend, which has significant limitations (no mount namespace, no `/tmp` isolation, no sandbox self-protection, `systemd-run` escape — see the comparison table under §2). **Recommended:** Create an AppArmor profile to allow bwrap (see §2 below). This is low effort and gives users the strongest backend. Alternatively, installing firejail (setuid) also bypasses the restriction.
 >
@@ -8,7 +10,7 @@ The [sandbox](README.md) is fully user-space — no root or admin involvement ne
 
 This document describes **improvements** that could close remaining gaps. Sections 1 and 2 are independent and can be deployed individually. Sections 3–5 build on each other (4 and 5 require 3). They are ordered roughly from least to most effort.
 
-> **Our priority:** Section 1 (enforcing sandbox on agent-submitted Slurm jobs) is the improvement we'd most like to see. It closes the main gap in the current setup — Slurm PATH shadowing — with moderate admin effort and no workflow changes for users.
+> **My priority:** Section 1 (enforcing sandbox on agent-submitted Slurm jobs) is the improvement I'd most like to see. It closes the main gap in the current setup (Slurm PATH shadowing) with moderate admin effort and no workflow changes for users.
 
 ### Self-serve vs. admin-enforced
 
@@ -137,7 +139,7 @@ On Ubuntu 24.04+, AppArmor blocks unprivileged user namespaces, so bwrap doesn't
 | **Enable bwrap via AppArmor** | Low | Strongest backend — mount namespace, PID namespace, `/tmp` isolation, self-protection |
 | **Install firejail** | Low | Strong — setuid binary bypasses AppArmor; mount namespace, PID namespace, seccomp |
 
-**Recommendation:** Enable bwrap. It provides the strongest isolation, is fully unprivileged (no setuid binary on the system), and supports optional seccomp filtering. Firejail is a good alternative if bwrap's AppArmor profile is not desired.
+**Recommendation:** Enable bwrap. It provides the strongest isolation, is fully unprivileged (no setuid binary on the system), and has a significantly better security track record (4 CVEs with zero root exploits vs firejail's 18 CVEs with 12 root exploits). Firejail is a fallback if bwrap's AppArmor profile is not desired, but installing it adds a setuid-root binary to every node. See the [full CVE comparison](APPTAINER_COMPARISON.md#security-track-record) for details.
 
 #### bwrap vs firejail comparison
 
@@ -151,9 +153,10 @@ On Ubuntu 24.04+, AppArmor blocks unprivileged user namespaces, so bwrap doesn't
 | User enumeration filtering | ✓ (overlays `/etc/passwd` + `nsswitch.conf`) | ✓ (blacklists NSS sockets) |
 | Slurm binary relocation | ✓ (overlays `/usr/bin/sbatch` with redirector) | PATH-based only (no overlay) |
 | Seccomp | Supported but not recommended (see below) | Built-in (`--seccomp` + `--caps.drop=all`) |
-| io_uring blocking | Not blocked (used by DuckDB, Node.js, Rust) | Not blocked in firejail v0.9.72 on aarch64 |
+| io_uring blocking | Not blocked (used by Node.js, RocksDB, Rust) | Not blocked in firejail v0.9.72 on aarch64 |
 | Internal state exposure | None | `/run/firejail/mnt/seccomp/` readable (reveals BPF filter) |
-| Attack surface | Minimal — no setuid | setuid root binary on every node |
+| Attack surface | Minimal, no setuid | Setuid root binary on every node |
+| CVE history | [4 CVEs](https://www.opencve.io/cve?search=bubblewrap), 0 root exploits, none since 2020 | [18 CVEs](https://www.cvedetails.com/vulnerability-list/vendor_id-16191/Firejail.html), 12 local root exploits ([details](APPTAINER_COMPARISON.md#firejail-18-cves-12-are-local-root)) |
 | AppArmor on Ubuntu 24.04+ | Requires admin AppArmor profile | Works without admin action |
 
 #### Enabling bwrap via AppArmor profile
@@ -416,3 +419,9 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 | 5 | Audit logging | Low-medium | Admin-enforced (requires #3) | Visibility, compliance, forensics |
 
 Sections 1 and 2 (including 2a/2b) are independent and can be deployed individually. On Ubuntu 24.04+, deploying 2a (AppArmor profile for bwrap) or 2b (firejail) is recommended — without either, the sandbox falls back to Landlock with significant gaps. Sections 4 and 5 require Section 3 (dedicated accounts).
+
+---
+
+## Sandbox vs. Apptainer Containers
+
+For a detailed security comparison with Apptainer (the standard HPC container runtime), including default isolation tables, CVE history, architectural weaknesses, and shared gaps, see **[Apptainer Comparison](APPTAINER_COMPARISON.md)**.

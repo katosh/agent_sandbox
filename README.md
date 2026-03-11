@@ -16,7 +16,7 @@ An agent working on one project shouldn't be able to read your SSH keys, exfiltr
 
 ### Why Not a Full Container?
 
-Containers (Docker, Singularity/Apptainer) solve isolation, but they introduce friction on HPC:
+Containers (Docker, Singularity/Apptainer) are designed for reproducibility, not containment. Apptainer's default configuration shares PID space, network, home directory, `/tmp`, and environment variables with the host, and applies no seccomp filter. The isolation is not actually stronger out of the box. On top of that, containers introduce significant friction on HPC:
 
 | Problem | Container Impact | Sandbox |
 |---|---|---|
@@ -504,6 +504,8 @@ Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,a
 | SSH escape (if `~/.ssh` exposed) | Not protected — sandbox does not restrict network | **None** — agent can SSH to localhost or other nodes to get an unsandboxed shell. **Do not expose `~/.ssh`** unless you understand this risk. |
 
 **Bottom line:** Filesystem isolation is kernel-enforced with all three backends. Bwrap and firejail provide the strongest isolation (mount namespace hides paths, PID namespace isolates processes, filesystem-based Unix sockets are hidden — though abstract sockets remain accessible via shared network namespace). Firejail additionally includes built-in seccomp syscall filtering (including io_uring). Landlock provides filesystem-only isolation without mount or PID namespaces, but works without any admin privileges. Slurm wrapping covers normal code paths but is a soft boundary in all backends. See [Admin Hardening Options](ADMIN_HARDENING.md) for stronger approaches.
+
+**How does this compare to Apptainer?** Apptainer's defaults are weaker than they appear — it shares PID space, network, `$HOME`, `/tmp`, and environment variables with the host, applies no seccomp filter, and its admin restrictions are [unenforceable in rootless mode](https://apptainer.org/docs/admin/main/configfiles.html). The sandbox provides stronger default containment for agent use cases, though neither tool isolates the network or blocks all dangerous syscalls. See [Sandbox vs. Apptainer Comparison](APPTAINER_COMPARISON.md) for a detailed analysis including CVE history and shared weaknesses.
 
 ---
 
