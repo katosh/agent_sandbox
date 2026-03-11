@@ -169,7 +169,7 @@ Claude Code agent teams require tmux. The outer tmux socket is blocked because t
 ~/.claude/sandbox/sandbox-exec.sh -- tmux new-session claude
 ```
 
-The nested tmux uses **`Ctrl-a`** as prefix (instead of `Ctrl-b`) to avoid conflicts with the outer session. Your tmux config is loaded automatically.
+The nested tmux uses **`Ctrl-a`** as prefix (instead of `Ctrl-b`) to avoid conflicts with the outer session. A minimal `sandbox-tmux.conf` is used instead of your `~/.tmux.conf` — custom configs with `run-shell` plugins or status scripts may reference paths hidden by the sandbox. Edit `~/.claude/sandbox/sandbox-tmux.conf` to customize.
 
 ### Verify the Sandbox
 
@@ -380,7 +380,7 @@ The sandbox inherits your shell environment, then:
 | **PID namespace** | Isolated by bwrap (`--unshare-pid`) and firejail (default). Not isolated by Landlock. |
 | **`/run`** | Partially isolated. Firejail blacklists `/run/dbus`, `/run/user`, `/run/systemd/private`, `/run/containerd` but allows munge socket. Bwrap exposes only `/run/munge`. Landlock allows all of `/run`. |
 | **User enumeration** | bwrap/firejail: filtered (`FILTER_PASSWD=true` — bwrap overlays `/etc/passwd` + nsswitch; firejail blocks NSS daemon sockets). Landlock: not filtered. |
-| **tmux** | Outer tmux socket blocked by `/tmp` isolation (exposing it would allow sandbox escape). A `bin/tmux` wrapper auto-loads `sandbox-tmux.conf` (prefix `Ctrl-a`) for clean nesting. `/dev/pts` is auto-bound only on kernels that need it or where TIOCSTI is disabled (see Known Limitations). |
+| **tmux** | Outer tmux socket blocked by `/tmp` isolation (exposing it would allow sandbox escape). A `bin/tmux` wrapper auto-loads `sandbox-tmux.conf` (prefix `Ctrl-a`) for clean nesting, creates the socket directory, and falls back `TERM` when terminfo is missing. On kernels < 5.4 or >= 6.2, host `/dev` is used instead of bwrap's minimal `/dev` for working pty allocation (see Known Limitations). |
 
 ---
 
