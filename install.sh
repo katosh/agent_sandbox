@@ -12,8 +12,16 @@
 # Usage:
 #   git clone git@github.com:settylab/agent_sandbox.git
 #   bash agent_sandbox/install.sh
+#   bash agent_sandbox/install.sh --no-test
 
 set -euo pipefail
+
+SKIP_TEST=false
+for arg in "$@"; do
+    case "$arg" in
+        --no-test|--skip-test) SKIP_TEST=true ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SANDBOX_DIR="$HOME/.claude/sandbox"
@@ -155,14 +163,19 @@ echo "    Edit $SANDBOX_DIR/sandbox-claude.md to customize."
 
 # ── Step 5: Test suite ─────────────────────────────────────────
 
-echo ""
-echo "→ Running test suite..."
-echo ""
-
-if ! bash "$SANDBOX_DIR/test.sh"; then
+if [[ "$SKIP_TEST" == true ]]; then
     echo ""
-    echo "⚠ Some tests failed. Run 'bash $SANDBOX_DIR/test.sh --verbose' for details."
-    exit 1
+    echo "  Skipping test suite (--no-test)"
+else
+    echo ""
+    echo "→ Running test suite..."
+    echo ""
+
+    if ! bash "$SANDBOX_DIR/test.sh"; then
+        echo ""
+        echo "⚠ Some tests failed. Run 'bash $SANDBOX_DIR/test.sh --verbose' for details."
+        exit 1
+    fi
 fi
 
 # ── Step 6: Suggest shell alias ───────────────────────────────────
