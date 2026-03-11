@@ -81,6 +81,21 @@ PRIVATE_TMP=true
 # landlock: not supported (no mount namespace).
 FILTER_PASSWD=true
 
+# Bind-mount /dev/pts from the host (bwrap only). Required for tmux
+# and pty allocation on kernels < 5.4 (where bwrap's --dev /dev does
+# not provide a working devpts). On kernels < 6.2 this exposes host
+# ptys to the sandbox — a same-user process could use the TIOCSTI
+# ioctl to inject keystrokes into unsandboxed terminals.
+#
+# Default "auto": bind /dev/pts only on kernels < 5.4 (needed) or
+# when TIOCSTI is already disabled (>= 6.2). On kernels 5.4–6.1,
+# /dev/pts works without binding but TIOCSTI is still available,
+# so "auto" skips the bind to avoid the escape risk (tmux will still
+# work — bwrap's --dev /dev allocates ptys via the container devpts).
+# Set to "true" to force-enable (e.g. if tmux fails), "false" to
+# force-disable.
+BIND_DEV_PTS=auto
+
 # Path to the Slurm bypass token file.  bwrap/firejail hide it inside
 # the sandbox.  If empty and /etc/slurm/sandbox-wrapper.conf exists,
 # TOKEN_FILE from that file is used automatically.

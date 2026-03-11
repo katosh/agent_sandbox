@@ -42,6 +42,33 @@ backend_prepare() {
     BWRAP_ARGS+=(--proc /proc)
     BWRAP_ARGS+=(--dev /dev)
 
+    # /dev/pts: needed for tmux and pty allocation on older kernels
+    # (< 5.4). Exposes host ptys — on kernels without TIOCSTI protection
+    # (< 6.2) a sandboxed process could inject keystrokes into same-user
+    # terminals. "auto" binds only when needed AND safe (see sandbox.conf).
+    local _bind_devpts="${BIND_DEV_PTS:-auto}"
+    if [[ "$_bind_devpts" == "auto" ]]; then
+        local _kver
+        _kver="$(uname -r)"
+        local _kmajor _kminor
+        _kmajor="${_kver%%.*}"
+        _kminor="${_kver#*.}"; _kminor="${_kminor%%.*}"
+        # Kernel < 5.4: devpts needed (bwrap --dev doesn't provide it)
+        # Kernel >= 6.2: TIOCSTI disabled by default, safe to bind
+        # Kernel 5.4–6.1: devpts works without binding, but TIOCSTI
+        #   is still available — skip binding to avoid escape risk
+        if (( _kmajor < 5 || (_kmajor == 5 && _kminor < 4) )); then
+            _bind_devpts=true   # needed for pty allocation
+        elif (( _kmajor > 6 || (_kmajor == 6 && _kminor >= 2) )); then
+            _bind_devpts=true   # safe — TIOCSTI disabled
+        else
+            _bind_devpts=false  # 5.4–6.1: skip to avoid TIOCSTI escape
+        fi
+    fi
+    if [[ "$_bind_devpts" == "true" ]]; then
+        BWRAP_ARGS+=(--dev-bind /dev/pts /dev/pts)
+    fi
+
     # /tmp isolation: default is private tmpfs. Set PRIVATE_TMP=false in
     # sandbox.conf for MPI/NCCL workloads that need shared /tmp.
     if [[ "${PRIVATE_TMP:-true}" == "true" ]]; then

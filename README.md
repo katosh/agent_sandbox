@@ -380,7 +380,7 @@ The sandbox inherits your shell environment, then:
 | **PID namespace** | Isolated by bwrap (`--unshare-pid`) and firejail (default). Not isolated by Landlock. |
 | **`/run`** | Partially isolated. Firejail blacklists `/run/dbus`, `/run/user`, `/run/systemd/private`, `/run/containerd` but allows munge socket. Bwrap exposes only `/run/munge`. Landlock allows all of `/run`. |
 | **User enumeration** | bwrap/firejail: filtered (`FILTER_PASSWD=true` — bwrap overlays `/etc/passwd` + nsswitch; firejail blocks NSS daemon sockets). Landlock: not filtered. |
-| **tmux** | Outer tmux socket blocked by `/tmp` isolation (exposing it would allow sandbox escape). A `bin/tmux` wrapper auto-loads `sandbox-tmux.conf` (prefix `Ctrl-a`, sources user config) for clean nesting. |
+| **tmux** | Outer tmux socket blocked by `/tmp` isolation (exposing it would allow sandbox escape). A `bin/tmux` wrapper auto-loads `sandbox-tmux.conf` (prefix `Ctrl-a`) for clean nesting. `/dev/pts` is auto-bound only on kernels that need it or where TIOCSTI is disabled (see Known Limitations). |
 
 ---
 
@@ -527,6 +527,8 @@ The sandbox auto-detects the best available backend (bwrap → firejail → land
 | Backend | Limitation | Mitigation |
 |---|---|---|
 | **bwrap/Firejail** | `/tmp` isolated by default (`PRIVATE_TMP=true`) — breaks MPI shared-memory transport and NCCL inter-GPU sockets | Set `PRIVATE_TMP=false` in `sandbox.conf` for HPC multi-process workloads |
+| **bwrap** | `/dev/pts` exposure for tmux — on kernels < 6.2, host pseudo-terminals are visible inside the sandbox. A sandboxed process could use the `TIOCSTI` ioctl to inject keystrokes into unsandboxed terminals of the same user | `BIND_DEV_PTS=auto` (default) only binds `/dev/pts` on kernels that need it (< 5.4) or where TIOCSTI is disabled (>= 6.2). On kernels 5.4–6.1, auto skips the bind — tmux still works but the escape risk is avoided. Set `BIND_DEV_PTS=false` to force-disable |
+| **bwrap** | No seccomp filter by default — bwrap supports `--seccomp` but does not enable it out of the box. Without seccomp, dangerous syscalls like `ptrace`, `process_vm_writev`, `kexec_load`, and `io_uring_setup` remain available. Adding a seccomp policy is harder than with firejail (requires a BPF binary, not a simple drop list) | Use firejail or Landlock for syscall filtering. PID namespace (`--unshare-pid`) mitigates `ptrace`/`process_vm_*` attacks. See [Admin Hardening](ADMIN_HARDENING.md) for io_uring/kexec |
 | **All** | `memfd_create`, `userfaultfd`, `process_vm_readv/writev` not blocked by any backend (HPC compatibility) | Accepted trade-off — needed by CUDA, MPI, Java GC. `process_vm_readv/writev` mitigated by PID namespace in bwrap/firejail. See [Admin Hardening](ADMIN_HARDENING.md) |
 | **Landlock** | Cannot block `AF_UNIX connect()` — agent can reach D-Bus, systemd sockets | Use bwrap or firejail; or see [Admin Hardening](ADMIN_HARDENING.md) |
 | **Landlock** | No PID namespace — host processes visible via `/proc`. Agent could read `/proc/PID/environ` of same-UID processes (e.g. sbatch wrapper injecting bypass token) | Use bwrap or firejail for PID isolation; token exposure window is microseconds. A SPANK plugin would eliminate it entirely |
