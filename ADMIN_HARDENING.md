@@ -122,10 +122,18 @@ Several other syscalls were **intentionally kept unblocked** to avoid breaking l
 | Syscall | Used by | Security risk (accepted) |
 |---|---|---|
 | `memfd_create` | [CUDA](https://developer.nvidia.com/cuda-toolkit) / [ROCm](https://rocm.docs.amd.com/) GPU drivers, [PyTorch](https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/MapAllocator.cpp) shared memory, [Numba](https://numba.pydata.org/) JIT, [JAX](https://github.com/jax-ml/jax)/[XLA](https://openxla.org/xla) compiler, [OpenJDK ZGC](https://github.com/openjdk/jdk/blob/master/src/hotspot/os/linux/gc/z/zPhysicalMemoryBacking_linux.cpp) | Anonymous executable memory regions |
-| `userfaultfd` | [QEMU live migration](https://www.qemu.org/docs/master/devel/migration.html) (postcopy), [CRIU](https://github.com/checkpoint-restore/criu/blob/master/criu/uffd.c) (checkpoint/restore). Note: Java ZGC historically used this (pre-JDK 17) but now uses `memfd_create` instead. Docker's default seccomp profile has [always blocked `userfaultfd`](https://github.com/moby/moby/commit/96896f2d) and Java works fine in containers. | Kernel race exploitation ([CVE-2021-22555](https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2021-22555) and others) |
 | `process_vm_readv/writev` | [OpenMPI](https://github.com/open-mpi/ompi/blob/main/opal/mca/smsc/cma/smsc_cma_module.c) CMA transport, [strace](https://github.com/strace/strace), [gdb](https://sourceware.org/gdb/) | Cross-process memory access (mitigated by PID namespace in bwrap/firejail) |
 
-Blocking `memfd_create` would silently break CUDA, PyTorch DataLoader (shared-memory IPC), Numba-compiled functions, and JAX/XLA-compiled models. Docker's default seccomp profile also [allows `memfd_create`](https://github.com/moby/profiles/blob/main/seccomp/default.json) unconditionally, confirming it cannot be blocked without breaking common workloads. `userfaultfd` could likely be blocked safely (Docker has always blocked it, and modern Java ZGC no longer needs it), but it remains allowed for QEMU postcopy migration and CRIU checkpoint/restore, which are relevant in HPC. Blocking `process_vm_readv` would break MPI CMA shared-memory transport used by multi-rank `sbatch` jobs (Docker [allows it on kernel >= 4.8](https://github.com/moby/moby/commit/dca15781)). The filesystem sandbox (Landlock rules) remains the primary isolation mechanism; seccomp is defense-in-depth only.
+Blocking `memfd_create` would silently break CUDA, PyTorch DataLoader (shared-memory IPC), Numba-compiled functions, and JAX/XLA-compiled models. Docker's default seccomp profile also [allows `memfd_create`](https://github.com/moby/profiles/blob/main/seccomp/default.json) unconditionally, confirming it cannot be blocked without breaking common workloads. Blocking `process_vm_readv` would break MPI CMA shared-memory transport used by multi-rank `sbatch` jobs (Docker [allows it on kernel >= 4.8](https://github.com/moby/moby/commit/dca15781)). The filesystem sandbox (Landlock rules) remains the primary isolation mechanism; seccomp is defense-in-depth only.
+
+`userfaultfd` **is blocked** by the seccomp filter. It lets a process intercept page faults in userspace, pausing the faulting kernel thread indefinitely. Attackers exploit this to create arbitrary-width race windows during `copy_from_user()` for TOCTOU and use-after-free exploits (e.g. [CVE-2021-22555](https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2021-22555), [CVE-2024-1086](https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2024-1086)). [Docker's default seccomp profile](https://github.com/moby/moby/commit/96896f2d) blocks it, and the kernel restricts unprivileged access by default since 5.11 (`vm.unprivileged_userfaultfd=0`).
+
+| User | Needs userfaultfd? | When blocked | HPC-relevant? |
+|---|---|---|---|
+| [QEMU](https://www.qemu.org/) postcopy live migration | Yes — primary use case | Falls back to precopy (all memory transferred before VM starts) | No |
+| [CRIU](https://github.com/checkpoint-restore/criu) lazy restore | Yes | Falls back to full pre-copy restore (slower but functional) | No |
+| Java ZGC | No — uses [colored pointers/multi-mapping](https://wiki.openjdk.org/display/zgc) | No impact | No |
+| CUDA, PyTorch, JAX, MPI, comp-bio tools | No | No impact | Yes, but don't use it |
 
 ### Choosing a backend on Ubuntu 24.04+ nodes
 
@@ -190,18 +198,17 @@ The sandbox auto-detects bwrap from `$PATH`, or admins can set `BWRAP=/path/to/b
 
 #### Seccomp for bwrap
 
-bwrap supports `--seccomp FD` to load a BPF syscall filter. The Landlock backend uses a seccomp filter as **defense-in-depth** because it lacks mount namespace isolation — seccomp compensates for weaker primary isolation. bwrap does not have this problem: mount namespace + PID namespace + `no_new_privs` already provide strong containment.
+bwrap supports `--seccomp FD` to load a BPF syscall filter. Mount namespace + PID namespace + `no_new_privs` already provide strong containment, but a seccomp filter closes two remaining gaps.
 
-After accounting for HPC compatibility (keeping `memfd_create` for GPU/JIT, `process_vm_readv` for MPI, and `userfaultfd` for QEMU/CRIU; see [trade-offs below](#seccomp-filter--hpc-compatibility-trade-offs)), the only syscalls a bwrap seccomp filter would add are:
+After accounting for HPC compatibility (keeping `memfd_create` for GPU/JIT and `process_vm_readv` for MPI; see [trade-offs below](#seccomp-filter--hpc-compatibility-trade-offs)), a bwrap seccomp filter would block:
 
-| Syscall | Blocked by seccomp | Already mitigated by |
+| Syscall | Already mitigated by | Impact of blocking |
 |---|---|---|
-| `kexec_load` / `kexec_file_load` | Yes | `no_new_privs` (requires `CAP_SYS_BOOT`) |
-| `io_uring_setup` / `io_uring_enter` | Yes | Nothing — real attack surface reduction |
+| `io_uring_setup` / `io_uring_enter` | Nothing — real attack surface reduction | [Node.js](https://github.com/libuv/libuv/pull/3952) falls back to epoll, [RocksDB](https://github.com/facebook/rocksdb/blob/main/env/io_posix.cc) falls back to `pread`. [tokio-uring](https://github.com/tokio-rs/tokio-uring) (Rust) would fail, but standard tokio is unaffected |
+| `userfaultfd` | Kernel restricts unprivileged use since 5.11, but user-mode faults still allowed | No HPC tools use it. Only QEMU postcopy and CRIU lazy restore are affected (see [above](#seccomp-filter--hpc-compatibility-trade-offs)) |
+| `kexec_load` / `kexec_file_load` | `no_new_privs` (requires `CAP_SYS_BOOT`) | None — already ineffective without capabilities |
 
-So the practical gain is blocking `io_uring` only. Docker 25.0+ [blocks `io_uring` by default](https://docs.docker.com/engine/security/seccomp/) in its seccomp profile, and the ecosystem has adapted — [Node.js/libuv](https://github.com/libuv/libuv/pull/3952) falls back to epoll, [RocksDB](https://github.com/facebook/rocksdb/blob/main/env/io_posix.cc) falls back to synchronous `pread`, and most tools degrade gracefully when `io_uring` returns `EPERM`. The one caveat is Rust's [tokio-uring](https://github.com/tokio-rs/tokio-uring) runtime, which is io_uring-only and would fail (standard tokio uses epoll and is unaffected).
-
-Given Docker's precedent, adding an `io_uring` seccomp filter to bwrap is reasonable and unlikely to cause issues for most workloads. See the [seccomp trade-offs](#seccomp-filter--hpc-compatibility-trade-offs) section for the full analysis.
+Docker's default seccomp profile blocks both `io_uring` (since 25.0) and `userfaultfd`. Adding a seccomp filter to bwrap is reasonable and aligns with Docker's precedent. See the [seccomp trade-offs](#seccomp-filter--hpc-compatibility-trade-offs) section for the full analysis.
 
 ### Firejail backend (alternative to bwrap)
 

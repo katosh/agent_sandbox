@@ -100,13 +100,13 @@ Neither approach provides complete isolation. Both share these weaknesses:
 | **Abstract Unix sockets** | Accessible since bwrap/firejail share the network namespace. `@/org/freedesktop/...` reachable. | Accessible (shared network namespace). |
 | **SSH escape** | If `~/.ssh` is exposed, agent can SSH to localhost for an unsandboxed shell. | `$HOME` bind-mounted by default, so `~/.ssh` is exposed unless `--contain` is used. |
 | **`/dev/shm` shared** | Writable and not isolated by default. Covert cross-sandbox IPC possible. | Writable and shared by default. |
-| **`memfd_create` / `userfaultfd`** | Not blocked for HPC compatibility (CUDA, PyTorch, QEMU). Docker's default seccomp profile makes the same choice for `memfd_create`. | Not blocked (no seccomp by default). |
+| **`memfd_create`** | Not blocked (needed by CUDA, PyTorch, JAX). Docker's default seccomp profile also allows it. `userfaultfd` is blocked by firejail and landlock seccomp filters (not by bwrap). | Not blocked (no seccomp by default). |
 | **Slurm wrapping** | Soft boundary. Munge auth available, PATH shadowing bypassable (see [Admin Hardening §1](ADMIN_HARDENING.md#1-enforce-sandbox-on-agent-submitted-slurm-jobs)). | No wrapping at all. Slurm fully accessible. |
 
 The sandbox has additional backend-specific gaps documented in the [README's Known Limitations](README.md#known-limitations):
 
 - **Landlock** cannot block Unix socket `connect()` (D-Bus/systemd escape), has no PID namespace, no self-protection, and no LDAP user enumeration filtering.
-- **bwrap** has no seccomp by default. `io_uring`, `ptrace`, `kexec_load` remain callable (mitigated by PID namespace and `no_new_privs`).
+- **bwrap** has no seccomp by default. `io_uring` and `userfaultfd` remain callable (`ptrace` and `kexec_load` are mitigated by PID namespace and `no_new_privs`).
 - **All backends** leave IPC namespace shared by default. `/dev/shm` is a covert channel between sandbox sessions.
 
 The key difference is not that the sandbox has no gaps (it does), but that its gaps are smaller and better characterized. Apptainer's default posture exposes the entire host environment; the sandbox's default posture hides everything and selectively re-exposes what is needed. Both require admin hardening for strong isolation (see [Admin Hardening §§1-5](ADMIN_HARDENING.md#summary)).

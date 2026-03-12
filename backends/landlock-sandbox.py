@@ -88,10 +88,13 @@ AUDIT_ARCH_AARCH64 = 0xC00000B7
 #                      Numba, PyTorch JIT), some Python C extensions.
 #                      Risk: can create anonymous executable memory regions.
 #
-#   userfaultfd      — Java ZGC/Shenandoah garbage collectors, QEMU live
-#                      migration, some memory-mapped databases.
-#                      Risk: kernel attack surface (CVE-2021-22555 and
-#                      others used userfaultfd for race exploitation).
+#   userfaultfd      — BLOCKED. Lets attackers stall kernel threads to
+#                      exploit race conditions (CVE-2021-22555, CVE-2024-1086).
+#                      Only used by QEMU postcopy migration and CRIU lazy
+#                      restore — neither relevant for HPC. Java ZGC uses
+#                      colored pointers, not userfaultfd. Docker blocks it
+#                      by default. Kernel restricts unprivileged access
+#                      since 5.11 (vm.unprivileged_userfaultfd=0).
 #
 #   process_vm_readv — MPI shared-memory transport (cross-rank data
 #   process_vm_writev  transfer on same node), debuggers (gdb, strace).
@@ -105,7 +108,7 @@ AUDIT_ARCH_AARCH64 = 0xC00000B7
 #                      memory (e.g., bypass tokens from sbatch wrappers).
 #                      Blocked on Landlock; bwrap/firejail have PID ns.
 #
-# memfd_create and userfaultfd are NOT blocked (GPU compute, CUDA, QEMU).
+# memfd_create is NOT blocked (GPU compute, CUDA, JIT compilers).
 # The filesystem sandbox (Landlock rules) remains the primary isolation.
 _BLOCKED_SYSCALLS = {
     AUDIT_ARCH_X86_64: {
@@ -114,6 +117,7 @@ _BLOCKED_SYSCALLS = {
         "io_uring_register":   427,
         "kexec_load":          246,
         "kexec_file_load":     320,
+        "userfaultfd":         323,
         "ptrace":              101,
         "process_vm_readv":    310,
         "process_vm_writev":   311,
@@ -124,6 +128,7 @@ _BLOCKED_SYSCALLS = {
         "io_uring_register":   427,
         "kexec_load":          104,
         "kexec_file_load":     294,
+        "userfaultfd":         282,
         "ptrace":              117,
         "process_vm_readv":    270,
         "process_vm_writev":   271,

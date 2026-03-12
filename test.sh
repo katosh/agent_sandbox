@@ -616,6 +616,27 @@ print('BLOCKED' if ctypes.get_errno() == 1 else 'ALLOWED')
     else
         skip "Could not test io_uring_setup"
     fi
+
+    # userfaultfd — blocked by landlock's custom seccomp and firejail's
+    # --seccomp.drop. Exploitation primitive for kernel race conditions.
+    # syscall numbers: x86_64=323, aarch64=282
+    if sandbox python3 -c "
+import ctypes, ctypes.util, platform
+libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+nr = 323 if platform.machine() == 'x86_64' else 282
+ret = libc.syscall(ctypes.c_long(nr), ctypes.c_int(0))
+print('BLOCKED' if ctypes.get_errno() == 1 else 'ALLOWED')
+" 2>&1; then
+        if [[ "$OUTPUT" == *"BLOCKED"* ]]; then
+            pass "userfaultfd blocked by seccomp"
+        elif is_firejail && [[ "$(uname -m)" == "aarch64" ]]; then
+            skip "userfaultfd — firejail seccomp broken on aarch64 (works on x86_64)"
+        else
+            fail "userfaultfd not blocked by seccomp" "$OUTPUT"
+        fi
+    else
+        skip "Could not test userfaultfd"
+    fi
 fi
 
 # ── 9. Security hardening (advanced) ──────────────────────────────
