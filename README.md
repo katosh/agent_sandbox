@@ -165,10 +165,9 @@ Changes take effect the next time you start a sandbox — no reinstall needed.
 
 ### Review your config
 
-The default config ships with example paths (e.g. `/fh/fast/setty_m`) that you should **replace with your own**. The principle of least privilege applies — the agent should only see data it actually needs for the task:
+The default config ships with commented-out example paths that you should **replace with your own**. The principle of least privilege applies — the agent should only see data it actually needs for the task:
 
 - **`READONLY_MOUNTS`** — Every path listed here is readable by the agent. The system paths (`/usr`, `/lib`, `/bin`, `/sbin`, `/etc`) are required for basic functionality. Lab storage paths should be limited to what the agent needs — mounting your PI's entire fast directory is convenient but exposes all data under it. Consider mounting only the specific subdirectory the agent will work with.
-- **`SCRATCH_MOUNTS`** — Read-only scratch access. Remove entries the agent doesn't need.
 - **`EXTRA_BLOCKED_PATHS`** — Use this to carve out sensitive subdirectories from otherwise-visible mounts (e.g. clinical data under a lab storage path).
 - **`HOME_READONLY`** — Each entry is visible inside the sandbox. The defaults cover shell config and tools; entries are marked in `sandbox.conf` with why they're needed. Remove any you don't use.
 - **`BLOCKED_ENV_VARS`** — Check your environment (`env | grep -iE 'token|key|secret|pat|auth'`) and add any site-specific secrets.
@@ -176,20 +175,20 @@ The default config ships with example paths (e.g. `/fh/fast/setty_m`) that you s
 ### Common Customizations
 
 ```bash
+# Add a read-only data directory (add inside the READONLY_MOUNTS array)
+    "/shared/other_lab/data"
+
+# Add writable output directory (beyond the project dir)
+EXTRA_WRITABLE_PATHS=("/shared/scratch/agent-output")
+
 # Block sensitive directories (overlaid with empty tmpfs)
 EXTRA_BLOCKED_PATHS=("/shared/lab/clinical_restricted")
 
-# Allow AWS credentials through (overrides BLOCKED_ENV_VARS)
-ALLOWED_CREDENTIALS=("AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_DEFAULT_REGION")
-
-# Add a read-only data directory
-READONLY_MOUNTS+=("/shared/other_lab/data")
-
 # Allow GitHub CLI: add ".config/gh" to HOME_READONLY
-# and "GITHUB_TOKEN" "GH_TOKEN" to ALLOWED_CREDENTIALS
+# and remove "GITHUB_TOKEN" "GH_TOKEN" from BLOCKED_ENV_VARS
 ```
 
-> **SSH keys:** You *can* add `".ssh"` to `HOME_READONLY`, but this is **not recommended**. On HPC clusters with passwordless SSH between nodes, the agent can SSH to localhost for an unsandboxed shell. Prefer [deploy keys](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys) scoped to a single repo, or HTTPS with a fine-grained token via `ALLOWED_CREDENTIALS`.
+> **SSH keys:** You *can* add `".ssh"` to `HOME_READONLY`, but this is **not recommended**. On HPC clusters with passwordless SSH between nodes, the agent can SSH to localhost for an unsandboxed shell. Prefer [deploy keys](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys) scoped to a single repo, or HTTPS with a fine-grained token (remove the token var from `BLOCKED_ENV_VARS`).
 
 #### Sandbox Permissions (settings.json)
 
@@ -207,7 +206,7 @@ Each backend achieves the same result — the agent can only see and write what 
 - **firejail**: Setuid sandbox with mount namespace, PID namespace, seccomp, and capability dropping. Whitelist model for `$HOME`. Paths hidden entirely (ENOENT).
 - **landlock**: Kernel LSM filesystem ACLs. No mount namespace — blocked paths return EACCES. Custom seccomp filter blocks kexec + io_uring + ptrace.
 
-**Environment variables:** The sandbox inherits your shell, blocks `BLOCKED_ENV_VARS` (API tokens, secrets), and allows `ALLOWED_CREDENTIALS` back through.
+**Environment variables:** The sandbox inherits your shell environment and blocks `BLOCKED_ENV_VARS` (API tokens, secrets). To grant access, remove the variable from the blocklist.
 
 ### What's NOT Isolated
 

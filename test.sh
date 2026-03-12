@@ -738,10 +738,8 @@ else
     skip "systemd-notify socket not present on host"
 fi
 
-# ALLOWED_CREDENTIALS passthrough — credentials explicitly allowed must be accessible
+# Non-blocked env vars should pass through to the sandbox
 export _TEST_CRED_VAR="test-credential-value"
-# Temporarily add to ALLOWED_CREDENTIALS won't work from here, but we can test
-# that BLOCKED_ENV_VARS are actually blocked and passthrough vars work
 if sandbox bash -c 'echo ${LANG:-UNSET}'; then
     if [[ "$OUTPUT" != "UNSET" ]]; then
         pass "Passthrough env vars (LANG) accessible"

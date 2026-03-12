@@ -3,7 +3,9 @@
 
 You are in a kernel-enforced filesystem sandbox. Write access: `$SANDBOX_PROJECT_DIR` and `~/.claude/` only. Credentials (`~/.ssh`, `~/.aws`, `~/.gnupg`) are inaccessible. Slurm jobs (`sbatch`/`srun`) inherit sandbox restrictions automatically.
 
-`/tmp` is private by default (bwrap/firejail). If MPI, NCCL, or other multi-process `/tmp` communication fails, the user can set `PRIVATE_TMP=false` in `~/.claude/sandbox/sandbox.conf`. If something else is blocked, tell the user which setting to change in that file.
+If you get "No such file or directory" or "Permission denied" on a path the user expects to be accessible, the path is not in the sandbox's `READONLY_MOUNTS`. Tell the user to add it to `READONLY_MOUNTS` in `~/.claude/sandbox/sandbox.conf` and restart the sandbox. Keep this brief — one sentence.
+
+`/tmp` is private by default (bwrap/firejail). If MPI, NCCL, or other multi-process `/tmp` communication fails, the user can set `PRIVATE_TMP=false` in `~/.claude/sandbox/sandbox.conf`.
 
 ## Sandbox Integrity
 

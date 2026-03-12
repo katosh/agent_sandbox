@@ -179,13 +179,6 @@ backend_prepare() {
         FIREJAIL_ARGS+=(--read-only="$SANDBOX_DIR")
     fi
 
-    # --- Scratch mounts (read-only) ---
-    for scratch in "${SCRATCH_MOUNTS[@]}"; do
-        if [[ -d "$scratch" ]]; then
-            FIREJAIL_ARGS+=(--read-only="$scratch")
-        fi
-    done
-
     # --- Project directory (writable) ---
     if [[ "$project_dir" == "$HOME"* ]]; then
         FIREJAIL_ARGS+=(--whitelist="$project_dir")
@@ -207,6 +200,16 @@ backend_prepare() {
     if [[ "$project_dir" == "$HOME"* ]]; then
         FIREJAIL_ARGS+=(--read-write="$project_dir")
     fi
+
+    # Additional writable directories
+    for _extra_rw in "${EXTRA_WRITABLE_PATHS[@]}"; do
+        if [[ -d "$_extra_rw" ]]; then
+            if [[ "$_extra_rw" == "$HOME"* ]]; then
+                FIREJAIL_ARGS+=(--whitelist="$_extra_rw")
+            fi
+            FIREJAIL_ARGS+=(--read-write="$_extra_rw")
+        fi
+    done
 
     # Protect the real CLAUDE.md from persistence attacks — the agent should
     # only write to the sandbox-config copy (via CLAUDE_CONFIG_DIR).
@@ -241,13 +244,6 @@ backend_prepare() {
     # --- Filter environment variables ---
     # Like landlock, we filter in-shell since firejail doesn't have
     # per-variable --unsetenv.
-    declare -A _saved_creds
-    for var in "${ALLOWED_CREDENTIALS[@]}"; do
-        if [[ -n "${!var:-}" ]]; then
-            _saved_creds[$var]="${!var}"
-        fi
-    done
-
     for var in "${BLOCKED_ENV_VARS[@]}"; do
         unset "$var" 2>/dev/null || true
     done
@@ -256,10 +252,6 @@ backend_prepare() {
     while IFS='=' read -r name _; do
         [[ "$name" == SSH_* ]] && unset "$name" 2>/dev/null || true
     done < <(env)
-
-    for var in "${!_saved_creds[@]}"; do
-        export "$var=${_saved_creds[$var]}"
-    done
 
     # Set sandbox env vars
     export SANDBOX_ACTIVE=1

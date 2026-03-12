@@ -87,22 +87,15 @@ backend_prepare() {
     done
 
 
-    # Scratch filesystems (read-only)
-    for scratch in "${SCRATCH_MOUNTS[@]}"; do
-        [[ -d "$scratch" ]] && LANDLOCK_ARGS+=(--ro "$scratch")
-    done
-
     # Project directory: writable
     LANDLOCK_ARGS+=(--rw "$project_dir")
 
-    # --- Filter environment variables ---
-    declare -A _saved_creds
-    for var in "${ALLOWED_CREDENTIALS[@]}"; do
-        if [[ -n "${!var:-}" ]]; then
-            _saved_creds[$var]="${!var}"
-        fi
+    # Additional writable directories
+    for _extra_rw in "${EXTRA_WRITABLE_PATHS[@]}"; do
+        [[ -d "$_extra_rw" ]] && LANDLOCK_ARGS+=(--rw "$_extra_rw")
     done
 
+    # --- Filter environment variables ---
     for var in "${BLOCKED_ENV_VARS[@]}"; do
         unset "$var" 2>/dev/null || true
     done
@@ -111,10 +104,6 @@ backend_prepare() {
     while IFS='=' read -r name _; do
         [[ "$name" == SSH_* ]] && unset "$name" 2>/dev/null || true
     done < <(env)
-
-    for var in "${!_saved_creds[@]}"; do
-        export "$var=${_saved_creds[$var]}"
-    done
 
     # Set sandbox env vars
     export SANDBOX_ACTIVE=1

@@ -91,16 +91,6 @@ SLURM_EOF
         fi
     done
 
-    if [[ -n "$DOTFILES_DIR" && -d "$DOTFILES_DIR" && ${#HOME_SYMLINKS[@]} -gt 0 ]]; then
-        # Mount the dotfiles directory so symlinks have a valid target.
-        BWRAP_ARGS+=(--ro-bind "$DOTFILES_DIR" "$DOTFILES_DIR")
-        for name in "${HOME_SYMLINKS[@]}"; do
-            if [[ -e "$DOTFILES_DIR/$name" ]]; then
-                BWRAP_ARGS+=(--symlink "$DOTFILES_DIR/$name" "$HOME/$name")
-            fi
-        done
-    fi
-
     for subdir in "${HOME_WRITABLE[@]}"; do
         local full_path="$HOME/$subdir"
         if [[ -e "$full_path" ]]; then
@@ -140,12 +130,6 @@ SLURM_EOF
         BWRAP_ARGS+=(--ro-bind /dev/null "$SANDBOX_BYPASS_TOKEN")
     fi
 
-    for scratch in "${SCRATCH_MOUNTS[@]}"; do
-        if [[ -d "$scratch" ]]; then
-            BWRAP_ARGS+=(--ro-bind "$scratch" "$scratch")
-        fi
-    done
-
     for blocked in "${EXTRA_BLOCKED_PATHS[@]}"; do
         if [[ -d "$blocked" ]]; then
             BWRAP_ARGS+=(--tmpfs "$blocked")
@@ -156,6 +140,13 @@ SLURM_EOF
     if [[ "$project_dir" != "$HOME"* ]]; then
         BWRAP_ARGS+=(--bind "$project_dir" "$project_dir")
     fi
+
+    # Additional writable directories
+    for _extra_rw in "${EXTRA_WRITABLE_PATHS[@]}"; do
+        if [[ -d "$_extra_rw" ]]; then
+            BWRAP_ARGS+=(--bind "$_extra_rw" "$_extra_rw")
+        fi
+    done
 
     # Mount /run as a tmpfs, then selectively bind only what's needed.
     # Mounting all of /run exposes D-Bus, systemd user sockets, and
@@ -220,11 +211,6 @@ SLURM_EOF
         [[ "$name" == SSH_* ]] && BWRAP_ARGS+=(--unsetenv "$name")
     done < <(env)
 
-    for var in "${ALLOWED_CREDENTIALS[@]}"; do
-        if [[ -n "${!var:-}" ]]; then
-            BWRAP_ARGS+=(--setenv "$var" "${!var}")
-        fi
-    done
 }
 
 backend_exec() {

@@ -26,14 +26,6 @@ READONLY_MOUNTS=(
     "/app"
 )
 
-SCRATCH_MOUNTS=(
-    "/fh/scratch/delete10"
-    "/fh/scratch/delete30"
-    "/fh/scratch/delete90"
-)
-
-DOTFILES_DIR=""
-
 HOME_READONLY=(
     ".bashrc" ".bash_profile" ".profile"
     ".zshrc" ".zprofile"
@@ -50,8 +42,6 @@ HOME_READONLY=(
     ".mambarc"
 )
 
-HOME_SYMLINKS=()
-
 HOME_WRITABLE=(
     ".claude"
     ".claude.json"
@@ -63,6 +53,8 @@ HOME_WRITABLE=(
 BLOCKED_FILES=()
 
 EXTRA_BLOCKED_PATHS=()
+
+EXTRA_WRITABLE_PATHS=()
 
 # Path to the Slurm sandbox bypass token (see ADMIN_HARDENING.md §1).
 # When set, the bwrap backend automatically hides this file from the sandbox
@@ -104,30 +96,6 @@ BLOCKED_ENV_VARS=(
     "TMUX" "TMUX_PANE"
 )
 
-ALLOWED_CREDENTIALS=()
-
-# NOTE: PASSTHROUGH_ENV_VARS is currently UNUSED by all backends.
-# The actual behavior is: every environment variable is passed through
-# EXCEPT those listed in BLOCKED_ENV_VARS (which are unset).
-# This array is kept for potential future use (e.g., an allowlist mode
-# where only listed variables are forwarded), but today it has no effect.
-PASSTHROUGH_ENV_VARS=(
-    BASH_ENV
-    LMOD_CMD LMOD_DIR LMOD_PKG LMOD_ROOT LMOD_PACKAGE_PATH
-    LMOD_VERSION LMOD_sys LMOD_COLORIZE
-    MODULEPATH MODULEPATH_ROOT MODULESHOME
-    LOADEDMODULES _LMFILES_
-    LD_LIBRARY_PATH LIBRARY_PATH CPATH
-    PKG_CONFIG_PATH CMAKE_PREFIX_PATH
-    PYTHONPATH R_LIBS_SITE
-    MAMBA_EXE MAMBA_ROOT_PREFIX
-    CONDA_EXE CONDA_PREFIX CONDA_DEFAULT_ENV
-    CONDA_SHLVL CONDA_PYTHON_EXE CONDA_PROMPT_MODIFIER
-    _CE_CONDA _CE_M
-    LANG LC_ALL SHELL USER LOGNAME EDITOR TERM
-    MANPATH INFOPATH
-    HOMEBREW_PREFIX HOMEBREW_CELLAR HOMEBREW_REPOSITORY
-)
 
 # ── Helpers: boolean normalization ─────────────────────────────
 # Accept true/True/TRUE/yes/1 as truthy; everything else is false.
@@ -178,11 +146,11 @@ _validate_path_array() {
 }
 _validate_path_array ALLOWED_PROJECT_PARENTS "${ALLOWED_PROJECT_PARENTS[@]}"
 _validate_path_array READONLY_MOUNTS "${READONLY_MOUNTS[@]}"
-_validate_path_array SCRATCH_MOUNTS "${SCRATCH_MOUNTS[@]}"
 _validate_path_array HOME_READONLY "${HOME_READONLY[@]}"
 _validate_path_array HOME_WRITABLE "${HOME_WRITABLE[@]}"
 _validate_path_array BLOCKED_FILES "${BLOCKED_FILES[@]}"
 _validate_path_array EXTRA_BLOCKED_PATHS "${EXTRA_BLOCKED_PATHS[@]}"
+_validate_path_array EXTRA_WRITABLE_PATHS "${EXTRA_WRITABLE_PATHS[@]}"
 
 # Fail early if HOME is unset (many paths depend on it).
 if [[ -z "${HOME:-}" ]]; then
@@ -236,10 +204,6 @@ if [[ "${SANDBOX_BACKEND:-auto}" == "landlock" ]]; then
     fi
 fi
 if [[ "${SANDBOX_BACKEND:-auto}" != "bwrap" && "${SANDBOX_BACKEND:-auto}" != "auto" ]]; then
-    if [[ -n "${DOTFILES_DIR:-}" && ${#HOME_SYMLINKS[@]} -gt 0 ]]; then
-        echo "WARNING: DOTFILES_DIR/HOME_SYMLINKS only work with the bwrap backend." >&2
-        echo "  Current backend: ${SANDBOX_BACKEND:-auto}. Symlinks will not be created." >&2
-    fi
     if _is_true "${BIND_DEV_PTS:-false}"; then
         echo "WARNING: BIND_DEV_PTS only applies to the bwrap backend." >&2
     fi
