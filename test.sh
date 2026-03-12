@@ -921,8 +921,8 @@ done
 WRAPPER_CONF=""
 if [[ -f /etc/slurm/sandbox-wrapper.conf ]]; then
     WRAPPER_CONF="/etc/slurm/sandbox-wrapper.conf"
-elif [[ -f "$SCRIPT_DIR/admin/sandbox-wrapper.conf" ]]; then
-    WRAPPER_CONF="$SCRIPT_DIR/admin/sandbox-wrapper.conf"
+elif [[ -f "$SCRIPT_DIR/slurm-enforce/sandbox-wrapper.conf" ]]; then
+    WRAPPER_CONF="$SCRIPT_DIR/slurm-enforce/sandbox-wrapper.conf"
 fi
 
 if [[ -n "$WRAPPER_CONF" ]]; then

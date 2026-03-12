@@ -12,12 +12,12 @@ End-to-end tested on Ubuntu 24.04 (kernel 6.8, Slurm 23.11, Landlock backend) wi
 
 | Source | Deploys to | Purpose |
 |---|---|---|
-| `admin/sandbox-wrapper.conf` | `/etc/slurm/sandbox-wrapper.conf` | Single source of truth — token path, real binary locations, sandbox-exec.sh path |
-| `admin/sbatch-token-wrapper.sh` | `/usr/bin/sbatch` | System-wide sbatch wrapper — auto-injects bypass token; strips manual `_SANDBOX_BYPASS` from CLI |
-| `admin/srun-token-wrapper.sh` | `/usr/bin/srun` | System-wide srun wrapper — passes through for normal users, wraps in sandbox-exec.sh for sandboxed processes |
-| `admin/job_submit.lua` | `/etc/slurm/job_submit.lua` | Slurm job submit plugin — server-side enforcement for sbatch (wraps jobs unless valid token is present) |
-| `admin/token_protect.bpf.c` | `/sys/fs/bpf/token_protect` (compiled) | eBPF LSM program — denies read access to the token file for processes with `no_new_privs` set |
-| `admin/load-token-protect.sh` | `/etc/rc.local` or systemd unit | Loads the compiled eBPF program and populates its map — run at boot |
+| `slurm-enforce/sandbox-wrapper.conf` | `/etc/slurm/sandbox-wrapper.conf` | Single source of truth — token path, real binary locations, sandbox-exec.sh path |
+| `slurm-enforce/sbatch-token-wrapper.sh` | `/usr/bin/sbatch` | System-wide sbatch wrapper — auto-injects bypass token; strips manual `_SANDBOX_BYPASS` from CLI |
+| `slurm-enforce/srun-token-wrapper.sh` | `/usr/bin/srun` | System-wide srun wrapper — passes through for normal users, wraps in sandbox-exec.sh for sandboxed processes |
+| `slurm-enforce/job_submit.lua` | `/etc/slurm/job_submit.lua` | Slurm job submit plugin — server-side enforcement for sbatch (wraps jobs unless valid token is present) |
+| `slurm-enforce/token_protect.bpf.c` | `/sys/fs/bpf/token_protect` (compiled) | eBPF LSM program — denies read access to the token file for processes with `no_new_privs` set |
+| `slurm-enforce/load-token-protect.sh` | `/etc/rc.local` or systemd unit | Loads the compiled eBPF program and populates its map — run at boot |
 
 ## Setup
 
@@ -47,7 +47,7 @@ sudo chmod 0644 /app/sandbox/.sandbox-bypass-token
 ### 2. Build and load the eBPF program
 
 ```bash
-cd admin/
+cd slurm-enforce/
 
 # Generate kernel BTF header and compile
 bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h

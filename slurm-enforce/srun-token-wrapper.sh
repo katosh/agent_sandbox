@@ -58,7 +58,7 @@ fi
 # Runtime check: warn if eBPF token protection is not loaded.
 if [[ ! -d /sys/fs/bpf/token_protect ]]; then
     echo "WARNING: eBPF token protection not loaded. Sandbox enforcement is weakened." >&2
-    echo "  Run: sudo admin/load-token-protect.sh" >&2
+    echo "  Run: sudo slurm-enforce/load-token-protect.sh" >&2
 fi
 
 # Inode drift check: warn if the token file's identity has changed.
@@ -69,7 +69,7 @@ if [[ -f "${TOKEN_FILE}.identity" && -f "$TOKEN_FILE" ]]; then
     if [[ -n "$_cur_dev" && -n "$_cur_ino" && "$_expected" != "$_cur_dev $_cur_ino" ]]; then
         echo "FATAL: Token file identity changed since eBPF was loaded." >&2
         echo "  eBPF protects the old inode, not the current file." >&2
-        echo "  Re-run: sudo admin/load-token-protect.sh" >&2
+        echo "  Re-run: sudo slurm-enforce/load-token-protect.sh" >&2
         exit 1
     fi
 fi

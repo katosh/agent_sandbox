@@ -10,10 +10,10 @@
 # Reads TOKEN_FILE from sandbox-wrapper.conf (single source of truth).
 #
 # For /etc/rc.local or a systemd unit, use an absolute path:
-#   /path/to/admin/load-token-protect.sh
+#   /path/to/slurm-enforce/load-token-protect.sh
 #
 # To recompile first (after editing token_protect.bpf.c), see the build
-# commands in admin/README.md.
+# commands in slurm-enforce/README.md.
 
 set -euo pipefail
 
@@ -35,7 +35,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 if [[ ! -f "$BPF_OBJ" ]]; then
-    echo "error: $BPF_OBJ not found — compile first (see admin/README.md)" >&2
+    echo "error: $BPF_OBJ not found — compile first (see slurm-enforce/README.md)" >&2
     exit 1
 fi
 

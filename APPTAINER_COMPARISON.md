@@ -78,7 +78,7 @@ The advisory for CVE-2023-30549 notes that "many ext4 filesystem vulnerabilities
 
 The setuid-root architecture is the common thread. Both firejail and Apptainer's setuid mode have been repeatedly exploited for local root. Bubblewrap avoids this entirely by using unprivileged user namespaces, and Landlock avoids it by being a pure kernel LSM with no userspace privileged component.
 
-When choosing a sandbox backend, this matters: **bwrap has 4 CVEs and zero root exploits; firejail has 18 CVEs and 12 root exploits.** Firejail provides strong isolation features (seccomp, caps dropping) but installs a setuid-root binary on every node. On systems where bwrap is available (or can be enabled via AppArmor), it is the safer choice. See the [bwrap vs firejail comparison](ADMIN_HARDENING.md#bwrap-vs-firejail-comparison) in Admin Hardening.
+When choosing a sandbox backend, this matters: **bwrap has 4 CVEs and zero root exploits; firejail has 18 CVEs and 12 root exploits.** Firejail provides strong isolation features (seccomp, caps dropping) but installs a setuid-root binary on every node. On systems where bwrap is available (or can be enabled via AppArmor), it is the safer choice. See the [bwrap vs firejail comparison](ADMIN_INSTALL.md#bwrap-vs-firejail-comparison) in Admin Install.
 
 ## Architectural weaknesses unique to Apptainer
 

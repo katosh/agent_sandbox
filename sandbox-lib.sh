@@ -59,7 +59,7 @@ EXTRA_WRITABLE_PATHS=()
 # Path to the Slurm sandbox bypass token (see ADMIN_HARDENING.md §1).
 # When set, the bwrap backend automatically hides this file from the sandbox
 # (overlays it with /dev/null). For the Landlock backend, use the eBPF LSM
-# program instead (see admin/token_protect.bpf.c).
+# program instead (see slurm-enforce/token_protect.bpf.c).
 # Isolate /tmp with a private tmpfs (firejail backend only).
 # Default: true. Set to false if the sandboxed process needs shared /tmp
 # access (e.g., MPI shared-memory transport between ranks on the same node,
@@ -107,22 +107,115 @@ _is_true() {
     esac
 }
 
-# ── Load user config ────────────────────────────────────────────
+# ── Multi-level config loading ──────────────────────────────────
+#
+# Config hierarchy (each layer adds to the previous):
+#   1. Defaults (above)
+#   2. Admin config (/opt/claude-sandbox/sandbox.conf) — security baseline
+#   3. User config (~/.claude/sandbox/user.conf) — additive customization
+#   4. Per-project overrides (conf.d/*.conf) — project-specific additions
+#
+# When an admin config exists, security-critical arrays (BLOCKED_FILES,
+# BLOCKED_ENV_VARS, EXTRA_BLOCKED_PATHS) are enforced: user/project
+# configs can add entries but not remove admin-set ones. Items in the
+# admin's HOME_READONLY cannot be moved to HOME_WRITABLE.
+#
+# Without an admin config, behavior is identical to a single sandbox.conf.
+# See ADMIN_INSTALL.md for setup instructions.
 
 # Preserve any SANDBOX_BACKEND set via environment or --backend flag
-# so sandbox.conf cannot override an explicit backend selection.
+# so config files cannot override an explicit backend selection.
 _SANDBOX_BACKEND_OVERRIDE="${SANDBOX_BACKEND:-}"
 
-if [[ -f "$SANDBOX_CONF" ]]; then
-    # Validate syntax before sourcing to give a clear error instead of
-    # a cryptic bash parse failure that silently skips all config.
-    if ! bash -n "$SANDBOX_CONF" 2>/dev/null; then
-        echo "Error: Syntax error in $SANDBOX_CONF" >&2
-        bash -n "$SANDBOX_CONF" >&2
+# --- Determine config files ---
+_ADMIN_CONF=""
+_USER_CONF=""
+
+if [[ "${SANDBOX_CONF:-}" != "" && "$SANDBOX_CONF" != "$SANDBOX_DIR/sandbox.conf" ]]; then
+    # Explicit SANDBOX_CONF override — single config, backward compat
+    _USER_CONF="$SANDBOX_CONF"
+elif [[ -f "/opt/claude-sandbox/sandbox.conf" ]]; then
+    # Admin-installed: admin config is authoritative
+    _ADMIN_CONF="/opt/claude-sandbox/sandbox.conf"
+    _USER_CONF="$HOME/.claude/sandbox/user.conf"
+else
+    # User-only install: single config
+    _USER_CONF="$SANDBOX_DIR/sandbox.conf"
+fi
+
+# --- Helper: source a config file with syntax check ---
+_source_config() {
+    local _conf="$1"
+    if ! bash -n "$_conf" 2>/dev/null; then
+        echo "Error: Syntax error in $_conf" >&2
+        bash -n "$_conf" >&2
         exit 1
     fi
     # shellcheck disable=SC1090
-    source "$SANDBOX_CONF"
+    source "$_conf"
+}
+
+# --- Admin enforcement: snapshot and validate ---
+_snapshot_admin_config() {
+    _ADMIN_BLOCKED_FILES=("${BLOCKED_FILES[@]}")
+    _ADMIN_BLOCKED_ENV_VARS=("${BLOCKED_ENV_VARS[@]}")
+    _ADMIN_EXTRA_BLOCKED_PATHS=("${EXTRA_BLOCKED_PATHS[@]}")
+    _ADMIN_HOME_READONLY=("${HOME_READONLY[@]}")
+}
+
+_validate_admin_enforcement() {
+    [[ -z "$_ADMIN_CONF" ]] && return 0
+
+    local _violations=()
+
+    # Check that admin-enforced entries were not removed
+    local _arrays=("BLOCKED_FILES" "BLOCKED_ENV_VARS" "EXTRA_BLOCKED_PATHS")
+    local _admin_arrays=("_ADMIN_BLOCKED_FILES" "_ADMIN_BLOCKED_ENV_VARS" "_ADMIN_EXTRA_BLOCKED_PATHS")
+
+    for _i in 0 1 2; do
+        local _arr_name="${_arrays[$_i]}"
+        local _admin_name="${_admin_arrays[$_i]}"
+        eval "local _admin_items=(\"\${${_admin_name}[@]}\")"
+        eval "local _current_items=(\"\${${_arr_name}[@]}\")"
+
+        for _admin_item in "${_admin_items[@]}"; do
+            local _found=false
+            for _current_item in "${_current_items[@]}"; do
+                [[ "$_current_item" == "$_admin_item" ]] && { _found=true; break; }
+            done
+            $_found || _violations+=("$_arr_name: admin entry '$_admin_item' was removed")
+        done
+    done
+
+    # Check HOME_READONLY → HOME_WRITABLE escalation
+    for _admin_item in "${_ADMIN_HOME_READONLY[@]}"; do
+        for _rw_item in "${HOME_WRITABLE[@]}"; do
+            [[ "$_rw_item" == "$_admin_item" ]] && \
+                _violations+=("HOME_READONLY→HOME_WRITABLE: admin read-only entry '$_admin_item' moved to writable")
+        done
+    done
+
+    if [[ ${#_violations[@]} -gt 0 ]]; then
+        echo "Error: User config violates admin-enforced security policy:" >&2
+        for _v in "${_violations[@]}"; do
+            echo "  - $_v" >&2
+        done
+        echo "" >&2
+        echo "Admin config: $_ADMIN_CONF" >&2
+        echo "User config:  ${_USER_CONF:-conf.d}" >&2
+        exit 1
+    fi
+}
+
+# --- Source configs ---
+if [[ -n "$_ADMIN_CONF" && -f "$_ADMIN_CONF" ]]; then
+    _source_config "$_ADMIN_CONF"
+    _snapshot_admin_config
+fi
+
+if [[ -f "$_USER_CONF" ]]; then
+    _source_config "$_USER_CONF"
+    _validate_admin_enforcement
 fi
 
 # Restore explicit backend override (env/CLI takes precedence over config)
@@ -181,6 +274,9 @@ load_project_config() {
     _validate_path_array BLOCKED_FILES "${BLOCKED_FILES[@]}"
     _validate_path_array EXTRA_BLOCKED_PATHS "${EXTRA_BLOCKED_PATHS[@]}"
     _validate_path_array EXTRA_WRITABLE_PATHS "${EXTRA_WRITABLE_PATHS[@]}"
+
+    # Enforce admin policy after conf.d overrides
+    _validate_admin_enforcement
 }
 
 # Fail early if HOME is unset (many paths depend on it).
