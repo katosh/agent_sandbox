@@ -256,6 +256,7 @@ validate_project_dir() {
     local dir="$1"
     for parent in "${ALLOWED_PROJECT_PARENTS[@]}"; do
         parent="${parent/\$HOME/$HOME}"
+        parent="${parent%/}"  # strip trailing slash
         # Exact match or proper subdirectory (with / boundary).
         # Without the boundary check, parent=/home/alice would
         # incorrectly match dir=/home/alicebob/project.
