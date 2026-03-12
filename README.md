@@ -131,58 +131,24 @@ bash test.sh --verbose   # show details on failure
 
 ## Quick Start
 
-### Set Up an Alias (optional)
-
-Add this to your `.bashrc` or `.zshrc` for quick access:
-
-```bash
-alias claude-sandbox='~/.claude/sandbox/sandbox-exec.sh -- claude'
-```
-
-
 ### Start Claude Code in a Sandbox
 
 ```bash
 cd /path/to/my-project
-
-# With the alias:
-claude-sandbox
-
-# Or directly:
 ~/.claude/sandbox/sandbox-exec.sh -- claude
 
-# Force a specific backend:
-~/.claude/sandbox/sandbox-exec.sh --backend firejail -- claude
+# Or add an alias to .bashrc:
+# alias claude-sandbox='~/.claude/sandbox/sandbox-exec.sh -- claude'
 ```
 
-That's it. Claude starts in your project directory with full read access to the HPC but write access **only** to that directory. Your SSH keys, API tokens, and all credentials are invisible.
+Claude starts in your project directory with full read access to the HPC but write access **only** to that directory. SSH keys, API tokens, and credentials are invisible.
 
 ### Verify the Sandbox
 
 ```bash
-# Secrets are hidden
-~/.claude/sandbox/sandbox-exec.sh -- ls ~/.ssh
-# → ls: cannot access '/home/user/.ssh': No such file or directory  (bwrap/firejail)
-# → ls: cannot open directory '/home/user/.ssh': Permission denied   (landlock)
-
-# API tokens are gone
-~/.claude/sandbox/sandbox-exec.sh -- bash -c 'echo "GITHUB_PAT=${GITHUB_PAT:-UNSET}"'
-# → GITHUB_PAT=UNSET
-
-# Slurm works
-~/.claude/sandbox/sandbox-exec.sh -- squeue --me
-
-# lmod works
-~/.claude/sandbox/sandbox-exec.sh -- bash -c 'module avail 2>&1 | head -5'
-
-# Writing outside project dir fails
-~/.claude/sandbox/sandbox-exec.sh -- touch /path/to/other-project/test
-# → touch: cannot touch '...': Read-only file system  (bwrap)
-# → touch: cannot touch '...': Permission denied      (firejail/landlock)
-
-# Writing inside project dir works
-~/.claude/sandbox/sandbox-exec.sh --project-dir $PWD -- bash -c 'touch test && rm test && echo OK'
-# → OK
+~/.claude/sandbox/sandbox-exec.sh -- ls ~/.ssh        # → No such file / Permission denied
+~/.claude/sandbox/sandbox-exec.sh -- bash -c 'echo $GITHUB_PAT'  # → (empty)
+~/.claude/sandbox/sandbox-exec.sh -- squeue --me       # → works (Slurm accessible)
 ```
 
 ---
@@ -199,120 +165,27 @@ Changes take effect the next time you start a sandbox — no reinstall needed.
 
 ### Common Customizations
 
-#### Block additional directories (e.g., clinical data)
-
-If there are directories under your lab's fast storage that contain restricted data:
+All examples below are edits to `sandbox.conf`. See the comments in that file for the full list of options.
 
 ```bash
-# In sandbox.conf:
-EXTRA_BLOCKED_PATHS=(
-    "/shared/lab/clinical_restricted"
-    "/shared/lab/user/someone_else/private"
-)
+# Block sensitive directories (overlaid with empty tmpfs)
+EXTRA_BLOCKED_PATHS=("/shared/lab/clinical_restricted")
+
+# Allow AWS credentials through (overrides BLOCKED_ENV_VARS)
+ALLOWED_CREDENTIALS=("AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_DEFAULT_REGION")
+
+# Add a read-only data directory
+READONLY_MOUNTS+=("/shared/other_lab/data")
+
+# Allow GitHub CLI: add ".config/gh" to HOME_READONLY
+# and "GITHUB_TOKEN" "GH_TOKEN" to ALLOWED_CREDENTIALS
 ```
 
-These paths will be overlaid with an empty tmpfs — the agent won't see them at all.
-
-#### Allow AWS access
-
-When the agent needs to interact with S3 or other AWS services:
-
-```bash
-# In sandbox.conf:
-ALLOWED_CREDENTIALS=(
-    "AWS_ACCESS_KEY_ID"
-    "AWS_SECRET_ACCESS_KEY"
-    "AWS_DEFAULT_REGION"
-    "AWS_SESSION_TOKEN"
-)
-```
-
-These are un-blocked (overriding `BLOCKED_ENV_VARS`) so the agent can use them inside the sandbox.
-
-#### Allow SSH keys (e.g., for private Git repos)
-
-If the agent needs to clone or push to private repositories over SSH, you *can* expose your SSH keys — but consider the alternatives first:
-
-- **Deploy keys** (recommended): Create a read-only [GitHub deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys) scoped to a single repository, place it in your project directory, and configure `GIT_SSH_COMMAND` to use it.
-- **HTTPS + token**: Use HTTPS cloning with a fine-grained personal access token (limited to specific repos) via the `ALLOWED_CREDENTIALS` mechanism.
-
-If you still need full SSH access:
-
-```bash
-# In sandbox.conf — add to HOME_READONLY:
-HOME_READONLY=(
-    ".bashrc"
-    ".gitconfig"
-    ".linuxbrew"
-    ".local/bin"
-    "micromamba"
-    ".condarc"
-    ".mambarc"
-    # ... existing entries ...
-    ".ssh"                 # ← NOT RECOMMENDED — see warning below
-)
-```
-
-> **Sandbox escape risk:** Exposing `~/.ssh` gives the agent access to all your SSH private keys. On HPC clusters where passwordless SSH between nodes is configured, the agent can SSH to `localhost` or another node, getting an **unsandboxed shell** with full access to your account. The sandbox controls filesystem access only — not network connections or SSH authentication.
-
-#### Allow GitHub CLI
-
-```bash
-# In sandbox.conf — add to HOME_READONLY:
-HOME_READONLY=(
-    ".bashrc"
-    ".gitconfig"
-    ".linuxbrew"
-    ".local/bin"
-    "micromamba"
-    ".condarc"
-    ".mambarc"
-    # ... existing entries ...
-    ".config/gh"           # ← add this
-)
-
-# And allow the token:
-ALLOWED_CREDENTIALS=(
-    "GITHUB_TOKEN"
-    "GH_TOKEN"
-)
-```
-
-#### Add a read-only data directory
-
-If you have shared data outside the lab's fast directory:
-
-```bash
-# In sandbox.conf — add to READONLY_MOUNTS:
-READONLY_MOUNTS=(
-    "/usr" "/lib" "/lib64" "/bin" "/sbin" "/etc"
-    "/app"
-    "/shared/lab"
-    "/shared/other_lab/data"    # ← add this
-)
-```
+> **SSH keys:** You *can* add `".ssh"` to `HOME_READONLY`, but this is **not recommended**. On HPC clusters with passwordless SSH between nodes, the agent can SSH to localhost for an unsandboxed shell. Prefer [deploy keys](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys) scoped to a single repo, or HTTPS with a fine-grained token via `ALLOWED_CREDENTIALS`.
 
 #### Sandbox Permissions (settings.json)
 
-The sandbox overlays Claude Code's `~/.claude/settings.json` to **auto-allow tools that are already restricted by the sandbox**. Since the sandbox enforces filesystem isolation at the kernel level, Claude Code's own permission prompts for file and shell operations are redundant — the agent can't escape the sandbox regardless of what it runs.
-
-By default, the sandbox adds these to the `allow` list:
-
-| Tool | Why safe inside the sandbox |
-|---|---|
-| `Bash` | Filesystem is read-only except the project dir |
-| `Read` | Only mounted paths are visible |
-| `Edit` / `Write` | Can only write to the project dir and `~/.claude` |
-| `Glob` / `Grep` | Search is read-only |
-| `NotebookEdit` | Same write restrictions as `Edit` |
-
-The user's existing `settings.json` rules (including `deny` rules) are preserved — the sandbox only **adds** to the `allow` list.
-
-To customize the sandbox permissions:
-
-```bash
-$EDITOR ~/.claude/sandbox/sandbox-settings.json
-```
+The sandbox overlays `~/.claude/settings.json` to auto-allow tools (`Bash`, `Read`, `Edit`, `Write`, `Glob`, `Grep`, `NotebookEdit`) that are already restricted by the kernel-enforced filesystem isolation. Your existing rules (including `deny`) are preserved. Customize via `~/.claude/sandbox/sandbox-settings.json`.
 
 ---
 
@@ -320,117 +193,46 @@ $EDITOR ~/.claude/sandbox/sandbox-settings.json
 
 ### Isolation Strategy
 
-Each backend achieves isolation differently, but the end result is the same: the agent can only see and write what you explicitly allow.
+Each backend achieves the same result — the agent can only see and write what you explicitly allow — through different mechanisms:
 
-**bwrap (mount namespace):**
-```
-Layer 1: System mounts (read-only)      /usr, /lib, /bin, /sbin, /etc, /app
-Layer 2: Blank tmpfs home               hides EVERYTHING under $HOME
-Layer 3: Selective re-mount (read-only) ~/.bashrc, ~/.gitconfig, ...
-Layer 4: Writable mounts                ~/.claude, project directory
-Layer 5: Slurm binary relocation        /usr/bin/sbatch → sandbox redirector
-Layer 6: NFS storage (read-only)        /shared/lab_data → entire tree
-Layer 7: Project dir (writable overlay) writable on top of Layer 6
-```
+- **bwrap**: Mount namespace. Blank tmpfs over `$HOME`, then selectively re-mount allowed paths read-only. Writable mounts for project dir and `~/.claude`. Slurm binaries relocated to internal path. Paths hidden entirely (ENOENT).
+- **firejail**: Setuid sandbox with mount namespace, PID namespace, seccomp, and capability dropping. Whitelist model for `$HOME`. Paths hidden entirely (ENOENT).
+- **landlock**: Kernel LSM filesystem ACLs. No mount namespace — blocked paths return EACCES. Custom seccomp filter blocks kexec + io_uring + ptrace.
 
-**firejail (setuid sandbox):**
-```
---whitelist   selective paths from real $HOME into private tmpfs home
---read-only   system paths + home (defense in depth)
---read-write  explicit writable paths (project dir, ~/.claude)
---blacklist   dangerous paths (/run/dbus, /run/user, credentials)
---seccomp     built-in syscall filter (blocks kexec, reboot, swapon, ...)
---caps.drop   drops all capabilities
-PID namespace enabled by default (no flag needed)
-```
-
-**landlock (LSM):**
-```
-Kernel-enforced filesystem ACLs — read-only/read-write/no-access per path.
-No mount namespace — blocked paths return EACCES, not ENOENT.
-Custom seccomp filter blocks kexec_load + io_uring syscalls.
-```
-
-### Environment Variables
-
-The sandbox inherits your shell environment, then:
-1. **Sets** `SANDBOX_ACTIVE=1`, `SANDBOX_BACKEND`, `SANDBOX_PROJECT_DIR`, and passes through HPC variables (lmod, mamba, etc.)
-2. **Blocks** everything in `BLOCKED_ENV_VARS` (API tokens, secrets)
-3. **Allows** everything in `ALLOWED_CREDENTIALS` back through (overrides the block)
+**Environment variables:** The sandbox inherits your shell, blocks `BLOCKED_ENV_VARS` (API tokens, secrets), and allows `ALLOWED_CREDENTIALS` back through.
 
 ### What's NOT Isolated
 
 | Resource | Backend behavior |
 |---|---|
-| **Network** | Not isolated (any backend) — Slurm needs network for job submission and munge authentication |
-| **PID namespace** | Isolated by bwrap (`--unshare-pid`) and firejail (default). Not isolated by Landlock. |
-| **`/run`** | Partially isolated. Firejail blacklists `/run/dbus`, `/run/user`, `/run/systemd/private`, `/run/containerd` but allows munge socket. Bwrap exposes only `/run/munge`. Landlock allows all of `/run`. |
-| **User enumeration** | bwrap/firejail: filtered (`FILTER_PASSWD=true` — bwrap overlays `/etc/passwd` + nsswitch; firejail blocks NSS daemon sockets). Landlock: not filtered. |
-| **tmux** | Outer tmux socket blocked by `/tmp` isolation (exposing it would allow sandbox escape). Experimental: a `bin/tmux` wrapper enables nested tmux with `Ctrl-a` prefix. Requires `BIND_DEV_PTS=true` on kernels < 5.4 (see Known Limitations). |
+| **Network** | Not isolated — Slurm needs network for munge authentication |
+| **PID namespace** | Isolated by bwrap/firejail. Not by Landlock. |
+| **`/run`** | bwrap: only `/run/munge`. Firejail: blacklists dbus/systemd/containerd. Landlock: all of `/run`. |
+| **User enumeration** | bwrap/firejail: filtered (`FILTER_PASSWD=true`). Landlock: not filtered. |
+| **tmux** | Outer tmux blocked (escape risk). Nested tmux available with `Ctrl-a` prefix. |
 
 ---
 
 ## Slurm Integration
 
-### Transparent Wrapping
+Inside the sandbox, `sbatch` and `srun` are transparently replaced by wrapper scripts (via PATH shadowing) that ensure compute-node jobs inherit the sandbox. The agent calls `sbatch` and `srun` as normal — no special paths needed.
 
-Inside the sandbox, `sbatch` and `srun` are **automatically replaced** by wrapper scripts that inject the sandbox on the compute node. The sandbox prepends `~/.claude/sandbox/bin/` to `PATH`, so the wrappers shadow `/usr/bin/sbatch` and `/usr/bin/srun`. The agent (and any scripts it runs) just calls `sbatch` and `srun` as normal — the sandboxing happens transparently.
-
-```bash
-# Inside the sandbox, these just work — no special paths needed:
-sbatch --wrap="python train.py"
-sbatch my_job.sh
-srun -n 4 python train.py
-```
-
-The wrappers pass all flags through unchanged and call the real Slurm binaries internally.
-
-### How the Wrappers Work
-
-**sbatch:** In `--wrap` mode, the command string is wrapped in a sandbox call. In script mode, `#SBATCH` directives are extracted from the original script, a wrapper script is generated that calls the sandbox with the original script as payload, and the wrapper is submitted to the real `sbatch`.
-
-**srun:** The wrapper separates srun flags from the user command (with or without a `--` separator), then calls the real `srun` with the sandbox wrapping the command on the compute node.
-
-### Protection
-
-**Bwrap backend:** The sandbox directory (`~/.claude/sandbox/`) is mounted **read-only** — the agent cannot modify wrapper scripts, config, or bin stubs. The real Slurm binaries at `/usr/bin/sbatch` and `/usr/bin/srun` are **relocated** to an obscure internal path and replaced with redirector scripts, so even calling `/usr/bin/sbatch` by absolute path goes through the sandbox wrappers.
-
-**Firejail backend:** The sandbox directory is whitelisted read-only inside firejail's mount namespace. Slurm wrappers work via PATH shadowing (same as landlock). The real `/usr/bin/sbatch` remains directly callable but is covered by the PATH wrappers in normal agent usage.
-
-**Landlock backend:** Neither self-protection nor binary relocation is possible — Landlock has no mount namespace to overlay files or make subdirectories read-only. The Slurm wrappers work via PATH shadowing only, and the real `/usr/bin/sbatch` remains directly callable. See [Admin Hardening](ADMIN_HARDENING.md) for mitigations.
+- **sbatch wrapper:** Extracts `#SBATCH` directives, generates a wrapper script that runs the original script inside `sandbox-exec.sh`, and submits it to the real `sbatch`.
+- **srun wrapper:** Separates srun flags from the user command, then calls the real `srun` with the command wrapped in `sandbox-exec.sh`.
+- **bwrap** additionally **relocates** the real Slurm binaries to an obscure path and replaces them with redirectors, so even absolute-path calls (`/usr/bin/sbatch`) go through the wrappers. Firejail and Landlock rely on PATH shadowing only.
+- The sandbox directory is mounted **read-only** (bwrap/firejail) so the agent cannot tamper with wrappers. Landlock cannot protect the scripts (see [Admin Hardening](ADMIN_HARDENING.md)).
 
 ---
 
 ## Agent Awareness (CLAUDE.md)
 
-The sandbox automatically injects instructions into the agent's `CLAUDE.md` — **without modifying your actual CLAUDE.md file**. On each sandbox start, `~/.claude/sandbox-config/` is populated with a merged `CLAUDE.md` and `settings.json`, and `CLAUDE_CONFIG_DIR` is set so Claude Code reads from there instead of `~/.claude/` directly. Everything else in `~/.claude/` is symlinked through, so sessions, projects, and other state work normally. Files that were updated inside the sandbox (e.g. refreshed OAuth tokens) are preserved across restarts — they are only replaced with a symlink when the outside version is newer.
-
-This means the agent:
-
-- Knows it can only write to `$SANDBOX_PROJECT_DIR`
-- Knows to tell you which `sandbox.conf` setting to change if it needs access to something blocked
-- Won't waste time trying to access credentials that don't exist
-
-The sandbox-specific instructions live in `~/.claude/sandbox/sandbox-claude.md`. Edit that file to customize what the agent sees:
-
-```bash
-$EDITOR ~/.claude/sandbox/sandbox-claude.md
-```
+The sandbox injects instructions into the agent's `CLAUDE.md` **without modifying your actual file**. A per-session `~/.claude/sandbox-config/` directory is created with merged `CLAUDE.md` and `settings.json`; `CLAUDE_CONFIG_DIR` points there. Everything else in `~/.claude/` is symlinked through (sessions, tokens, etc.). The agent knows its write boundaries and which `sandbox.conf` settings to suggest changing if it needs blocked access. Customize via `~/.claude/sandbox/sandbox-claude.md`.
 
 ---
 
 ## Agent Teams / tmux (experimental)
 
-Claude Code agent teams require tmux. The outer tmux socket is blocked inside the sandbox (exposing it would allow escape via `tmux new-window 'unsandboxed command'`). Instead, a nested tmux runs inside the sandbox with a separate prefix key.
-
-**Requirements:** tmux inside the sandbox needs working pty allocation. On kernels >= 5.4, bwrap's minimal `/dev` provides this automatically. On older kernels (e.g. 4.15 on current gizmo nodes), you must enable `BIND_DEV_PTS=true` in `sandbox.conf`. This binds the host's `/dev` into the sandbox, which on kernels < 6.2 exposes a TIOCSTI escape risk (see Known Limitations and [Admin Hardening](ADMIN_HARDENING.md)).
-
-```bash
-# Start sandbox with nested tmux:
-~/.claude/sandbox/sandbox-exec.sh -- tmux new-session claude
-```
-
-The nested tmux uses **`Ctrl-a`** as prefix (instead of `Ctrl-b`) to avoid conflicts with the outer session. A minimal `sandbox-tmux.conf` is used instead of your `~/.tmux.conf` — custom configs with `run-shell` plugins may reference paths hidden by the sandbox. Edit `~/.claude/sandbox/sandbox-tmux.conf` to customize.
+The outer tmux socket is blocked (escape risk). A nested tmux runs inside the sandbox with `Ctrl-a` prefix: `sandbox-exec.sh -- tmux new-session claude`. On kernels < 5.4, set `BIND_DEV_PTS=true` in `sandbox.conf` for pty allocation (see Known Limitations). Customize via `~/.claude/sandbox/sandbox-tmux.conf`.
 
 ---
 
@@ -503,9 +305,7 @@ Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,a
 | Agent tampers with sandbox scripts | Read-only mount (bwrap/firejail) / not protected (Landlock) | **Hard** (bwrap/firejail) / **None** (Landlock) — see [Admin Hardening](ADMIN_HARDENING.md) §2 |
 | SSH escape (if `~/.ssh` exposed) | Not protected — sandbox does not restrict network | **None** — agent can SSH to localhost or other nodes to get an unsandboxed shell. **Do not expose `~/.ssh`** unless you understand this risk. |
 
-**Bottom line:** Filesystem isolation is kernel-enforced with all three backends. Bwrap and firejail provide the strongest isolation (mount namespace hides paths, PID namespace isolates processes, filesystem-based Unix sockets are hidden — though abstract sockets remain accessible via shared network namespace). Firejail additionally includes built-in seccomp syscall filtering (including io_uring). Landlock provides filesystem-only isolation without mount or PID namespaces, but works without any admin privileges. Slurm wrapping covers normal code paths but is a soft boundary in all backends. See [Admin Hardening Options](ADMIN_HARDENING.md) for stronger approaches.
-
-**How does this compare to Apptainer?** Apptainer's defaults are weaker than they appear — it shares PID space, network, `$HOME`, `/tmp`, and environment variables with the host, applies no seccomp filter, and its admin restrictions are [unenforceable in rootless mode](https://apptainer.org/docs/admin/main/configfiles.html). The sandbox provides stronger default containment for agent use cases, though neither tool isolates the network or blocks all dangerous syscalls. See [Sandbox vs. Apptainer Comparison](APPTAINER_COMPARISON.md) for a detailed analysis including CVE history and shared weaknesses.
+**Bottom line:** Filesystem isolation is kernel-enforced with all three backends. Bwrap/firejail add mount + PID namespace isolation. Landlock works without admin privileges but provides filesystem-only isolation. Slurm wrapping is a soft boundary in all backends — see [Admin Hardening](ADMIN_HARDENING.md) for stronger approaches. For comparison with Apptainer, see [Sandbox vs. Apptainer](APPTAINER_COMPARISON.md).
 
 ---
 
@@ -519,11 +319,7 @@ Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,a
 | **[Apptainer/Singularity](https://apptainer.org/)** | ✅ Yes (lmod) | Full container, HPC-native | Heavy — requires container images, path mapping |
 | **Docker** | ❌ No | Industry standard | Requires root daemon; not available on shared HPC |
 
-The sandbox auto-detects the best available backend (bwrap → firejail → landlock). All three provide kernel-enforced filesystem isolation through different mechanisms:
-
-- **Bwrap**: mount namespaces — strongest isolation with file overlays, Slurm binary relocation, and sandbox self-protection. Requires unprivileged user namespaces.
-- **Firejail**: setuid sandbox with mount namespaces, PID namespace, seccomp (including io_uring), and capability dropping. Works on Ubuntu 24.04+ where AppArmor blocks bwrap. Slurm wrapping via PATH shadowing only.
-- **Landlock**: kernel LSM — weakest isolation but works everywhere with kernel ≥ 5.13 and no admin privileges. No mount/PID namespace, no seccomp (except custom filter for kexec/io_uring), PATH shadowing only for Slurm.
+Auto-detection priority: bwrap → firejail → landlock. All three provide kernel-enforced filesystem isolation. Force a backend with `SANDBOX_BACKEND` in `sandbox.conf` or `--backend` on the command line.
 
 ### Known Limitations
 
