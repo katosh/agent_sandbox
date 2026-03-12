@@ -208,7 +208,7 @@ SLURM_EOF
 
     # Also block any SSH_* vars not in the explicit blocklist
     while IFS='=' read -r name _; do
-        [[ "$name" == SSH_* ]] && BWRAP_ARGS+=(--unsetenv "$name")
+        [[ "$name" == SSH_* ]] && BWRAP_ARGS+=(--unsetenv "$name") || true
     done < <(env)
 
 }
