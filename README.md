@@ -188,6 +188,24 @@ EXTRA_BLOCKED_PATHS=("/shared/lab/clinical_restricted")
 # and remove "GITHUB_TOKEN" "GH_TOKEN" from BLOCKED_ENV_VARS
 ```
 
+### Per-Project Overrides
+
+Different projects may need different data access. Create files in `conf.d/*.conf` to add mounts only when the project directory matches:
+
+```bash
+# conf.d/genomics.conf
+[[ "$_PROJECT_DIR" == /fh/fast/mylab/genomics/* ]] || return 0
+
+READONLY_MOUNTS+=(
+    "/fh/fast/shared/reference_genomes"
+)
+EXTRA_WRITABLE_PATHS+=(
+    "/fh/scratch/delete30/mylab/pipeline-output"
+)
+```
+
+These files are sourced after `sandbox.conf`, so `+=` appends to the global arrays. See `conf.d/example.conf`.
+
 > **SSH keys:** You *can* add `".ssh"` to `HOME_READONLY`, but this is **not recommended**. On HPC clusters with passwordless SSH between nodes, the agent can SSH to localhost for an unsandboxed shell. Prefer [deploy keys](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys) scoped to a single repo, or HTTPS with a fine-grained token (remove the token var from `BLOCKED_ENV_VARS`).
 
 #### Sandbox Permissions (settings.json)

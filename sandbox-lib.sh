@@ -144,13 +144,44 @@ _validate_path_array() {
         fi
     done
 }
-_validate_path_array ALLOWED_PROJECT_PARENTS "${ALLOWED_PROJECT_PARENTS[@]}"
-_validate_path_array READONLY_MOUNTS "${READONLY_MOUNTS[@]}"
-_validate_path_array HOME_READONLY "${HOME_READONLY[@]}"
-_validate_path_array HOME_WRITABLE "${HOME_WRITABLE[@]}"
-_validate_path_array BLOCKED_FILES "${BLOCKED_FILES[@]}"
-_validate_path_array EXTRA_BLOCKED_PATHS "${EXTRA_BLOCKED_PATHS[@]}"
-_validate_path_array EXTRA_WRITABLE_PATHS "${EXTRA_WRITABLE_PATHS[@]}"
+
+# ── Per-project config overrides ─────────────────────────────────
+#
+# Source all *.conf files in conf.d/ with _PROJECT_DIR set, so each
+# file can guard itself with:
+#   [[ "$_PROJECT_DIR" == /some/prefix/* ]] || return 0
+# and append to READONLY_MOUNTS, EXTRA_WRITABLE_PATHS, etc.
+#
+# Called from sandbox-exec.sh after PROJECT_DIR is resolved.
+
+load_project_config() {
+    local _PROJECT_DIR="$1"
+    export _PROJECT_DIR
+    local _conf_d="$SANDBOX_DIR/conf.d"
+    if [[ -d "$_conf_d" ]]; then
+        local _f
+        for _f in "$_conf_d"/*.conf; do
+            [[ -f "$_f" ]] || continue
+            if ! bash -n "$_f" 2>/dev/null; then
+                echo "Error: Syntax error in $_f" >&2
+                bash -n "$_f" >&2
+                exit 1
+            fi
+            # shellcheck disable=SC1090
+            source "$_f"
+        done
+    fi
+    unset _PROJECT_DIR
+
+    # Validate all path arrays (covers sandbox.conf + conf.d/ additions)
+    _validate_path_array ALLOWED_PROJECT_PARENTS "${ALLOWED_PROJECT_PARENTS[@]}"
+    _validate_path_array READONLY_MOUNTS "${READONLY_MOUNTS[@]}"
+    _validate_path_array HOME_READONLY "${HOME_READONLY[@]}"
+    _validate_path_array HOME_WRITABLE "${HOME_WRITABLE[@]}"
+    _validate_path_array BLOCKED_FILES "${BLOCKED_FILES[@]}"
+    _validate_path_array EXTRA_BLOCKED_PATHS "${EXTRA_BLOCKED_PATHS[@]}"
+    _validate_path_array EXTRA_WRITABLE_PATHS "${EXTRA_WRITABLE_PATHS[@]}"
+}
 
 # Fail early if HOME is unset (many paths depend on it).
 if [[ -z "${HOME:-}" ]]; then

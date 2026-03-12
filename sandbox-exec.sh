@@ -92,6 +92,9 @@ fi
 # Claude Code sees outside, so session resume works across both.
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
 
+# Load per-project config overrides (conf.d/*.conf)
+load_project_config "$PROJECT_DIR"
+
 # Validate
 if [[ ! -d "$PROJECT_DIR" ]]; then
     echo "Error: Project directory does not exist: $PROJECT_DIR" >&2
