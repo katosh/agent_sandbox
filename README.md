@@ -155,7 +155,7 @@ Claude starts in your project directory with full read access to the HPC but wri
 
 ## Configuration
 
-All sandbox permissions are in **one file**: `~/.claude/sandbox/sandbox.conf`. It's a bash file with well-documented arrays. Edit it with your favorite editor:
+All sandbox permissions are in **one file**: `~/.claude/sandbox/sandbox.conf`. Edit it to match your environment:
 
 ```bash
 $EDITOR ~/.claude/sandbox/sandbox.conf
@@ -163,9 +163,17 @@ $EDITOR ~/.claude/sandbox/sandbox.conf
 
 Changes take effect the next time you start a sandbox — no reinstall needed.
 
-### Common Customizations
+### Review your config
 
-All examples below are edits to `sandbox.conf`. See the comments in that file for the full list of options.
+The default config ships with example paths (e.g. `/fh/fast/setty_m`) that you should **replace with your own**. The principle of least privilege applies — the agent should only see data it actually needs for the task:
+
+- **`READONLY_MOUNTS`** — Every path listed here is readable by the agent. The system paths (`/usr`, `/lib`, `/bin`, `/sbin`, `/etc`) are required for basic functionality. Lab storage paths should be limited to what the agent needs — mounting your PI's entire fast directory is convenient but exposes all data under it. Consider mounting only the specific subdirectory the agent will work with.
+- **`SCRATCH_MOUNTS`** — Read-only scratch access. Remove entries the agent doesn't need.
+- **`EXTRA_BLOCKED_PATHS`** — Use this to carve out sensitive subdirectories from otherwise-visible mounts (e.g. clinical data under a lab storage path).
+- **`HOME_READONLY`** — Each entry is visible inside the sandbox. The defaults cover shell config and tools; entries are marked in `sandbox.conf` with why they're needed. Remove any you don't use.
+- **`BLOCKED_ENV_VARS`** — Check your environment (`env | grep -iE 'token|key|secret|pat|auth'`) and add any site-specific secrets.
+
+### Common Customizations
 
 ```bash
 # Block sensitive directories (overlaid with empty tmpfs)
