@@ -46,7 +46,7 @@ backend_prepare() {
     # ptmxmode=000). Exposes host /dev/pts — on kernels < 6.2 this
     # allows TIOCSTI keystroke injection into same-user terminals.
     # See sandbox.conf for details.
-    if [[ "${BIND_DEV_PTS:-false}" == "true" ]]; then
+    if _is_true "${BIND_DEV_PTS:-false}"; then
         BWRAP_ARGS+=(--dev-bind /dev /dev)
     else
         BWRAP_ARGS+=(--dev /dev)
@@ -54,7 +54,7 @@ backend_prepare() {
 
     # /tmp isolation: default is private tmpfs. Set PRIVATE_TMP=false in
     # sandbox.conf for MPI/NCCL workloads that need shared /tmp.
-    if [[ "${PRIVATE_TMP:-true}" == "true" ]]; then
+    if _is_true "${PRIVATE_TMP:-true}"; then
         BWRAP_ARGS+=(--tmpfs /tmp --chmod 1777 /tmp)
     else
         BWRAP_ARGS+=(--bind /tmp /tmp)
@@ -120,7 +120,6 @@ SLURM_EOF
     # in sandbox-lib.sh (sets CLAUDE_CONFIG_DIR to a per-session directory).
 
     for blocked in "${BLOCKED_FILES[@]}"; do
-        blocked="${blocked/\$HOME/$HOME}"
         if [[ -e "$blocked" ]]; then
             BWRAP_ARGS+=(--ro-bind /dev/null "$blocked")
         fi
@@ -162,7 +161,7 @@ SLURM_EOF
     # nscd socket (required for user/group lookups on NFS/LDAP systems).
     # When FILTER_PASSWD is enabled, skip nscd — we overlay nsswitch.conf
     # to use "files" only, so nscd is unnecessary and would leak LDAP data.
-    if [[ -d /run/nscd ]] && [[ "${FILTER_PASSWD:-true}" != "true" ]]; then
+    if [[ -d /run/nscd ]] && ! _is_true "${FILTER_PASSWD:-true}"; then
         BWRAP_ARGS+=(--ro-bind /run/nscd /run/nscd)
     fi
 
@@ -180,7 +179,7 @@ SLURM_EOF
     # --- Passwd/group filtering (LDAP/AD user enumeration prevention) ---
     # Overlay /etc/passwd, /etc/group, and /etc/nsswitch.conf with filtered
     # versions containing only system accounts + current user and disable LDAP.
-    if [[ "${FILTER_PASSWD:-true}" == "true" ]]; then
+    if _is_true "${FILTER_PASSWD:-true}"; then
         generate_filtered_passwd
         if [[ -n "${_FILTERED_PASSWD:-}" && -f "${_FILTERED_PASSWD:-}" ]]; then
             BWRAP_ARGS+=(--ro-bind "$_FILTERED_PASSWD" /etc/passwd)

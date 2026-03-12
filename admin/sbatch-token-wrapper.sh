@@ -35,6 +35,18 @@ if [[ ! -x "$REAL_SBATCH" ]]; then
     REAL_SBATCH=/usr/bin/sbatch
 fi
 
+# Guard against infinite loop: if REAL_SBATCH points back to this script
+# (e.g., admin forgot to move the real binary), bail out with a clear error.
+_self="$(readlink -f "${BASH_SOURCE[0]}")"
+_target="$(readlink -f "$REAL_SBATCH" 2>/dev/null || echo "")"
+if [[ "$_self" == "$_target" ]]; then
+    echo "FATAL: sbatch-token-wrapper.sh would exec itself (infinite loop)." >&2
+    echo "  REAL_SBATCH=$REAL_SBATCH resolves to this script." >&2
+    echo "  Did you forget to move the real sbatch binary?" >&2
+    echo "  Expected: sudo mv /usr/bin/sbatch /usr/libexec/slurm/sbatch" >&2
+    exit 1
+fi
+
 # Strip any _SANDBOX_BYPASS from --export= flags (prevent manual injection
 # via command line, which would be visible in the process table).
 ARGS=()
@@ -54,6 +66,25 @@ done
 
 # Clear any _SANDBOX_BYPASS from the inherited environment
 unset _SANDBOX_BYPASS
+
+# Runtime check: warn if eBPF token protection is not loaded.
+# Without it, sandboxed processes can read the token and bypass enforcement.
+if [[ ! -d /sys/fs/bpf/token_protect ]]; then
+    echo "WARNING: eBPF token protection not loaded. Sandbox enforcement is weakened." >&2
+    echo "  Run: sudo admin/load-token-protect.sh" >&2
+fi
+
+# Inode drift check: warn if the token file's identity has changed since
+# the eBPF program was loaded (e.g., token was regenerated).
+if [[ -f "${TOKEN_FILE}.identity" && -f "$TOKEN_FILE" ]]; then
+    _cur_dev=$(python3 -c "import os; st=os.stat('$TOKEN_FILE'); print((os.major(st.st_dev)<<20)|os.minor(st.st_dev))" 2>/dev/null || echo "")
+    _cur_ino=$(stat -c %i "$TOKEN_FILE" 2>/dev/null || echo "")
+    _expected=$(cat "${TOKEN_FILE}.identity" 2>/dev/null || echo "")
+    if [[ -n "$_cur_dev" && -n "$_cur_ino" && "$_expected" != "$_cur_dev $_cur_ino" ]]; then
+        echo "WARNING: Token file identity changed since eBPF was loaded." >&2
+        echo "  eBPF protects the old inode. Re-run: sudo admin/load-token-protect.sh" >&2
+    fi
+fi
 
 # Try to read the token. Succeeds for normal users, fails for sandboxed
 # processes (eBPF returns EACCES when no_new_privs is set).

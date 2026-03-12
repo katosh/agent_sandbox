@@ -129,6 +129,16 @@ PASSTHROUGH_ENV_VARS=(
     HOMEBREW_PREFIX HOMEBREW_CELLAR HOMEBREW_REPOSITORY
 )
 
+# ── Helpers: boolean normalization ─────────────────────────────
+# Accept true/True/TRUE/yes/1 as truthy; everything else is false.
+# Used for all boolean config values to prevent silent misconfiguration.
+_is_true() {
+    case "${1,,}" in  # bash 4+ lowercase
+        true|yes|1) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # ── Load user config ────────────────────────────────────────────
 
 # Preserve any SANDBOX_BACKEND set via environment or --backend flag
@@ -136,6 +146,13 @@ PASSTHROUGH_ENV_VARS=(
 _SANDBOX_BACKEND_OVERRIDE="${SANDBOX_BACKEND:-}"
 
 if [[ -f "$SANDBOX_CONF" ]]; then
+    # Validate syntax before sourcing to give a clear error instead of
+    # a cryptic bash parse failure that silently skips all config.
+    if ! bash -n "$SANDBOX_CONF" 2>/dev/null; then
+        echo "Error: Syntax error in $SANDBOX_CONF" >&2
+        bash -n "$SANDBOX_CONF" >&2
+        exit 1
+    fi
     # shellcheck disable=SC1090
     source "$SANDBOX_CONF"
 fi
@@ -143,6 +160,43 @@ fi
 # Restore explicit backend override (env/CLI takes precedence over config)
 if [[ -n "$_SANDBOX_BACKEND_OVERRIDE" ]]; then
     SANDBOX_BACKEND="$_SANDBOX_BACKEND_OVERRIDE"
+fi
+
+# ── Validate config ──────────────────────────────────────────────
+
+# Warn about critical READONLY_MOUNTS that are missing from config.
+# Without these, the sandbox starts but almost nothing works inside it.
+for _critical_mount in /usr /lib /bin /sbin /etc; do
+    _found=false
+    for _m in "${READONLY_MOUNTS[@]}"; do
+        if [[ "$_m" == "$_critical_mount" ]]; then _found=true; break; fi
+    done
+    if ! $_found && [[ -d "$_critical_mount" ]]; then
+        echo "WARNING: $_critical_mount is not in READONLY_MOUNTS. The sandbox may not function correctly." >&2
+    fi
+done
+
+# Warn about critical HOME_WRITABLE entries required by Claude Code.
+for _critical_home in ".claude" ".claude.json"; do
+    _found=false
+    for _hw in "${HOME_WRITABLE[@]}"; do
+        if [[ "$_hw" == "$_critical_home" ]]; then _found=true; break; fi
+    done
+    if ! $_found; then
+        echo "WARNING: $HOME/$_critical_home is not in HOME_WRITABLE. Claude Code may not function correctly." >&2
+    fi
+done
+
+# Warn when Landlock backend is selected but unsupported features are enabled.
+if [[ "${SANDBOX_BACKEND:-auto}" == "landlock" ]]; then
+    if _is_true "${FILTER_PASSWD:-true}"; then
+        echo "WARNING: FILTER_PASSWD=true has no effect with the Landlock backend (no mount namespace)." >&2
+        echo "  User enumeration prevention requires bwrap or firejail." >&2
+    fi
+    if [[ ${#BLOCKED_FILES[@]} -gt 0 ]]; then
+        echo "WARNING: BLOCKED_FILES has no effect with the Landlock backend." >&2
+        echo "  Individual file blocking requires bwrap or firejail." >&2
+    fi
 fi
 
 # Auto-discover bypass token from admin wrapper config if not set explicitly
@@ -161,7 +215,10 @@ validate_project_dir() {
     local dir="$1"
     for parent in "${ALLOWED_PROJECT_PARENTS[@]}"; do
         parent="${parent/\$HOME/$HOME}"
-        if [[ "$dir" == "$parent"* ]]; then
+        # Exact match or proper subdirectory (with / boundary).
+        # Without the boundary check, parent=/home/alice would
+        # incorrectly match dir=/home/alicebob/project.
+        if [[ "$dir" == "$parent" || "$dir" == "$parent/"* ]]; then
             return 0
         fi
     done
@@ -184,7 +241,7 @@ validate_project_dir() {
 # Backends that support file overlays (bwrap) use these directly.
 
 generate_filtered_passwd() {
-    [[ "${FILTER_PASSWD:-true}" == "true" ]] || return 0
+    _is_true "${FILTER_PASSWD:-true}" || return 0
 
     local tmpdir="$SANDBOX_DIR/.passwd-filter"
     mkdir -p "$tmpdir"

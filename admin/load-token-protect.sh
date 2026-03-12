@@ -72,6 +72,11 @@ DEV_BYTES=$(python3 -c "import struct; print(' '.join(f'0x{x:02x}' for x in stru
 INO_BYTES=$(python3 -c "import struct; print(' '.join(f'0x{x:02x}' for x in struct.pack('<Q', $TOKEN_INO)))")
 bpftool map update id "$MAP_ID" key 0x00 0x00 0x00 0x00 value $DEV_BYTES $INO_BYTES
 
+# Write a sidecar file so other components can detect stale state.
+# If the token file is regenerated (new inode), the wrappers can compare.
+echo "$TOKEN_DEV $TOKEN_INO" > "${TOKEN_FILE}.identity"
+chmod 0644 "${TOKEN_FILE}.identity"
+
 echo "token_protect: loaded (dev=$TOKEN_DEV ino=$TOKEN_INO file=$TOKEN_FILE)"
 
 # Self-test: verify the eBPF actually blocks token reads for sandboxed

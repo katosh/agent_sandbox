@@ -50,9 +50,10 @@ function slurm_job_submit(job_desc, part_list, submit_uid)
         return slurm.SUCCESS
     end
 
-    -- Check for bypass token
+    -- Check for bypass token (empty token = no bypass, to prevent
+    -- misconfiguration where an empty file accidentally matches)
     local expected = read_token()
-    if expected and job_desc.environment then
+    if expected and expected ~= "" and job_desc.environment then
         local provided = job_desc.environment["_SANDBOX_BYPASS"]
         if provided == expected then
             slurm.log_info("job_submit/sandbox: uid %d bypass token valid", submit_uid)

@@ -60,6 +60,9 @@ sandbox() {
     OUTPUT=$(echo "$raw" | grep -v \
         -e '^Warning: landlock_add_rule' \
         -e '^Warning: Restoring stale backup' \
+        -e '^WARNING: ' \
+        -e '^  User enumeration' \
+        -e '^  Individual file' \
         -e '^Parent pid ' \
         -e '^Child process initialized' \
         -e '^Parent is shutting down')

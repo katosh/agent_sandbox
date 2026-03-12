@@ -93,7 +93,7 @@ backend_prepare() {
     # Enabled by default for security (prevents cross-session /tmp leakage).
     # Disable via PRIVATE_TMP=false in sandbox.conf if MPI, NCCL, or other
     # multi-process frameworks need shared /tmp for inter-rank communication.
-    if [[ "${PRIVATE_TMP:-true}" == "true" ]]; then
+    if _is_true "${PRIVATE_TMP:-true}"; then
         FIREJAIL_ARGS+=(--private-tmp)
     fi
 
@@ -138,7 +138,7 @@ backend_prepare() {
     # Blacklist sockets used by NSS daemons that proxy LDAP/AD queries:
     # nscd (caching), nslcd (LDAP), sssd (AD/LDAP/Kerberos).
     # Without these sockets, getent passwd returns only local users.
-    if [[ "${FILTER_PASSWD:-true}" == "true" ]]; then
+    if _is_true "${FILTER_PASSWD:-true}"; then
         for _nss_sock in /run/nscd /run/nslcd /var/run/nscd /var/run/nslcd \
                          /run/sssd /var/lib/sss/pipes; do
             if [[ -e "$_nss_sock" ]]; then
@@ -210,7 +210,6 @@ backend_prepare() {
 
     # --- Blocked files ---
     for blocked in "${BLOCKED_FILES[@]}"; do
-        blocked="${blocked/\$HOME/$HOME}"
         if [[ -e "$blocked" ]]; then
             FIREJAIL_ARGS+=(--blacklist="$blocked")
         fi
