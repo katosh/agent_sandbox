@@ -242,6 +242,16 @@ _load_untrusted_config() {
         exit 1
     fi
 
+    # Warn about unknown variable assignments (static check — no eval).
+    # Catches stale config from older versions without runtime side effects.
+    local _known_vars=" $(printf '%s ' "${_CONFIG_ARRAYS[@]}" "${_CONFIG_SCALARS[@]}") "
+    local _unknown_var
+    while IFS= read -r _unknown_var; do
+        [[ -n "$_unknown_var" ]] || continue
+        [[ "$_known_vars" == *" $_unknown_var "* ]] || \
+            echo "WARNING: ${_label} sets unknown variable '${_unknown_var}' (not a recognized sandbox option — ignored)." >&2
+    done < <(grep -oE '^[A-Z_][A-Z_0-9]*\+?=' "$_conf" | sed 's/+\?=$//' | sort -u)
+
     # Serialize current state for the subprocess
     local _parent_state
     _parent_state="$(declare -p "${_CONFIG_ARRAYS[@]}" "${_CONFIG_SCALARS[@]}" 2>/dev/null || true)"
@@ -272,7 +282,7 @@ _load_untrusted_config() {
         # function, this calls the attacker'\''s code — but the parent
         # validates the output before eval'\''ing it (see below).
         declare -p '"$_var_names"' 2>/dev/null
-    ' -- "$_parent_state" "$_conf" )" || _exit_code=$?
+    ' -- "$_parent_state" "$_conf" "$_label" )" || _exit_code=$?
 
     if [[ $_exit_code -ne 0 ]]; then
         echo "WARNING: ${_label} exited with code ${_exit_code} — using values it set before exiting." >&2

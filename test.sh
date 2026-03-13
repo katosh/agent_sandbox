@@ -1168,20 +1168,25 @@ else
 fi
 
 # ── K01: TIOCSTI ioctl blocked or /dev/pts isolated ──
+# Test on a sandbox-owned pty (not stdin) to avoid injecting keystrokes
+# into the host terminal.
 if sandbox bash -c '
     if [[ -d /dev/pts ]]; then
         host_pts=$(ls /dev/pts/ 2>/dev/null | grep -c "[0-9]")
         echo "PTS_COUNT=$host_pts"
         if command -v python3 &>/dev/null; then
             python3 -c "
-import fcntl, sys, os
+import fcntl, pty, os
+master, slave = pty.openpty()
 try:
-    # TIOCSTI = 0x5412
-    for c in \"id\\n\":
-        fcntl.ioctl(0, 0x5412, c.encode())
+    # TIOCSTI = 0x5412 — test on our own pty, not stdin
+    fcntl.ioctl(slave, 0x5412, b\"x\")
     print(\"TIOCSTI_SUCCEEDED\")
 except (OSError, IOError) as e:
     print(f\"TIOCSTI_BLOCKED:{e}\")
+finally:
+    os.close(master)
+    os.close(slave)
 " 2>&1
         else
             echo "NO_PYTHON"
@@ -1193,11 +1198,11 @@ except (OSError, IOError) as e:
     if echo "$OUTPUT" | grep -q "TIOCSTI_BLOCKED"; then
         pass "K01: TIOCSTI ioctl blocked inside sandbox"
     elif echo "$OUTPUT" | grep -q "TIOCSTI_SUCCEEDED"; then
-        # TIOCSTI on the sandbox's OWN pty is not a security issue — the
+        # TIOCSTI on a sandbox-owned pty is not a security issue — the
         # agent can only inject keystrokes into its own terminal.  The real
         # risk is host ptys, which requires BIND_DEV_PTS=true.  On kernels
-        # < 6.2 the ioctl is allowed on any open pty fd, so it succeeds on
-        # the sandbox's stdin even with --dev /dev (isolated devpts).
+        # < 6.2 the ioctl is allowed on any open pty fd, so it succeeds
+        # even with --dev /dev (isolated devpts).
         local _host_pts
         _host_pts=$(echo "$OUTPUT" | grep -oP 'PTS_COUNT=\K[0-9]+' || echo "0")
         if [[ "$_host_pts" -gt 0 ]]; then
