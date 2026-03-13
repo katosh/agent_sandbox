@@ -21,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 # Admin config path. Change during deployment if using a different location.
 _ADMIN_CONF="/opt/claude-sandbox/sandbox.conf"
+_ADMIN_DIR="${_ADMIN_CONF%/*}"
 
 # Source config (check: next to script → admin sandbox config)
 if [[ -f "$SCRIPT_DIR/sandbox-wrapper.conf" ]]; then
@@ -28,7 +29,7 @@ if [[ -f "$SCRIPT_DIR/sandbox-wrapper.conf" ]]; then
 elif [[ -f "$_ADMIN_CONF" ]]; then
     source "$_ADMIN_CONF"
 fi
-TOKEN_FILE="${TOKEN_FILE:-${_ADMIN_CONF%/*}/.sandbox-bypass-token}"
+TOKEN_FILE="${TOKEN_FILE:-$_ADMIN_DIR/.sandbox-bypass-token}"
 BPF_OBJ="$SCRIPT_DIR/token_protect.bpf.o"
 BPF_PIN="/sys/fs/bpf/token_protect"
 

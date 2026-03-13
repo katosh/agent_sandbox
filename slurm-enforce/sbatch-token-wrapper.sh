@@ -16,14 +16,20 @@
 #   sudo chmod +x /usr/bin/sbatch
 #
 # Config: sandbox-wrapper.conf, or the admin sandbox config (one file
-# for both sandbox + Slurm enforcement). Change ADMIN_CONF below if
+# for both sandbox + Slurm enforcement). Change _ADMIN_CONF below if
 # the admin sandbox is installed to a different path.
+
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 # Admin config path. Change during deployment if using a different location.
 # Not read from environment (an agent could redirect it to a controlled dir).
 _ADMIN_CONF="/opt/claude-sandbox/sandbox.conf"
+_ADMIN_DIR="${_ADMIN_CONF%/*}"
+
+# Clear env vars an agent could pre-set to influence config defaults
+unset TOKEN_FILE SANDBOX_BYPASS_TOKEN
 
 # Source configuration (check: next to script → admin sandbox config)
 if [[ -f "$SCRIPT_DIR/sandbox-wrapper.conf" ]]; then
@@ -33,7 +39,7 @@ elif [[ -f "$_ADMIN_CONF" ]]; then
 fi
 
 # Defaults if not set by config
-TOKEN_FILE="${TOKEN_FILE:-${_ADMIN_CONF%/*}/.sandbox-bypass-token}"
+TOKEN_FILE="${TOKEN_FILE:-$_ADMIN_DIR/.sandbox-bypass-token}"
 REAL_SBATCH="${REAL_SBATCH:-/usr/libexec/slurm/sbatch}"
 
 # Fall back to /usr/bin/sbatch if relocated binary doesn't exist
@@ -111,6 +117,11 @@ if [[ -f "${TOKEN_FILE}.identity" && -f "$TOKEN_FILE" ]]; then
         echo "  Re-run: sudo slurm-enforce/load-token-protect.sh" >&2
         exit 1
     fi
+fi
+
+# Warn if token file does not exist (all jobs will be sandboxed)
+if [[ ! -f "$TOKEN_FILE" ]]; then
+    echo "WARNING: TOKEN_FILE not found: $TOKEN_FILE — all jobs will be sandboxed." >&2
 fi
 
 # Try to read the token. Succeeds for normal users, fails for sandboxed

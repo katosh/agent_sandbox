@@ -10,8 +10,8 @@
 -- processes via eBPF LSM (denies read when PR_SET_NO_NEW_PRIVS is set).
 -- See ADMIN_HARDENING.md §1.
 --
--- Reads TOKEN_FILE and SANDBOX_EXEC from the admin sandbox config or
--- sandbox-wrapper.conf (same search order as all other components).
+-- Reads TOKEN_FILE and SANDBOX_EXEC from the admin sandbox config.
+-- Change ADMIN_CONF below if the admin sandbox is installed elsewhere.
 
 -- Parse config files (KEY="value" or KEY=value, ignoring comments/arrays)
 local function read_conf(path)

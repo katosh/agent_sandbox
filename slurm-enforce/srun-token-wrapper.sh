@@ -20,11 +20,17 @@
 # for both sandbox + Slurm enforcement). Change _ADMIN_CONF below if
 # the admin sandbox is installed to a different path.
 
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 # Admin config path. Change during deployment if using a different location.
 # Not read from environment (an agent could redirect it to a controlled dir).
 _ADMIN_CONF="/opt/claude-sandbox/sandbox.conf"
+_ADMIN_DIR="${_ADMIN_CONF%/*}"
+
+# Clear env vars an agent could pre-set to influence config defaults
+unset TOKEN_FILE SANDBOX_BYPASS_TOKEN SANDBOX_EXEC
 
 # Source configuration (check: next to script → admin sandbox config)
 if [[ -f "$SCRIPT_DIR/sandbox-wrapper.conf" ]]; then
@@ -34,7 +40,6 @@ elif [[ -f "$_ADMIN_CONF" ]]; then
 fi
 
 # Defaults if not set by config (derive paths from admin config location)
-_ADMIN_DIR="${_ADMIN_CONF%/*}"
 TOKEN_FILE="${TOKEN_FILE:-$_ADMIN_DIR/.sandbox-bypass-token}"
 REAL_SRUN="${REAL_SRUN:-/usr/libexec/slurm/srun}"
 SANDBOX_EXEC="${SANDBOX_EXEC:-$_ADMIN_DIR/sandbox-exec.sh}"
@@ -84,6 +89,11 @@ fi
 # If already inside a sandbox, just pass through — no need to nest.
 if [[ "${SANDBOX_ACTIVE:-}" == "1" ]]; then
     exec "$REAL_SRUN" "$@"
+fi
+
+# Warn if token file does not exist (all srun commands will be sandboxed)
+if [[ ! -f "$TOKEN_FILE" ]]; then
+    echo "WARNING: TOKEN_FILE not found: $TOKEN_FILE — all srun commands will be sandboxed." >&2
 fi
 
 # Try to read the token. Succeeds for normal users, fails for sandboxed

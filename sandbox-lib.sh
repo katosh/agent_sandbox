@@ -14,6 +14,13 @@
 
 set -euo pipefail
 
+# Require bash >= 4.4 for safe empty-array expansion under set -u.
+# (In bash < 4.4, "${empty_array[@]}" is an unbound variable error.)
+if [[ "${BASH_VERSINFO[0]}" -lt 4 ]] || { [[ "${BASH_VERSINFO[0]}" -eq 4 && "${BASH_VERSINFO[1]}" -lt 4 ]]; }; then
+    echo "Error: sandbox-lib.sh requires bash >= 4.4 (found ${BASH_VERSION})." >&2
+    exit 1
+fi
+
 SANDBOX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SANDBOX_CONF="${SANDBOX_CONF:-$SANDBOX_DIR/sandbox.conf}"
 
@@ -153,6 +160,10 @@ else
 fi
 
 # --- Helper: source a config file with syntax check ---
+# Note: bash -n is a usability check (catches typos), not a security gate.
+# Security comes from the re-apply block below. This function uses plain
+# 'source' (not 'builtin .') because it runs before user config — no
+# function-override concern yet.
 _source_config() {
     local _conf="$1"
     if ! bash -n "$_conf" 2>/dev/null; then
@@ -190,21 +201,32 @@ _snapshot_admin_config() {
     _ADMIN_TOKEN_FILE="${TOKEN_FILE:-}"
 }
 
-# --- Source configs ---
+# ── Phase 1: Source admin config ──────────────────────────────
 if [[ -n "$_ADMIN_CONF" && -f "$_ADMIN_CONF" ]]; then
     _source_config "$_ADMIN_CONF"
     _snapshot_admin_config
 fi
 
+# ── Phase 2: Source user config ──────────────────────────────
 if [[ -f "$_USER_CONF" ]]; then
     _source_config "$_USER_CONF"
 fi
 
-# --- Re-apply admin enforcement ---
+# Reset traps that user config may have installed (e.g., DEBUG trap
+# that fires on every statement and could tamper with merge variables).
+trap - DEBUG RETURN ERR EXIT
+
+# ── Phase 3: Re-apply admin enforcement ──────────────────────
 # After user config may have run arbitrary code, forcefully restore
 # admin-enforced values and merge user additions. This block is inline
 # (not in a function) so user config cannot override it.
-if [[ -n "$_ADMIN_CONF" && -f "$_ADMIN_CONF" ]]; then
+if [[ -n "$_ADMIN_CONF" ]]; then
+    # Guard: admin config must still exist (TOCTOU defense)
+    if [[ ! -f "$_ADMIN_CONF" ]]; then
+        echo "FATAL: Admin config disappeared: $_ADMIN_CONF" >&2
+        exit 1
+    fi
+
     # Capture merged state (admin + user additions)
     _MERGED_BLOCKED_FILES=("${BLOCKED_FILES[@]}")
     _MERGED_BLOCKED_ENV_VARS=("${BLOCKED_ENV_VARS[@]}")
@@ -247,7 +269,11 @@ if [[ -n "$_ADMIN_CONF" && -f "$_ADMIN_CONF" ]]; then
     # Uses 'builtin .' to bypass any function-override of 'source'.
     builtin . "$_ADMIN_CONF"
 
-    # Merge: admin base + user-only additions for enforced arrays
+    # Merge: admin base + user-only additions for enforced arrays.
+    # Uses eval for indirect array access — _arr is from a hardcoded list
+    # (not user input), so this is safe. Cannot use namerefs here because
+    # this block is intentionally not inside a function (local -n requires
+    # function scope).
     for _arr in BLOCKED_FILES BLOCKED_ENV_VARS EXTRA_BLOCKED_PATHS; do
         eval "_merged=(\"\${_MERGED_${_arr}[@]}\")"
         eval "_admin=(\"\${_ADMIN_${_arr}[@]}\")"
@@ -284,6 +310,7 @@ fi
 if [[ -n "$_SANDBOX_BACKEND_OVERRIDE" ]]; then
     SANDBOX_BACKEND="$_SANDBOX_BACKEND_OVERRIDE"
 fi
+unset _SANDBOX_BACKEND_OVERRIDE
 
 # ── Validate config ──────────────────────────────────────────────
 
@@ -300,6 +327,93 @@ _validate_path_array() {
     done
 }
 
+# ── Admin enforcement helper ─────────────────────────────────────
+#
+# Defined AFTER the inline enforcement block above — safe from user.conf
+# function overrides (the inline block already neutralized them). Called
+# by load_project_config() to enforce admin policy after conf.d overrides.
+# Uses namerefs (bash 4.3+) instead of eval.
+
+_enforce_admin_config() {
+    local _label="${1:-Config}"
+
+    if [[ ! -f "$_ADMIN_CONF" ]]; then
+        echo "FATAL: Admin config disappeared: $_ADMIN_CONF" >&2
+        exit 1
+    fi
+
+    # Save current state (post-user/project config)
+    local _saved_bf=("${BLOCKED_FILES[@]}")
+    local _saved_bev=("${BLOCKED_ENV_VARS[@]}")
+    local _saved_ebp=("${EXTRA_BLOCKED_PATHS[@]}")
+    local _saved_hw=("${HOME_WRITABLE[@]}")
+
+    # Warn about removed admin entries
+    local _a _item _found _aro
+    for _a in "${_ADMIN_BLOCKED_FILES[@]}"; do
+        _found=false
+        for _item in "${_saved_bf[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
+        $_found || echo "WARNING: ${_label} removed admin-enforced BLOCKED_FILES entry '${_a}' — restored." >&2
+    done
+    for _a in "${_ADMIN_BLOCKED_ENV_VARS[@]}"; do
+        _found=false
+        for _item in "${_saved_bev[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
+        $_found || echo "WARNING: ${_label} removed admin-enforced BLOCKED_ENV_VARS entry '${_a}' — restored." >&2
+    done
+    for _a in "${_ADMIN_EXTRA_BLOCKED_PATHS[@]}"; do
+        _found=false
+        for _item in "${_saved_ebp[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
+        $_found || echo "WARNING: ${_label} removed admin-enforced EXTRA_BLOCKED_PATHS entry '${_a}' — restored." >&2
+    done
+
+    # Warn about HOME_READONLY → HOME_WRITABLE escalation
+    for _aro in "${_ADMIN_HOME_READONLY[@]}"; do
+        for _item in "${_saved_hw[@]}"; do
+            [[ "$_item" == "$_aro" ]] && echo "WARNING: ${_label} moved admin HOME_READONLY entry '${_aro}' to HOME_WRITABLE — reverted." >&2
+        done
+    done
+
+    # Warn about scalar overrides
+    if [[ -n "$_ADMIN_SANDBOX_BYPASS_TOKEN" && "${SANDBOX_BYPASS_TOKEN:-}" != "$_ADMIN_SANDBOX_BYPASS_TOKEN" ]]; then
+        echo "WARNING: ${_label} changed SANDBOX_BYPASS_TOKEN — restored to admin value." >&2
+    fi
+    if [[ -n "$_ADMIN_TOKEN_FILE" && "${TOKEN_FILE:-}" != "$_ADMIN_TOKEN_FILE" ]]; then
+        echo "WARNING: ${_label} changed TOKEN_FILE — restored to admin value." >&2
+    fi
+
+    # Re-source admin config
+    builtin . "$_ADMIN_CONF"
+
+    # Merge: admin base + user/project additions
+    local _in_admin
+    for _item in "${_saved_bf[@]}"; do
+        _in_admin=false
+        for _a in "${_ADMIN_BLOCKED_FILES[@]}"; do [[ "$_item" == "$_a" ]] && { _in_admin=true; break; }; done
+        $_in_admin || BLOCKED_FILES+=("$_item")
+    done
+    for _item in "${_saved_bev[@]}"; do
+        _in_admin=false
+        for _a in "${_ADMIN_BLOCKED_ENV_VARS[@]}"; do [[ "$_item" == "$_a" ]] && { _in_admin=true; break; }; done
+        $_in_admin || BLOCKED_ENV_VARS+=("$_item")
+    done
+    for _item in "${_saved_ebp[@]}"; do
+        _in_admin=false
+        for _a in "${_ADMIN_EXTRA_BLOCKED_PATHS[@]}"; do [[ "$_item" == "$_a" ]] && { _in_admin=true; break; }; done
+        $_in_admin || EXTRA_BLOCKED_PATHS+=("$_item")
+    done
+
+    # Remove admin HOME_READONLY items from HOME_WRITABLE
+    local _clean_writable=() _is_admin_ro
+    for _item in "${_saved_hw[@]}"; do
+        _is_admin_ro=false
+        for _aro in "${_ADMIN_HOME_READONLY[@]}"; do
+            [[ "$_item" == "$_aro" ]] && { _is_admin_ro=true; break; }
+        done
+        $_is_admin_ro || _clean_writable+=("$_item")
+    done
+    HOME_WRITABLE=("${_clean_writable[@]}")
+}
+
 # ── Per-project config overrides ─────────────────────────────────
 #
 # Source all *.conf files in conf.d/ with _PROJECT_DIR set, so each
@@ -307,7 +421,8 @@ _validate_path_array() {
 #   [[ "$_PROJECT_DIR" == /some/prefix/* ]] || return 0
 # and append to READONLY_MOUNTS, EXTRA_WRITABLE_PATHS, etc.
 #
-# Called from sandbox-exec.sh after PROJECT_DIR is resolved.
+# Called once from sandbox-exec.sh after PROJECT_DIR is resolved.
+# Not designed for multiple calls — user+project additions accumulate.
 
 load_project_config() {
     local _PROJECT_DIR="$1"
@@ -325,82 +440,14 @@ load_project_config() {
             # shellcheck disable=SC1090
             source "$_f"
         done
+        # Reset traps that conf.d files may have installed
+        trap - DEBUG RETURN ERR EXIT
     fi
     unset _PROJECT_DIR
 
-    # Re-apply admin enforcement after conf.d overrides (same approach
-    # as the main config load — re-source admin, merge additions).
-    if [[ -n "${_ADMIN_CONF:-}" && -f "$_ADMIN_CONF" ]]; then
-        local _merged_bf=("${BLOCKED_FILES[@]}")
-        local _merged_bev=("${BLOCKED_ENV_VARS[@]}")
-        local _merged_ebp=("${EXTRA_BLOCKED_PATHS[@]}")
-        local _merged_hw=("${HOME_WRITABLE[@]}")
-
-        # Warn about removed admin entries
-        local _item _a _found _aro
-        for _a in "${_ADMIN_BLOCKED_FILES[@]}"; do
-            _found=false
-            for _item in "${_merged_bf[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-            $_found || echo "WARNING: Project config removed admin-enforced BLOCKED_FILES entry '${_a}' — restored." >&2
-        done
-        for _a in "${_ADMIN_BLOCKED_ENV_VARS[@]}"; do
-            _found=false
-            for _item in "${_merged_bev[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-            $_found || echo "WARNING: Project config removed admin-enforced BLOCKED_ENV_VARS entry '${_a}' — restored." >&2
-        done
-        for _a in "${_ADMIN_EXTRA_BLOCKED_PATHS[@]}"; do
-            _found=false
-            for _item in "${_merged_ebp[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-            $_found || echo "WARNING: Project config removed admin-enforced EXTRA_BLOCKED_PATHS entry '${_a}' — restored." >&2
-        done
-        for _aro in "${_ADMIN_HOME_READONLY[@]}"; do
-            for _item in "${_merged_hw[@]}"; do
-                [[ "$_item" == "$_aro" ]] && echo "WARNING: Project config moved admin HOME_READONLY entry '${_aro}' to HOME_WRITABLE — reverted." >&2
-            done
-        done
-        if [[ -n "$_ADMIN_SANDBOX_BYPASS_TOKEN" && "${SANDBOX_BYPASS_TOKEN:-}" != "$_ADMIN_SANDBOX_BYPASS_TOKEN" ]]; then
-            echo "WARNING: Project config changed SANDBOX_BYPASS_TOKEN — restored to admin value." >&2
-        fi
-        if [[ -n "$_ADMIN_TOKEN_FILE" && "${TOKEN_FILE:-}" != "$_ADMIN_TOKEN_FILE" ]]; then
-            echo "WARNING: Project config changed TOKEN_FILE — restored to admin value." >&2
-        fi
-
-        builtin . "$_ADMIN_CONF"
-
-        # Restore user+project additions to enforced arrays
-        local _in_admin
-        for _item in "${_merged_bf[@]}"; do
-            _in_admin=false
-            for _a in "${_ADMIN_BLOCKED_FILES[@]}"; do
-                [[ "$_item" == "$_a" ]] && { _in_admin=true; break; }
-            done
-            $_in_admin || BLOCKED_FILES+=("$_item")
-        done
-        for _item in "${_merged_bev[@]}"; do
-            _in_admin=false
-            for _a in "${_ADMIN_BLOCKED_ENV_VARS[@]}"; do
-                [[ "$_item" == "$_a" ]] && { _in_admin=true; break; }
-            done
-            $_in_admin || BLOCKED_ENV_VARS+=("$_item")
-        done
-        for _item in "${_merged_ebp[@]}"; do
-            _in_admin=false
-            for _a in "${_ADMIN_EXTRA_BLOCKED_PATHS[@]}"; do
-                [[ "$_item" == "$_a" ]] && { _in_admin=true; break; }
-            done
-            $_in_admin || EXTRA_BLOCKED_PATHS+=("$_item")
-        done
-
-        # Remove admin HOME_READONLY items from HOME_WRITABLE
-        local _clean_hw=() _is_admin_ro
-        for _item in "${_merged_hw[@]}"; do
-            _is_admin_ro=false
-            for _aro in "${_ADMIN_HOME_READONLY[@]}"; do
-                [[ "$_item" == "$_aro" ]] && { _is_admin_ro=true; break; }
-            done
-            $_is_admin_ro || _clean_hw+=("$_item")
-        done
-        HOME_WRITABLE=("${_clean_hw[@]}")
+    # Re-apply admin enforcement after conf.d overrides
+    if [[ -n "${_ADMIN_CONF:-}" ]]; then
+        _enforce_admin_config "Project config"
     fi
 
     # Validate all path arrays (covers sandbox.conf + conf.d/ additions)
