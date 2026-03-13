@@ -21,6 +21,13 @@
 
 set -euo pipefail
 
+# Log to syslog (daemon.warning) so admins see issues without confusing users.
+# Falls back to stderr only if logger is unavailable.
+_log() {
+    local level="$1"; shift
+    logger -t sandbox-sbatch -p "daemon.${level}" -- "$*" 2>/dev/null || true
+}
+
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 # Admin config path. Change during deployment if using a different location.
@@ -52,10 +59,8 @@ fi
 _self="$(readlink -f "${BASH_SOURCE[0]}")"
 _target="$(readlink -f "$REAL_SBATCH" 2>/dev/null || echo "")"
 if [[ "$_self" == "$_target" ]]; then
-    echo "FATAL: sbatch-token-wrapper.sh would exec itself (infinite loop)." >&2
-    echo "  REAL_SBATCH=$REAL_SBATCH resolves to this script." >&2
-    echo "  Did you forget to move the real sbatch binary?" >&2
-    echo "  Expected: sudo mv /usr/bin/sbatch /usr/libexec/slurm/sbatch" >&2
+    _log err "FATAL: sbatch-token-wrapper.sh would exec itself (REAL_SBATCH=$REAL_SBATCH). Move the real binary: sudo mv /usr/bin/sbatch /usr/libexec/slurm/sbatch"
+    echo "sbatch: internal configuration error (see syslog)" >&2
     exit 1
 fi
 
@@ -98,30 +103,32 @@ done
 # Clear any _SANDBOX_BYPASS from the inherited environment
 unset _SANDBOX_BYPASS
 
-# Runtime check: warn if eBPF token protection is not loaded.
-# Without it, sandboxed processes can read the token and bypass enforcement.
-if [[ ! -d /sys/fs/bpf/token_protect ]]; then
-    echo "WARNING: eBPF token protection not loaded. Sandbox enforcement is weakened." >&2
-    echo "  Run: sudo slurm-enforce/load-token-protect.sh" >&2
-fi
+# Skip eBPF and identity checks inside a sandbox — mount namespaces change
+# device/inode numbers, causing false positives. Inside the sandbox, the
+# eBPF + filesystem hiding already prevent token reads; these checks are
+# only useful on the host.
+if [[ "${SANDBOX_ACTIVE:-}" != "1" ]]; then
+    # Runtime check: warn if eBPF token protection is not loaded.
+    if [[ ! -d /sys/fs/bpf/token_protect ]]; then
+        _log warning "eBPF token protection not loaded — sandbox enforcement weakened. Run: sudo slurm-enforce/load-token-protect.sh"
+    fi
 
-# Inode drift check: warn if the token file's identity has changed since
-# the eBPF program was loaded (e.g., token was regenerated).
-if [[ -f "${TOKEN_FILE}.identity" && -f "$TOKEN_FILE" ]]; then
-    _cur_dev=$(python3 -c "import os,sys; st=os.stat(sys.argv[1]); print((os.major(st.st_dev)<<20)|os.minor(st.st_dev))" "$TOKEN_FILE" 2>/dev/null || echo "")
-    _cur_ino=$(stat -c %i "$TOKEN_FILE" 2>/dev/null || echo "")
-    _expected=$(cat "${TOKEN_FILE}.identity" 2>/dev/null || echo "")
-    if [[ -n "$_cur_dev" && -n "$_cur_ino" && "$_expected" != "$_cur_dev $_cur_ino" ]]; then
-        echo "FATAL: Token file identity changed since eBPF was loaded." >&2
-        echo "  eBPF protects the old inode, not the current file." >&2
-        echo "  Re-run: sudo slurm-enforce/load-token-protect.sh" >&2
-        exit 1
+    # Inode drift check: token file regenerated but eBPF map not updated.
+    if [[ -f "${TOKEN_FILE}.identity" && -f "$TOKEN_FILE" ]]; then
+        _cur_dev=$(python3 -c "import os,sys; st=os.stat(sys.argv[1]); print((os.major(st.st_dev)<<20)|os.minor(st.st_dev))" "$TOKEN_FILE" 2>/dev/null || echo "")
+        _cur_ino=$(stat -c %i "$TOKEN_FILE" 2>/dev/null || echo "")
+        _expected=$(cat "${TOKEN_FILE}.identity" 2>/dev/null || echo "")
+        if [[ -n "$_cur_dev" && -n "$_cur_ino" && "$_expected" != "$_cur_dev $_cur_ino" ]]; then
+            _log err "Token file identity changed since eBPF was loaded (expected: $_expected, got: $_cur_dev $_cur_ino). Re-run: sudo slurm-enforce/load-token-protect.sh"
+            # Don't exit — still submit the job. The eBPF protects the old
+            # inode; the new token is unprotected but jobs still work.
+        fi
     fi
 fi
 
-# Warn if token file does not exist (all jobs will be sandboxed)
+# Token file missing — all jobs will be sandboxed (log, don't tell user)
 if [[ ! -f "$TOKEN_FILE" ]]; then
-    echo "WARNING: TOKEN_FILE not found: $TOKEN_FILE — all jobs will be sandboxed." >&2
+    _log warning "TOKEN_FILE not found: $TOKEN_FILE — all jobs will be sandboxed"
 fi
 
 # Try to read the token. Succeeds for normal users, fails for sandboxed

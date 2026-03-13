@@ -268,7 +268,16 @@ _load_untrusted_config() {
             echo "  File: $_conf" >&2
             return 1
         fi
-        # Apply extracted values
+        # Apply extracted values to GLOBAL scope.
+        # declare -p output produces 'declare -a VAR=(...)' for arrays and
+        # 'declare -- VAR="..."' for scalars. Plain 'declare' inside a function
+        # creates LOCAL variables, so the changes would never reach global scope.
+        # Fix: add -g flag to make declarations global.
+        _result="$(echo "$_result" | sed \
+            -e 's/^declare -a /declare -ga /' \
+            -e 's/^declare -A /declare -gA /' \
+            -e 's/^declare -- /declare -g -- /' \
+            -e 's/^declare -x /declare -gx /')"
         eval "$_result"
     fi
 }
@@ -434,6 +443,12 @@ _source_trusted_config() {
 
 # --- Snapshot admin config values after loading ---
 _snapshot_admin_config() {
+    # Auto-discover token path before snapshotting, so the admin value
+    # is captured and enforced through _enforce_admin_policy().
+    if [[ -z "${SANDBOX_BYPASS_TOKEN:-}" && -n "${TOKEN_FILE:-}" ]]; then
+        SANDBOX_BYPASS_TOKEN="$TOKEN_FILE"
+    fi
+
     _ADMIN_BLOCKED_FILES=("${BLOCKED_FILES[@]}")
     _ADMIN_BLOCKED_ENV_VARS=("${BLOCKED_ENV_VARS[@]}")
     _ADMIN_EXTRA_BLOCKED_PATHS=("${EXTRA_BLOCKED_PATHS[@]}")

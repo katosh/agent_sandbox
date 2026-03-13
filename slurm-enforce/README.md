@@ -182,6 +182,34 @@ change. The wrappers read the token (eBPF allows it) and either inject it
 the wrappers cannot read the token — sbatch submits without it (plugin
 sandboxes the job), srun wraps the command in the sandbox directly.
 
+## Logging
+
+The wrappers are silent toward users. All warnings and errors go to **syslog**
+(`daemon.*` facility, tags `sandbox-sbatch` / `sandbox-srun`) so admins can
+monitor issues without cluttering user-visible output.
+
+| Severity | Condition | Message (excerpt) |
+|----------|-----------|-------------------|
+| `err` | Wrapper would exec itself (infinite loop) | `sbatch-token-wrapper.sh would exec itself …` |
+| `err` | Token file inode changed since eBPF load | `Token file identity changed …` |
+| `warning` | eBPF program not loaded | `eBPF token protection not loaded …` |
+| `warning` | Token file missing | `TOKEN_FILE not found …` |
+| `warning` | `sandbox-exec.sh` not found (srun only) | `SANDBOX_EXEC not found …` |
+
+The only message a user ever sees is `"sbatch: internal configuration error
+(see syslog)"` in the infinite-loop case — a misconfiguration that prevents
+the job from running at all.
+
+**Viewing logs:**
+
+```bash
+# journald
+sudo journalctl -t sandbox-sbatch -t sandbox-srun --since "1 hour ago"
+
+# traditional syslog
+sudo grep -E 'sandbox-s(batch|run)' /var/log/syslog | tail -20
+```
+
 ## Verification
 
 No job submission required. The eBPF checks a single kernel property —

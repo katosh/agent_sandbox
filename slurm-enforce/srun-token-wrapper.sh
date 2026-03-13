@@ -22,6 +22,12 @@
 
 set -euo pipefail
 
+# Log to syslog (daemon.warning) so admins see issues without confusing users.
+_log() {
+    local level="$1"; shift
+    logger -t sandbox-srun -p "daemon.${level}" -- "$*" 2>/dev/null || true
+}
+
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 # Admin config path. Change during deployment if using a different location.
@@ -54,46 +60,39 @@ fi
 _self="$(readlink -f "${BASH_SOURCE[0]}")"
 _target="$(readlink -f "$REAL_SRUN" 2>/dev/null || echo "")"
 if [[ "$_self" == "$_target" ]]; then
-    echo "FATAL: srun-token-wrapper.sh would exec itself (infinite loop)." >&2
-    echo "  REAL_SRUN=$REAL_SRUN resolves to this script." >&2
-    echo "  Did you forget to move the real srun binary?" >&2
-    echo "  Expected: sudo mv /usr/bin/srun /usr/libexec/slurm/srun" >&2
+    _log err "FATAL: srun-token-wrapper.sh would exec itself (REAL_SRUN=$REAL_SRUN). Move the real binary: sudo mv /usr/bin/srun /usr/libexec/slurm/srun"
+    echo "srun: internal configuration error (see syslog)" >&2
     exit 1
 fi
 
-# Warn if sandbox-exec.sh is not found (srun wrapper needs it for sandboxing)
 if [[ ! -x "$SANDBOX_EXEC" ]]; then
-    echo "WARNING: SANDBOX_EXEC not found: $SANDBOX_EXEC" >&2
-    echo "  Sandboxed srun commands will fail. Check sandbox-wrapper.conf." >&2
+    _log warning "SANDBOX_EXEC not found: $SANDBOX_EXEC — sandboxed srun commands will fail"
 fi
 
-# Runtime check: warn if eBPF token protection is not loaded.
+# If already inside a sandbox, just pass through — no need to nest.
+# Skip eBPF/identity checks too — mount namespaces change device/inode numbers.
+if [[ "${SANDBOX_ACTIVE:-}" == "1" ]]; then
+    exec "$REAL_SRUN" "$@"
+fi
+
+# Runtime check: eBPF not loaded
 if [[ ! -d /sys/fs/bpf/token_protect ]]; then
-    echo "WARNING: eBPF token protection not loaded. Sandbox enforcement is weakened." >&2
-    echo "  Run: sudo slurm-enforce/load-token-protect.sh" >&2
+    _log warning "eBPF token protection not loaded — sandbox enforcement weakened. Run: sudo slurm-enforce/load-token-protect.sh"
 fi
 
-# Inode drift check: warn if the token file's identity has changed.
+# Inode drift check: token file regenerated but eBPF map not updated.
 if [[ -f "${TOKEN_FILE}.identity" && -f "$TOKEN_FILE" ]]; then
     _cur_dev=$(python3 -c "import os,sys; st=os.stat(sys.argv[1]); print((os.major(st.st_dev)<<20)|os.minor(st.st_dev))" "$TOKEN_FILE" 2>/dev/null || echo "")
     _cur_ino=$(stat -c %i "$TOKEN_FILE" 2>/dev/null || echo "")
     _expected=$(cat "${TOKEN_FILE}.identity" 2>/dev/null || echo "")
     if [[ -n "$_cur_dev" && -n "$_cur_ino" && "$_expected" != "$_cur_dev $_cur_ino" ]]; then
-        echo "FATAL: Token file identity changed since eBPF was loaded." >&2
-        echo "  eBPF protects the old inode, not the current file." >&2
-        echo "  Re-run: sudo slurm-enforce/load-token-protect.sh" >&2
-        exit 1
+        _log err "Token file identity changed since eBPF was loaded (expected: $_expected, got: $_cur_dev $_cur_ino). Re-run: sudo slurm-enforce/load-token-protect.sh"
     fi
 fi
 
-# If already inside a sandbox, just pass through — no need to nest.
-if [[ "${SANDBOX_ACTIVE:-}" == "1" ]]; then
-    exec "$REAL_SRUN" "$@"
-fi
-
-# Warn if token file does not exist (all srun commands will be sandboxed)
+# Token file missing
 if [[ ! -f "$TOKEN_FILE" ]]; then
-    echo "WARNING: TOKEN_FILE not found: $TOKEN_FILE — all srun commands will be sandboxed." >&2
+    _log warning "TOKEN_FILE not found: $TOKEN_FILE — all srun commands will be sandboxed"
 fi
 
 # Try to read the token. Succeeds for normal users, fails for sandboxed

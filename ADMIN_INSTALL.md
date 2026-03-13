@@ -128,6 +128,7 @@ READONLY_MOUNTS=(
 # Files inside readable/writable dirs that should be hidden from the agent
 # (overlaid with /dev/null — bwrap/firejail only, no effect on Landlock).
 BLOCKED_FILES=(
+    "/app/lib/agent-sandbox/.sandbox-bypass-token"  # defense-in-depth (also hidden by eBPF)
     "$HOME/.claude/settings.json"       # agent can't modify permission settings
 )
 

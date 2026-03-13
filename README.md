@@ -206,7 +206,7 @@ EXTRA_WRITABLE_PATHS+=(
 
 These files are sourced after `sandbox.conf`, so `+=` appends to the global arrays. See `conf.d/example.conf`.
 
-> **SSH keys:** You *can* add `".ssh"` to `HOME_READONLY`, but this is **not recommended**. On HPC clusters with passwordless SSH between nodes, the agent can SSH to localhost for an unsandboxed shell. Prefer [deploy keys](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys) scoped to a single repo, or HTTPS with a fine-grained token (remove the token var from `BLOCKED_ENV_VARS`).
+> **SSH keys:** `~/.ssh` is excluded from `HOME_READONLY` by default — the agent cannot see it. **Do not add it.** On HPC clusters with passwordless SSH between nodes, an agent with access to `~/.ssh` can SSH to localhost for an unsandboxed shell. If the agent needs git access, prefer [deploy keys](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys) scoped to a single repo, or HTTPS with a fine-grained token (remove the token var from `BLOCKED_ENV_VARS`).
 
 #### Sandbox Permissions (settings.json)
 

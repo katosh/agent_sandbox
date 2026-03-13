@@ -179,17 +179,26 @@ echo "2. Filesystem isolation"
 test_blocked_dir() {
     local dir="$1"
     local name="$2"
+    local _hint=""
+    # Check if the dir is in HOME_READONLY in an admin config — that's why it would be visible
+    if [[ -f /app/lib/agent-sandbox/sandbox.conf ]]; then
+        local _basename="${dir##*/}"
+        _basename="${_basename#.}"  # strip leading dot for matching
+        if grep -q "\"\.${_basename}\"" /app/lib/agent-sandbox/sandbox.conf 2>/dev/null; then
+            _hint=" — admin config has it in HOME_READONLY (remove to hide)"
+        fi
+    fi
 
     if has_mount_ns; then
         if sandbox test -d "$dir"; then
-            fail "$name is visible (should be hidden)"
+            fail "$name is visible (should be hidden)${_hint}"
         else
             pass "$name is hidden"
         fi
     else
         # Landlock: directory may exist but access is denied
         if sandbox bash -c "ls '$dir' 2>&1"; then
-            fail "$name is accessible (should be blocked)"
+            fail "$name is accessible (should be blocked)${_hint}"
         else
             if echo "$OUTPUT" | grep -qi "permission denied\|cannot open\|cannot access"; then
                 pass "$name is blocked (EACCES)"
@@ -877,7 +886,11 @@ else
         if [[ -n "$_TOKEN_PATH" && -f "$_TOKEN_PATH" ]]; then
             # Landlock sets NO_NEW_PRIVS — eBPF should deny the read
             if sandbox cat "$_TOKEN_PATH" 2>&1; then
-                fail "SANDBOX_BYPASS_TOKEN readable despite eBPF (Landlock)"
+                # eBPF is loaded but not blocking. This can happen if:
+                # - The eBPF program doesn't match this token path
+                # - The eBPF program checks a different condition than NoNewPrivs
+                # - The kernel version doesn't support the specific LSM hook
+                fail "SANDBOX_BYPASS_TOKEN readable despite eBPF (Landlock) — check eBPF program path match"
             else
                 if echo "$OUTPUT" | grep -qi "permission denied\|operation not permitted"; then
                     pass "SANDBOX_BYPASS_TOKEN protected by eBPF LSM (Landlock)"
