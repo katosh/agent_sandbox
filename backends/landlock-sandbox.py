@@ -146,6 +146,7 @@ def _bpf_jump(code, k, jt, jf):
     return struct.pack("HBBI", code, jt, jf, k)
 
 
+
 def install_seccomp_filter():
     """Install a seccomp-bpf filter blocking dangerous syscalls.
 

