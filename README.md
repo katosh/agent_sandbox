@@ -27,7 +27,7 @@ Docker provides strong isolation but requires root and is unavailable on shared 
 | **Starting Claude** | Must install and configure Claude Code inside each container image | `sandbox-exec.sh -- claude` — that's it. |
 | **Slurm integration** | Either Slurm is inaccessible inside the container — making interactive agents on the login node pointless since they can't submit compute jobs — or jobs escape the container and run unsandboxed on compute nodes, defeating the isolation entirely | `sbatch`/`srun` are transparently wrapped so compute-node jobs inherit the same sandbox restrictions |
 
-The sandbox gives you **container-grade filesystem isolation** with none of the path-mapping headaches. The agent sees the exact same filesystem as you, minus the secrets.
+The sandbox gives you **kernel-enforced filesystem isolation** with none of the path-mapping headaches. The agent sees the exact same filesystem as you, minus the secrets.
 
 ### The Slurm Problem
 
@@ -87,7 +87,8 @@ The installer:
 │   ├── bwrap.sh          # Bubblewrap backend (mount namespace isolation)
 │   ├── firejail.sh       # Firejail backend (setuid sandbox, namespaces + seccomp)
 │   ├── landlock.sh       # Landlock backend (LSM filesystem restrictions)
-│   └── landlock-sandbox.py  # Landlock syscall helper (Python)
+│   ├── landlock-sandbox.py  # Landlock syscall helper (Python)
+│   └── generate-seccomp.py  # Seccomp BPF filter generator (for bwrap)
 └── bin/
     ├── sbatch            # Shadows /usr/bin/sbatch inside sandbox
     └── srun              # Shadows /usr/bin/srun inside sandbox
@@ -228,7 +229,7 @@ The sandbox overlays `~/.claude/settings.json` to auto-allow tools (`Bash`, `Rea
 | **`/run` (system sockets)** | tmpfs + selective bind (munge, nscd, resolved) | Blacklist (dbus, systemd, containerd) | Full access |
 | **Abstract Unix sockets** | Accessible | Accessible | Accessible |
 | **IPC / `/dev/shm`** | Shared | Shared | Shared |
-| **Syscalls (seccomp)** | None by default | Built-in + io_uring + userfaultfd blocked | kexec + io_uring + userfaultfd + ptrace |
+| **Syscalls (seccomp)** | io_uring + userfaultfd + kexec blocked (generated BPF filter) | Built-in + io_uring + userfaultfd blocked | kexec + io_uring + userfaultfd + ptrace (kernel ≥ 5.13 only) |
 | **User enumeration** | Filtered (`FILTER_PASSWD`) | Filtered (`FILTER_PASSWD`) | Not filtered |
 | **Slurm wrappers** | PATH shadow + binary relocation | PATH shadow only | PATH shadow only |
 | **Sandbox self-protection** | Read-only mount | Read-only mount | Not protected |
@@ -331,12 +332,14 @@ Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,a
 | Agent reads other users' data | Only explicitly allowed paths are accessible | **Hard** |
 | Agent escapes via Unix sockets | Bwrap/firejail: filesystem-based sockets (e.g. `/run/dbus`) hidden by mount namespace, but abstract sockets (`@/org/...`) remain accessible (shared network namespace). Landlock: cannot block `AF_UNIX connect` | **Partial** (bwrap/firejail) / **None** (Landlock) |
 | Agent escapes via PID namespace | Bwrap/firejail: isolated PID namespace. Landlock: host PIDs visible | **Hard** (bwrap/firejail) / **None** (Landlock) |
-| Agent uses dangerous syscalls | Firejail: built-in seccomp + io_uring + userfaultfd blocked. Landlock: custom seccomp (kexec + io_uring + userfaultfd + ptrace). Bwrap: no seccomp by default | **Hard** (firejail/landlock) / **None** (bwrap) |
+| Agent uses dangerous syscalls | All backends block `io_uring`, `userfaultfd`, `kexec` via seccomp-bpf. Firejail: built-in. Landlock: custom filter in `landlock-sandbox.py` (requires kernel ≥ 5.13). Bwrap: generated filter via `generate-seccomp.py` | **Hard** — all backends |
 | Slurm job bypasses sandbox | PATH shadowing (all backends) + binary relocation (bwrap only) | **Soft** — firejail/Landlock have PATH shadowing only; munge auth available (see [Admin Hardening](ADMIN_HARDENING.md)) |
 | Agent tampers with sandbox scripts | Read-only mount (bwrap/firejail) / not protected (Landlock) | **Hard** (bwrap/firejail) / **None** (Landlock) — see [Admin Hardening](ADMIN_HARDENING.md) §2 |
 | SSH escape (if `~/.ssh` exposed) | Not protected — sandbox does not restrict network | **None** — agent can SSH to localhost or other nodes to get an unsandboxed shell. **Do not expose `~/.ssh`** unless you understand this risk. |
 
 **Bottom line:** Filesystem isolation is kernel-enforced with all three backends. Bwrap/firejail add mount + PID namespace isolation. Landlock works without admin privileges but provides filesystem-only isolation. Slurm wrapping is a soft boundary in all backends — see [Admin Hardening](ADMIN_HARDENING.md) for stronger approaches. For comparison with Apptainer, see [Sandbox vs. Apptainer](APPTAINER_COMPARISON.md).
+
+**Accepted risks (all backends):** Fileless execution via `memfd_create` (needed by CUDA/PyTorch/JAX). `/proc/net` information disclosure (needed for network stack). Abstract Unix sockets accessible (shared network namespace required for munge). See the [pentest reports](pentest/) for detailed findings and analysis per backend.
 
 ---
 
@@ -344,8 +347,8 @@ Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,a
 
 | Tool | Available? | Pros | Cons |
 |---|---|---|---|
-| **[Bubblewrap](https://github.com/containers/bubblewrap)** | ✅ Yes (Homebrew) | Mount namespace isolation, paths hidden entirely (ENOENT), file overlays, Slurm binary relocation, sandbox self-protection | Requires unprivileged user namespaces; blocked by AppArmor on Ubuntu 24.04+ without admin help |
-| **[Firejail](https://firejail.wordpress.com/)** | ✅ Yes (`apt install`) | Mount namespace (ENOENT), PID namespace, built-in seccomp + io_uring blocked, caps dropping, works when AppArmor blocks user namespaces | Requires setuid root binary |
+| **[Bubblewrap](https://github.com/containers/bubblewrap)** | ✅ Yes (Homebrew) | Mount namespace isolation, paths hidden entirely (ENOENT), file overlays, Slurm binary relocation, sandbox self-protection, seccomp via generated BPF filter (io_uring/userfaultfd/kexec) | Requires unprivileged user namespaces; blocked by AppArmor on Ubuntu 24.04+ without admin help |
+| **[Firejail](https://firejail.wordpress.com/)** | ✅ Yes (`apt install`) | Mount namespace (ENOENT), PID namespace, built-in seccomp + io_uring + userfaultfd blocked, caps dropping, works when AppArmor blocks user namespaces | Requires setuid root binary |
 | **[Landlock](https://docs.kernel.org/userspace-api/landlock.html)** | ✅ Yes (kernel ≥ 5.13) | No root or admin needed, works on Ubuntu 24.04 despite AppArmor, pure kernel LSM, no external dependencies (Python 3 only) | No mount namespace — blocked paths return EACCES not ENOENT, no file overlays, no PID isolation, no Slurm binary relocation, no sandbox self-protection, cannot block Unix socket connect (see [Admin Hardening](ADMIN_HARDENING.md)) |
 | **[Apptainer/Singularity](https://apptainer.org/)** | ✅ Yes (lmod) | Full container, HPC-native | Heavy — requires container images, path mapping |
 | **Docker** | ❌ No | Industry standard | Requires root daemon; not available on shared HPC |
@@ -363,10 +366,11 @@ Sorted by perceived severity (security impact first, then operational issues).
 | **Landlock** | Cannot block `AF_UNIX connect()` — agent can reach D-Bus, systemd sockets for potential sandbox escape | Use bwrap or firejail; or see [Admin Hardening](ADMIN_HARDENING.md) |
 | **Landlock** | No sandbox self-protection — agent can modify wrapper scripts. Current session is safe (kernel rules are irrevocable), but future sessions could be compromised | Use bwrap or firejail |
 | **Landlock** | No PID namespace — host processes visible via `/proc`. Agent could read `/proc/PID/environ` of same-UID processes (e.g. sbatch wrapper injecting bypass token) | Use bwrap or firejail for PID isolation; token exposure window is microseconds. A SPANK plugin would eliminate it entirely |
-| **bwrap** | No seccomp filter — `io_uring` and `userfaultfd` syscalls remain available (other dangerous syscalls mitigated by `no_new_privs` and PID namespace) | Add a seccomp filter — `io_uring` tools fall back gracefully (Docker 25.0+ blocks it too), and no HPC tools use `userfaultfd`. See [Admin Install](ADMIN_INSTALL.md#seccomp-for-bwrap) |
+| **bwrap** | Seccomp filter generated at runtime (`generate-seccomp.py`) rather than built-in — see [Seccomp for bwrap](ADMIN_INSTALL.md#seccomp-for-bwrap) | Verify the filter loads (no "seccomp" warnings on stderr at startup) |
 | **All** | `memfd_create` and `process_vm_readv/writev` not blocked by any backend (HPC compatibility). Docker's default seccomp profile makes the same trade-offs | Accepted trade-off. `memfd_create` needed by CUDA, PyTorch, JAX. `process_vm_readv/writev` needed by MPI (mitigated by PID namespace in bwrap/firejail). See [Admin Hardening](ADMIN_HARDENING.md) |
 | **bwrap** (`BIND_DEV_PTS=true`) | Host `/dev` exposure — required for tmux on kernels < 5.4. On kernels < 6.2, `TIOCSTI` ioctl allows keystroke injection into same-user terminals outside the sandbox | Default `false` (safe). Upgrade to kernel ≥ 5.4 to avoid the need, or ≥ 6.2 to disable TIOCSTI entirely |
 | **Landlock** | Host `/dev/pts/*` always visible (no mount namespace). On kernels < 6.2, `TIOCSTI` ioctl allows keystroke injection into same-user terminals — unlike bwrap, this is not opt-in | Kernel ≥ 6.2 disables TIOCSTI system-wide. Use bwrap or firejail for private `/dev` |
+| **All** | `~/.claude/` is writable (required for Claude to function — OAuth tokens, session state, settings). An agent in one project can read session transcripts from other projects under `~/.claude/projects/` | Inherent requirement — Claude cannot operate without write access to `~/.claude/`. Cross-project transcript access could be mitigated by per-project `~/.claude/` copies (adds setup complexity) |
 | **All** | `/dev/shm` is writable and shared (IPC namespace not isolated by default) — could be used for covert cross-sandbox communication | `firejail --ipc-namespace`, `bwrap --unshare-ipc` |
 | **Landlock** | User enumeration via LDAP/AD — `getent passwd` reveals all directory users | No mount namespace to overlay files or block sockets; set `FILTER_PASSWD=false` if LDAP lookups are needed |
 | **bwrap/Firejail** | `/tmp` isolated by default (`PRIVATE_TMP=true`) — breaks MPI shared-memory transport and NCCL inter-GPU sockets | Set `PRIVATE_TMP=false` in `sandbox.conf` for HPC multi-process workloads |

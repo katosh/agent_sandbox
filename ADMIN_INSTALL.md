@@ -321,7 +321,7 @@ The sandbox uses `--allusers` to disable firejail's built-in `/etc/passwd` filte
 | Sandbox self-protection | ✓ (scripts read-only via bind mount) | ✓ (scripts hidden via mount namespace) |
 | User enumeration filtering | ✓ (overlays `/etc/passwd` + `nsswitch.conf`, LDAP-safe) | Partial (blacklists NSS sockets, but breaks LDAP-only users) |
 | Slurm binary relocation | ✓ (overlays `/usr/bin/sbatch` with redirector) | PATH-based only (no overlay) |
-| Seccomp | Supported ([see below](#seccomp-for-bwrap)) | Built-in (`--seccomp` + `--caps.drop=all`) |
+| Seccomp | Generated BPF filter (`generate-seccomp.py`) — [see below](#seccomp-for-bwrap) | Built-in (`--seccomp` + `--caps.drop=all`) |
 | Internal state exposure | None | `/run/firejail/mnt/seccomp/` readable (reveals BPF filter) |
 | Attack surface | Minimal, no setuid | Setuid root binary on every node |
 | CVE history | [4 CVEs](https://www.opencve.io/cve?search=bubblewrap), 0 root exploits, none since 2020 | [18 CVEs](https://www.cvedetails.com/vulnerability-list/vendor_id-16191/Firejail.html), 12 local root exploits ([details](APPTAINER_COMPARISON.md#firejail-18-cves-12-are-local-root)) |
@@ -331,7 +331,7 @@ The sandbox uses `--allusers` to disable firejail's built-in `/etc/passwd` filte
 
 ## Seccomp Filter — HPC Compatibility
 
-The Landlock and firejail backends include seccomp filters that block dangerous syscalls. bwrap does not include one by default but supports loading a custom BPF filter via `--seccomp FD`.
+All three backends include seccomp filters that block dangerous syscalls. Firejail and Landlock have built-in filters; bwrap loads a generated BPF filter via `--seccomp FD` (see `generate-seccomp.py`).
 
 ### What is blocked
 
