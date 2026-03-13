@@ -35,10 +35,11 @@
 #     slurm user has a high UID (e.g., 64030), sbatch fails because it can't
 #     resolve SlurmUser. Fix: assign slurm a system-range UID (< 1000):
 #       sudo usermod -u 120 slurm && sudo groupmod -g 120 slurm
-#   - Firejail's default seccomp blacklist does not include io_uring or
-#     userfaultfd. We add them via --seccomp.drop (matching the Landlock
-#     backend's custom seccomp). userfaultfd is a kernel race exploitation
-#     primitive; Docker has always blocked it; no HPC tools use it.
+#   - Firejail's default seccomp blacklist does not include io_uring,
+#     userfaultfd, or kexec. We add them via --seccomp.drop (matching the
+#     Landlock and bwrap backends' seccomp filters). kexec is already
+#     blocked by --caps.drop=all (requires CAP_SYS_BOOT), but seccomp
+#     provides defense-in-depth.
 #     Note: firejail 0.9.72 seccomp is broken on aarch64 (filter loads but
 #     doesn't block). Works correctly on x86_64.
 #
@@ -72,7 +73,7 @@ backend_prepare() {
         --quiet
         --caps.drop=all
         --nonewprivs
-        --seccomp.drop=io_uring_setup,io_uring_enter,io_uring_register,userfaultfd
+        --seccomp.drop=io_uring_setup,io_uring_enter,io_uring_register,userfaultfd,kexec_load,kexec_file_load
         --nosound
         --no3d
         --restrict-namespaces
