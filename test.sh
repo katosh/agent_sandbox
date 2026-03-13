@@ -974,6 +974,34 @@ else
     skip "S03: Could not create symlink"
 fi
 
+# ── S04: Symlinked BLOCKED_FILES entry ──
+# If a BLOCKED_FILES path is a symlink, the sandbox must block the target.
+# bwrap: readlink -f + bind /dev/null. firejail: --blacklist resolves natively.
+# landlock: no file hiding (BLOCKED_FILES has no effect), so skip.
+if ! is_landlock; then
+    local _slink_dir="$PROJECT_DIR/.test-slink-blocked-$$"
+    mkdir -p "$_slink_dir"
+    echo "SENSITIVE" > "$_slink_dir/real_file"
+    ln -sf "$_slink_dir/real_file" "$_slink_dir/link_file"
+    # Temporarily add the symlink to BLOCKED_FILES via a conf.d snippet
+    local _slink_conf="$HOME/.claude/sandbox/conf.d/test-symlink-blocked-$$.conf"
+    mkdir -p "$HOME/.claude/sandbox/conf.d"
+    echo "BLOCKED_FILES+=( \"$_slink_dir/link_file\" )" > "$_slink_conf"
+    if sandbox bash -c "cat '$_slink_dir/link_file' 2>&1; echo EXIT=\$?"; then
+        if echo "$OUTPUT" | grep -qE "No such file|Permission denied|EXIT=[1-9]"; then
+            pass "S04: Symlinked BLOCKED_FILES entry is blocked"
+        else
+            fail "S04: Symlinked BLOCKED_FILES entry is readable" "$OUTPUT"
+        fi
+    else
+        pass "S04: Sandbox blocked access to symlinked BLOCKED_FILES entry"
+    fi
+    rm -f "$_slink_conf"
+    rm -rf "$_slink_dir"
+else
+    skip "S04: BLOCKED_FILES has no effect on Landlock (no mount namespace)"
+fi
+
 # ── H01: Hardlink /etc/passwd into project dir ──
 local _hlink="$PROJECT_DIR/.test-passwd-hardlink-$$"
 if ln /etc/passwd "$_hlink" 2>/dev/null; then
