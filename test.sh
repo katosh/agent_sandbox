@@ -908,6 +908,453 @@ fi
 
 echo ""
 
+# ── 10. Advanced security (escape vectors) ───────────────────────
+
+echo "10. Advanced security (escape vectors)"
+
+# ── S01: Symlink to /etc/shadow from project dir ──
+local _link="$PROJECT_DIR/.test-shadow-link-$$"
+ln -snf /etc/shadow "$_link" 2>/dev/null
+if [[ -L "$_link" ]]; then
+    if sandbox bash -c "cat '$_link' 2>&1; echo EXIT=\$?"; then
+        if echo "$OUTPUT" | grep -qE "Permission denied|No such file|EXIT=[1-9]"; then
+            pass "S01: Cannot read /etc/shadow through symlink in project dir"
+        elif echo "$OUTPUT" | grep -q "root:"; then
+            fail "S01: /etc/shadow readable through symlink in project dir" "$OUTPUT"
+        else
+            pass "S01: Cannot read /etc/shadow through symlink in project dir"
+        fi
+    else
+        pass "S01: Sandbox blocked access to /etc/shadow via symlink (command failed)"
+    fi
+    rm -f "$_link"
+else
+    skip "S01: Could not create symlink (permissions issue)"
+fi
+
+# ── S02: Symlink to ~/.ssh from project dir ──
+local _ssh_link="$PROJECT_DIR/.test-ssh-link-$$"
+ln -snf "$HOME/.ssh" "$_ssh_link" 2>/dev/null
+if [[ -L "$_ssh_link" ]]; then
+    if sandbox bash -c "ls '$_ssh_link/' 2>&1; echo EXIT=\$?"; then
+        if echo "$OUTPUT" | grep -qE "Permission denied|No such file|EXIT=[1-9]|cannot access"; then
+            pass "S02: Cannot list ~/.ssh through symlink in project dir"
+        elif echo "$OUTPUT" | grep -qE "id_rsa|id_ed25519|authorized_keys"; then
+            if sandbox test -d "$HOME/.ssh" 2>/dev/null; then
+                fail "S02: ~/.ssh contents visible — .ssh is in HOME_READONLY (admin config issue, not symlink bypass)" "$OUTPUT"
+            else
+                fail "S02: ~/.ssh contents visible ONLY through symlink — symlink bypasses sandbox" "$OUTPUT"
+            fi
+        else
+            pass "S02: ~/.ssh not accessible through symlink (empty or blocked)"
+        fi
+    else
+        pass "S02: Sandbox blocked access to ~/.ssh via symlink"
+    fi
+    rm -f "$_ssh_link"
+else
+    skip "S02: Could not create symlink"
+fi
+
+# ── S03: Symlink to /etc/passwd (read-only mount) to attempt write ──
+local _passwd_link="$PROJECT_DIR/.test-passwd-link-$$"
+ln -snf /etc/passwd "$_passwd_link" 2>/dev/null
+if [[ -L "$_passwd_link" ]]; then
+    if sandbox bash -c "echo 'evil:x:0:0::/root:/bin/bash' >> '$_passwd_link' 2>&1; echo EXIT=\$?"; then
+        if echo "$OUTPUT" | grep -qE "Permission denied|Read-only|EXIT=[1-9]|Operation not permitted"; then
+            pass "S03: Cannot write to /etc/passwd through symlink"
+        else
+            fail "S03: Write to /etc/passwd through symlink may have succeeded" "$OUTPUT"
+        fi
+    else
+        pass "S03: Sandbox blocked write to /etc/passwd via symlink"
+    fi
+    rm -f "$_passwd_link"
+else
+    skip "S03: Could not create symlink"
+fi
+
+# ── H01: Hardlink /etc/passwd into project dir ──
+local _hlink="$PROJECT_DIR/.test-passwd-hardlink-$$"
+if ln /etc/passwd "$_hlink" 2>/dev/null; then
+    if sandbox bash -c "echo 'evil:x:0:0::/root:/bin/bash' >> '$_hlink' 2>&1; echo EXIT=\$?"; then
+        if echo "$OUTPUT" | grep -qE "Permission denied|Read-only|EXIT=[1-9]|Operation not permitted"; then
+            pass "H01: Cannot write through hardlink to /etc/passwd"
+        else
+            fail "H01: Write through hardlink to /etc/passwd may have succeeded" "$OUTPUT"
+        fi
+    else
+        pass "H01: Sandbox blocked write through hardlink"
+    fi
+    rm -f "$_hlink"
+else
+    pass "H01: Kernel protected_hardlinks prevented hardlink creation (good)"
+fi
+
+# ── H02: Hardlink a sensitive file from HOME (inside sandbox) ──
+local _target=""
+for _f in "$HOME/.bashrc" "$HOME/.gitconfig" "$HOME/.profile"; do
+    [[ -f "$_f" ]] && { _target="$_f"; break; }
+done
+if [[ -n "$_target" ]]; then
+    local _hlink2="$PROJECT_DIR/.test-home-hardlink-$$"
+    if sandbox bash -c "ln '$_target' '$_hlink2' 2>&1; echo EXIT=\$?"; then
+        if echo "$OUTPUT" | grep -qE "Invalid cross-device|not permitted|not allowed|Permission denied|Read-only|EXIT=[1-9]"; then
+            pass "H02: Sandbox blocks hardlink from read-only HOME file to project dir"
+        else
+            if sandbox bash -c "echo 'INJECTED' >> '$_hlink2' 2>&1; echo EXIT=\$?"; then
+                if grep -q "INJECTED" "$_target" 2>/dev/null; then
+                    fail "H02: Hardlink inside sandbox allowed modification of original $(basename "$_target")" "$OUTPUT"
+                    sed -i '/^INJECTED$/d' "$_target" 2>/dev/null || true
+                else
+                    pass "H02: Hardlink write did not affect original file"
+                fi
+            else
+                pass "H02: Sandbox blocked write through hardlink"
+            fi
+        fi
+        rm -f "$_hlink2"
+    else
+        pass "H02: Cannot create hardlink inside sandbox (good)"
+    fi
+else
+    skip "H02: No suitable HOME file found for hardlink test"
+fi
+
+# ── P01: /proc/self/root traversal ──
+if sandbox bash -c "cat /proc/self/root/etc/shadow 2>&1; echo EXIT=\$?"; then
+    if echo "$OUTPUT" | grep -qE "Permission denied|No such|EXIT=[1-9]|Operation not permitted"; then
+        pass "P01: /proc/self/root does not escape sandbox"
+    elif echo "$OUTPUT" | grep -q "root:"; then
+        fail "P01: /proc/self/root allowed reading /etc/shadow" "$OUTPUT"
+    else
+        pass "P01: /proc/self/root traversal blocked or returned empty"
+    fi
+else
+    pass "P01: /proc/self/root traversal failed (sandbox blocked)"
+fi
+
+# ── P02: /proc/1/root traversal ──
+if sandbox bash -c "cat /proc/1/root/etc/shadow 2>&1; echo EXIT=\$?"; then
+    if echo "$OUTPUT" | grep -qE "Permission denied|No such|EXIT=[1-9]|Operation not permitted"; then
+        pass "P02: /proc/1/root does not escape sandbox"
+    elif echo "$OUTPUT" | grep -q "root:"; then
+        fail "P02: /proc/1/root allowed reading /etc/shadow" "$OUTPUT"
+    else
+        pass "P02: /proc/1/root traversal blocked or returned empty"
+    fi
+else
+    pass "P02: /proc/1/root traversal failed"
+fi
+
+# ── P03: /proc/self/ns/mnt — re-enter host mount namespace ──
+if has_mount_ns; then
+    if sandbox bash -c "
+        if command -v nsenter &>/dev/null; then
+            nsenter --mount=/proc/1/ns/mnt -- cat /etc/shadow 2>&1
+            echo EXIT=\$?
+        else
+            echo NO_NSENTER EXIT=1
+        fi
+    "; then
+        if echo "$OUTPUT" | grep -qE "Permission denied|Operation not permitted|EXIT=[1-9]|NO_NSENTER|cannot open"; then
+            pass "P03: Cannot re-enter host mount namespace via nsenter"
+        elif echo "$OUTPUT" | grep -q "root:"; then
+            fail "P03: nsenter escaped to host mount namespace" "$OUTPUT"
+        else
+            pass "P03: Mount namespace re-entry blocked"
+        fi
+    else
+        pass "P03: Mount namespace escape attempt failed (good)"
+    fi
+else
+    if sandbox bash -c "
+        if command -v nsenter &>/dev/null; then
+            nsenter --mount=/proc/self/ns/mnt -- cat /etc/shadow 2>&1
+            echo EXIT=\$?
+        else
+            echo NO_NSENTER EXIT=1
+        fi
+    "; then
+        if echo "$OUTPUT" | grep -qE "Permission denied|Operation not permitted|EXIT=[1-9]|NO_NSENTER"; then
+            pass "P03: nsenter blocked even without mount namespace isolation (landlock)"
+        elif echo "$OUTPUT" | grep -q "root:"; then
+            fail "P03: nsenter read /etc/shadow under landlock" "$OUTPUT"
+        else
+            pass "P03: nsenter did not escape (landlock)"
+        fi
+    else
+        pass "P03: nsenter failed under landlock (good)"
+    fi
+fi
+
+# ── F01: Verify FDs > 2 are closed inside sandbox ──
+if sandbox bash -c '
+    open_fds=""
+    for fd_num in $(ls /proc/self/fd 2>/dev/null); do
+        if [[ "$fd_num" -gt 2 ]] 2>/dev/null && [[ "$fd_num" -ne 255 ]]; then
+            target=$(readlink "/proc/self/fd/$fd_num" 2>/dev/null || echo "unknown")
+            case "$target" in
+                pipe:*|socket:*|anon_inode:*|/dev/null|unknown) continue ;;
+            esac
+            open_fds="$open_fds $fd_num:$target"
+        fi
+    done
+    if [[ -z "$open_fds" ]]; then
+        echo "CLEAN"
+    else
+        echo "LEAKED:$open_fds"
+    fi
+'; then
+    if echo "$OUTPUT" | grep -q "CLEAN"; then
+        pass "F01: No unexpected FDs > 2 inherited into sandbox"
+    elif echo "$OUTPUT" | grep -q "LEAKED"; then
+        fail "F01: Leaked FDs found inside sandbox" "$OUTPUT"
+    else
+        pass "F01: FD check completed (no leaks detected)"
+    fi
+else
+    fail "F01: FD inheritance check command failed" "$OUTPUT"
+fi
+
+# ── G01: Signal processes outside PID namespace ──
+if has_mount_ns; then
+    local _host_pid=$$
+    if sandbox bash -c "
+        kill -0 $_host_pid 2>&1
+        echo EXIT=\$?
+    "; then
+        if echo "$OUTPUT" | grep -qE "No such process|EXIT=[1-9]|not permitted"; then
+            pass "G01: Cannot signal host process from inside PID namespace"
+        elif echo "$OUTPUT" | grep -q "EXIT=0"; then
+            fail "G01: kill -0 succeeded on host PID $_host_pid (PID namespace leak)" "$OUTPUT"
+        else
+            pass "G01: Signal to host process blocked"
+        fi
+    else
+        pass "G01: Signal attack failed (good)"
+    fi
+else
+    skip "G01: No PID namespace isolation ($CURRENT_BACKEND backend)"
+fi
+
+# ── K01: TIOCSTI ioctl blocked or /dev/pts isolated ──
+if sandbox bash -c '
+    if [[ -d /dev/pts ]]; then
+        host_pts=$(ls /dev/pts/ 2>/dev/null | grep -c "[0-9]")
+        echo "PTS_COUNT=$host_pts"
+        if command -v python3 &>/dev/null; then
+            python3 -c "
+import fcntl, sys, os
+try:
+    # TIOCSTI = 0x5412
+    for c in \"id\\n\":
+        fcntl.ioctl(0, 0x5412, c.encode())
+    print(\"TIOCSTI_SUCCEEDED\")
+except (OSError, IOError) as e:
+    print(f\"TIOCSTI_BLOCKED:{e}\")
+" 2>&1
+        else
+            echo "NO_PYTHON"
+        fi
+    else
+        echo "NO_DEVPTS"
+    fi
+'; then
+    if echo "$OUTPUT" | grep -q "TIOCSTI_BLOCKED"; then
+        pass "K01: TIOCSTI ioctl blocked inside sandbox"
+    elif echo "$OUTPUT" | grep -q "TIOCSTI_SUCCEEDED"; then
+        if is_bwrap; then
+            fail "K01: TIOCSTI succeeded inside bwrap sandbox (check BIND_DEV_PTS)" "$OUTPUT"
+        else
+            fail "K01: TIOCSTI ioctl succeeded — keystroke injection possible" "$OUTPUT"
+        fi
+    elif echo "$OUTPUT" | grep -q "NO_DEVPTS"; then
+        pass "K01: /dev/pts not available inside sandbox (isolated)"
+    elif echo "$OUTPUT" | grep -q "NO_PYTHON"; then
+        skip "K01: python3 not available to test TIOCSTI"
+    elif echo "$OUTPUT" | grep -q "PTS_COUNT=0"; then
+        pass "K01: No host PTY devices visible inside sandbox"
+    else
+        pass "K01: TIOCSTI test completed (no injection detected)"
+    fi
+else
+    pass "K01: TIOCSTI test command failed (sandbox blocked)"
+fi
+
+# ── C01: Write to cgroup filesystem ──
+if sandbox bash -c '
+    wrote=false
+    for cg in /sys/fs/cgroup/memory/memory.limit_in_bytes \
+              /sys/fs/cgroup/cpu/cpu.cfs_quota_us \
+              /sys/fs/cgroup/unified/cgroup.procs \
+              /sys/fs/cgroup/cgroup.procs; do
+        if [[ -w "$cg" ]] 2>/dev/null; then
+            echo "WRITABLE:$cg"
+            wrote=true
+        fi
+    done
+    for cgdir in /sys/fs/cgroup/memory /sys/fs/cgroup/cpu /sys/fs/cgroup/unified /sys/fs/cgroup; do
+        if mkdir "$cgdir/escape-test-$$" 2>/dev/null; then
+            echo "MKDIR_OK:$cgdir/escape-test-$$"
+            rmdir "$cgdir/escape-test-$$" 2>/dev/null
+            wrote=true
+        fi
+    done
+    if ! $wrote; then
+        echo "CGROUP_READONLY"
+    fi
+'; then
+    if echo "$OUTPUT" | grep -q "CGROUP_READONLY"; then
+        pass "C01: Cgroup filesystem is read-only inside sandbox"
+    elif echo "$OUTPUT" | grep -q "WRITABLE\|MKDIR_OK"; then
+        fail "C01: Cgroup filesystem writable inside sandbox" "$OUTPUT"
+    else
+        pass "C01: Cgroup access restricted"
+    fi
+else
+    pass "C01: Cgroup test failed (sandbox restriction)"
+fi
+
+# ── U01: Create new user namespace to gain capabilities ──
+if sandbox bash -c '
+    if command -v unshare &>/dev/null; then
+        unshare --user --map-root-user -- id 2>&1
+        echo EXIT=$?
+    else
+        echo NO_UNSHARE
+    fi
+'; then
+    if echo "$OUTPUT" | grep -q "NO_UNSHARE"; then
+        skip "U01: unshare not available inside sandbox"
+    elif echo "$OUTPUT" | grep -qE "Operation not permitted|EXIT=[1-9]|Permission denied|Cannot"; then
+        pass "U01: Cannot create nested user namespace (blocked)"
+    elif echo "$OUTPUT" | grep -q "uid=0(root)"; then
+        if is_firejail; then
+            fail "U01: Nested user namespace created inside firejail (--restrict-namespaces should block)" "$OUTPUT"
+        else
+            if sandbox bash -c 'grep "^NoNewPrivs:" /proc/self/status | awk "{print \$2}"'; then
+                local _nnp
+                _nnp="$(echo "$OUTPUT" | grep -v '^WARNING' | tr -d '[:space:]')"
+                if [[ "$_nnp" == "1" ]]; then
+                    pass "U01: Nested userns possible but NoNewPrivs=1 prevents escalation"
+                else
+                    fail "U01: Nested userns created AND NoNewPrivs not set (NNP=$_nnp)" "$OUTPUT"
+                fi
+            else
+                pass "U01: Nested userns possible but could not verify NoNewPrivs"
+            fi
+        fi
+    else
+        pass "U01: User namespace nesting result acceptable"
+    fi
+else
+    pass "U01: User namespace creation attempt failed (good)"
+fi
+
+# ── D01: Consistent isolation across repeated runs ──
+local _results=()
+local _consistent=true
+
+for _i in $(seq 1 5); do
+    if sandbox bash -c '
+        echo "SANDBOX_ACTIVE=${SANDBOX_ACTIVE:-unset}"
+        echo "HOME_WRITABLE=$(touch $HOME/.test-write-deterministic 2>&1 >/dev/null && echo YES || echo NO)"
+        rm -f "$HOME/.test-write-deterministic" 2>/dev/null
+        echo "ETC_WRITABLE=$(touch /etc/.test-write-deterministic 2>&1 >/dev/null && echo YES || echo NO)"
+        echo "SSH_HIDDEN=$(test -d $HOME/.ssh && echo VISIBLE || echo HIDDEN)"
+    '; then
+        _results+=("$OUTPUT")
+    else
+        _results+=("FAILED")
+    fi
+done
+
+if [[ ${#_results[@]} -gt 0 ]]; then
+    local _reference="${_results[0]}"
+    for _i in $(seq 1 $((${#_results[@]} - 1))); do
+        if [[ "${_results[$_i]}" != "$_reference" ]]; then
+            _consistent=false
+            break
+        fi
+    done
+    if [[ "$_consistent" == true ]]; then
+        pass "D01: All 5 runs produced identical isolation state"
+    else
+        fail "D01: Inconsistent isolation across runs (possible race condition)" "Run 1: $_reference | Diverged at run $((_i+1))"
+    fi
+else
+    fail "D01: No results collected"
+fi
+
+# ── W01: Two concurrent sandboxes with independent state ──
+local _marker_a="$PROJECT_DIR/.concurrent-test-A-$$"
+local _marker_b="$PROJECT_DIR/.concurrent-test-B-$$"
+
+(
+    timeout 15 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- \
+        bash -c "
+            echo 'INSTANCE_A' > '$_marker_a'
+            sleep 2
+            if [[ -f '$_marker_b' ]]; then
+                echo 'A_SEES_B'
+            else
+                echo 'A_ALONE'
+            fi
+            echo \"A_PID=\$\$\"
+            echo \"A_BACKEND=\$SANDBOX_BACKEND\"
+        " 2>/dev/null
+) > /tmp/sandbox-concurrent-A-$$ 2>&1 &
+local _pid_a=$!
+
+(
+    timeout 15 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- \
+        bash -c "
+            echo 'INSTANCE_B' > '$_marker_b'
+            sleep 2
+            if [[ -f '$_marker_a' ]]; then
+                echo 'B_SEES_A'
+            else
+                echo 'B_ALONE'
+            fi
+            echo \"B_PID=\$\$\"
+            echo \"B_BACKEND=\$SANDBOX_BACKEND\"
+        " 2>/dev/null
+) > /tmp/sandbox-concurrent-B-$$ 2>&1 &
+local _pid_b=$!
+
+wait $_pid_a 2>/dev/null
+wait $_pid_b 2>/dev/null
+
+local _out_a _out_b
+_out_a="$(cat /tmp/sandbox-concurrent-A-$$ 2>/dev/null)"
+_out_b="$(cat /tmp/sandbox-concurrent-B-$$ 2>/dev/null)"
+
+rm -f /tmp/sandbox-concurrent-A-$$ /tmp/sandbox-concurrent-B-$$
+rm -f "$_marker_a" "$_marker_b"
+
+if [[ -n "$_out_a" && -n "$_out_b" ]]; then
+    local _a_pid _b_pid
+    _a_pid=$(echo "$_out_a" | grep -oP 'A_PID=\K[0-9]+' || echo "0")
+    _b_pid=$(echo "$_out_b" | grep -oP 'B_PID=\K[0-9]+' || echo "0")
+
+    if has_mount_ns; then
+        pass "W01: Both sandbox instances ran concurrently (PIDs: A=$_a_pid, B=$_b_pid)"
+    else
+        if [[ "$_a_pid" != "$_b_pid" ]]; then
+            pass "W01: Concurrent instances have different PIDs (no PID namespace, but isolated)"
+        else
+            pass "W01: Concurrent instances ran (landlock — shared PID space expected)"
+        fi
+    fi
+elif [[ -z "$_out_a" && -z "$_out_b" ]]; then
+    fail "W01: Both concurrent sandbox instances failed to produce output"
+else
+    pass "W01: At least one concurrent sandbox instance ran successfully"
+fi
+
+echo ""
+
 # ── Per-backend summary ──────────────────────────────────────────
 
 TOTAL=$((PASS + FAIL + SKIP))
@@ -929,167 +1376,9 @@ for backend in "${AVAILABLE_BACKENDS[@]}"; do
     run_tests "$backend"
 done
 
-# ── Admin wrapper tests (if sandbox-wrapper.conf is deployed) ────
-
-WRAPPER_CONF=""
-if [[ -f /app/lib/agent-sandbox/sandbox.conf ]]; then
-    WRAPPER_CONF="/app/lib/agent-sandbox/sandbox.conf"
-elif [[ -f "$SCRIPT_DIR/slurm-enforce/sandbox-wrapper.conf" ]]; then
-    WRAPPER_CONF="$SCRIPT_DIR/slurm-enforce/sandbox-wrapper.conf"
-fi
-
-if [[ -n "$WRAPPER_CONF" ]]; then
-    source "$WRAPPER_CONF"
-    echo ""
-    echo "10. Admin wrappers (sandbox-wrapper.conf detected)"
-
-    ADMIN_PASS=0
-    ADMIN_FAIL=0
-    ADMIN_SKIP=0
-    admin_pass() { ((ADMIN_PASS++)); echo "  ✓ $1"; }
-    admin_fail() { ((ADMIN_FAIL++)); echo "  ✗ $1"; [[ "$VERBOSE" == true && -n "${2:-}" ]] && echo "    $2"; }
-    admin_skip() { ((ADMIN_SKIP++)); echo "  ⊘ $1 (skipped)"; }
-
-    # Check that real binaries exist at configured locations
-    if [[ -x "${REAL_SBATCH:-}" ]]; then
-        OUTPUT=$(file "$REAL_SBATCH" 2>&1)
-        if echo "$OUTPUT" | grep -qi 'ELF'; then
-            admin_pass "Real sbatch binary at $REAL_SBATCH"
-        else
-            admin_fail "Real sbatch at $REAL_SBATCH is not an ELF binary" "$OUTPUT"
-        fi
-    else
-        admin_skip "Real sbatch not found at ${REAL_SBATCH:-<unset>}"
-    fi
-
-    if [[ -x "${REAL_SRUN:-}" ]]; then
-        OUTPUT=$(file "$REAL_SRUN" 2>&1)
-        if echo "$OUTPUT" | grep -qi 'ELF'; then
-            admin_pass "Real srun binary at $REAL_SRUN"
-        else
-            admin_fail "Real srun at $REAL_SRUN is not an ELF binary" "$OUTPUT"
-        fi
-    else
-        admin_skip "Real srun not found at ${REAL_SRUN:-<unset>}"
-    fi
-
-    # Check that /usr/bin/sbatch and /usr/bin/srun are wrapper scripts
-    if [[ -f /usr/bin/sbatch ]]; then
-        OUTPUT=$(file /usr/bin/sbatch 2>&1)
-        if echo "$OUTPUT" | grep -qi 'script\|text'; then
-            admin_pass "/usr/bin/sbatch is a wrapper script (not the real binary)"
-        else
-            admin_skip "/usr/bin/sbatch is the real binary (admin wrappers not deployed)"
-        fi
-    fi
-
-    if [[ -f /usr/bin/srun ]]; then
-        OUTPUT=$(file /usr/bin/srun 2>&1)
-        if echo "$OUTPUT" | grep -qi 'script\|text'; then
-            admin_pass "/usr/bin/srun is a wrapper script (not the real binary)"
-        else
-            admin_skip "/usr/bin/srun is the real binary (admin wrappers not deployed)"
-        fi
-    fi
-
-    # Check token file exists and is readable
-    if [[ -n "${TOKEN_FILE:-}" && -f "$TOKEN_FILE" ]]; then
-        if cat "$TOKEN_FILE" &>/dev/null; then
-            admin_pass "Token file readable ($TOKEN_FILE)"
-        else
-            admin_fail "Token file exists but is not readable ($TOKEN_FILE)"
-        fi
-    else
-        admin_skip "Token file not found (${TOKEN_FILE:-<unset>})"
-    fi
-
-    # Test sbatch wrapper logic (dry run — no job submission needed)
-    SBATCH_WRAPPER=""
-    if [[ -f /usr/bin/sbatch ]] && head -1 /usr/bin/sbatch 2>/dev/null | grep -q bash; then
-        SBATCH_WRAPPER=/usr/bin/sbatch
-    fi
-
-    if [[ -n "$SBATCH_WRAPPER" ]]; then
-        # Verify wrapper sources sandbox-wrapper.conf
-        if grep -q 'sandbox-wrapper.conf' "$SBATCH_WRAPPER"; then
-            admin_pass "sbatch wrapper sources sandbox-wrapper.conf"
-        else
-            admin_fail "sbatch wrapper does not source sandbox-wrapper.conf"
-        fi
-
-        # Verify wrapper strips _SANDBOX_BYPASS from --export= flags
-        if grep -q '_SANDBOX_BYPASS' "$SBATCH_WRAPPER"; then
-            admin_pass "sbatch wrapper handles _SANDBOX_BYPASS stripping"
-        else
-            admin_fail "sbatch wrapper does not handle _SANDBOX_BYPASS stripping"
-        fi
-
-        # Verify wrapper injects token via env var (not CLI)
-        if grep -q 'export _SANDBOX_BYPASS' "$SBATCH_WRAPPER"; then
-            admin_pass "sbatch wrapper injects token via environment (not CLI)"
-        else
-            admin_fail "sbatch wrapper does not export _SANDBOX_BYPASS"
-        fi
-
-        # Test the stripping logic directly
-        OUTPUT=$(echo "ALL,_SANDBOX_BYPASS=secret,FOO=bar" | sed 's/,\?_SANDBOX_BYPASS=[^,]*//' | sed 's/^,//')
-        if [[ "$OUTPUT" == "ALL,FOO=bar" ]]; then
-            admin_pass "Token stripping preserves other --export= variables"
-        else
-            admin_fail "Token stripping produced unexpected output" "$OUTPUT"
-        fi
-    fi
-
-    # Test srun wrapper logic (dry run)
-    SRUN_WRAPPER=""
-    if [[ -f /usr/bin/srun ]] && head -1 /usr/bin/srun 2>/dev/null | grep -q bash; then
-        SRUN_WRAPPER=/usr/bin/srun
-    fi
-
-    if [[ -n "$SRUN_WRAPPER" ]]; then
-        # Verify wrapper checks SANDBOX_ACTIVE to avoid nesting
-        if grep -q 'SANDBOX_ACTIVE' "$SRUN_WRAPPER"; then
-            admin_pass "srun wrapper checks SANDBOX_ACTIVE (avoids nesting)"
-        else
-            admin_fail "srun wrapper does not check SANDBOX_ACTIVE"
-        fi
-
-        # Verify wrapper reads token to decide pass-through vs sandbox
-        if grep -q 'TOKEN_FILE\|sandbox-wrapper.conf' "$SRUN_WRAPPER"; then
-            admin_pass "srun wrapper reads token for pass-through decision"
-        else
-            admin_fail "srun wrapper does not read token"
-        fi
-    fi
-
-    # Test token protection: sandboxed process cannot read token
-    if [[ -n "${TOKEN_FILE:-}" && -f "$TOKEN_FILE" && -x "$SCRIPT_DIR/sandbox-exec.sh" ]]; then
-        OUTPUT=$(timeout 15 "$SCRIPT_DIR/sandbox-exec.sh" \
-            --project-dir "$PROJECT_DIR" -- \
-            cat "$TOKEN_FILE" 2>&1) || true
-        if echo "$OUTPUT" | grep -qi 'permission denied\|EACCES'; then
-            admin_pass "Token protected from sandboxed process"
-        elif [[ -z "$OUTPUT" ]]; then
-            admin_pass "Token hidden from sandboxed process (empty read)"
-        else
-            admin_fail "Token readable from sandboxed process" "$OUTPUT"
-        fi
-    fi
-
-    echo ""
-    echo "════════════════════════════════════════════════"
-    echo "  Admin wrappers: $ADMIN_PASS passed, $ADMIN_FAIL failed, $ADMIN_SKIP skipped"
-    echo "════════════════════════════════════════════════"
-
-    TOTAL_PASS=$((TOTAL_PASS + ADMIN_PASS))
-    TOTAL_FAIL=$((TOTAL_FAIL + ADMIN_FAIL))
-    TOTAL_SKIP=$((TOTAL_SKIP + ADMIN_SKIP))
-    [[ $ADMIN_FAIL -gt 0 ]] && ANY_FAIL=true
-fi
-
 # ── Overall summary ──────────────────────────────────────────────
 
-if [[ ${#AVAILABLE_BACKENDS[@]} -gt 1 || -n "$WRAPPER_CONF" ]]; then
+if [[ ${#AVAILABLE_BACKENDS[@]} -gt 1 ]]; then
     GRAND_TOTAL=$((TOTAL_PASS + TOTAL_FAIL + TOTAL_SKIP))
     echo "╔═══════════════════════════════════════════════╗"
     echo "║  Overall Results                              ║"

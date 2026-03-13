@@ -44,9 +44,9 @@ sudo ln -s /app/lib/agent-sandbox/sandbox-exec.sh /app/bin/sandbox-exec
 
 | Component | bwrap/firejail | Landlock |
 |---|---|---|
-| **Admin config** (`/app/lib/agent-sandbox/sandbox.conf`) | Protected (root-owned, re-applied after user config) | Protected (root-owned, re-applied after user config) |
+| **Admin config** (`/app/lib/agent-sandbox/sandbox.conf`) | Protected (root-owned, enforced via subprocess isolation) | Protected (root-owned, enforced via subprocess isolation) |
 | **Sandbox scripts** (`sandbox-lib.sh`, backends/) | Protected (root-owned + read-only inside sandbox via mount namespace) | Protected (root-owned at `/app/lib/agent-sandbox/`). `~/.claude/sandbox/` contains only user data, not scripts. |
-| **User config** (`user.conf`, `conf.d/`) | Cannot weaken admin policy (re-apply enforcement) | Cannot weaken admin policy (re-apply enforcement) |
+| **User config** (`user.conf`, `conf.d/`) | Cannot weaken admin policy (subprocess isolation + policy merge) | Cannot weaken admin policy (subprocess isolation + policy merge) |
 
 The admin path is set in `_ADMIN_DIR` in `sandbox-lib.sh` (not configurable via environment variable). To use a different path, change this single line. The Slurm enforcement scripts (`slurm-enforce/`) have their own `_ADMIN_CONF` variable at the top of each script for the same reason.
 
@@ -81,11 +81,11 @@ Without an admin config, the sandbox loads a single `sandbox.conf` from `~/.clau
 | `FILTER_PASSWD` | Yes | Yes |
 | `SANDBOX_BACKEND` | Yes | Yes |
 
-### Admin enforcement: re-apply, not validate
+### Admin enforcement: subprocess isolation + policy merge
 
-After sourcing each user/project config layer, the sandbox **re-sources the admin config** and merges user additions on top. Admin-enforced values are forcefully restored regardless of what the user config did — even if it ran arbitrary code (redefined functions, manipulated variables).
+User configs (`user.conf`, `conf.d/*.conf`) are loaded in an **isolated subprocess** (`/bin/bash --norc --noprofile`). Only known config variables are extracted via `declare -p` and validated before being applied in the parent. After each untrusted config layer, `_enforce_admin_policy()` compares the resulting values against the admin snapshot, restores admin entries, and merges user additions on top.
 
-This is more robust than a validate-and-fail approach: validation relies on functions that user config could override before they run. The re-apply approach doesn't depend on any functions executing after user config — the merge logic is inline in `sandbox-lib.sh`, which is admin-owned and protected by the sandbox's mount namespace (bwrap/firejail).
+This eliminates entire attack classes: function overrides (`source`, `eval`, `builtin`), DEBUG/RETURN traps, `exit`/`return` escapes, IFS manipulation, and background processes — none can escape the subprocess boundary. The merge logic runs in the parent shell, unreachable from user config.
 
 **Enforced arrays** (`BLOCKED_FILES`, `BLOCKED_ENV_VARS`, `EXTRA_BLOCKED_PATHS`): admin entries are always present. User additions are preserved, but user removals are undone with a warning:
 
@@ -227,7 +227,21 @@ EXTRA_WRITABLE_PATHS+=(
 )
 ```
 
-These configs also go through admin enforcement (re-apply) — they cannot remove admin-set entries.
+These configs also run in isolated subprocesses and go through admin enforcement — they cannot remove admin-set entries.
+
+## Testing
+
+Two test suites validate the sandbox:
+
+- **`test.sh`** — run on every install to verify backend isolation: filesystem, env blocking, overlays, Slurm wrappers, security hardening, symlink/hardlink attacks, `/proc` escapes, FD inheritance, signal isolation, TIOCSTI, cgroup/userns restrictions, deterministic isolation, concurrent instances. Tests all available backends (bwrap, firejail, landlock).
+- **`test-admin.sh`** — run on admin installs to verify config enforcement: admin entries survive user tampering, `DENIED_WRITABLE_PATHS`, `HOME_READONLY` escalation blocking, scalar protection, `HOME` override resistance, `conf.d` enforcement, subprocess isolation of escape attempts, admin Slurm wrappers. Skips automatically if no admin config is found.
+
+```bash
+bash test.sh                          # all backends
+bash test.sh --backend bwrap          # single backend
+bash test-admin.sh                    # admin enforcement (needs admin config)
+bash test-admin.sh --verbose          # show output on failure
+```
 
 ---
 
