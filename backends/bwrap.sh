@@ -191,6 +191,41 @@ SLURM_EOF
 
     BWRAP_ARGS+=(--unshare-pid)
     BWRAP_ARGS+=(--die-with-parent)
+
+    # --- Seccomp filter (block io_uring, userfaultfd, kexec) ---
+    # Generated at runtime because HPC nodes sharing an NFS install may
+    # have different architectures (x86_64 vs aarch64) — the BPF bytecode
+    # is architecture-specific.
+    #
+    # bwrap --seccomp FD reads raw BPF instructions from a file descriptor.
+    # The FD is NOT opened here — sandbox-exec.sh closes FDs > 2 before
+    # calling backend_exec().  We store the temp file path and open the FD
+    # in backend_exec() just before exec.
+    #
+    # Null bytes in the BPF binary mean we MUST use a temp file — bash
+    # variables silently truncate at \0.
+    _SECCOMP_TMPFILE=
+    local _seccomp_py="${SANDBOX_DIR}/backends/generate-seccomp.py"
+    if [[ -f "$_seccomp_py" ]] && command -v python3 &>/dev/null; then
+        _SECCOMP_TMPFILE="$(mktemp "${TMPDIR:-/tmp}/bwrap-seccomp.XXXXXX")"
+        if python3 "$_seccomp_py" > "$_SECCOMP_TMPFILE" 2>/dev/null; then
+            local _bpf_size
+            _bpf_size="$(stat -c%s "$_SECCOMP_TMPFILE" 2>/dev/null || echo 0)"
+            if (( _bpf_size >= 8 )); then
+                # Placeholder — replaced with real FD in backend_exec()
+                BWRAP_ARGS+=(--seccomp __SECCOMP_FD__)
+            else
+                echo "sandbox: warning: seccomp BPF filter is empty, skipping" >&2
+                rm -f "$_SECCOMP_TMPFILE"
+                _SECCOMP_TMPFILE=
+            fi
+        else
+            echo "sandbox: warning: seccomp filter generation failed, skipping" >&2
+            rm -f "$_SECCOMP_TMPFILE"
+            _SECCOMP_TMPFILE=
+        fi
+    fi
+
     BWRAP_ARGS+=(--chdir "$project_dir")
 
     # --- Environment ---
@@ -228,6 +263,15 @@ backend_exec() {
         [[ "$_name" == SSH_* ]] && unset "$_name" 2>/dev/null || true
     done < <(env)
 
+    # Open seccomp FD now (after sandbox-exec.sh's FD cleanup) and
+    # replace the placeholder with the actual FD number.
+    if [[ -n "${_SECCOMP_TMPFILE:-}" && -f "${_SECCOMP_TMPFILE:-}" ]]; then
+        local _seccomp_fd
+        exec {_seccomp_fd}<"$_SECCOMP_TMPFILE"
+        rm -f "$_SECCOMP_TMPFILE"
+        BWRAP_ARGS=("${BWRAP_ARGS[@]/__SECCOMP_FD__/$_seccomp_fd}")
+    fi
+
     exec "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
 }
 
@@ -239,4 +283,6 @@ backend_dry_run() {
         printf '  %s \\\n' "$arg"
     done
     printf '  -- %s\n' "$*"
+    # Clean up seccomp temp file (dry-run doesn't exec)
+    [[ -n "${_SECCOMP_TMPFILE:-}" ]] && rm -f "$_SECCOMP_TMPFILE" 2>/dev/null || true
 }

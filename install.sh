@@ -131,7 +131,7 @@ for file in sbatch srun tmux; do
     cp "$SCRIPT_DIR/bin/$file" "$SANDBOX_DIR/bin/$file"
 done
 
-for file in bwrap.sh firejail.sh landlock.sh landlock-sandbox.py; do
+for file in bwrap.sh firejail.sh landlock.sh landlock-sandbox.py generate-seccomp.py; do
     cp "$SCRIPT_DIR/backends/$file" "$SANDBOX_DIR/backends/$file"
 done
 

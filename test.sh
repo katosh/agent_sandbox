@@ -577,7 +577,7 @@ if has_mount_ns; then
 fi
 
 # Seccomp filter (landlock and firejail — bwrap doesn't install one currently)
-if is_landlock || is_firejail; then
+if is_landlock || is_firejail || is_bwrap; then
     if sandbox bash -c 'grep "^Seccomp:" /proc/self/status'; then
         SECCOMP_MODE=$(echo "$OUTPUT" | grep '^Seccomp:' | awk '{print $2}')
         if [[ "$SECCOMP_MODE" == "2" ]]; then
