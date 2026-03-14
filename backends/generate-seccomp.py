@@ -21,7 +21,9 @@ import platform
 import struct
 import sys
 
-# --- BPF instruction encoding (linux/bpf_common.h) ---
+# --- BPF instruction encoding ---
+# Source: linux/bpf_common.h
+#   https://github.com/torvalds/linux/blob/master/include/uapi/linux/bpf_common.h
 
 BPF_LD  = 0x00
 BPF_JMP = 0x05
@@ -31,27 +33,50 @@ BPF_ABS = 0x20
 BPF_JEQ = 0x10
 BPF_K   = 0x00
 
-# --- Seccomp constants (linux/seccomp.h) ---
+# struct sock_filter { __u16 code; __u8 jt; __u8 jf; __u32 k; }  (8 bytes)
+# Source: linux/filter.h
+#   https://github.com/torvalds/linux/blob/master/include/uapi/linux/filter.h
+# Packed as "HBBI" (unsigned short, unsigned char, unsigned char, unsigned int).
+
+# --- Seccomp constants ---
+# Source: linux/seccomp.h
+#   https://github.com/torvalds/linux/blob/master/include/uapi/linux/seccomp.h
 
 SECCOMP_RET_ALLOW = 0x7FFF0000
 SECCOMP_RET_ERRNO = 0x00050000  # | errno
 
-# struct seccomp_data offsets
-SECCOMP_DATA_NR   = 0   # syscall number
-SECCOMP_DATA_ARCH = 4   # audit architecture
+# struct seccomp_data { int nr; __u32 arch; __u64 instruction_pointer; __u64 args[6]; }
+SECCOMP_DATA_NR   = 0   # syscall number (offset 0)
+SECCOMP_DATA_ARCH = 4   # audit architecture (offset 4)
 
-# Audit architectures (linux/audit.h)
+# --- Audit architecture constants ---
+# Source: linux/audit.h
+#   https://github.com/torvalds/linux/blob/master/include/uapi/linux/audit.h
+# Computed as: EM_<arch> | __AUDIT_ARCH_64BIT (0x80000000) | __AUDIT_ARCH_LE (0x40000000)
+#   x86_64:  EM_X86_64  (62)  | 0xC0000000 = 0xC000003E
+#   aarch64: EM_AARCH64 (183) | 0xC0000000 = 0xC00000B7
 AUDIT_ARCH_X86_64  = 0xC000003E
 AUDIT_ARCH_AARCH64 = 0xC00000B7
 
 # --- Blocked syscalls (bwrap subset) ---
+#
+# Syscall numbers verified against kernel source:
+#   x86_64:  arch/x86/entry/syscalls/syscall_64.tbl
+#     https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl
+#   aarch64: include/uapi/asm-generic/unistd.h (aarch64 uses the generic table)
+#     https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/unistd.h
+#
+# All six syscalls are also blocked by Docker's default seccomp profile
+# (default-deny, none are in the allowlist):
+#   https://github.com/moby/profiles/blob/main/seccomp/default.json
 #
 # Bwrap already provides PID namespace isolation, so ptrace and
 # process_vm_readv/writev are not blocked here (unlike the Landlock
 # backend which lacks PID namespace).
 #
 # io_uring:     kernel 5.1+.  Exposes a large, rapidly-evolving kernel
-#               attack surface.  Docker 25.0+ blocks it by default.
+#               attack surface.  Docker 25.0+ blocks it by default
+#               (https://github.com/moby/moby/pull/46762).
 #               No HPC workload requires it — I/O falls back to normal
 #               read/write syscalls.
 #
@@ -67,20 +92,20 @@ AUDIT_ARCH_AARCH64 = 0xC00000B7
 
 _BLOCKED_SYSCALLS = {
     AUDIT_ARCH_X86_64: {
-        "io_uring_setup":    425,
-        "io_uring_enter":    426,
-        "io_uring_register": 427,
-        "kexec_load":        246,
-        "kexec_file_load":   320,
-        "userfaultfd":       323,
+        "io_uring_setup":    425,   # syscall_64.tbl: 425 common io_uring_setup
+        "io_uring_enter":    426,   # syscall_64.tbl: 426 common io_uring_enter
+        "io_uring_register": 427,   # syscall_64.tbl: 427 common io_uring_register
+        "kexec_load":        246,   # syscall_64.tbl: 246 64     kexec_load
+        "kexec_file_load":   320,   # syscall_64.tbl: 320 common kexec_file_load
+        "userfaultfd":       323,   # syscall_64.tbl: 323 common userfaultfd
     },
     AUDIT_ARCH_AARCH64: {
-        "io_uring_setup":    425,
-        "io_uring_enter":    426,
-        "io_uring_register": 427,
-        "kexec_load":        104,
-        "kexec_file_load":   294,
-        "userfaultfd":       282,
+        "io_uring_setup":    425,   # asm-generic/unistd.h: __NR_io_uring_setup    425
+        "io_uring_enter":    426,   # asm-generic/unistd.h: __NR_io_uring_enter    426
+        "io_uring_register": 427,   # asm-generic/unistd.h: __NR_io_uring_register 427
+        "kexec_load":        104,   # asm-generic/unistd.h: __NR_kexec_load        104
+        "kexec_file_load":   294,   # asm-generic/unistd.h: __NR_kexec_file_load   294
+        "userfaultfd":       282,   # asm-generic/unistd.h: __NR_userfaultfd       282
     },
 }
 
