@@ -123,6 +123,10 @@ FILTER_PASSWD=true
 # to inject keystrokes into unsandboxed terminals. See sandbox.conf.
 BIND_DEV_PTS=false
 
+# Backend selection. Empty means auto-detect (bwrap > firejail > landlock).
+# Can be overridden by --backend flag, SANDBOX_BACKEND env, or config file.
+SANDBOX_BACKEND=""
+
 # Path to the Slurm bypass token file. bwrap/firejail hide it inside
 # the sandbox. Can be set as SANDBOX_BYPASS_TOKEN or TOKEN_FILE (the
 # Slurm wrapper name).
@@ -203,12 +207,13 @@ _CONFIG_ARRAYS=(
 )
 _CONFIG_SCALARS=(
     SANDBOX_BACKEND PRIVATE_TMP FILTER_PASSWD BIND_DEV_PTS
-    SANDBOX_BYPASS_TOKEN TOKEN_FILE
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
 _ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS EXTRA_BLOCKED_PATHS)
-# Protected scalars: user cannot override admin values.
-_PROTECTED_SCALARS=(SANDBOX_BYPASS_TOKEN TOKEN_FILE)
+# Token paths are admin-only — set in the admin config (sourced directly),
+# never extracted from user configs.  Keeping them out of _CONFIG_SCALARS
+# prevents users from overriding them and avoids declare -p failures when
+# TOKEN_FILE has no default.
 
 # --- Load an untrusted config file in an isolated subprocess ---
 #
@@ -245,12 +250,16 @@ _load_untrusted_config() {
     # Warn about unknown variable assignments (static check — no eval).
     # Catches stale config from older versions without runtime side effects.
     local _known_vars=" $(printf '%s ' "${_CONFIG_ARRAYS[@]}" "${_CONFIG_SCALARS[@]}") "
-    local _unknown_var
+    local _unknown_var _unknown_list=()
     while IFS= read -r _unknown_var; do
         [[ -n "$_unknown_var" ]] || continue
-        [[ "$_known_vars" == *" $_unknown_var "* ]] || \
-            echo "WARNING: ${_label} sets unknown variable '${_unknown_var}' (not a recognized sandbox option — ignored)." >&2
+        [[ "$_known_vars" == *" $_unknown_var "* ]] || _unknown_list+=("$_unknown_var")
     done < <(grep -oE '^[A-Z_][A-Z_0-9]*\+?=' "$_conf" | sed 's/+\?=$//' | sort -u)
+    if [[ ${#_unknown_list[@]} -gt 0 ]]; then
+        echo "WARNING: ${_label} sets ${#_unknown_list[@]} unknown variable(s): ${_unknown_list[*]}" >&2
+        echo "  These are ignored and can be removed. Compare with the current template:" >&2
+        echo "  diff $_conf $SANDBOX_DIR/sandbox.conf" >&2
+    fi
 
     # Serialize current state for the subprocess
     local _parent_state
@@ -412,14 +421,6 @@ _enforce_admin_policy() {
             [[ "$_item" == "$_aro" ]] && echo "WARNING: ${_label} moved admin HOME_READONLY entry '${_aro}' to HOME_WRITABLE — reverted." >&2
         done
     done
-
-    # Protected scalars
-    if [[ -n "$_ADMIN_SANDBOX_BYPASS_TOKEN" && "${SANDBOX_BYPASS_TOKEN:-}" != "$_ADMIN_SANDBOX_BYPASS_TOKEN" ]]; then
-        echo "WARNING: ${_label} changed SANDBOX_BYPASS_TOKEN — restored to admin value." >&2
-    fi
-    if [[ -n "$_ADMIN_TOKEN_FILE" && "${TOKEN_FILE:-}" != "$_ADMIN_TOKEN_FILE" ]]; then
-        echo "WARNING: ${_label} changed TOKEN_FILE — restored to admin value." >&2
-    fi
 
     # --- Collect user-only additions (items not in admin snapshot) ---
     # Save the user's arrays before restoring admin values.
