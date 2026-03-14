@@ -874,7 +874,13 @@ json.dump(user, sys.stdout, indent=2)
         if [[ -e "$target" && ! -L "$target" && "$target" -nt "$item" ]]; then
             continue
         fi
-        ln -snf "$item" "$target"
+        # Atomic symlink replace: create at temp path then mv into place.
+        # Plain ln -snf is not atomic on NFS and races under concurrent
+        # SLURM array tasks (see SANDBOX_SYMLINK_BUG.md).
+        local _tmp="$target.tmp.$$"
+        if ln -snf "$item" "$_tmp" 2>/dev/null; then
+            mv -fT "$_tmp" "$target" 2>/dev/null || rm -f "$_tmp" 2>/dev/null
+        fi
     done
 
     export CLAUDE_CONFIG_DIR="$config_dir"
