@@ -874,7 +874,12 @@ json.dump(user, sys.stdout, indent=2)
         if [[ -e "$target" && ! -L "$target" && "$target" -nt "$item" ]]; then
             continue
         fi
-        ln -snf "$item" "$target"
+        # Skip if symlink already points to the correct target — avoids
+        # NFS write contention when concurrent SLURM tasks run this.
+        if [[ -L "$target" && "$(readlink "$target")" == "$item" ]]; then
+            continue
+        fi
+        ln -snf "$item" "$target" 2>/dev/null || true
     done
 
     export CLAUDE_CONFIG_DIR="$config_dir"
