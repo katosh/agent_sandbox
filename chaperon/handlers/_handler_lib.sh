@@ -328,16 +328,23 @@ _track_job_id() {
         return 0  # No job ID found — not an error (e.g., --test-only)
     fi
 
-    # Session-level tracking (in FIFO_DIR — set by chaperon.sh)
+    # Session-level tracking (in FIFO_DIR — set by chaperon.sh).
+    # The chaperon main loop is single-threaded so concurrent writes to
+    # this file from the same session cannot happen.
     local session_file="${FIFO_DIR:-}/jobs"
     if [[ -n "${FIFO_DIR:-}" ]]; then
         echo "$job_id" >> "$session_file"
     fi
 
-    # Project-level tracking (shared file in ~/.claude/sandbox/)
+    # Project-level tracking (shared across sandbox sessions).
+    # Multiple chaperons with the same project dir may append concurrently,
+    # so use flock to serialize writes.
     local hash
     hash="$(printf '%s' "$project_dir" | md5sum | cut -c1-12)"
     local project_file="$HOME/.claude/sandbox/chaperon-jobs-${hash}"
     mkdir -p "$HOME/.claude/sandbox" 2>/dev/null || true
-    echo "$job_id" >> "$project_file" 2>/dev/null || true
+    (
+        flock -w 2 9 || return 0  # best-effort; skip on timeout
+        echo "$job_id" >> "$project_file"
+    ) 9>>"$project_file" 2>/dev/null || true
 }

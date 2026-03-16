@@ -71,10 +71,14 @@ _get_project_jobs_file() {
 }
 
 # Read job IDs from a tracking file.
+# Uses flock for the project-level file (shared across sessions).
 _read_tracked_jobs() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        cat "$file"
+        (
+            flock -s -w 2 9 || true  # shared lock, best-effort
+            cat "$file"
+        ) 9<"$file" 2>/dev/null
     fi
 }
 
