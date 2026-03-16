@@ -67,11 +67,15 @@ backend_prepare() {
     # --- Slurm binary blocking ---
     # Block all Slurm submission binaries inside the sandbox.
     # The chaperon proxy (via stubs in PATH) is the only way to submit jobs.
-    for bin in sbatch srun scontrol scancel salloc sattach; do
+    # Block Slurm binaries (list derived from chaperon/stubs/ + defaults)
+    _build_chaperon_blocked_binaries
+    for bin in "${CHAPERON_BLOCKED_BINARIES[@]}"; do
         if [[ -x "/usr/bin/$bin" ]]; then
             BWRAP_ARGS+=(--ro-bind /dev/null "/usr/bin/$bin")
         fi
     done
+
+    # (Real srun is exposed below, under /run/sandbox/ after the /run tmpfs)
 
     # Block Slurm config (leaks controller address)
     for _slurm_conf in /etc/slurm /etc/slurm-llnl; do
@@ -156,8 +160,30 @@ backend_prepare() {
     # systemd-run --user.
     BWRAP_ARGS+=(--tmpfs /run)
 
-    # Munge socket: BLOCKED inside sandbox (chaperon handles auth outside)
+    # Munge socket: BLOCKED on login node (chaperon handles auth outside).
     # /run/munge is not mounted — hidden by the /run tmpfs above.
+    # On compute nodes (SLURM_JOB_ID set), expose munge + slurm config
+    # so srun can launch job steps within the existing sandboxed allocation.
+    if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+        if [[ -d /run/munge ]]; then
+            BWRAP_ARGS+=(--ro-bind /run/munge /run/munge)
+        fi
+        for _slurm_conf in /etc/slurm /etc/slurm-llnl; do
+            if [[ -d "$_slurm_conf" ]]; then
+                # Re-mount slurm config over the tmpfs that blocked it earlier
+                BWRAP_ARGS+=(--ro-bind "$_slurm_conf" "$_slurm_conf")
+            fi
+        done
+    fi
+
+    # Expose real srun at an internal path for the step-launcher stub.
+    # The /run tmpfs is writable during setup, so bwrap can create the mount point.
+    # The stub uses _SANDBOX_REAL_SRUN to find it; the original /usr/bin/srun
+    # is blocked above, so only the stub (via flag validation) can invoke it.
+    if [[ -x /usr/bin/srun ]]; then
+        BWRAP_ARGS+=(--dir /run/sandbox)
+        BWRAP_ARGS+=(--ro-bind /usr/bin/srun /run/sandbox/srun-real)
+    fi
 
     # nscd socket (required for user/group lookups on NFS/LDAP systems).
     # When FILTER_PASSWD is enabled, skip nscd — we overlay nsswitch.conf
@@ -243,6 +269,11 @@ backend_prepare() {
     if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -d "${_CHAPERON_FIFO_DIR:-}" ]]; then
         BWRAP_ARGS+=(--bind "$_CHAPERON_FIFO_DIR" "$_CHAPERON_FIFO_DIR")
         BWRAP_ARGS+=(--setenv _CHAPERON_FIFO_DIR "$_CHAPERON_FIFO_DIR")
+    fi
+
+    # Tell the srun stub where to find the real srun binary
+    if [[ -x /usr/bin/srun ]]; then
+        BWRAP_ARGS+=(--setenv _SANDBOX_REAL_SRUN /run/sandbox/srun-real)
     fi
 
     for var in "${BLOCKED_ENV_VARS[@]}"; do

@@ -182,6 +182,10 @@ validate_sbatch_args() {
                 echo "chaperon: denied flag: --bcast" >&2
                 return 1
                 ;;
+            --container|--container=*)
+                echo "chaperon: denied flag: --container (OCI containers bypass sandbox)" >&2
+                return 1
+                ;;
             --comment=*)
                 # Intercept --comment: chaperon will inject its own tag.
                 # Save the user's value to append later.

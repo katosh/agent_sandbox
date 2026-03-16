@@ -1,12 +1,222 @@
 #!/bin/bash --
-# chaperon/stubs/srun — Standalone blocked stub for srun
+# chaperon/stubs/srun — Smart srun stub (step launcher + job blocker)
 #
-# srun is not supported through the chaperon because interactive/step
-# execution requires direct Slurm communication that can't be proxied
-# safely. Use sbatch instead.
+# When SLURM_JOB_ID is set (inside an sbatch allocation), srun acts as a
+# job-step launcher for MPI and multi-process workflows.  This is safe:
+# steps run within the existing sandboxed allocation.
 #
-# This stub does NOT talk to the chaperon — it simply prints an error.
+# When SLURM_JOB_ID is NOT set (login node), srun would allocate a new
+# job — this is blocked because it bypasses the chaperon's sbatch proxy.
+#
+# Security model:
+#   - Step mode: validate flags against whitelist, then exec real srun
+#   - Job mode: print error suggesting sbatch instead
+#   - Dangerous flags (--jobid, --uid, --gid, --export, etc.) always blocked
 
-echo "error: srun is not available inside the sandbox." >&2
-echo "Hint: use 'sbatch --wrap=\"command\"' or 'sbatch script.sh' instead." >&2
-exit 1
+set -euo pipefail
+
+# ── Flag whitelist for step mode ─────────────────────────────────
+# Only these flags are allowed when launching job steps.  This prevents
+# using srun to escape the sandbox or interfere with other jobs.
+
+_SRUN_ALLOWED_FLAGS=" \
+  -n --ntasks \
+  -N --nodes \
+  -c --cpus-per-task \
+  -G --gpus \
+  --gpus-per-node \
+  --gpus-per-task \
+  --cpus-per-gpu \
+  --mem \
+  --mem-per-cpu \
+  --mem-per-gpu \
+  --gres \
+  -w --nodelist \
+  -x --exclude \
+  --exclusive \
+  -l --label \
+  -o --output \
+  -e --error \
+  -i --input \
+  --mpi \
+  --distribution \
+  --ntasks-per-node \
+  --ntasks-per-gpu \
+  --threads-per-core \
+  --cpu-bind \
+  --mem-bind \
+  --gpu-bind \
+  --spread-job \
+  --exact \
+  --overlap \
+  --het-group \
+  --multi-prog \
+  --kill-on-bad-exit \
+  --unbuffered \
+  -v --verbose \
+  -Q --quiet \
+  --help \
+  --usage \
+  --version \
+"
+
+# Flags that consume a value argument (space-separated form: --flag value)
+_SRUN_VALUE_FLAGS=" \
+  -n --ntasks \
+  -N --nodes \
+  -c --cpus-per-task \
+  -G --gpus \
+  --gpus-per-node \
+  --gpus-per-task \
+  --cpus-per-gpu \
+  --mem \
+  --mem-per-cpu \
+  --mem-per-gpu \
+  --gres \
+  -w --nodelist \
+  -x --exclude \
+  -o --output \
+  -e --error \
+  -i --input \
+  --mpi \
+  --distribution \
+  --ntasks-per-node \
+  --ntasks-per-gpu \
+  --threads-per-core \
+  --cpu-bind \
+  --mem-bind \
+  --gpu-bind \
+  --het-group \
+  --multi-prog \
+  --kill-on-bad-exit \
+"
+
+# ── Explicitly denied flags ──────────────────────────────────────
+# These could escape the sandbox or interfere with other jobs.
+
+_srun_deny() {
+    echo "sandbox: srun flag '$1' is not allowed ($2)" >&2
+    exit 1
+}
+
+# ── Determine real srun path ────────────────────────────────────
+# Set by the backend: bwrap exposes at an internal path, firejail/landlock
+# use the original /usr/bin/srun.
+_REAL_SRUN="${_SANDBOX_REAL_SRUN:-/usr/bin/srun}"
+
+# ── Job-step mode check ─────────────────────────────────────────
+# srun is only allowed inside an existing Slurm allocation.
+
+if [[ -z "${SLURM_JOB_ID:-}" ]]; then
+    echo "error: srun is not available for job submission inside the sandbox." >&2
+    echo "Hint: use 'sbatch --wrap=\"command\"' or 'sbatch script.sh' instead." >&2
+    echo "      srun is allowed as a step launcher inside sbatch jobs (SLURM_JOB_ID set)." >&2
+    exit 1
+fi
+
+# Verify real srun exists
+if [[ ! -x "$_REAL_SRUN" ]]; then
+    echo "error: real srun not found at $_REAL_SRUN" >&2
+    echo "Hint: this sandbox backend may not support srun step launching." >&2
+    exit 1
+fi
+
+# ── Validate flags ──────────────────────────────────────────────
+VALIDATED_ARGS=()
+i=0
+args=("$@")
+found_separator=false
+
+while (( i < ${#args[@]} )); do
+    arg="${args[$i]}"
+
+    # After "--", everything is the command to run — pass through
+    if [[ "$arg" == "--" ]]; then
+        found_separator=true
+        VALIDATED_ARGS+=("$arg")
+        (( i++ )) || true
+        # Pass remaining args (the command) as-is
+        while (( i < ${#args[@]} )); do
+            VALIDATED_ARGS+=("${args[$i]}")
+            (( i++ )) || true
+        done
+        break
+    fi
+
+    case "$arg" in
+        # ── Explicitly denied flags ──
+        --jobid|--jobid=*|-j)
+            _srun_deny "$arg" "cannot attach to arbitrary allocations"
+            ;;
+        --uid|--uid=*|--gid|--gid=*)
+            _srun_deny "$arg" "cannot impersonate other users"
+            ;;
+        --export|--export=*)
+            _srun_deny "$arg" "env injection blocked"
+            ;;
+        --chdir|--chdir=*|-D)
+            _srun_deny "$arg" "CWD controlled by sandbox"
+            ;;
+        --get-user-env|--get-user-env=*)
+            _srun_deny "$arg" "env leakage blocked"
+            ;;
+        --propagate|--propagate=*)
+            _srun_deny "$arg" "rlimit propagation blocked"
+            ;;
+        --prolog|--prolog=*|--epilog|--epilog=*|--task-prolog|--task-prolog=*|--task-epilog|--task-epilog=*)
+            _srun_deny "$arg" "arbitrary script execution blocked"
+            ;;
+        --bcast|--bcast=*)
+            _srun_deny "$arg" "binary broadcast blocked"
+            ;;
+        --container|--container=*)
+            _srun_deny "$arg" "OCI containers bypass sandbox"
+            ;;
+        --network|--network=*)
+            _srun_deny "$arg" "network namespace manipulation blocked"
+            ;;
+        # ── Allocation flags that would create a new job ──
+        -A|--account|--account=*|-p|--partition|--partition=*|-q|--qos|--qos=*|-t|--time|--time=*|--reservation|--reservation=*)
+            # These are scheduling/allocation flags. Inside a step, they're
+            # usually ignored or only affect step placement. But to be safe,
+            # we block them — steps inherit the allocation's resources.
+            _srun_deny "$arg" "allocation flags not allowed in step mode"
+            ;;
+        # ── --flag=value form ──
+        --*=*)
+            local_base="${arg%%=*}"
+            if [[ "$_SRUN_ALLOWED_FLAGS" == *" $local_base "* ]]; then
+                VALIDATED_ARGS+=("$arg")
+            else
+                _srun_deny "$arg" "unknown flag"
+            fi
+            ;;
+        # ── -flag or --flag form ──
+        -*)
+            if [[ "$_SRUN_ALLOWED_FLAGS" == *" $arg "* ]]; then
+                VALIDATED_ARGS+=("$arg")
+                if [[ "$_SRUN_VALUE_FLAGS" == *" $arg "* ]] && (( i + 1 < ${#args[@]} )); then
+                    (( i++ )) || true
+                    VALIDATED_ARGS+=("${args[$i]}")
+                fi
+            else
+                _srun_deny "$arg" "unknown flag"
+            fi
+            ;;
+        # ── Positional argument: start of command ──
+        *)
+            # Once we hit a non-flag, the rest is the command + its args
+            VALIDATED_ARGS+=("$arg")
+            (( i++ )) || true
+            while (( i < ${#args[@]} )); do
+                VALIDATED_ARGS+=("${args[$i]}")
+                (( i++ )) || true
+            done
+            break
+            ;;
+    esac
+    (( i++ )) || true
+done
+
+# ── Execute real srun ────────────────────────────────────────────
+exec "$_REAL_SRUN" "${VALIDATED_ARGS[@]}"

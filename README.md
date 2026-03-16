@@ -33,7 +33,7 @@ The sandbox gives you **kernel-enforced filesystem isolation** with none of the 
 
 Filesystem isolation on the login node is only half the story. The main point of HPC is submitting work to compute nodes via Slurm. If the agent can run `sbatch` or `srun`, and those jobs execute **outside** the sandbox, then all restrictions are trivially bypassed — the agent just submits a job that reads `~/.ssh` on the compute node.
 
-This sandbox solves the Slurm problem with the **chaperon** — a zero-trust Slurm proxy that runs *outside* the sandbox and handles all job submission on behalf of the sandboxed process. Inside the sandbox, the munge authentication socket is blocked, all Slurm binaries are hidden or blacklisted, and Slurm configuration files are removed. The only way to submit jobs is through stub scripts that communicate with the chaperon via a Unix socketpair (which has no filesystem path and cannot be discovered or hijacked). The chaperon validates arguments against a whitelist of safe sbatch flags, wraps every job in `sandbox-exec.sh` so compute-node jobs inherit the same sandbox, and rejects dangerous flags like `--uid`, `--get-user-env`, and `--export`.
+This sandbox solves the Slurm problem with the **chaperon** — a zero-trust Slurm proxy that runs *outside* the sandbox and handles all job submission on behalf of the sandboxed process. Inside the sandbox, the munge authentication socket is blocked, all Slurm binaries are hidden or blacklisted, and Slurm configuration files are removed. The only way to submit jobs is through stub scripts that communicate with the chaperon via named pipes in a per-session temp directory (chmod 700, unpredictable response FIFO names). The chaperon validates arguments against a whitelist of safe sbatch flags, wraps every job in `sandbox-exec.sh` so compute-node jobs inherit the same sandbox, and rejects dangerous flags like `--uid`, `--get-user-env`, `--container`, and `--export`.
 
 For the full architecture and security analysis, see [Chaperon: Secure Slurm Proxy](CHAPERON.md).
 
@@ -242,9 +242,9 @@ The sandbox overlays `~/.claude/settings.json` to auto-allow tools (`Bash`, `Rea
 | **Sandbox self-protection** | Read-only mount | Read-only mount | Not protected |
 | **tmux** | Outer blocked, nested works | Outer blocked, nested works | Outer blocked, nested works |
 
-**Network** is not isolated on any backend — Slurm requires network access for munge authentication.
+**Network** is not isolated on any backend — Claude Code requires network access to communicate with the Anthropic API, and many HPC tools (Slurm, LDAP/NSS, NFS) depend on network connectivity. See [Admin Hardening](ADMIN_HARDENING.md) for network restriction options.
 
-**Abstract Unix sockets** (`@/org/...`) bypass filesystem isolation because they live in the network namespace, not on the filesystem. Isolating them would require a separate network namespace, which would break Slurm's munge authentication.
+**Abstract Unix sockets** (`@/org/...`) bypass filesystem isolation because they live in the network namespace, not on the filesystem. Isolating them requires a separate network namespace (`--unshare-net` / `--net=none`), which would break Claude Code's API access and Slurm connectivity. On systems with `systemd --user`, an abstract D-Bus socket could be used for sandbox escape — see [Admin Hardening](ADMIN_HARDENING.md).
 
 **IPC / `/dev/shm`** is shared because MPI, NCCL, and CUDA use it for inter-process communication and GPU coordination. Isolating it (`--unshare-ipc` / `--ipc-namespace`) would break multi-process HPC workloads. Can be enabled in `sandbox.conf` if not needed.
 
@@ -254,10 +254,10 @@ The sandbox overlays `~/.claude/settings.json` to auto-allow tools (`Bash`, `Rea
 
 ## Slurm Integration (Chaperon)
 
-Inside the sandbox, all Slurm authentication and binaries are **blocked** — munge socket hidden, `/usr/bin/sbatch` etc. blacklisted, `/etc/slurm` removed. Job submission goes through the **chaperon**, a proxy process running outside the sandbox that communicates via a Unix socketpair.
+Inside the sandbox, all Slurm authentication and binaries are **blocked** — munge socket hidden, `/usr/bin/sbatch` etc. blacklisted, `/etc/slurm` removed. Job submission goes through the **chaperon**, a proxy process running outside the sandbox that communicates via named pipes in a per-session temp directory.
 
 - **Stub sbatch:** Parses `--wrap` and script arguments, sends them over the `CHAPERON/1` protocol to the chaperon, prints the response. The agent calls `sbatch` as normal.
-- **Stub srun:** Prints a helpful error directing the user to `sbatch` instead. `srun` is not supported through the chaperon because interactive step execution can't be safely proxied.
+- **Stub srun:** Dual mode — on the login node (no `SLURM_JOB_ID`), prints an error directing the user to `sbatch`. Inside a Slurm allocation (compute node), validates flags against a whitelist and passes through to the real srun for job-step launching (MPI, multi-process). Dangerous flags (`--jobid`, `--uid`, `--export`, `--container`, etc.) are always blocked.
 - **Stub scancel:** Sends cancel requests to the chaperon, which filters job IDs by scope (session, project, or user). By default, only jobs submitted by the current sandbox session can be cancelled. Configurable via `CHAPERON_SCANCEL_SCOPE` in `sandbox.conf`.
 - **Chaperon proxy:** Validates arguments against a whitelist of ~40 safe sbatch flags (rejects `--uid`, `--export`, `--get-user-env`, etc.), validates CWD is under the project directory, wraps the job in `sandbox-exec.sh`, and submits via the real sbatch.
 - **Security:** Named pipes with per-session temp directories, the chaperon dies with its parent (PR_SET_PDEATHSIG + liveness polling), and all user data is base64-encoded in the protocol (injection-proof).
@@ -371,7 +371,7 @@ Sorted by perceived severity (security impact first, then operational issues).
 
 | Backend | Limitation | Mitigation |
 |---|---|---|
-| **All** | Network not isolated — agent can exfiltrate data via HTTP, or SSH to an unsandboxed shell if `~/.ssh` is exposed | Do not expose `~/.ssh`; if you must, limit keys to single-service scopes (e.g. GitHub deploy keys only). Consider network policy at admin level |
+| **All** | Network not isolated — agent can exfiltrate data via HTTP, reach cloud metadata endpoints (169.254.169.254), access internal services, or SSH to an unsandboxed shell if `~/.ssh` is exposed. Claude Code requires network for its API, so full isolation is not possible without a dedicated network namespace with selective forwarding | Do not expose `~/.ssh`; limit keys to single-service scopes (e.g. GitHub deploy keys only). See [Admin Hardening](ADMIN_HARDENING.md) for iptables/nftables templates to block metadata endpoints and restrict outbound connections |
 | **Firejail** | Setuid-root binary with a significant [CVE history](https://www.cvedetails.com/vulnerability-list/vendor_id-16191/Firejail.html) (18 CVEs, 12 local root exploits). Installing firejail adds a privileged attack surface to every node | Prefer bwrap where possible. See [Apptainer Comparison](APPTAINER_COMPARISON.md#security-track-record) for the full CVE breakdown |
 | **Landlock** | Cannot block `AF_UNIX connect()` — agent can reach D-Bus, systemd sockets for potential sandbox escape | Use bwrap or firejail; or see [Admin Hardening](ADMIN_HARDENING.md) |
 | **Landlock** | No sandbox self-protection — agent can modify wrapper scripts. Current session is safe (kernel rules are irrevocable), but future sessions could be compromised | Use bwrap or firejail |
@@ -384,4 +384,9 @@ Sorted by perceived severity (security impact first, then operational issues).
 | **All** | `/dev/shm` is writable and shared (IPC namespace not isolated by default) — could be used for covert cross-sandbox communication | `firejail --ipc-namespace`, `bwrap --unshare-ipc` |
 | **Landlock** | User enumeration via LDAP/AD — `getent passwd` reveals all directory users | No mount namespace to overlay files or block sockets; set `FILTER_PASSWD=false` if LDAP lookups are needed |
 | **bwrap/Firejail** | `/tmp` isolated by default (`PRIVATE_TMP=true`) — breaks MPI shared-memory transport and NCCL inter-GPU sockets | Set `PRIVATE_TMP=false` in `sandbox.conf` for HPC multi-process workloads |
+| **All** | Environment variable blocking uses a denylist (`BLOCKED_ENV_VARS`) — new secrets added to the environment are unprotected until manually added to the list | Review your environment (`env \| grep -iE 'token\|key\|secret\|auth'`) and add site-specific secrets. See [Admin Hardening](ADMIN_HARDENING.md) for an allowlist approach |
+| **All** | No resource exhaustion limits — a sandboxed process can consume unlimited CPU, memory, processes, and disk space in the project directory | See [Admin Hardening](ADMIN_HARDENING.md) for `ulimit` and cgroup-based limits. Slurm-submitted jobs are limited by the scheduler, but the login-node agent process has no resource caps |
+| **All** | No audit/logging trail — there is no persistent log of sandbox sessions, chaperon requests, or denied access attempts | The chaperon prints errors to stderr per-request but does not persist them. Consider redirecting to a log file or using `logger` for syslog integration |
+| **All** | `srun` in step-launcher mode (inside sbatch jobs) validates flags against a whitelist. Some advanced srun flags may be blocked — check the denied list in `chaperon/stubs/srun` if a step launch fails | Allocation flags (`--partition`, `--account`, `--time`, etc.) are denied in step mode since steps inherit the job's resources |
+| **All** | Chaperon temp files (wrapper scripts, original scripts) in `$TMPDIR` persist after SIGKILL since the cleanup trap cannot fire | Stale files are named `chaperon-*` in `$TMPDIR`; periodic cleanup recommended on NFS-backed tmp |
 | **Firejail** | `FILTER_PASSWD=true` blocks NSS daemon sockets (nscd, nslcd, sssd) on LDAP/AD clusters where the current user is not in local `/etc/passwd`, breaking user/group resolution and Slurm | Set `FILTER_PASSWD=false` in `sandbox.conf` on LDAP clusters, or prefer bwrap which overlays a pre-generated `/etc/passwd` |

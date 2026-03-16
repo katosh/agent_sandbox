@@ -133,24 +133,37 @@ backend_prepare() {
         fi
     done
 
-    # Munge socket: BLOCKED inside sandbox (chaperon handles auth outside)
-    if [[ -e /run/munge ]]; then
-        FIREJAIL_ARGS+=(--blacklist=/run/munge)
+    # Munge socket: BLOCKED on login node (chaperon handles auth outside).
+    # On compute nodes (SLURM_JOB_ID set), expose munge + slurm config
+    # so srun can launch job steps within the existing sandboxed allocation.
+    if [[ -z "${SLURM_JOB_ID:-}" ]]; then
+        if [[ -e /run/munge ]]; then
+            FIREJAIL_ARGS+=(--blacklist=/run/munge)
+        fi
     fi
 
     # Slurm binaries: BLOCKED inside sandbox (chaperon stubs in PATH)
-    for _slurm_bin in sbatch srun scontrol scancel salloc sattach; do
+    # Block Slurm binaries (list derived from chaperon/stubs/ + defaults).
+    # Exception: srun is NOT blacklisted — the srun stub needs the real
+    # binary for job-step launching (MPI).  The stub validates flags and
+    # only allows step mode.  Munge is blocked as defense-in-depth.
+    _build_chaperon_blocked_binaries
+    for _slurm_bin in "${CHAPERON_BLOCKED_BINARIES[@]}"; do
+        [[ "$_slurm_bin" == "srun" ]] && continue
         if [[ -x "/usr/bin/$_slurm_bin" ]]; then
             FIREJAIL_ARGS+=(--blacklist="/usr/bin/$_slurm_bin")
         fi
     done
 
-    # Slurm config (leaks controller address)
-    for _slurm_conf in /etc/slurm /etc/slurm-llnl; do
-        if [[ -d "$_slurm_conf" ]]; then
-            FIREJAIL_ARGS+=(--blacklist="$_slurm_conf")
-        fi
-    done
+    # Slurm config: BLOCKED on login node (leaks controller address).
+    # On compute nodes, exposed for srun step launching.
+    if [[ -z "${SLURM_JOB_ID:-}" ]]; then
+        for _slurm_conf in /etc/slurm /etc/slurm-llnl; do
+            if [[ -d "$_slurm_conf" ]]; then
+                FIREJAIL_ARGS+=(--blacklist="$_slurm_conf")
+            fi
+        done
+    fi
 
     # /run/systemd/resolve remains accessible (DNS).
 
@@ -275,9 +288,18 @@ backend_prepare() {
     # Prepend chaperon stubs to PATH (before bin/ for sbatch/srun override)
     export PATH="$SANDBOX_DIR/chaperon/stubs:$SANDBOX_DIR/bin:${PATH}"
 
-    # Pass chaperon FIFO directory into the sandbox
+    # Pass chaperon FIFO directory into the sandbox.
+    # When --private-tmp is active, /tmp is replaced with a clean tmpfs,
+    # so we must whitelist the FIFO dir to make it visible inside.
     if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -d "${_CHAPERON_FIFO_DIR:-}" ]]; then
         export _CHAPERON_FIFO_DIR
+        FIREJAIL_ARGS+=(--whitelist="$_CHAPERON_FIFO_DIR")
+    fi
+
+    # Tell the srun stub where to find the real srun binary.
+    # firejail doesn't blacklist srun (see above), so /usr/bin/srun is accessible.
+    if [[ -x /usr/bin/srun ]]; then
+        export _SANDBOX_REAL_SRUN=/usr/bin/srun
     fi
 }
 

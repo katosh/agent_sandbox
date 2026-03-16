@@ -11,20 +11,24 @@ The chaperon replaces this with a **zero-trust architecture**: all Slurm authent
 ```
 sandbox-exec.sh
   │
-  ├── python3 socketpair() → parent_fd, child_fd
-  ├── fork chaperon (holds parent_fd, outside sandbox)
-  ├── close parent_fd in child
-  ├── close FDs 3+ EXCEPT child_fd
-  ├── export _CHAPERON_FD=child_fd
+  ├── mktemp -d → _CHAPERON_FIFO_DIR (chmod 700)
+  ├── mkfifo req (chmod 600)
+  ├── backend_prepare (bind-mounts FIFO dir into sandbox)
+  ├── fork chaperon (reads req pipe, outside sandbox)
+  ├── close FDs 3+ (no exceptions needed — FIFOs are filesystem-based)
+  ├── export _CHAPERON_FIFO_DIR
   └── backend_exec → enters sandbox
         │
         └── Inside sandbox:
               - /run/munge BLOCKED (no munge auth)
               - /usr/bin/{sbatch,srun,...} BLOCKED
               - /etc/slurm/ BLOCKED
-              - stub sbatch → writes to _CHAPERON_FD → chaperon validates,
-                wraps in sandbox-exec.sh, calls real sbatch → returns result
-              - stub srun → prints "use sbatch instead" → exits 1
+              - stub sbatch → writes to req FIFO → chaperon validates,
+                wraps in sandbox-exec.sh, calls real sbatch → writes
+                response to per-request FIFO → stub reads result
+              - stub srun (login node) → prints "use sbatch" → exits 1
+              - stub srun (compute node, SLURM_JOB_ID set) → validates
+                flags against whitelist → execs real srun for step launching
 ```
 
 ### Component Roles
@@ -36,8 +40,10 @@ sandbox-exec.sh
 | **handlers/sbatch.sh** | Outside sandbox | Validates sbatch args, wraps job in sandbox-exec.sh, submits to real sbatch |
 | **handlers/blocked.sh** | Outside sandbox | Returns "command not allowed" for unsupported Slurm commands |
 | **handlers/_handler_lib.sh** | Outside sandbox | Argument whitelist, CWD validation, wrapper script generation |
-| **stubs/sbatch** | Inside sandbox | Parses user's sbatch invocation, sends request over socketpair |
-| **stubs/srun** | Inside sandbox | Standalone error — doesn't talk to chaperon |
+| **handlers/scancel.sh** | Outside sandbox | Validates job scope, cancels via real scancel |
+| **stubs/sbatch** | Inside sandbox | Parses user's sbatch invocation, sends request via named pipe |
+| **stubs/srun** | Inside sandbox | Login node: blocks with error. Compute node: validates flags, execs real srun for step launching |
+| **stubs/scancel** | Inside sandbox | Sends cancel requests to chaperon via named pipe |
 | **stubs/_stub_lib.sh** | Inside sandbox | Stub-to-chaperon communication helpers |
 
 ## File Structure
@@ -49,10 +55,12 @@ chaperon/
 ├── handlers/
 │   ├── _handler_lib.sh      # Arg whitelisting, CWD validation, job wrapping
 │   ├── sbatch.sh            # Validates, wraps, submits via real sbatch
+│   ├── scancel.sh           # Validates job scope, cancels via real scancel
 │   └── blocked.sh           # Generic "blocked" response
 └── stubs/
     ├── _stub_lib.sh          # Stub→chaperon communication
     ├── sbatch                # PATH-shadowing stub (talks to chaperon)
+    ├── scancel               # Sends cancel requests to chaperon
     └── srun                  # Standalone blocked stub (no chaperon)
 ```
 
@@ -68,6 +76,7 @@ ARG <base64>          # one per sbatch flag/value
 ARG <base64>
 CWD <base64>          # working directory (validated by handler)
 SCRIPT <base64>       # job script content (--wrap converted to script)
+RESP_FIFO <path>      # path to per-request response FIFO
 END
 ```
 
@@ -88,22 +97,23 @@ END
 - **Unknown lines silently ignored**: forward compatibility — new fields can be added without breaking old readers
 - **No shell interpretation**: the chaperon never passes user data to `sh -c`, `eval`, or any form of shell expansion
 
-## Socketpair Design
+## FIFO Design
 
-The communication channel is a Unix socketpair created by Python's `socket.socketpair()` before the sandbox is entered. This is critical for security:
+The communication channel uses named pipes (FIFOs) in a per-session temporary directory created before the sandbox is entered:
 
-1. **No filesystem path**: unlike Unix domain sockets bound to a path, socketpairs exist only as file descriptors. There is no path to discover, connect to, or race against.
-2. **Inherited across fork**: the parent FD goes to the chaperon process, the child FD passes into the sandbox via `_CHAPERON_FD`.
-3. **FD closing exemption**: sandbox-exec.sh closes all FDs > 2 before entering the sandbox to prevent FD-based escape. The chaperon FD is explicitly exempted.
-4. **EOF on death**: when either side dies, the other gets EOF. The chaperon exits cleanly on EOF (sandbox died); the stub gets a read error if the chaperon dies.
+1. **Per-session directory**: `mktemp -d` creates a directory with `chmod 700` — only the owning user can access it. The directory is bind-mounted into the sandbox so both sides can reach it.
+2. **Persistent request pipe**: A single `req` FIFO handles all requests. The chaperon opens it O_RDWR to prevent blocking and avoid EOF between requests.
+3. **Per-request response pipes**: Each stub creates a response FIFO with an unpredictable name (`mktemp -u`), sends the path in the request, and reads the response from it. This prevents response mixing between concurrent requests.
+4. **No FD inheritance needed**: Unlike socketpairs, FIFOs are filesystem-backed and survive bwrap's FD closing (which closes all FDs > 2). No exemptions needed.
+5. **Cleanup on exit**: The chaperon's EXIT trap removes the entire FIFO directory.
 
 ## Chaperon Lifecycle
 
-1. **Creation**: `sandbox-exec.sh` creates the socketpair via Python, forks `chaperon.sh` as a background child, closes the parent FD in the child process, and exports `_CHAPERON_FD` for the sandbox.
+1. **Creation**: `sandbox-exec.sh` creates a FIFO directory via `mktemp -d` and a request pipe via `mkfifo`, launches `chaperon.sh` as a background process, and exports `_CHAPERON_FIFO_DIR` for the sandbox.
 2. **Orphan prevention**: The chaperon sets `PR_SET_PDEATHSIG` via Python/ctypes so it receives SIGTERM if its parent (sandbox-exec.sh) dies. This prevents orphaned chaperon processes.
 3. **Signal handling**: SIGTERM and SIGINT are trapped for clean shutdown (FD cleanup).
 4. **Main loop**: Reads requests via `chaperon_read_request()`, dispatches to the appropriate handler, captures stdout/stderr, and sends the response.
-5. **Exit**: On EOF (socketpair closed) or signal, the chaperon closes its FD and exits 0.
+5. **Exit**: On read error, parent death (liveness polling), or signal, the chaperon removes the FIFO directory and exits 0.
 
 ## Handler Dispatch
 
@@ -145,7 +155,7 @@ squeue --me -h -o "%i %k" | grep "chaperon:"              # all sandbox jobs
 
 The scancel handler (`handlers/scancel.sh`) queries `squeue --comment` to resolve which jobs are in scope, then passes only matching IDs to the real scancel. No file-based tracking — the tag in Slurm is the source of truth.
 
-1. **Argument whitelisting**: Only safe scancel flags are forwarded. Flags like `--user`, `--me`, `--account` are denied — scope is controlled by the chaperon.
+1. **Argument whitelisting**: Only safe scancel flags are forwarded. Flags like `--user`, `--me`, `--account`, `--wckey` are denied — scope is controlled by the chaperon.
 2. **Job ID validation**: Positional arguments must be numeric job IDs.
 3. **Scope filtering**: Requested job IDs are checked against `squeue` output filtered by the chaperon tag.
 4. **`scancel all`**: Cancels everything within scope (no specific IDs needed).
@@ -176,6 +186,7 @@ These flags are explicitly rejected because they could bypass sandboxing:
 | `--task-prolog` / `--task-epilog` | Same as above |
 | `--burst-buffer-file` / `--bbf` | Arbitrary file access |
 | `--bcast` | Copy binary to compute nodes (bypass wrapping) |
+| `--container` | OCI container execution could bypass sandbox wrapping |
 
 Unknown flags (not in the whitelist) are also rejected.
 
@@ -184,11 +195,14 @@ Unknown flags (not in the whitelist) are also rejected.
 | Resource | bwrap | firejail | landlock |
 |---|---|---|---|
 | `/run/munge/` (auth socket) | Hidden (tmpfs /run, not re-mounted) | `--blacklist=/run/munge` | Not granted (EACCES) |
-| `/usr/bin/{sbatch,srun,...}` | `--ro-bind /dev/null` | `--blacklist=` | Not blocked (known limitation) |
+| `/usr/bin/{sbatch,scancel,...}` | `--ro-bind /dev/null` | `--blacklist=` | Not blocked (known limitation) |
+| `/usr/bin/srun` | Blocked at original path; exposed at `/run/sandbox/srun-real` for step stub | Not blacklisted (stub controls access) | Not blocked (stub controls access) |
 | `/etc/slurm/`, `/etc/slurm-llnl/` | `--tmpfs` | `--blacklist=` | Not blocked |
 | Munge auth capability | **None** — can't auth without socket | **None** | **None** — EACCES on socket |
 
-**Defense in depth**: Without the munge socket, even finding a Slurm binary (on Landlock where `/usr/bin` can't be blocked) is useless — authentication will fail. The chaperon is the only path to job submission.
+**Compute-node exception**: When `SLURM_JOB_ID` is set (inside a Slurm allocation), munge and slurm config are exposed read-only so that `srun` can launch job steps within the existing sandboxed allocation. This is safe because the allocation itself was approved by the chaperon, and the srun stub validates all flags.
+
+**Defense in depth**: Without the munge socket (login node), even finding a Slurm binary (on Landlock where `/usr/bin` can't be blocked) is useless — authentication will fail. The chaperon is the only path to job submission.
 
 ## Comparison with Previous Architecture
 
@@ -199,7 +213,7 @@ Unknown flags (not in the whitelist) are also rejected.
 | Bypass via crafted binary | **Possible** (munge auth available) | **Impossible** (no munge, no binaries) |
 | Bypass via `/usr/bin/sbatch` | **Possible** (firejail/landlock) | **Impossible** (blocked/blacklisted) |
 | Argument injection | **Possible** (wrappers pass-through) | **Blocked** (whitelist rejects unknown flags) |
-| Communication channel | PATH ordering (soft) | Socketpair (no filesystem path) |
+| Communication channel | PATH ordering (soft) | Named pipes (per-session temp dir, 700 permissions) |
 | Compute-node wrapping | Via wrapper scripts | Via wrapper scripts (same) |
 
 ## Security Properties
@@ -213,7 +227,7 @@ Unknown flags (not in the whitelist) are also rejected.
 7. **Die-with-parent**: The chaperon sets `PR_SET_PDEATHSIG` and polls parent liveness every 5 seconds as a fallback.
 8. **Handler dispatch validation**: Command names are validated against `^[a-z_][a-z0-9_]*$` to prevent path traversal in handler lookup.
 9. **TOCTOU prevention**: Response FIFOs are opened to a held FD immediately after validation, and writes go through the FD (not the path).
-10. **#SBATCH directive stripping**: All `#SBATCH` directives are stripped from user scripts, preventing whitelist bypass via embedded directives.
+10. **#SBATCH directive filtering**: `#SBATCH` directives are filtered against the flag whitelist — safe directives pass through, dangerous ones are stripped.
 11. **Atomic request writes**: Request messages are built into a buffer and written atomically (single write for messages under PIPE_BUF, flock for larger ones).
 12. **scancel scoping**: Job cancellation is restricted to jobs submitted by this session/project/user, preventing cancellation of other users' jobs.
 
@@ -239,8 +253,13 @@ The test suite (`test.sh` sections 5–6) verifies:
 ### Adding a new Slurm command
 
 1. Create `chaperon/handlers/newcmd.sh` with a `handle_newcmd()` function
-2. Create `chaperon/stubs/newcmd` that uses `_stub_lib.sh` to send the request
-3. The chaperon's filesystem-based dispatch will automatically route requests
+2. Create `chaperon/stubs/newcmd` that uses `_stub_lib.sh` to send the request (see `stubs/scancel` for a minimal example)
+3. Make the stub executable: `chmod +x chaperon/stubs/newcmd`
+4. The chaperon's filesystem-based dispatch will automatically route requests
+5. Binary blocking is automatic: backends scan `chaperon/stubs/` at startup to build the block list (any executable file not starting with `_` is blocked)
+6. `install.sh` uses globs to copy handlers and stubs — no edits needed
+
+To block a command without proxying it (like srun), create a standalone stub that prints an error without sourcing `_stub_lib.sh`.
 
 ### Adding a new allowed sbatch flag
 

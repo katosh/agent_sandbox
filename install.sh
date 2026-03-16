@@ -141,11 +141,11 @@ done
 for file in chaperon.sh protocol.sh; do
     cp "$SCRIPT_DIR/chaperon/$file" "$SANDBOX_DIR/chaperon/$file"
 done
-for file in _handler_lib.sh sbatch.sh scancel.sh blocked.sh; do
-    cp "$SCRIPT_DIR/chaperon/handlers/$file" "$SANDBOX_DIR/chaperon/handlers/$file"
+for file in "$SCRIPT_DIR"/chaperon/handlers/*.sh; do
+    cp "$file" "$SANDBOX_DIR/chaperon/handlers/"
 done
-for file in _stub_lib.sh sbatch scancel srun; do
-    cp "$SCRIPT_DIR/chaperon/stubs/$file" "$SANDBOX_DIR/chaperon/stubs/$file"
+for file in "$SCRIPT_DIR"/chaperon/stubs/*; do
+    cp "$file" "$SANDBOX_DIR/chaperon/stubs/"
 done
 
 chmod +x "$SANDBOX_DIR/sandbox-exec.sh"
@@ -157,9 +157,9 @@ chmod +x "$SANDBOX_DIR/bin/srun"
 chmod +x "$SANDBOX_DIR/bin/scancel"
 chmod +x "$SANDBOX_DIR/bin/tmux"
 chmod +x "$SANDBOX_DIR/chaperon/chaperon.sh"
-chmod +x "$SANDBOX_DIR/chaperon/stubs/sbatch"
-chmod +x "$SANDBOX_DIR/chaperon/stubs/scancel"
-chmod +x "$SANDBOX_DIR/chaperon/stubs/srun"
+chmod +x "$SANDBOX_DIR"/chaperon/stubs/*
+# Re-protect library files that shouldn't be directly executed
+chmod -x "$SANDBOX_DIR"/chaperon/stubs/_stub_lib.sh 2>/dev/null || true
 
 echo "  ✓ Scripts installed"
 

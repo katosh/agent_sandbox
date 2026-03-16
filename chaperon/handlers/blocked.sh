@@ -7,6 +7,6 @@
 handle_blocked() {
     local command="${REQ_COMMAND:-unknown}"
     echo "chaperon: '$command' is not allowed inside the sandbox." >&2
-    echo "Hint: only 'sbatch' is supported for job submission." >&2
+    echo "Hint: 'sbatch' and 'scancel' are supported. See CHAPERON.md for details." >&2
     return 1
 }

@@ -66,11 +66,13 @@ backend_prepare() {
     # Selectively grant /run subdirs — granting all of /run exposes
     # D-Bus and systemd user sockets, allowing sandbox escape via
     # systemd-run --user.
-    # Munge socket: NOT granted access (chaperon handles auth outside).
-    # Landlock can't block under /run if parent is granted, but we simply
-    # don't grant /run/munge — it returns EACCES.
+    # Munge socket: NOT granted on login node (chaperon handles auth outside).
+    # On compute nodes (SLURM_JOB_ID set), grant munge for srun step launching.
     [[ -d /run/nscd ]]             && LANDLOCK_ARGS+=(--ro /run/nscd)
     [[ -d /run/systemd/resolve ]]  && LANDLOCK_ARGS+=(--ro /run/systemd/resolve)
+    if [[ -n "${SLURM_JOB_ID:-}" && -d /run/munge ]]; then
+        LANDLOCK_ARGS+=(--ro /run/munge)
+    fi
 
     # Read-only home paths (files and directories)
     for subdir in "${HOME_READONLY[@]}"; do
@@ -118,6 +120,12 @@ backend_prepare() {
     if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -d "${_CHAPERON_FIFO_DIR:-}" ]]; then
         LANDLOCK_ARGS+=(--rw "$_CHAPERON_FIFO_DIR")
         export _CHAPERON_FIFO_DIR
+    fi
+
+    # Tell the srun stub where to find the real srun binary.
+    # Landlock can't block binaries — /usr/bin/srun is already accessible.
+    if [[ -x /usr/bin/srun ]]; then
+        export _SANDBOX_REAL_SRUN=/usr/bin/srun
     fi
 }
 

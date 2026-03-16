@@ -23,6 +23,39 @@ fi
 
 SANDBOX_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
+# Build list of Slurm binaries to block inside the sandbox.
+# Derived from chaperon/stubs/ — any executable file whose name does NOT
+# start with "_" is treated as a command to block in /usr/bin.
+# This also includes common Slurm binaries that we block even without stubs.
+#
+# srun is included in the list but handled specially by each backend:
+#   bwrap:    blocks /usr/bin/srun, exposes at /usr/lib/sandbox/srun-real
+#   firejail: skips srun in blacklist (needs real binary for step launching)
+#   landlock: can't block binaries; srun already accessible at /usr/bin/srun
+# Defense-in-depth: munge socket is blocked in all backends, so even direct
+# /usr/bin/srun calls cannot submit new jobs (only step launching works).
+_build_chaperon_blocked_binaries() {
+    CHAPERON_BLOCKED_BINARIES=()
+    local stubs_dir="$SANDBOX_DIR/chaperon/stubs"
+    if [[ -d "$stubs_dir" ]]; then
+        for stub in "$stubs_dir"/*; do
+            [[ -x "$stub" ]] || continue
+            local name
+            name="$(basename "$stub")"
+            [[ "$name" == _* ]] && continue
+            CHAPERON_BLOCKED_BINARIES+=("$name")
+        done
+    fi
+    # Always block these even without stubs (defense in depth)
+    for bin in scontrol salloc sattach; do
+        local found=false
+        for existing in "${CHAPERON_BLOCKED_BINARIES[@]}"; do
+            [[ "$existing" == "$bin" ]] && found=true && break
+        done
+        "$found" || CHAPERON_BLOCKED_BINARIES+=("$bin")
+    done
+}
+
 # Resolve HOME from the password database, not the environment variable.
 # An agent (or user config) could export HOME=/tmp/evil before the sandbox
 # starts, redirecting all home-relative paths.  getent passwd is authoritative.
@@ -141,6 +174,7 @@ BLOCKED_ENV_VARS=(
     "ST_AUTH" "SW2_URL"
     "MUTT_EMAIL_ADDRESS" "MUTT_REALNAME" "MUTT_SMTP_URL"
     "KRB5CCNAME" "SSH_CLIENT" "SSH_CONNECTION" "SSH_TTY"
+    "SLURM_CONF" "SLURM_CONFIG_DIR"
     "DBUS_SESSION_BUS_ADDRESS" "OLDPWD"
     "TMUX" "TMUX_PANE"
 )

@@ -63,15 +63,13 @@ chaperon_call() {
     msg+="$(printf '\nRESP_FIFO %s' "$resp_fifo")"
     msg+="$(printf '\nEND')"
 
-    # Write atomically: single write for small messages, flock for large ones
-    if [[ ${#msg} -le 4096 ]]; then
+    # Write atomically: acquire flock to prevent interleaving from concurrent stubs.
+    # For messages under PIPE_BUF (4096), a single write() is atomic on Linux,
+    # but we always lock for safety with concurrent large+small messages.
+    (
+        flock 9
         printf '%s\n' "$msg" > "$fifo_dir/req"
-    else
-        (
-            flock 9
-            printf '%s\n' "$msg" > "$fifo_dir/req"
-        ) 9>"$fifo_dir/req.lock"
-    fi
+    ) 9>"$fifo_dir/req.lock"
 
     # Read response from per-request FIFO with a timeout to prevent infinite
     # hangs if the chaperon process dies.

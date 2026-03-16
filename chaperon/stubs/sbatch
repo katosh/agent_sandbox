@@ -1,7 +1,7 @@
 #!/bin/bash --
 # chaperon/stubs/sbatch — PATH-shadowing stub for sbatch
 #
-# Sends sbatch requests to the chaperon process via _CHAPERON_FD.
+# Sends sbatch requests to the chaperon process via named pipes (_CHAPERON_FIFO_DIR).
 # Runs INSIDE the sandbox; the chaperon validates, wraps, and submits
 # the job on the outside.
 

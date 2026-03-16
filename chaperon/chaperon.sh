@@ -197,14 +197,32 @@ while true; do
         _exit_code=1
     fi
 
-    # Send response via the held FD (not the path) to avoid TOCTOU
+    # Send response via the held FD (not the path) to avoid TOCTOU.
+    # Use a timeout to prevent deadlock if the stub dies without reading.
+    _write_ok=true
     {
         printf 'CHAPERON/1 RESULT\n'
         printf 'EXIT %s\n' "$_exit_code"
         printf 'STDOUT %s\n' "$_stdout_b64"
         printf 'STDERR %s\n' "$_stderr_b64"
         printf 'END\n'
-    } >&"$_resp_fd"
+    } >&"$_resp_fd" 2>/dev/null &
+    _write_pid=$!
+
+    # Wait up to 10 seconds for the write to complete
+    _w=0
+    while (( _w < 10 )) && kill -0 "$_write_pid" 2>/dev/null; do
+        sleep 1
+        (( _w++ )) || true
+    done
+    if kill -0 "$_write_pid" 2>/dev/null; then
+        kill "$_write_pid" 2>/dev/null || true
+        wait "$_write_pid" 2>/dev/null || true
+        echo "chaperon: response write timed out for $REQ_COMMAND" >&2
+    else
+        wait "$_write_pid" 2>/dev/null || _write_ok=false
+    fi
+
     exec {_resp_fd}>&-
 done
 
