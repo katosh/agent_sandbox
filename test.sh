@@ -410,14 +410,14 @@ if command -v sbatch &>/dev/null; then
     fi
 fi
 
-# 5d. srun blocked with helpful message
-if sandbox bash -c 'srun hostname 2>&1'; then
-    fail "srun should fail inside sandbox"
+# 5d. srun proxied through chaperon (--pty denied, --jobid denied)
+if sandbox bash -c 'srun --pty bash 2>&1'; then
+    fail "srun --pty should be denied"
 else
-    if echo "$OUTPUT" | grep -qi "sbatch"; then
-        pass "srun prints helpful error suggesting sbatch"
+    if echo "$OUTPUT" | grep -qi "denied\|not allowed"; then
+        pass "srun --pty correctly denied by chaperon"
     else
-        fail "srun error does not suggest sbatch" "$OUTPUT"
+        fail "srun --pty error unexpected" "$OUTPUT"
     fi
 fi
 

@@ -2,21 +2,25 @@
 # chaperon/handlers/srun.sh — Handle srun requests from sandbox
 #
 # Proxies srun through the chaperon so it can authenticate with munge
-# (which is blocked inside the sandbox).  Only allowed when SLURM_JOB_ID
-# is set (inside an existing allocation — step launching only).
+# (which is blocked inside the sandbox).  Two modes:
 #
-# The handler validates flags against a whitelist identical to the stub's,
-# then execs real srun.  stdout/stderr are captured by the chaperon main
-# loop and returned via the response FIFO.
+#   Step mode (SLURM_JOB_ID set):
+#     Validates flags against step whitelist, execs real srun directly.
+#     The command runs within the existing sandboxed allocation.
 #
-# Security: munge is intentionally blocked inside the sandbox to prevent
-# arbitrary job submission.  By proxying srun through the chaperon, we
-# get munge access (chaperon runs outside) while still validating all args.
+#   Allocation mode (no SLURM_JOB_ID):
+#     Validates flags against allocation whitelist, wraps the command in
+#     sandbox-exec.sh so compute-node processes inherit sandbox restrictions,
+#     then execs real srun.  --pty is denied (no PTY passthrough via protocol).
+#
+# Security: munge is intentionally blocked inside the sandbox.  The chaperon
+# runs outside and has munge access.  All flags are validated against a
+# whitelist.  In allocation mode, the command is always sandboxed.
 
 source "$(dirname "${BASH_SOURCE[0]}")/_handler_lib.sh"
 
-# ── Allowed srun flags (step mode only) ─────────────────────────
-_SRUN_ALLOWED_FLAGS=" \
+# ── Flags allowed in BOTH modes ──────────────────────────────────
+_SRUN_COMMON_FLAGS=" \
   -n --ntasks \
   -N --nodes \
   -c --cpus-per-task \
@@ -57,6 +61,25 @@ _SRUN_ALLOWED_FLAGS=" \
   --version \
 "
 
+# ── Additional flags allowed ONLY in allocation mode ─────────────
+_SRUN_ALLOC_FLAGS=" \
+  -A --account \
+  -p --partition \
+  -q --qos \
+  -t --time \
+  -J --job-name \
+  --reservation \
+  --begin \
+  --deadline \
+  --constraint \
+  --nice \
+  --priority \
+  --signal \
+  --wckey \
+  --comment \
+"
+
+# ── Value flags (consume the next argument) ──────────────────────
 _SRUN_VALUE_FLAGS=" \
   -n --ntasks \
   -N --nodes \
@@ -85,11 +108,32 @@ _SRUN_VALUE_FLAGS=" \
   --het-group \
   --multi-prog \
   --kill-on-bad-exit \
+  -A --account \
+  -p --partition \
+  -q --qos \
+  -t --time \
+  -J --job-name \
+  --reservation \
+  --begin \
+  --deadline \
+  --constraint \
+  --nice \
+  --priority \
+  --signal \
+  --wckey \
+  --comment \
 "
 
 _is_srun_allowed() {
     local base="${1%%=*}"
-    [[ "$_SRUN_ALLOWED_FLAGS" == *" $base "* ]]
+    local mode="$2"  # "step" or "alloc"
+    if [[ "$_SRUN_COMMON_FLAGS" == *" $base "* ]]; then
+        return 0
+    fi
+    if [[ "$mode" == "alloc" && "$_SRUN_ALLOC_FLAGS" == *" $base "* ]]; then
+        return 0
+    fi
+    return 1
 }
 
 _is_srun_value_flag() {
@@ -106,11 +150,10 @@ handle_srun() {
         return 1
     fi
 
-    # srun is only allowed inside an existing allocation
-    if [[ -z "${SLURM_JOB_ID:-}" ]]; then
-        echo "chaperon: srun denied — not inside a Slurm allocation (SLURM_JOB_ID not set)" >&2
-        echo "Hint: use 'sbatch --wrap=\"command\"' for job submission." >&2
-        return 1
+    # Determine mode: step (inside allocation) or alloc (new allocation)
+    local mode="alloc"
+    if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+        mode="step"
     fi
 
     # Validate CWD
@@ -120,27 +163,29 @@ handle_srun() {
         fi
     fi
 
-    # Validate and filter arguments
-    local validated_args=()
+    # Validate and filter arguments; collect the command after flags
+    local validated_flags=()
+    local command_args=()
     local i=0
-    local found_separator=false
     while (( i < ${#REQ_ARGS[@]} )); do
         local arg="${REQ_ARGS[$i]}"
 
-        # After "--", everything is the command — pass through
+        # After "--", everything is the command
         if [[ "$arg" == "--" ]]; then
-            found_separator=true
-            validated_args+=("$arg")
             (( i++ )) || true
             while (( i < ${#REQ_ARGS[@]} )); do
-                validated_args+=("${REQ_ARGS[$i]}")
+                command_args+=("${REQ_ARGS[$i]}")
                 (( i++ )) || true
             done
             break
         fi
 
         case "$arg" in
-            # Explicitly denied flags
+            # ── Always denied ──
+            --pty)
+                echo "chaperon: srun --pty denied (no PTY passthrough in sandbox)" >&2
+                return 1
+                ;;
             --jobid|--jobid=*|-j)
                 echo "chaperon: srun flag '$arg' denied (cannot attach to arbitrary allocations)" >&2
                 return 1
@@ -181,36 +226,46 @@ handle_srun() {
                 echo "chaperon: srun flag '$arg' denied (network namespace manipulation)" >&2
                 return 1
                 ;;
-            -A|--account|--account=*|-p|--partition|--partition=*|-q|--qos|--qos=*|-t|--time|--time=*|--reservation|--reservation=*)
-                echo "chaperon: srun flag '$arg' denied (allocation flags not allowed in step mode)" >&2
-                return 1
+            # ── Allocation flags: allowed in alloc mode, denied in step mode ──
+            -A|--account|--account=*|-p|--partition|--partition=*|-q|--qos|--qos=*|-t|--time|--time=*|--reservation|--reservation=*|-J|--job-name|--job-name=*|--begin|--begin=*|--deadline|--deadline=*|--constraint|--constraint=*|--nice|--nice=*|--priority|--priority=*|--signal|--signal=*|--wckey|--wckey=*|--comment|--comment=*)
+                if [[ "$mode" == "step" ]]; then
+                    echo "chaperon: srun flag '$arg' denied (allocation flags not allowed in step mode)" >&2
+                    return 1
+                fi
+                validated_flags+=("$arg")
+                if [[ "$arg" != *=* ]] && _is_srun_value_flag "$arg" && (( i + 1 < ${#REQ_ARGS[@]} )); then
+                    (( i++ )) || true
+                    validated_flags+=("${REQ_ARGS[$i]}")
+                fi
                 ;;
+            # ── --flag=value form ──
             --*=*)
-                if _is_srun_allowed "$arg"; then
-                    validated_args+=("$arg")
+                if _is_srun_allowed "$arg" "$mode"; then
+                    validated_flags+=("$arg")
                 else
                     echo "chaperon: srun denied unknown flag: ${arg%%=*}" >&2
                     return 1
                 fi
                 ;;
+            # ── -flag or --flag form ──
             -*)
-                if _is_srun_allowed "$arg"; then
-                    validated_args+=("$arg")
+                if _is_srun_allowed "$arg" "$mode"; then
+                    validated_flags+=("$arg")
                     if _is_srun_value_flag "$arg" && (( i + 1 < ${#REQ_ARGS[@]} )); then
                         (( i++ )) || true
-                        validated_args+=("${REQ_ARGS[$i]}")
+                        validated_flags+=("${REQ_ARGS[$i]}")
                     fi
                 else
                     echo "chaperon: srun denied unknown flag: $arg" >&2
                     return 1
                 fi
                 ;;
+            # ── Positional: start of command ──
             *)
-                # Positional: start of command — pass through rest
-                validated_args+=("$arg")
+                command_args+=("$arg")
                 (( i++ )) || true
                 while (( i < ${#REQ_ARGS[@]} )); do
-                    validated_args+=("${REQ_ARGS[$i]}")
+                    command_args+=("${REQ_ARGS[$i]}")
                     (( i++ )) || true
                 done
                 break
@@ -219,14 +274,42 @@ handle_srun() {
         (( i++ )) || true
     done
 
-    # Execute real srun with validated args.
-    # The chaperon runs outside the sandbox and has munge access.
-    # CWD is set to the validated directory.
-    local rc=0
-    if [[ -n "$REQ_CWD" ]]; then
-        (cd "$REQ_CWD" && "$real_srun" "${validated_args[@]}") || rc=$?
-    else
-        "$real_srun" "${validated_args[@]}" || rc=$?
+    # Handle --help/--version/--usage (no command needed)
+    if [[ ${#command_args[@]} -eq 0 ]]; then
+        for f in "${validated_flags[@]}"; do
+            case "$f" in --help|--usage|--version)
+                local rc=0
+                "$real_srun" "${validated_flags[@]}" || rc=$?
+                return "$rc"
+                ;;
+            esac
+        done
+        echo "chaperon: srun requires a command to run" >&2
+        return 1
     fi
+
+    local rc=0
+
+    if [[ "$mode" == "step" ]]; then
+        # Step mode: exec real srun directly — the command runs within
+        # the existing sandboxed allocation.
+        if [[ -n "$REQ_CWD" ]]; then
+            (cd "$REQ_CWD" && "$real_srun" "${validated_flags[@]}" -- "${command_args[@]}") || rc=$?
+        else
+            "$real_srun" "${validated_flags[@]}" -- "${command_args[@]}" || rc=$?
+        fi
+    else
+        # Allocation mode: wrap the command in sandbox-exec.sh so
+        # compute-node processes inherit sandbox restrictions.
+        # srun [flags] -- sandbox-exec.sh --project-dir $DIR -- <command>
+        if [[ -n "$REQ_CWD" ]]; then
+            (cd "$REQ_CWD" && "$real_srun" "${validated_flags[@]}" -- \
+                "$sandbox_exec" --project-dir "$project_dir" -- "${command_args[@]}") || rc=$?
+        else
+            "$real_srun" "${validated_flags[@]}" -- \
+                "$sandbox_exec" --project-dir "$project_dir" -- "${command_args[@]}" || rc=$?
+        fi
+    fi
+
     return "$rc"
 }

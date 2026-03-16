@@ -26,8 +26,13 @@ sandbox-exec.sh
               - stub sbatch → writes to req FIFO → chaperon validates,
                 wraps in sandbox-exec.sh, calls real sbatch → writes
                 response to per-request FIFO → stub reads result
-              - stub srun → writes to req FIFO → chaperon validates flags,
-                blocks if no SLURM_JOB_ID, execs real srun for steps
+              - stub srun → writes to req FIFO → chaperon validates flags:
+                  alloc mode (login node): wraps command in sandbox-exec.sh,
+                    calls real srun → compute node runs sandboxed
+                  step mode (compute node, SLURM_JOB_ID set): execs real
+                    srun directly for job-step launching (MPI)
+              - stub scancel → writes to req FIFO → chaperon validates
+                job scope, calls real scancel
 ```
 
 ### Component Roles
@@ -42,7 +47,7 @@ sandbox-exec.sh
 | **handlers/scancel.sh** | Outside sandbox | Validates job scope, cancels via real scancel |
 | **stubs/sbatch** | Inside sandbox | Parses user's sbatch invocation, sends request via named pipe |
 | **stubs/srun** | Inside sandbox | Sends srun requests to chaperon via named pipe |
-| **handlers/srun.sh** | Outside sandbox | Validates srun flags, allows step launching only (SLURM_JOB_ID), execs real srun |
+| **handlers/srun.sh** | Outside sandbox | Validates srun flags; alloc mode wraps command in sandbox-exec.sh, step mode execs real srun |
 | **stubs/scancel** | Inside sandbox | Sends cancel requests to chaperon via named pipe |
 | **stubs/_stub_lib.sh** | Inside sandbox | Stub-to-chaperon communication helpers |
 
@@ -191,6 +196,37 @@ These flags are explicitly rejected because they could bypass sandboxing:
 
 Unknown flags (not in the whitelist) are also rejected.
 
+### srun Handler
+
+The srun handler (`handlers/srun.sh`) operates in two modes:
+
+**Allocation mode** (no `SLURM_JOB_ID` — login node):
+1. Validates flags against a whitelist that includes scheduling flags (`-p`, `-A`, `-t`, etc.)
+2. Wraps the command in `sandbox-exec.sh --project-dir $DIR` so the compute-node process inherits sandbox restrictions
+3. Calls real srun with the validated flags and wrapped command
+
+**Step mode** (`SLURM_JOB_ID` set — inside a compute-node allocation):
+1. Validates flags against a step-only whitelist (no scheduling flags — steps inherit the job's resources)
+2. Execs real srun directly — the command runs within the existing sandboxed allocation
+
+**Denied srun flags** (both modes):
+
+| Flag | Reason |
+|---|---|
+| `--pty` | No PTY passthrough via the chaperon protocol |
+| `--jobid` / `-j` | Cannot attach to arbitrary allocations |
+| `--uid` / `--gid` | Must not impersonate other users |
+| `--export` | Could inject env vars to bypass sandbox detection |
+| `--chdir` / `-D` | CWD comes from protocol and is validated |
+| `--get-user-env` | Can leak host environment variables |
+| `--propagate` | Can propagate unsafe resource limits |
+| `--prolog` / `--epilog` / `--task-prolog` / `--task-epilog` | Arbitrary script execution |
+| `--bcast` | Binary broadcast (bypass wrapping) |
+| `--container` | OCI container execution bypasses sandbox |
+| `--network` | Network namespace manipulation |
+
+In step mode, allocation flags (`-p`, `-A`, `-t`, `-q`, `--reservation`, etc.) are also denied.
+
 ## What Gets Blocked Inside the Sandbox
 
 | Resource | bwrap | firejail | landlock |
@@ -237,7 +273,8 @@ The test suite (`test.sh` sections 5–6) verifies:
 - Munge socket is hidden/blocked inside sandbox
 - Slurm binaries are blocked inside sandbox (bwrap/firejail)
 - Slurm config is hidden inside sandbox (bwrap/firejail)
-- `srun` prints helpful error suggesting `sbatch`
+- `srun --pty` is denied by chaperon
+- `srun` in allocation mode wraps command in sandbox-exec.sh
 - `_CHAPERON_FIFO_DIR` is set inside sandbox
 - Chaperon request FIFO exists inside sandbox
 - `sbatch --wrap` via chaperon submits jobs successfully
