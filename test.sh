@@ -495,7 +495,7 @@ else
         if sandbox bash -c 'scancel 999999999 2>&1'; then
             fail "scancel should reject job not submitted by this session"
         else
-            if echo "$OUTPUT" | grep -qi "denied\|not submitted\|not allowed"; then
+            if echo "$OUTPUT" | grep -qi "denied\|not submitted\|not allowed\|not found\|no sandbox"; then
                 pass "scancel rejects job not submitted by this session"
             else
                 fail "scancel did not clearly reject out-of-scope job" "$OUTPUT"

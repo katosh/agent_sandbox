@@ -1,8 +1,8 @@
 #! /bin/bash --
 # chaperon/handlers/sbatch.sh — Handle sbatch requests from sandbox
 #
-# Validates arguments, wraps the job in sandbox-exec.sh, and submits
-# via the real sbatch (outside the sandbox).
+# Validates arguments, wraps the job in sandbox-exec.sh, injects a
+# chaperon tag into --comment for scoping, and submits via real sbatch.
 
 # Source handler utilities
 source "$(dirname "${BASH_SOURCE[0]}")/_handler_lib.sh"
@@ -29,10 +29,15 @@ handle_sbatch() {
         return 1
     fi
 
-    # Validate arguments
+    # Validate arguments (also captures _USER_COMMENT if --comment was given)
     if ! validate_sbatch_args; then
         return 1
     fi
+
+    # Build the chaperon tag and inject as --comment
+    local chaperon_comment
+    chaperon_comment="$(_build_chaperon_comment "$project_dir")"
+    VALIDATED_ARGS+=("--comment=$chaperon_comment")
 
     # Determine submission mode: SCRIPT or --wrap
     if [[ -n "$REQ_SCRIPT" ]]; then
@@ -42,29 +47,17 @@ handle_sbatch() {
 
         create_wrapped_script "$sandbox_exec" "$project_dir" "$REQ_SCRIPT" "$wrapper"
 
-        # Submit and capture output to extract job ID
-        local sbatch_output rc=0
-        sbatch_output="$("$real_sbatch" "${VALIDATED_ARGS[@]}" "$wrapper" 2>&1)" || rc=$?
-        echo "$sbatch_output"
-
-        # Track submitted job ID for scancel scoping
-        if [[ "$rc" -eq 0 ]]; then
-            _track_job_id "$sbatch_output" "$project_dir"
-        fi
+        # Submit
+        local rc=0
+        "$real_sbatch" "${VALIDATED_ARGS[@]}" "$wrapper" || rc=$?
 
         # Clean up wrapper (original script cleaned up by wrapper's trap)
         rm -f "$wrapper"
         return "$rc"
     else
         # No script: pass through flags (e.g., --help, --version, --test-only)
-        local sbatch_output rc=0
-        sbatch_output="$("$real_sbatch" "${VALIDATED_ARGS[@]}" 2>&1)" || rc=$?
-        echo "$sbatch_output"
-
-        if [[ "$rc" -eq 0 ]]; then
-            _track_job_id "$sbatch_output" "$project_dir"
-        fi
-
+        local rc=0
+        "$real_sbatch" "${VALIDATED_ARGS[@]}" || rc=$?
         return "$rc"
     fi
 }

@@ -141,12 +141,12 @@ _is_value_flag() {
 # Returns 1 if a denied flag is found.
 validate_sbatch_args() {
     VALIDATED_ARGS=()
+    _USER_COMMENT=""   # Captured here, injected by sbatch handler with chaperon tag
     local i=0
     while (( i < ${#REQ_ARGS[@]} )); do
         local arg="${REQ_ARGS[$i]}"
         case "$arg" in
             --wrap|--wrap=*)
-                # Denied: reconstructed by handler
                 echo "chaperon: denied flag: --wrap (use protocol SCRIPT)" >&2
                 return 1
                 ;;
@@ -182,8 +182,19 @@ validate_sbatch_args() {
                 echo "chaperon: denied flag: --bcast" >&2
                 return 1
                 ;;
+            --comment=*)
+                # Intercept --comment: chaperon will inject its own tag.
+                # Save the user's value to append later.
+                _USER_COMMENT="${arg#--comment=}"
+                ;;
+            --comment)
+                # --comment <value> form
+                if (( i + 1 < ${#REQ_ARGS[@]} )); then
+                    (( i++ ))
+                    _USER_COMMENT="${REQ_ARGS[$i]}"
+                fi
+                ;;
             --*=*)
-                # Long option with inline value
                 if _is_allowed_flag "$arg"; then
                     VALIDATED_ARGS+=("$arg")
                 else
@@ -192,10 +203,8 @@ validate_sbatch_args() {
                 fi
                 ;;
             -*)
-                # Short or long flag
                 if _is_allowed_flag "$arg"; then
                     VALIDATED_ARGS+=("$arg")
-                    # Consume value if this flag takes one
                     if _is_value_flag "$arg" && (( i + 1 < ${#REQ_ARGS[@]} )); then
                         (( i++ ))
                         VALIDATED_ARGS+=("${REQ_ARGS[$i]}")
@@ -206,8 +215,6 @@ validate_sbatch_args() {
                 fi
                 ;;
             *)
-                # Positional argument — not expected for sbatch via chaperon
-                # (script comes via SCRIPT in protocol). Reject.
                 echo "chaperon: denied positional argument: (use protocol SCRIPT)" >&2
                 return 1
                 ;;
@@ -314,37 +321,53 @@ create_wrapped_command() {
         "$sandbox_exec" "$project_dir" "$wrap_cmd"
 }
 
-# ── Job ID tracking (for scancel scoping) ────────────────────────
+# ── Job tagging via --comment (for scancel/squeue scoping) ───────
+#
+# Every job submitted through the chaperon gets a structured --comment
+# tag that encodes the session and project identity.  This is queried
+# by scancel/squeue to scope operations — no file-based tracking needed.
+#
+# Tag format:  chaperon:sid=<SESSION_ID>,proj=<PROJECT_HASH>[,user=<comment>]
+#
+#   sid  = unique per-chaperon-instance (PID + epoch, set once at startup)
+#   proj = first 12 hex chars of md5(project_dir)
+#   user = the user-supplied --comment value, if any (url-encoded to avoid commas)
+#
+# Query examples:
+#   squeue --me -h -o "%i %k" | grep "chaperon:sid=$SID"   → session scope
+#   squeue --me -h -o "%i %k" | grep "chaperon:.*proj=$H"  → project scope
+#   squeue --me -h -o "%i %k" | grep "^chaperon:"          → user scope
 
-# Extract job ID from sbatch output and record it.
-# Usage: _track_job_id <sbatch_output> <project_dir>
-_track_job_id() {
-    local output="$1" project_dir="$2"
+# Session ID: unique per chaperon process.  Combine PID and epoch
+# so that recycled PIDs from a later boot don't collide.
+_CHAPERON_SESSION_ID="${BASHPID:-$$}.$(date +%s)"
 
-    # sbatch outputs "Submitted batch job NNNNN" or with --parsable "NNNNN"
-    local job_id
-    job_id="$(echo "$output" | grep -oP '\d+' | tail -1)"
-    if [[ -z "$job_id" ]]; then
-        return 0  # No job ID found — not an error (e.g., --test-only)
+# Build the --comment value for sbatch.
+# Usage: _build_chaperon_comment <project_dir>
+# Reads _USER_COMMENT (set by validate_sbatch_args).
+_build_chaperon_comment() {
+    local project_dir="$1"
+    local proj_hash
+    proj_hash="$(printf '%s' "$project_dir" | md5sum | cut -c1-12)"
+
+    local tag="chaperon:sid=${_CHAPERON_SESSION_ID},proj=${proj_hash}"
+
+    # Append user's original comment (percent-encode commas to stay parseable)
+    if [[ -n "${_USER_COMMENT:-}" ]]; then
+        local safe_comment="${_USER_COMMENT//,/%2C}"
+        tag+=",user=${safe_comment}"
     fi
 
-    # Session-level tracking (in FIFO_DIR — set by chaperon.sh).
-    # The chaperon main loop is single-threaded so concurrent writes to
-    # this file from the same session cannot happen.
-    local session_file="${FIFO_DIR:-}/jobs"
-    if [[ -n "${FIFO_DIR:-}" ]]; then
-        echo "$job_id" >> "$session_file"
-    fi
+    printf '%s' "$tag"
+}
 
-    # Project-level tracking (shared across sandbox sessions).
-    # Multiple chaperons with the same project dir may append concurrently,
-    # so use flock to serialize writes.
-    local hash
-    hash="$(printf '%s' "$project_dir" | md5sum | cut -c1-12)"
-    local project_file="$HOME/.claude/sandbox/chaperon-jobs-${hash}"
-    mkdir -p "$HOME/.claude/sandbox" 2>/dev/null || true
-    (
-        flock -w 2 9 || return 0  # best-effort; skip on timeout
-        echo "$job_id" >> "$project_file"
-    ) 9>>"$project_file" 2>/dev/null || true
+# Query squeue for job IDs matching a chaperon tag pattern.
+# Usage: _query_chaperon_jobs <grep_pattern>
+# Prints matching job IDs (one per line).
+_query_chaperon_jobs() {
+    local pattern="$1"
+    squeue --me -h -o "%i %k" 2>/dev/null \
+        | grep -E "$pattern" \
+        | awk '{print $1}' \
+        || true
 }

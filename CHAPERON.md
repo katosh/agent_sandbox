@@ -119,25 +119,46 @@ The sbatch handler (`handlers/sbatch.sh`) performs three validation steps before
 2. **CWD validation**: The requested working directory must be a physical path under the project directory (resolves symlinks to prevent escape).
 3. **Job wrapping**: The user's script is written to a temp file, and a wrapper script is generated that runs it inside `sandbox-exec.sh --project-dir $PROJECT_DIR`. The wrapper is submitted to the real sbatch.
 
+### Job Tagging via `--comment`
+
+Every job submitted through the chaperon is tagged with a structured `--comment`:
+
+```
+chaperon:sid=<session_id>,proj=<project_hash>[,user=<original_comment>]
+```
+
+| Field | Content | Purpose |
+|---|---|---|
+| `sid` | `<PID>.<epoch>` | Unique per chaperon instance (session scope) |
+| `proj` | First 12 hex of `md5(project_dir)` | Groups jobs by project (project scope) |
+| `user` | User's original `--comment` value (percent-encoded) | Preserves user metadata |
+
+This tag is set once at submission and is **inherited by array tasks**, **survives preemption** (job ID may change, comment does not), and is **queryable via squeue/sacct**:
+
+```bash
+squeue --me -h -o "%i %k" | grep "chaperon:sid=$SID"     # session
+squeue --me -h -o "%i %k" | grep "chaperon:.*proj=$HASH"  # project
+squeue --me -h -o "%i %k" | grep "chaperon:"              # all sandbox jobs
+```
+
 ### scancel Handler
 
-The scancel handler (`handlers/scancel.sh`) allows the sandbox to cancel Slurm jobs, scoped to prevent cancelling other users' or sessions' jobs:
+The scancel handler (`handlers/scancel.sh`) queries `squeue --comment` to resolve which jobs are in scope, then passes only matching IDs to the real scancel. No file-based tracking — the tag in Slurm is the source of truth.
 
-1. **Argument whitelisting**: Only safe scancel flags are forwarded (`--name`, `--partition`, `--state`, `--signal`, etc.). Flags like `--user`, `--me`, `--account` are denied — scope is controlled by the chaperon, not by the user.
-2. **Job ID validation**: All positional arguments must be numeric job IDs.
-3. **Scope filtering**: Job IDs are checked against a tracking list before being passed to the real scancel.
+1. **Argument whitelisting**: Only safe scancel flags are forwarded. Flags like `--user`, `--me`, `--account` are denied — scope is controlled by the chaperon.
+2. **Job ID validation**: Positional arguments must be numeric job IDs.
+3. **Scope filtering**: Requested job IDs are checked against `squeue` output filtered by the chaperon tag.
+4. **`scancel all`**: Cancels everything within scope (no specific IDs needed).
 
 #### scancel Scope Levels
 
 Configured via `CHAPERON_SCANCEL_SCOPE` in `sandbox.conf`:
 
-| Scope | Behavior | Tracking |
+| Scope | Behavior | squeue filter |
 |---|---|---|
-| `session` (default) | Only jobs submitted by THIS sandbox session | `$FIFO_DIR/jobs` (per-session temp) |
-| `project` | Jobs submitted by ANY sandbox with the same project dir | `~/.claude/sandbox/chaperon-jobs-<hash>` |
-| `user` | All jobs of the current user (no filtering) | None — equivalent to `scancel --me` |
-
-Job IDs are recorded by the sbatch handler after each successful submission. For `session` scope, the tracking file is ephemeral (deleted with the FIFO directory when the sandbox exits). For `project` scope, the file persists across sessions.
+| `session` (default) | Only jobs from THIS sandbox session | `chaperon:sid=<this_session>` |
+| `project` | Jobs from any sandbox with same project dir | `chaperon:.*proj=<hash>` |
+| `user` | Any chaperon-submitted job of this user | `chaperon:` prefix |
 
 ### Denied sbatch Flags
 
@@ -236,6 +257,18 @@ CHAPERON_SCANCEL_SCOPE="session"
 # Cancel jobs submitted by any sandbox with the same project dir
 CHAPERON_SCANCEL_SCOPE="project"
 
-# Cancel any job of the current user (no filtering)
+# Cancel any chaperon-submitted job of the current user
 CHAPERON_SCANCEL_SCOPE="user"
+```
+
+### Querying sandbox jobs
+
+The `--comment` tag makes it easy to filter squeue from outside:
+
+```bash
+# All sandbox jobs for this user
+squeue --me -o "%.18i %.9P %.8j %.2t %.10M %k" | grep chaperon:
+
+# Jobs from a specific project
+squeue --me -h -o "%i %k" | grep "proj=<hash>"
 ```

@@ -1,22 +1,23 @@
 #! /bin/bash --
 # chaperon/handlers/scancel.sh — Handle scancel requests from sandbox
 #
-# Cancels Slurm jobs, scoped to what this sandbox (or user) submitted.
+# Cancels Slurm jobs, scoped by querying the chaperon tag in --comment.
 #
 # Scope levels (configured via CHAPERON_SCANCEL_SCOPE in sandbox.conf):
-#   "session"  — only jobs submitted by THIS sandbox session (default)
-#   "project"  — jobs submitted by any sandbox with the same project dir
-#   "user"     — all jobs submitted by any sandbox of the same user
+#   "session"  — only jobs tagged with THIS session's ID (default)
+#   "project"  — jobs tagged with the same project hash (any session)
+#   "user"     — any job tagged by any chaperon instance of this user
 #
-# Job tracking: the sbatch handler records submitted job IDs in
-# $FIFO_DIR/jobs (one per line). For "project" scope, a shared file
-# at $HOME/.claude/sandbox/chaperon-jobs-<project_hash> is used.
-# For "user" scope, no filtering is applied (scancel --me equivalent).
+# The tag is set by the sbatch handler:
+#   --comment="chaperon:sid=<session_id>,proj=<project_hash>[,user=<comment>]"
+#
+# This handler queries squeue to resolve which jobs match the scope,
+# then passes only those job IDs to the real scancel.  No file-based
+# tracking — the tag survives array expansion and preemption.
 
 source "$(dirname "${BASH_SOURCE[0]}")/_handler_lib.sh"
 
 # ── Allowed scancel flags ───────────────────────────────────────
-# Conservative whitelist: only flags that filter or display.
 _SCANCEL_ALLOWED_FLAGS=" \
   --batch \
   --full \
@@ -52,49 +53,33 @@ _is_scancel_value_flag() {
     [[ "$_SCANCEL_VALUE_FLAGS" == *" $1 "* ]]
 }
 
-# ── Job ID tracking ─────────────────────────────────────────────
+# ── Scope queries ────────────────────────────────────────────────
 
-# File where this session's submitted job IDs are recorded.
-# Set by the sbatch handler after successful submission.
-_get_session_jobs_file() {
-    echo "${FIFO_DIR:-/dev/null}/jobs"
-}
+# Get the set of job IDs that this scope is allowed to cancel.
+# Prints job IDs one per line.
+_get_scoped_jobs() {
+    local scope="$1" project_dir="$2"
 
-# File for project-scoped job tracking.
-_get_project_jobs_file() {
-    local project_dir="$1"
-    local hash
-    hash="$(printf '%s' "$project_dir" | md5sum | cut -c1-12)"
-    local dir="$HOME/.claude/sandbox"
-    mkdir -p "$dir" 2>/dev/null || true
-    echo "$dir/chaperon-jobs-${hash}"
-}
-
-# Read job IDs from a tracking file.
-# Uses flock for the project-level file (shared across sessions).
-_read_tracked_jobs() {
-    local file="$1"
-    if [[ -f "$file" ]]; then
-        (
-            flock -s -w 2 9 || true  # shared lock, best-effort
-            cat "$file"
-        ) 9<"$file" 2>/dev/null
-    fi
-}
-
-# Check if a job ID is in the allowed set.
-_is_job_allowed() {
-    local job_id="$1"
-    shift
-    local allowed_jobs="$*"
-    for j in $allowed_jobs; do
-        # Handle array jobs: "123_4" should match if "123" is tracked
-        local base_id="${job_id%%_*}"
-        if [[ "$j" == "$base_id" || "$j" == "$job_id" ]]; then
-            return 0
-        fi
-    done
-    return 1
+    case "$scope" in
+        session)
+            # Match this exact session ID
+            _query_chaperon_jobs "chaperon:sid=${_CHAPERON_SESSION_ID}[,.]"
+            ;;
+        project)
+            # Match any session with this project hash
+            local proj_hash
+            proj_hash="$(printf '%s' "$project_dir" | md5sum | cut -c1-12)"
+            _query_chaperon_jobs "chaperon:.*proj=${proj_hash}"
+            ;;
+        user)
+            # Match any chaperon-submitted job
+            _query_chaperon_jobs "chaperon:"
+            ;;
+        *)
+            echo "chaperon: unknown CHAPERON_SCANCEL_SCOPE: $scope" >&2
+            return 1
+            ;;
+    esac
 }
 
 # ── Handler ─────────────────────────────────────────────────────
@@ -109,19 +94,19 @@ handle_scancel() {
         return 1
     fi
 
-    # Determine scope
     local scope="${CHAPERON_SCANCEL_SCOPE:-session}"
 
     # Parse and validate arguments
     local validated_flags=()
-    local job_ids=()
+    local requested_ids=()
+    local cancel_all=false
     local i=0
     while (( i < ${#REQ_ARGS[@]} )); do
         local arg="${REQ_ARGS[$i]}"
         case "$arg" in
-            # Denied flags
-            -u|--user|--me|--account|--wckey)
-                echo "chaperon: scancel flag '$arg' not allowed (scope is controlled by chaperon)" >&2
+            # Denied: scope is controlled by the chaperon
+            -u|--user|--user=*|--me|--account|--account=*|--wckey|--wckey=*)
+                echo "chaperon: scancel flag '$arg' not allowed (scope controlled by chaperon)" >&2
                 return 1
                 ;;
             --*=*)
@@ -144,10 +129,14 @@ handle_scancel() {
                     return 1
                 fi
                 ;;
+            all)
+                # "scancel all" — cancel all jobs within scope
+                cancel_all=true
+                ;;
             *)
-                # Positional: should be a job ID
+                # Positional: should be a job ID (with optional array index)
                 if [[ "$arg" =~ ^[0-9]+(_[0-9]+)?$ ]]; then
-                    job_ids+=("$arg")
+                    requested_ids+=("$arg")
                 else
                     echo "chaperon: invalid job ID: $arg" >&2
                     return 1
@@ -157,67 +146,76 @@ handle_scancel() {
         (( i++ )) || true
     done
 
-    # If no job IDs given and flags like --help/--version, just pass through
-    if [[ ${#job_ids[@]} -eq 0 ]]; then
-        local has_help=false
+    # Handle --help/--version/--usage (no job IDs needed)
+    if [[ ${#requested_ids[@]} -eq 0 ]] && ! "$cancel_all"; then
         for f in "${validated_flags[@]}"; do
-            case "$f" in --help|--usage|--version) has_help=true ;; esac
+            case "$f" in --help|--usage|--version)
+                local rc=0
+                "$real_scancel" "${validated_flags[@]}" || rc=$?
+                return "$rc"
+                ;;
+            esac
         done
-        if "$has_help"; then
-            local rc=0
-            "$real_scancel" "${validated_flags[@]}" || rc=$?
-            return "$rc"
+    fi
+
+    # Get the set of jobs allowed by this scope
+    local allowed_jobs
+    allowed_jobs="$(_get_scoped_jobs "$scope" "$project_dir")"
+
+    if [[ -z "$allowed_jobs" ]] && ! "$cancel_all"; then
+        # No chaperon jobs in queue — check if the requested IDs even exist
+        local any_exist=false
+        for req_id in "${requested_ids[@]}"; do
+            if squeue -j "$req_id" -h -o "%i" &>/dev/null; then
+                any_exist=true
+                break
+            fi
+        done
+        if "$any_exist"; then
+            echo "chaperon: scancel denied — requested job(s) not submitted by this $scope" >&2
+        else
+            echo "chaperon: no sandbox-submitted jobs found in queue" >&2
         fi
-        echo "chaperon: no job IDs specified for scancel" >&2
         return 1
     fi
 
-    # Filter job IDs based on scope
-    case "$scope" in
-        session)
-            local allowed
-            allowed="$(_read_tracked_jobs "$(_get_session_jobs_file)")"
-            local filtered=()
-            for jid in "${job_ids[@]}"; do
-                if _is_job_allowed "$jid" $allowed; then
-                    filtered+=("$jid")
-                else
-                    echo "chaperon: scancel denied for job $jid (not submitted by this session)" >&2
+    local final_ids=()
+
+    if "$cancel_all"; then
+        # Cancel everything in scope
+        while IFS= read -r jid; do
+            [[ -n "$jid" ]] && final_ids+=("$jid")
+        done <<< "$allowed_jobs"
+    else
+        # Filter requested IDs against scope
+        for req_id in "${requested_ids[@]}"; do
+            local base_id="${req_id%%_*}"
+            local matched=false
+            while IFS= read -r allowed_id; do
+                local allowed_base="${allowed_id%%_*}"
+                if [[ "$allowed_id" == "$req_id" || "$allowed_base" == "$base_id" ]]; then
+                    matched=true
+                    break
                 fi
-            done
-            if [[ ${#filtered[@]} -eq 0 ]]; then
-                echo "chaperon: no allowed jobs to cancel" >&2
-                return 1
+            done <<< "$allowed_jobs"
+            if "$matched"; then
+                final_ids+=("$req_id")
+            else
+                echo "chaperon: scancel denied for job $req_id (not in $scope scope)" >&2
             fi
-            job_ids=("${filtered[@]}")
-            ;;
-        project)
-            local allowed
-            allowed="$(_read_tracked_jobs "$(_get_project_jobs_file "$project_dir")")"
-            local filtered=()
-            for jid in "${job_ids[@]}"; do
-                if _is_job_allowed "$jid" $allowed; then
-                    filtered+=("$jid")
-                else
-                    echo "chaperon: scancel denied for job $jid (not submitted by this project)" >&2
-                fi
-            done
-            if [[ ${#filtered[@]} -eq 0 ]]; then
-                echo "chaperon: no allowed jobs to cancel" >&2
-                return 1
-            fi
-            job_ids=("${filtered[@]}")
-            ;;
-        user)
-            # No filtering — allow canceling any job owned by the user
-            ;;
-        *)
-            echo "chaperon: unknown CHAPERON_SCANCEL_SCOPE: $scope" >&2
-            return 1
-            ;;
-    esac
+        done
+    fi
+
+    if [[ ${#final_ids[@]} -eq 0 ]]; then
+        if [[ ${#requested_ids[@]} -gt 0 ]]; then
+            echo "chaperon: none of the requested jobs are in $scope scope" >&2
+        else
+            echo "chaperon: no job IDs specified for scancel" >&2
+        fi
+        return 1
+    fi
 
     local rc=0
-    "$real_scancel" "${validated_flags[@]}" "${job_ids[@]}" || rc=$?
+    "$real_scancel" "${validated_flags[@]}" "${final_ids[@]}" || rc=$?
     return "$rc"
 }
