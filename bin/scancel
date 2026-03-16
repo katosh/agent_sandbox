@@ -1,0 +1,5 @@
+#!/bin/bash --
+# Sandbox scancel — shadows /usr/bin/scancel inside the sandbox.
+# Delegates to chaperon stub which validates job scope.
+_BIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+exec "$_BIN_DIR/../chaperon/stubs/scancel" "$@"

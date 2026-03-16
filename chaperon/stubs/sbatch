@@ -1,0 +1,99 @@
+#!/bin/bash --
+# chaperon/stubs/sbatch — PATH-shadowing stub for sbatch
+#
+# Sends sbatch requests to the chaperon process via _CHAPERON_FD.
+# Runs INSIDE the sandbox; the chaperon validates, wraps, and submits
+# the job on the outside.
+
+set -euo pipefail
+
+_STUB_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+source "$_STUB_DIR/_stub_lib.sh"
+
+# ── Parse arguments to find --wrap and script file ───────────────
+# We need to intercept --wrap (send as SCRIPT) and the script file
+# (read and send as SCRIPT). Everything else is forwarded as ARGs.
+
+FORWARD_ARGS=()
+WRAP_CMD=""
+SCRIPT_FILE=""
+SCRIPT_ARGS=()
+
+i=0
+args=("$@")
+while (( i < ${#args[@]} )); do
+    arg="${args[$i]}"
+    case "$arg" in
+        --wrap=*)
+            WRAP_CMD="${arg#--wrap=}"
+            ;;
+        --wrap)
+            i=$(( i + 1 ))
+            WRAP_CMD="${args[$i]:-}"
+            ;;
+        *)
+            FORWARD_ARGS+=("$arg")
+            ;;
+    esac
+    (( i++ )) || true
+done
+
+# If --wrap was given, convert to a script
+if [[ -n "$WRAP_CMD" ]]; then
+    _CHAPERON_SCRIPT="#!/bin/bash --
+$WRAP_CMD"
+    export _CHAPERON_SCRIPT
+    chaperon_call sbatch "${FORWARD_ARGS[@]}"
+    exit $?
+fi
+
+# No --wrap: look for a script file among the forward args.
+# Strategy: walk args with flag-value awareness to find the first
+# bare positional that is a readable file.
+FINAL_ARGS=()
+skip_next=false
+
+for (( i=0; i < ${#FORWARD_ARGS[@]}; i++ )); do
+    arg="${FORWARD_ARGS[$i]}"
+
+    if "$skip_next"; then
+        FINAL_ARGS+=("$arg")
+        skip_next=false
+        continue
+    fi
+
+    case "$arg" in
+        --*=*)
+            FINAL_ARGS+=("$arg")
+            ;;
+        -*)
+            FINAL_ARGS+=("$arg")
+            # Peek: if next arg doesn't start with -, it's likely a value
+            if (( i + 1 < ${#FORWARD_ARGS[@]} )) && [[ "${FORWARD_ARGS[$((i+1))]}" != -* ]]; then
+                skip_next=true
+            fi
+            ;;
+        *)
+            if [[ -z "$SCRIPT_FILE" && -f "$arg" ]]; then
+                SCRIPT_FILE="$arg"
+                # Everything after the script file is script args
+                SCRIPT_ARGS=("${FORWARD_ARGS[@]:$((i+1))}")
+                break
+            else
+                FINAL_ARGS+=("$arg")
+            fi
+            ;;
+    esac
+done
+
+if [[ -n "$SCRIPT_FILE" ]]; then
+    # Read the script file and send as SCRIPT
+    _CHAPERON_SCRIPT="$(cat "$SCRIPT_FILE")"
+    export _CHAPERON_SCRIPT
+    chaperon_call sbatch "${FINAL_ARGS[@]}"
+    exit $?
+fi
+
+# No --wrap and no script file — pass through (e.g., --help, --version)
+chaperon_call sbatch "${FORWARD_ARGS[@]}"
+exit $?

@@ -317,122 +317,192 @@ fi
 
 echo ""
 
-# ── 5. Slurm binary isolation ───────────────────────────────────
+# ── 5. Chaperon: Slurm proxy and isolation ────────────────────────
 
-echo "5. Slurm binary isolation"
+echo "5. Chaperon: Slurm proxy and isolation"
+
+# 5a. PATH shadowing — stubs should resolve first
+EXPECTED_STUBS_DIR="$SCRIPT_DIR/chaperon/stubs"
+if sandbox bash -c 'which sbatch 2>/dev/null'; then
+    if [[ "$OUTPUT" == "$EXPECTED_STUBS_DIR/sbatch" ]]; then
+        pass "sbatch resolves to chaperon stub via PATH"
+    else
+        fail "sbatch does not resolve to chaperon stub" "got: $OUTPUT, expected: $EXPECTED_STUBS_DIR/sbatch"
+    fi
+else
+    fail "sbatch not found inside sandbox"
+fi
+
+if sandbox bash -c 'which srun 2>/dev/null'; then
+    if [[ "$OUTPUT" == "$EXPECTED_STUBS_DIR/srun" ]]; then
+        pass "srun resolves to chaperon stub via PATH"
+    else
+        fail "srun does not resolve to chaperon stub" "got: $OUTPUT, expected: $EXPECTED_STUBS_DIR/srun"
+    fi
+else
+    fail "srun not found inside sandbox"
+fi
+
+# 5b. Munge socket blocked
+if has_mount_ns; then
+    if sandbox bash -c 'test -e /run/munge/munge.socket.2 2>/dev/null && echo FOUND || echo HIDDEN'; then
+        if [[ "$OUTPUT" == "HIDDEN" ]]; then
+            pass "Munge socket hidden inside sandbox"
+        else
+            fail "Munge socket still accessible inside sandbox" "$OUTPUT"
+        fi
+    fi
+else
+    # Landlock: /run/munge not granted → EACCES
+    if sandbox bash -c 'ls /run/munge/ 2>&1 || true'; then
+        if echo "$OUTPUT" | grep -qi "denied\|cannot\|error\|No such"; then
+            pass "Munge socket blocked inside sandbox (Landlock EACCES)"
+        else
+            fail "Munge socket may be accessible inside sandbox" "$OUTPUT"
+        fi
+    fi
+fi
+
+# 5c. Slurm binaries blocked
+if command -v sbatch &>/dev/null; then
+    if has_mount_ns; then
+        # bwrap/firejail: /usr/bin/sbatch overlaid with /dev/null or blacklisted
+        if sandbox bash -c '/usr/bin/sbatch --version 2>&1 || true'; then
+            if echo "$OUTPUT" | grep -qi "cannot execute\|Permission denied\|No such\|not found\|Exec format"; then
+                pass "/usr/bin/sbatch blocked inside sandbox"
+            else
+                fail "/usr/bin/sbatch still executable inside sandbox" "$OUTPUT"
+            fi
+        fi
+    else
+        # Landlock: can't block under /usr (known limitation), but munge
+        # blocking makes it useless. Test that PATH shadowing works instead.
+        skip "/usr/bin/sbatch blocking — not applicable for Landlock (munge blocking sufficient)"
+    fi
+
+    # Slurm config blocked (defense in depth)
+    if [[ -d /etc/slurm ]]; then
+        if has_mount_ns; then
+            if sandbox bash -c 'ls /etc/slurm/slurm.conf 2>&1 || true'; then
+                if echo "$OUTPUT" | grep -qi "cannot\|denied\|No such"; then
+                    pass "Slurm config (/etc/slurm) hidden inside sandbox"
+                else
+                    # bwrap uses tmpfs which empties the dir; firejail blacklists
+                    if sandbox bash -c 'find /etc/slurm -type f 2>/dev/null | wc -l'; then
+                        if [[ "$OUTPUT" == "0" ]]; then
+                            pass "Slurm config (/etc/slurm) emptied inside sandbox (tmpfs)"
+                        else
+                            fail "Slurm config files still accessible inside sandbox" "$OUTPUT"
+                        fi
+                    fi
+                fi
+            fi
+        fi
+    fi
+fi
+
+# 5d. srun blocked with helpful message
+if sandbox bash -c 'srun hostname 2>&1'; then
+    fail "srun should fail inside sandbox"
+else
+    if echo "$OUTPUT" | grep -qi "sbatch"; then
+        pass "srun prints helpful error suggesting sbatch"
+    else
+        fail "srun error does not suggest sbatch" "$OUTPUT"
+    fi
+fi
+
+# 5e. Chaperon FIFO directory present
+if sandbox bash -c 'echo "${_CHAPERON_FIFO_DIR:-UNSET}"'; then
+    if [[ "$OUTPUT" != "UNSET" && "$OUTPUT" == /tmp/chaperon-* ]]; then
+        pass "_CHAPERON_FIFO_DIR is set inside sandbox"
+    else
+        fail "_CHAPERON_FIFO_DIR not set or unexpected" "$OUTPUT"
+    fi
+fi
+
+if sandbox bash -c 'test -p "${_CHAPERON_FIFO_DIR}/req" && echo EXISTS || echo MISSING'; then
+    if [[ "$OUTPUT" == "EXISTS" ]]; then
+        pass "Chaperon request FIFO exists inside sandbox"
+    else
+        fail "Chaperon request FIFO missing inside sandbox" "$OUTPUT"
+    fi
+fi
+
+echo ""
+
+# ── 6. Chaperon functional tests ─────────────────────────────────
+
+echo "6. Chaperon functional tests"
 
 if ! command -v sbatch &>/dev/null; then
-    skip "sbatch not found on host — skipping Slurm tests"
-    echo ""
+    skip "sbatch not found on host — skipping chaperon submission tests"
 else
-    # PATH shadow (works for both backends)
-    # The sandbox prepends $SANDBOX_DIR/bin to PATH, so sbatch/srun should
-    # resolve there instead of /usr/bin/.
-    EXPECTED_BIN_DIR="$SCRIPT_DIR/bin"
-    if sandbox bash -c 'which sbatch 2>/dev/null'; then
-        if [[ "$OUTPUT" == "$EXPECTED_BIN_DIR/sbatch" ]]; then
-            pass "sbatch resolves to sandbox wrapper via PATH"
-        else
-            fail "sbatch does not resolve to sandbox wrapper" "got: $OUTPUT, expected: $EXPECTED_BIN_DIR/sbatch"
-        fi
-    else
-        fail "sbatch not found inside sandbox"
-    fi
-
-    if sandbox bash -c 'which srun 2>/dev/null'; then
-        if [[ "$OUTPUT" == "$EXPECTED_BIN_DIR/srun" ]]; then
-            pass "srun resolves to sandbox wrapper via PATH"
-        else
-            fail "srun does not resolve to sandbox wrapper" "got: $OUTPUT, expected: $EXPECTED_BIN_DIR/srun"
-        fi
-    else
-        fail "srun not found inside sandbox"
-    fi
-
-    # bwrap-specific: /usr/bin/ overlay and binary relocation
-    if [[ "$CURRENT_BACKEND" == "bwrap" ]]; then
-        if sandbox bash -c 'file /usr/bin/sbatch'; then
-            if echo "$OUTPUT" | grep -qi "script\|text"; then
-                pass "/usr/bin/sbatch is overlaid with redirector script"
-            else
-                fail "/usr/bin/sbatch is still the real ELF binary" "$OUTPUT"
-            fi
-        fi
-
-        if sandbox bash -c 'file /usr/bin/srun'; then
-            if echo "$OUTPUT" | grep -qi "script\|text"; then
-                pass "/usr/bin/srun is overlaid with redirector script"
-            else
-                fail "/usr/bin/srun is still the real ELF binary" "$OUTPUT"
-            fi
-        fi
-
-        if sandbox bash -c 'test -x /tmp/.sandbox-slurm-real/sbatch && echo EXISTS'; then
-            if [[ "$OUTPUT" == "EXISTS" ]]; then
-                pass "Real sbatch relocated to /tmp/.sandbox-slurm-real/sbatch"
-            else
-                fail "Real sbatch not found at obscure path" "$OUTPUT"
-            fi
-        else
-            fail "Real sbatch not found at obscure path" "$OUTPUT"
-        fi
-
-        if sandbox bash -c 'test -x /tmp/.sandbox-slurm-real/srun && echo EXISTS'; then
-            if [[ "$OUTPUT" == "EXISTS" ]]; then
-                pass "Real srun relocated to /tmp/.sandbox-slurm-real/srun"
-            else
-                fail "Real srun not found at obscure path" "$OUTPUT"
-            fi
-        else
-            fail "Real srun not found at obscure path" "$OUTPUT"
-        fi
-
-        if sandbox bash -c 'head -2 /usr/bin/sbatch'; then
-            if echo "$OUTPUT" | grep -q "sandbox"; then
-                pass "/usr/bin/sbatch redirector calls sandbox wrapper"
-            else
-                fail "/usr/bin/sbatch redirector does not point to sandbox" "$OUTPUT"
-            fi
-        fi
-    else
-        skip "/usr/bin/ overlay — not applicable for $CURRENT_BACKEND backend"
-        skip "Binary relocation — not applicable for $CURRENT_BACKEND backend"
-    fi
-
-    echo ""
-
-    # ── 6. sbatch/srun functional tests ──────────────────────────
-
-    echo "6. Slurm submission (functional)"
-
-    if sandbox sbatch --wrap="echo sandbox-test-path" 2>&1; then
+    # 6a. sbatch --wrap via chaperon
+    if sandbox sbatch --wrap="echo chaperon-test" 2>&1; then
         if echo "$OUTPUT" | grep -q "Submitted batch job"; then
-            pass "sbatch --wrap via PATH submits job"
+            pass "sbatch --wrap via chaperon submits job"
         else
-            fail "sbatch --wrap via PATH failed" "$OUTPUT"
+            fail "sbatch --wrap via chaperon failed" "$OUTPUT"
         fi
     else
-        fail "sbatch --wrap via PATH failed" "$OUTPUT"
+        fail "sbatch --wrap via chaperon failed" "$OUTPUT"
     fi
 
-    if [[ "$CURRENT_BACKEND" == "bwrap" ]]; then
-        if sandbox /usr/bin/sbatch --wrap="echo sandbox-test-bypass" 2>&1; then
-            if echo "$OUTPUT" | grep -q "Submitted batch job"; then
-                pass "/usr/bin/sbatch bypass attempt routed through sandbox"
-            else
-                fail "/usr/bin/sbatch bypass attempt failed" "$OUTPUT"
-            fi
-        else
-            fail "/usr/bin/sbatch bypass attempt errored" "$OUTPUT"
-        fi
-    fi
-
-    # No infinite recursion
+    # 6b. No infinite recursion
     if timeout 10 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- \
         sbatch --wrap="echo recursion-test" &>/dev/null; then
-        pass "No infinite recursion in sbatch wrapper"
+        pass "No infinite recursion in chaperon sbatch"
     else
-        fail "sbatch wrapper may have infinite recursion (timed out)"
+        fail "Chaperon sbatch may have infinite recursion (timed out)"
+    fi
+
+    # 6c. Denied flags rejected
+    if sandbox sbatch --uid=0 --wrap="echo pwned" 2>&1; then
+        fail "sbatch --uid=0 should be rejected by chaperon"
+    else
+        if echo "$OUTPUT" | grep -qi "denied\|not allowed\|error"; then
+            pass "Chaperon rejects --uid flag"
+        else
+            fail "Chaperon did not clearly reject --uid" "$OUTPUT"
+        fi
+    fi
+
+    if sandbox sbatch --get-user-env --wrap="echo pwned" 2>&1; then
+        fail "sbatch --get-user-env should be rejected by chaperon"
+    else
+        if echo "$OUTPUT" | grep -qi "denied\|not allowed\|error"; then
+            pass "Chaperon rejects --get-user-env flag"
+        else
+            fail "Chaperon did not clearly reject --get-user-env" "$OUTPUT"
+        fi
+    fi
+
+    # 6d. scancel scoped to session
+    if command -v scancel &>/dev/null; then
+        # Submit a job, then cancel it (should succeed)
+        if sandbox bash -c '
+            OUT=$(sbatch --wrap="sleep 300" 2>&1)
+            JID=$(echo "$OUT" | grep -oP "\d+" | tail -1)
+            scancel "$JID" 2>&1
+        '; then
+            pass "scancel can cancel job submitted by same session"
+        else
+            fail "scancel failed to cancel own session job" "$OUTPUT"
+        fi
+
+        # Try to cancel a non-existent job (should be rejected by scope)
+        if sandbox bash -c 'scancel 999999999 2>&1'; then
+            fail "scancel should reject job not submitted by this session"
+        else
+            if echo "$OUTPUT" | grep -qi "denied\|not submitted\|not allowed"; then
+                pass "scancel rejects job not submitted by this session"
+            else
+                fail "scancel did not clearly reject out-of-scope job" "$OUTPUT"
+            fi
+        fi
+    else
+        skip "scancel not found on host — skipping scancel tests"
     fi
 fi
 

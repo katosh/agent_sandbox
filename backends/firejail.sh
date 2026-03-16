@@ -133,8 +133,26 @@ backend_prepare() {
         fi
     done
 
-    # /run/munge and /run/systemd/resolve remain accessible
-    # (read-only by default in firejail's mount namespace).
+    # Munge socket: BLOCKED inside sandbox (chaperon handles auth outside)
+    if [[ -e /run/munge ]]; then
+        FIREJAIL_ARGS+=(--blacklist=/run/munge)
+    fi
+
+    # Slurm binaries: BLOCKED inside sandbox (chaperon stubs in PATH)
+    for _slurm_bin in sbatch srun scontrol scancel salloc sattach; do
+        if [[ -x "/usr/bin/$_slurm_bin" ]]; then
+            FIREJAIL_ARGS+=(--blacklist="/usr/bin/$_slurm_bin")
+        fi
+    done
+
+    # Slurm config (leaks controller address)
+    for _slurm_conf in /etc/slurm /etc/slurm-llnl; do
+        if [[ -d "$_slurm_conf" ]]; then
+            FIREJAIL_ARGS+=(--blacklist="$_slurm_conf")
+        fi
+    done
+
+    # /run/systemd/resolve remains accessible (DNS).
 
     # --- Passwd filtering (block NSS daemon sockets) ---
     # Blacklist sockets used by NSS daemons that proxy LDAP/AD queries:
@@ -238,11 +256,6 @@ backend_prepare() {
         fi
     done
 
-    # --- Slurm PATH shadowing ---
-    # Like the landlock backend, we shadow /usr/bin/sbatch and srun with
-    # wrapper scripts via PATH. The sandbox bin/ directory is prepended
-    # to PATH below.
-
     # --- Filter environment variables ---
     # Like landlock, we filter in-shell since firejail doesn't have
     # per-variable --unsetenv.
@@ -259,7 +272,13 @@ backend_prepare() {
     export SANDBOX_ACTIVE=1
     export SANDBOX_BACKEND=firejail
     export SANDBOX_PROJECT_DIR="$project_dir"
-    export PATH="$SANDBOX_DIR/bin:${PATH}"
+    # Prepend chaperon stubs to PATH (before bin/ for sbatch/srun override)
+    export PATH="$SANDBOX_DIR/chaperon/stubs:$SANDBOX_DIR/bin:${PATH}"
+
+    # Pass chaperon FIFO directory into the sandbox
+    if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -d "${_CHAPERON_FIFO_DIR:-}" ]]; then
+        export _CHAPERON_FIFO_DIR
+    fi
 }
 
 backend_exec() {

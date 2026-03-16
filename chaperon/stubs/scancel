@@ -1,0 +1,14 @@
+#!/bin/bash --
+# chaperon/stubs/scancel — PATH-shadowing stub for scancel
+#
+# Sends scancel requests to the chaperon process. The chaperon
+# filters job IDs based on the configured scope (session/project/user).
+
+set -euo pipefail
+
+_STUB_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+source "$_STUB_DIR/_stub_lib.sh"
+
+# All arguments are forwarded — the chaperon handler does validation.
+chaperon_call scancel "$@"
+exit $?

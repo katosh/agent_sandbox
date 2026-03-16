@@ -1,4 +1,5 @@
-#! /bin/bash --
+#!/bin/bash --
 # Sandbox sbatch — shadows /usr/bin/sbatch inside the sandbox.
-# Delegates to sbatch-sandbox.sh which wraps jobs in bwrap.
-exec "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/../sbatch-sandbox.sh" "$@"
+# Delegates to chaperon stub which talks to the chaperon proxy.
+_BIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+exec "$_BIN_DIR/../chaperon/stubs/sbatch" "$@"

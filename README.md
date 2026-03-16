@@ -33,16 +33,9 @@ The sandbox gives you **kernel-enforced filesystem isolation** with none of the 
 
 Filesystem isolation on the login node is only half the story. The main point of HPC is submitting work to compute nodes via Slurm. If the agent can run `sbatch` or `srun`, and those jobs execute **outside** the sandbox, then all restrictions are trivially bypassed — the agent just submits a job that reads `~/.ssh` on the compute node.
 
-This sandbox solves the Slurm problem with a two-layer approach. First, wrapper scripts at `~/.claude/sandbox/bin/` **shadow** `sbatch`/`srun` on PATH, so every job submitted by the agent automatically runs inside the sandbox on the compute node. Second, with mount-namespace backends (bwrap and firejail), the real `/usr/bin/sbatch` and `/usr/bin/srun` binaries are **relocated** to an obscure internal path (`/tmp/.sandbox-slurm-real/`) and replaced with redirector scripts — so even calling them by absolute path still goes through the sandbox wrappers. Since all scripts live on NFS, they're available on every compute node. The sandbox directory is mounted read-only, so the agent cannot tamper with the wrappers.
+This sandbox solves the Slurm problem with the **chaperon** — a zero-trust Slurm proxy that runs *outside* the sandbox and handles all job submission on behalf of the sandboxed process. Inside the sandbox, the munge authentication socket is blocked, all Slurm binaries are hidden or blacklisted, and Slurm configuration files are removed. The only way to submit jobs is through stub scripts that communicate with the chaperon via a Unix socketpair (which has no filesystem path and cannot be discovered or hijacked). The chaperon validates arguments against a whitelist of safe sbatch flags, wraps every job in `sandbox-exec.sh` so compute-node jobs inherit the same sandbox, and rejects dangerous flags like `--uid`, `--get-user-env`, and `--export`.
 
-#### Limitations of the Slurm Wrappers
-
-The Slurm wrappers provide strong default protection but are not fully kernel-enforced. They work by:
-
-1. **PATH shadowing** (all backends) — `sbatch`/`srun` resolve to sandbox wrappers via PATH ordering.
-2. **Binary relocation** (bwrap only) — the real ELF binaries at `/usr/bin/sbatch` and `/usr/bin/srun` are moved to an obscure internal path (`/tmp/.sandbox-slurm-real/`) and replaced with redirector scripts that funnel calls back through the sandbox wrappers. Firejail and Landlock cannot do this (firejail could in theory but uses the same PATH shadowing approach for consistency), so the real binaries remain at `/usr/bin/` and are directly callable.
-
-With **bwrap**, even calling `/usr/bin/sbatch` by absolute path hits the sandbox wrappers. With **firejail** and **Landlock**, only PATH shadowing is available — an agent that calls `/usr/bin/sbatch` directly bypasses the wrappers. **This is a soft boundary** in all cases — Slurm authentication (munge) is available inside the sandbox. See [Admin Hardening Options](ADMIN_HARDENING.md) for approaches that can close this gap. In practice, the PATH-based wrappers cover the paths an agent would use autonomously.
+For the full architecture and security analysis, see [Chaperon: Secure Slurm Proxy](CHAPERON.md).
 
 ---
 
@@ -79,8 +72,8 @@ The installer:
 ├── sandbox.conf          # ← Your permissions config — edit this
 ├── sandbox-lib.sh        # Core library (config loading, backend detection)
 ├── sandbox-exec.sh       # Main entry point (auto-selects backend)
-├── sbatch-sandbox.sh     # Slurm sbatch wrapper
-├── srun-sandbox.sh       # Slurm srun wrapper
+├── sbatch-sandbox.sh     # Legacy Slurm sbatch wrapper (compute-node wrapping)
+├── srun-sandbox.sh       # Legacy Slurm srun wrapper (compute-node wrapping)
 ├── sandbox-claude.md     # Agent instructions (overlaid into CLAUDE.md inside sandbox)
 ├── test.sh               # Test suite
 ├── backends/
@@ -89,9 +82,23 @@ The installer:
 │   ├── landlock.sh       # Landlock backend (LSM filesystem restrictions)
 │   ├── landlock-sandbox.py  # Landlock syscall helper (Python)
 │   └── generate-seccomp.py  # Seccomp BPF filter generator (for bwrap)
+├── chaperon/             # Secure Slurm proxy (see CHAPERON.md)
+│   ├── chaperon.sh       # Main loop (runs OUTSIDE sandbox)
+│   ├── protocol.sh       # CHAPERON/1 wire protocol primitives
+│   ├── handlers/
+│   │   ├── _handler_lib.sh  # Arg whitelisting, CWD validation, job wrapping
+│   │   ├── sbatch.sh     # Validates, wraps, submits via real sbatch
+│   │   ├── scancel.sh    # Validates job scope, cancels via real scancel
+│   │   └── blocked.sh    # Generic "command blocked" response
+│   └── stubs/
+│       ├── _stub_lib.sh  # Stub→chaperon communication
+│       ├── sbatch        # PATH-shadowing stub (talks to chaperon)
+│       ├── scancel       # PATH-shadowing stub (talks to chaperon)
+│       └── srun          # Standalone blocked stub (no chaperon)
 └── bin/
-    ├── sbatch            # Shadows /usr/bin/sbatch inside sandbox
-    └── srun              # Shadows /usr/bin/srun inside sandbox
+    ├── sbatch            # Fallback PATH shadow (delegates to chaperon stub)
+    ├── scancel           # Fallback PATH shadow (delegates to chaperon stub)
+    └── srun              # Fallback PATH shadow (delegates to chaperon stub)
 ```
 
 ### Backends
@@ -231,7 +238,7 @@ The sandbox overlays `~/.claude/settings.json` to auto-allow tools (`Bash`, `Rea
 | **IPC / `/dev/shm`** | Shared | Shared | Shared |
 | **Syscalls (seccomp)** | io_uring + userfaultfd + kexec blocked (generated BPF filter) | Built-in + io_uring + userfaultfd blocked | kexec + io_uring + userfaultfd + ptrace (kernel ≥ 5.13 only) |
 | **User enumeration** | Filtered (`FILTER_PASSWD`) | Filtered (`FILTER_PASSWD`) | Not filtered |
-| **Slurm wrappers** | PATH shadow + binary relocation | PATH shadow only | PATH shadow only |
+| **Slurm (chaperon)** | Munge + binaries + config blocked; chaperon proxy | Munge + binaries + config blocked; chaperon proxy | Munge not granted; chaperon proxy |
 | **Sandbox self-protection** | Read-only mount | Read-only mount | Not protected |
 | **tmux** | Outer blocked, nested works | Outer blocked, nested works | Outer blocked, nested works |
 
@@ -245,14 +252,17 @@ The sandbox overlays `~/.claude/settings.json` to auto-allow tools (`Bash`, `Rea
 
 ---
 
-## Slurm Integration
+## Slurm Integration (Chaperon)
 
-Inside the sandbox, `sbatch` and `srun` are transparently replaced by wrapper scripts (via PATH shadowing) that ensure compute-node jobs inherit the sandbox. The agent calls `sbatch` and `srun` as normal — no special paths needed.
+Inside the sandbox, all Slurm authentication and binaries are **blocked** — munge socket hidden, `/usr/bin/sbatch` etc. blacklisted, `/etc/slurm` removed. Job submission goes through the **chaperon**, a proxy process running outside the sandbox that communicates via a Unix socketpair.
 
-- **sbatch wrapper:** Extracts `#SBATCH` directives, generates a wrapper script that runs the original script inside `sandbox-exec.sh`, and submits it to the real `sbatch`.
-- **srun wrapper:** Separates srun flags from the user command, then calls the real `srun` with the command wrapped in `sandbox-exec.sh`.
-- **bwrap** additionally **relocates** the real Slurm binaries to an obscure path and replaces them with redirectors, so even absolute-path calls (`/usr/bin/sbatch`) go through the wrappers. Firejail and Landlock rely on PATH shadowing only.
-- The sandbox directory is mounted **read-only** (bwrap/firejail) so the agent cannot tamper with wrappers. Landlock cannot protect the scripts (see [Admin Hardening](ADMIN_HARDENING.md)).
+- **Stub sbatch:** Parses `--wrap` and script arguments, sends them over the `CHAPERON/1` protocol to the chaperon, prints the response. The agent calls `sbatch` as normal.
+- **Stub srun:** Prints a helpful error directing the user to `sbatch` instead. `srun` is not supported through the chaperon because interactive step execution can't be safely proxied.
+- **Stub scancel:** Sends cancel requests to the chaperon, which filters job IDs by scope (session, project, or user). By default, only jobs submitted by the current sandbox session can be cancelled. Configurable via `CHAPERON_SCANCEL_SCOPE` in `sandbox.conf`.
+- **Chaperon proxy:** Validates arguments against a whitelist of ~40 safe sbatch flags (rejects `--uid`, `--export`, `--get-user-env`, etc.), validates CWD is under the project directory, wraps the job in `sandbox-exec.sh`, and submits via the real sbatch.
+- **Security:** Named pipes with per-session temp directories, the chaperon dies with its parent (PR_SET_PDEATHSIG + liveness polling), and all user data is base64-encoded in the protocol (injection-proof).
+
+For the full architecture, protocol specification, and security analysis, see [CHAPERON.md](CHAPERON.md).
 
 ---
 
@@ -294,8 +304,8 @@ Replace `/path/to/bwrap` with the output of `which bwrap`. Then run `sudo apparm
 ### Firejail: Slurm "sbatch: error: ... Invalid user id"
 This was caused by firejail's `/etc/passwd` filtering, which removes UIDs >= `UID_MIN`. The sandbox now uses `--allusers` to disable this filtering, so this issue should no longer occur. If you still see it, ensure you're running the latest version of the sandbox scripts.
 
-### Slurm commands fail with "Authentication error"
-The munge socket at `/run/munge/` must be accessible. Bwrap binds `/run` by default. Firejail allows `/run/munge` but blacklists `/run/dbus` and `/run/user`. If you're on a non-standard setup, check that `/run/munge/munge.socket.2` exists.
+### Slurm commands fail inside the sandbox
+By design, `sbatch` inside the sandbox goes through the chaperon proxy. If it fails, check that the chaperon started successfully (look for "chaperon:" prefixed errors in stderr). The munge socket is intentionally blocked inside the sandbox — Slurm authentication happens in the chaperon, which runs outside. If `sbatch` fails with authentication errors, ensure `/run/munge/munge.socket.2` exists on the host.
 
 ### "Read-only file system" when writing
 By design. Only `$SANDBOX_PROJECT_DIR` and `~/.claude/` are writable. If the agent needs to write somewhere else, either change `--project-dir` or add the path to `HOME_WRITABLE` in `sandbox.conf`.
@@ -333,13 +343,13 @@ Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,a
 | Agent escapes via Unix sockets | Bwrap/firejail: filesystem-based sockets (e.g. `/run/dbus`) hidden by mount namespace, but abstract sockets (`@/org/...`) remain accessible (shared network namespace). Landlock: cannot block `AF_UNIX connect` | **Partial** (bwrap/firejail) / **None** (Landlock) |
 | Agent escapes via PID namespace | Bwrap/firejail: isolated PID namespace. Landlock: host PIDs visible | **Hard** (bwrap/firejail) / **None** (Landlock) |
 | Agent uses dangerous syscalls | All backends block `io_uring`, `userfaultfd`, `kexec` via seccomp-bpf. Firejail: built-in. Landlock: custom filter in `landlock-sandbox.py` (requires kernel ≥ 5.13). Bwrap: generated filter via `generate-seccomp.py` | **Hard** — all backends |
-| Slurm job bypasses sandbox | PATH shadowing (all backends) + binary relocation (bwrap only) | **Soft** — firejail/Landlock have PATH shadowing only; munge auth available (see [Admin Hardening](ADMIN_HARDENING.md)) |
+| Slurm job bypasses sandbox | Chaperon proxy: munge socket blocked, Slurm binaries blocked, argument whitelisting, all jobs wrapped in sandbox-exec.sh | **Hard** — munge auth unavailable inside sandbox; chaperon validates and wraps all submissions (see [CHAPERON.md](CHAPERON.md)) |
 | Agent tampers with sandbox scripts | Read-only mount (bwrap/firejail) / not protected (Landlock) | **Hard** (bwrap/firejail) / **None** (Landlock) — see [Admin Hardening](ADMIN_HARDENING.md) §2 |
 | SSH escape (if `~/.ssh` exposed) | Not protected — sandbox does not restrict network | **None** — agent can SSH to localhost or other nodes to get an unsandboxed shell. **Do not expose `~/.ssh`** unless you understand this risk. |
 
-**Bottom line:** Filesystem isolation is kernel-enforced with all three backends. Bwrap/firejail add mount + PID namespace isolation. Landlock works without admin privileges but provides filesystem-only isolation. Slurm wrapping is a soft boundary in all backends — see [Admin Hardening](ADMIN_HARDENING.md) for stronger approaches. For comparison with Apptainer, see [Sandbox vs. Apptainer](APPTAINER_COMPARISON.md).
+**Bottom line:** Filesystem isolation is kernel-enforced with all three backends. Bwrap/firejail add mount + PID namespace isolation. Landlock works without admin privileges but provides filesystem-only isolation. Slurm job submission is enforced by the chaperon proxy — munge auth is blocked inside the sandbox, so there is no way to submit jobs without going through the validated, wrapped path. For comparison with Apptainer, see [Sandbox vs. Apptainer](APPTAINER_COMPARISON.md).
 
-**Accepted risks (all backends):** Fileless execution via `memfd_create` (needed by CUDA/PyTorch/JAX). `/proc/net` information disclosure (needed for network stack). Abstract Unix sockets accessible (shared network namespace required for munge). See the [pentest reports](pentest/) for detailed findings and analysis per backend.
+**Accepted risks (all backends):** Fileless execution via `memfd_create` (needed by CUDA/PyTorch/JAX). `/proc/net` information disclosure (needed for network stack). Abstract Unix sockets accessible (shared network namespace required for DNS/NSS). See the [pentest reports](pentest/) for detailed findings and analysis per backend.
 
 ---
 

@@ -66,7 +66,9 @@ backend_prepare() {
     # Selectively grant /run subdirs — granting all of /run exposes
     # D-Bus and systemd user sockets, allowing sandbox escape via
     # systemd-run --user.
-    [[ -d /run/munge ]]            && LANDLOCK_ARGS+=(--ro /run/munge)
+    # Munge socket: NOT granted access (chaperon handles auth outside).
+    # Landlock can't block under /run if parent is granted, but we simply
+    # don't grant /run/munge — it returns EACCES.
     [[ -d /run/nscd ]]             && LANDLOCK_ARGS+=(--ro /run/nscd)
     [[ -d /run/systemd/resolve ]]  && LANDLOCK_ARGS+=(--ro /run/systemd/resolve)
 
@@ -109,7 +111,14 @@ backend_prepare() {
     export SANDBOX_ACTIVE=1
     export SANDBOX_BACKEND=landlock
     export SANDBOX_PROJECT_DIR="$project_dir"
-    export PATH="$SANDBOX_DIR/bin:${PATH}"
+    # Prepend chaperon stubs to PATH (before bin/ for sbatch/srun override)
+    export PATH="$SANDBOX_DIR/chaperon/stubs:$SANDBOX_DIR/bin:${PATH}"
+
+    # Pass chaperon FIFO directory into the sandbox (needs write for response FIFOs)
+    if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -d "${_CHAPERON_FIFO_DIR:-}" ]]; then
+        LANDLOCK_ARGS+=(--rw "$_CHAPERON_FIFO_DIR")
+        export _CHAPERON_FIFO_DIR
+    fi
 }
 
 backend_exec() {

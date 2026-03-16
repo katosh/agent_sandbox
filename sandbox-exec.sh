@@ -117,18 +117,48 @@ _BACKEND_DETECTED=true
 # Create per-session config directory (backend-independent)
 prepare_config_dir
 
-# Prepare sandbox
+# ── Chaperon: create FIFO directory ───────────────────────────────
+# Create the FIFO directory BEFORE backend_prepare so backends can
+# add bind-mounts for it. The chaperon process is started AFTER
+# backend_prepare but before entering the sandbox.
+
+_CHAPERON_PID=""
+_CHAPERON_DIR=""
+
+if [[ -x "$SCRIPT_DIR/chaperon/chaperon.sh" ]]; then
+    _CHAPERON_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chaperon-XXXXXX")"
+    chmod 700 "$_CHAPERON_DIR"
+
+    # request pipe: sandbox writes → chaperon reads
+    mkfifo "$_CHAPERON_DIR/req"
+    chmod 600 "$_CHAPERON_DIR/req"
+
+    # Export the FIFO directory path — backends read this during prepare
+    export _CHAPERON_FIFO_DIR="$_CHAPERON_DIR"
+fi
+
+# Prepare sandbox (reads _CHAPERON_FIFO_DIR for bind-mounts)
 backend_prepare "$PROJECT_DIR"
 
 if [[ "$DRY_RUN" == true ]]; then
     backend_dry_run "$@"
+    # Clean up chaperon dir on dry-run
+    [[ -n "$_CHAPERON_DIR" ]] && rm -rf "$_CHAPERON_DIR"
     exit 0
+fi
+
+# Start chaperon in background (opens FIFOs on its side)
+if [[ -n "$_CHAPERON_DIR" ]]; then
+    "$SCRIPT_DIR/chaperon/chaperon.sh" \
+        "$_CHAPERON_DIR" "$PROJECT_DIR" "$SCRIPT_DIR/sandbox-exec.sh" &
+    _CHAPERON_PID=$!
 fi
 
 # Close inherited file descriptors (3+) to prevent FD-based sandbox bypass.
 # Open FDs from the parent process persist across exec and bypass filesystem
 # isolation — a parent-opened FD to /etc/shadow would remain readable inside
 # the sandbox even if the path is blocked.  Keep only stdin/stdout/stderr.
+# EXCEPTION: the chaperon socketpair FD must survive into the sandbox.
 if [[ -d /proc/self/fd ]]; then
     for _fd in /proc/self/fd/*; do
         _fd_num="${_fd##*/}"

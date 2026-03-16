@@ -1,4 +1,5 @@
-#! /bin/bash --
+#!/bin/bash --
 # Sandbox srun — shadows /usr/bin/srun inside the sandbox.
-# Delegates to srun-sandbox.sh which wraps commands in bwrap.
-exec "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/../srun-sandbox.sh" "$@"
+# Delegates to chaperon stub which blocks srun usage.
+_BIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+exec "$_BIN_DIR/../chaperon/stubs/srun" "$@"

@@ -1,0 +1,12 @@
+#!/bin/bash --
+# chaperon/stubs/srun — Standalone blocked stub for srun
+#
+# srun is not supported through the chaperon because interactive/step
+# execution requires direct Slurm communication that can't be proxied
+# safely. Use sbatch instead.
+#
+# This stub does NOT talk to the chaperon — it simply prints an error.
+
+echo "error: srun is not available inside the sandbox." >&2
+echo "Hint: use 'sbatch --wrap=\"command\"' or 'sbatch script.sh' instead." >&2
+exit 1

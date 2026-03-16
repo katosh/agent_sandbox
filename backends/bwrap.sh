@@ -29,9 +29,6 @@ backend_name() {
     echo "bubblewrap"
 }
 
-# Internal path where real Slurm binaries are mounted inside the
-# sandbox.  Intentionally obscure and outside any PATH.
-SLURM_REAL_DIR="/tmp/.sandbox-slurm-real"
 
 backend_prepare() {
     local project_dir="$1"
@@ -67,17 +64,19 @@ backend_prepare() {
         fi
     done
 
-    # --- Slurm binary isolation ---
-    for bin in sbatch srun; do
+    # --- Slurm binary blocking ---
+    # Block all Slurm submission binaries inside the sandbox.
+    # The chaperon proxy (via stubs in PATH) is the only way to submit jobs.
+    for bin in sbatch srun scontrol scancel salloc sattach; do
         if [[ -x "/usr/bin/$bin" ]]; then
-            local overlay="$SANDBOX_DIR/.${bin}-overlay"
-            cat > "$overlay" <<SLURM_EOF
-#! /bin/bash --
-exec "$SANDBOX_DIR/${bin}-sandbox.sh" "\$@"
-SLURM_EOF
-            chmod +x "$overlay"
-            BWRAP_ARGS+=(--ro-bind "/usr/bin/$bin" "$SLURM_REAL_DIR/$bin")
-            BWRAP_ARGS+=(--ro-bind "$overlay" "/usr/bin/$bin")
+            BWRAP_ARGS+=(--ro-bind /dev/null "/usr/bin/$bin")
+        fi
+    done
+
+    # Block Slurm config (leaks controller address)
+    for _slurm_conf in /etc/slurm /etc/slurm-llnl; do
+        if [[ -d "$_slurm_conf" ]]; then
+            BWRAP_ARGS+=(--tmpfs "$_slurm_conf")
         fi
     done
 
@@ -157,10 +156,8 @@ SLURM_EOF
     # systemd-run --user.
     BWRAP_ARGS+=(--tmpfs /run)
 
-    # Munge socket (required for Slurm authentication)
-    if [[ -d /run/munge ]]; then
-        BWRAP_ARGS+=(--ro-bind /run/munge /run/munge)
-    fi
+    # Munge socket: BLOCKED inside sandbox (chaperon handles auth outside)
+    # /run/munge is not mounted — hidden by the /run tmpfs above.
 
     # nscd socket (required for user/group lookups on NFS/LDAP systems).
     # When FILTER_PASSWD is enabled, skip nscd — we overlay nsswitch.conf
@@ -238,7 +235,15 @@ SLURM_EOF
     BWRAP_ARGS+=(--setenv SANDBOX_ACTIVE 1)
     BWRAP_ARGS+=(--setenv SANDBOX_BACKEND bwrap)
     BWRAP_ARGS+=(--setenv SANDBOX_PROJECT_DIR "$project_dir")
-    BWRAP_ARGS+=(--setenv PATH "$SANDBOX_DIR/bin:${PATH}")
+    # Prepend chaperon stubs to PATH (before bin/ for sbatch/srun override)
+    BWRAP_ARGS+=(--setenv PATH "$SANDBOX_DIR/chaperon/stubs:$SANDBOX_DIR/bin:${PATH}")
+
+    # Bind-mount chaperon FIFO directory into the sandbox (writable for
+    # per-request response FIFOs created by stubs)
+    if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -d "${_CHAPERON_FIFO_DIR:-}" ]]; then
+        BWRAP_ARGS+=(--bind "$_CHAPERON_FIFO_DIR" "$_CHAPERON_FIFO_DIR")
+        BWRAP_ARGS+=(--setenv _CHAPERON_FIFO_DIR "$_CHAPERON_FIFO_DIR")
+    fi
 
     for var in "${BLOCKED_ENV_VARS[@]}"; do
         BWRAP_ARGS+=(--unsetenv "$var")
