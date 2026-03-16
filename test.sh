@@ -2,16 +2,22 @@
 # test.sh — Comprehensive test suite for the sandbox
 #
 # Runs from the repo directory or the installed ~/.claude/sandbox/.
-# Tests cover filesystem isolation, environment blocking, Slurm binary
-# isolation, overlay generation, sbatch/srun wrapping, and security
-# hardening (attack vector tests).
+# Tests cover filesystem isolation, environment blocking, chaperon
+# proxy isolation, Slurm submission, and security hardening.
 #
 # Usage:
-#   bash test.sh [PROJECT_DIR]            # test all available backends
+#   bash test.sh                          # full test (all backends)
+#   bash test.sh --quick                  # quick smoke test (no Slurm jobs)
 #   bash test.sh --verbose                # show command output on failure
 #   bash test.sh --backend bwrap          # test only bwrap backend
-#   bash test.sh --backend firejail       # test only firejail backend
-#   bash test.sh --backend landlock       # test only landlock backend
+#
+# The --quick flag runs sections 1–5 only: sandbox boot, filesystem
+# isolation, environment blocking, config overlays, and chaperon
+# setup verification.  It does NOT submit any Slurm jobs.
+#
+# The full test (default) additionally runs chaperon functional tests
+# (submits real Slurm jobs), escape vector tests, syscall restrictions,
+# resource isolation, credential protection, and stability tests.
 
 set -uo pipefail
 
@@ -21,11 +27,14 @@ PROJECT_DIR=""
 
 VERBOSE=false
 BACKEND_FLAG=""
+QUICK_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --verbose) VERBOSE=true; shift ;;
         --backend) BACKEND_FLAG="$2"; shift 2 ;;
+        --quick) QUICK_MODE=true; shift ;;
+        --full) QUICK_MODE=false; shift ;;
         -*) shift ;;
         *) PROJECT_DIR="$1"; shift ;;
     esac
@@ -430,6 +439,12 @@ if sandbox bash -c 'test -p "${_CHAPERON_FIFO_DIR}/req" && echo EXISTS || echo M
 fi
 
 echo ""
+
+if [[ "$QUICK_MODE" == true ]]; then
+    echo "(quick mode — skipping sections 6–12)"
+    echo "  Run without --quick for functional, security, and stability tests."
+    echo "  Note: the full test submits real Slurm jobs."
+else
 
 # ── 6. Chaperon functional tests ─────────────────────────────────
 
@@ -1510,6 +1525,8 @@ else
 fi
 
 echo ""
+
+fi  # end of [[ "$QUICK_MODE" != true ]] block (sections 6-12)
 
 # ── Per-backend summary ──────────────────────────────────────────
 

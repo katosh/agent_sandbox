@@ -122,17 +122,30 @@ echo "→ Installing sandbox scripts to $SANDBOX_DIR/"
 
 mkdir -p "$SANDBOX_DIR/bin"
 mkdir -p "$SANDBOX_DIR/backends"
+mkdir -p "$SANDBOX_DIR/chaperon/handlers"
+mkdir -p "$SANDBOX_DIR/chaperon/stubs"
 
 for file in sandbox-lib.sh sandbox-exec.sh sbatch-sandbox.sh srun-sandbox.sh sandbox-claude.md sandbox-settings.json sandbox-tmux.conf test.sh; do
     cp "$SCRIPT_DIR/$file" "$SANDBOX_DIR/$file"
 done
 
-for file in sbatch srun tmux; do
+for file in sbatch srun scancel tmux; do
     cp "$SCRIPT_DIR/bin/$file" "$SANDBOX_DIR/bin/$file"
 done
 
 for file in bwrap.sh firejail.sh landlock.sh landlock-sandbox.py generate-seccomp.py; do
     cp "$SCRIPT_DIR/backends/$file" "$SANDBOX_DIR/backends/$file"
+done
+
+# Chaperon: secure Slurm proxy
+for file in chaperon.sh protocol.sh; do
+    cp "$SCRIPT_DIR/chaperon/$file" "$SANDBOX_DIR/chaperon/$file"
+done
+for file in _handler_lib.sh sbatch.sh scancel.sh blocked.sh; do
+    cp "$SCRIPT_DIR/chaperon/handlers/$file" "$SANDBOX_DIR/chaperon/handlers/$file"
+done
+for file in _stub_lib.sh sbatch scancel srun; do
+    cp "$SCRIPT_DIR/chaperon/stubs/$file" "$SANDBOX_DIR/chaperon/stubs/$file"
 done
 
 chmod +x "$SANDBOX_DIR/sandbox-exec.sh"
@@ -141,7 +154,12 @@ chmod +x "$SANDBOX_DIR/srun-sandbox.sh"
 chmod +x "$SANDBOX_DIR/test.sh"
 chmod +x "$SANDBOX_DIR/bin/sbatch"
 chmod +x "$SANDBOX_DIR/bin/srun"
+chmod +x "$SANDBOX_DIR/bin/scancel"
 chmod +x "$SANDBOX_DIR/bin/tmux"
+chmod +x "$SANDBOX_DIR/chaperon/chaperon.sh"
+chmod +x "$SANDBOX_DIR/chaperon/stubs/sbatch"
+chmod +x "$SANDBOX_DIR/chaperon/stubs/scancel"
+chmod +x "$SANDBOX_DIR/chaperon/stubs/srun"
 
 echo "  ✓ Scripts installed"
 
@@ -168,14 +186,18 @@ if [[ "$SKIP_TEST" == true ]]; then
     echo "  Skipping test suite (--no-test)"
 else
     echo ""
-    echo "→ Running test suite..."
+    echo "→ Running quick smoke test..."
     echo ""
 
-    if ! bash "$SANDBOX_DIR/test.sh"; then
+    if ! bash "$SANDBOX_DIR/test.sh" --quick; then
         echo ""
         echo "⚠ Some tests failed. Run 'bash $SANDBOX_DIR/test.sh --verbose' for details."
         exit 1
     fi
+
+    echo ""
+    echo "  For the full test suite (submits real Slurm jobs):"
+    echo "    bash $SANDBOX_DIR/test.sh"
 fi
 
 # ── Step 6: Suggest shell alias ───────────────────────────────────

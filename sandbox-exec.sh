@@ -147,10 +147,16 @@ if [[ "$DRY_RUN" == true ]]; then
     exit 0
 fi
 
-# Start chaperon in background (opens FIFOs on its side)
+# Start chaperon in background (opens FIFOs on its side).
+# Redirect stdout/stderr to /dev/null so the chaperon doesn't hold
+# the parent's output pipes open — otherwise $() subshells that capture
+# sandbox output would block until the chaperon exits (5s poll delay).
+# The chaperon's own error logging goes to stderr inside dispatch_handler
+# and is captured per-request, not on the process-level stderr.
 if [[ -n "$_CHAPERON_DIR" ]]; then
     "$SCRIPT_DIR/chaperon/chaperon.sh" \
-        "$_CHAPERON_DIR" "$PROJECT_DIR" "$SCRIPT_DIR/sandbox-exec.sh" &
+        "$_CHAPERON_DIR" "$PROJECT_DIR" "$SCRIPT_DIR/sandbox-exec.sh" \
+        >/dev/null 2>/dev/null &
     _CHAPERON_PID=$!
 fi
 
