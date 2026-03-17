@@ -132,8 +132,8 @@ handle_sacct() {
         esac
     done
 
-    # Always scope to current user
+    # Always scope to current user; strip chaperon tags from output
     local rc=0
-    "$real_sacct" --user="$(whoami)" "${validated_flags[@]}" || rc=$?
+    "$real_sacct" --user="$(whoami)" "${validated_flags[@]}" | _strip_chaperon_tags || rc=$?
     return "$rc"
 }

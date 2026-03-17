@@ -90,7 +90,7 @@ handle_scontrol() {
                             return 1
                         fi
                         local rc=0
-                        "$real_scontrol" "${REQ_ARGS[@]}" || rc=$?
+                        "$real_scontrol" "${REQ_ARGS[@]}" | _strip_chaperon_tags || rc=$?
                         return "$rc"
                     else
                         # No job ID — show all jobs in scope
@@ -103,7 +103,7 @@ handle_scontrol() {
                         local rc=0
                         while IFS= read -r jid; do
                             [[ -n "$jid" ]] && "$real_scontrol" show job "$jid" || true
-                        done <<< "$scoped_ids"
+                        done <<< "$scoped_ids" | _strip_chaperon_tags
                         return 0
                     fi
                     ;;

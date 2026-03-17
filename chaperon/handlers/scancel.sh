@@ -10,7 +10,7 @@
 #   "none"     — no scope restriction (full access to your own jobs)
 #
 # The tag is set by the sbatch handler:
-#   --comment="chaperon:sid=<session_id>,proj=<project_hash>[,user=<comment>]"
+#   --comment="chaperon:sid=<session_id>,proj=<project_hash>[,user=<comment>]:END"
 #
 # This handler queries squeue to resolve which jobs match the scope,
 # then passes only those job IDs to the real scancel.  No file-based

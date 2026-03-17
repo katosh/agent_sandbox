@@ -334,7 +334,7 @@ create_wrapped_command() {
 # tag that encodes the session and project identity.  This is queried
 # by scancel/squeue to scope operations — no file-based tracking needed.
 #
-# Tag format:  chaperon:sid=<SESSION_ID>,proj=<PROJECT_HASH>[,user=<comment>]
+# Tag format:  chaperon:sid=<SESSION_ID>,proj=<PROJECT_HASH>[,user=<comment>]:END
 #
 #   sid  = unique per-chaperon-instance (PID + epoch, set once at startup)
 #   proj = first 12 hex chars of md5(project_dir)
@@ -369,6 +369,10 @@ _build_chaperon_comment() {
         safe_comment="${safe_comment//=/%3D}"
         tag+=",user=${safe_comment}"
     fi
+
+    # End marker — colons are percent-encoded in user values, so :END
+    # is an unambiguous boundary for _strip_chaperon_tags().
+    tag+=":END"
 
     printf '%s' "$tag"
 }
@@ -432,11 +436,13 @@ _validate_job_in_scope() {
     fi
 
     # Check if the comment matches the scope.
-    # Match only in the tag prefix (before ,user=) to prevent injection
-    # via crafted user comments. Require delimiter after session ID to
-    # prevent prefix collisions (sid=123.100 vs sid=123.1000000).
+    # Strip :END marker, then match only in the tag prefix (before ,user=)
+    # to prevent injection via crafted user comments. Require delimiter
+    # after session ID to prevent prefix collisions (sid=123.100 vs
+    # sid=123.1000000).
     local match=false
-    local tag_prefix="${comment%%,user=*}"
+    local stripped="${comment%:END}"
+    local tag_prefix="${stripped%%,user=*}"
     case "$scope" in
         session)
             [[ "$tag_prefix" == "chaperon:sid=${_CHAPERON_SESSION_ID},"* || \
@@ -462,4 +468,30 @@ _validate_job_in_scope() {
         return 1
     fi
     return 0
+}
+
+# ── Strip chaperon tags from Slurm output ──────────────────────────
+#
+# Pipe Slurm command output through this to replace chaperon tags with
+# the user's original comment (or empty string if none was set).
+#
+# Tag format: chaperon:sid=...,proj=...[,user=<percent-encoded>]:END
+# The :END marker is an unambiguous boundary because colons are
+# percent-encoded (%3A) in the user value, so ":END" cannot appear
+# inside it.  The user= value also has commas (%2C) and equals (%3D)
+# percent-encoded.  We decode these after extracting.
+#
+# Usage: "$real_squeue" ... | _strip_chaperon_tags
+_strip_chaperon_tags() {
+    # Step 1: Replace full tag with just the user comment value (or empty).
+    #   - With user comment:  chaperon:sid=X,proj=Y,user=VALUE:END → VALUE
+    #   - Without:            chaperon:sid=X,proj=Y:END             → (empty)
+    #   The :END marker provides an unambiguous boundary regardless of
+    #   output format (tabular, JSON, YAML, scontrol key=value).
+    # Step 2: Decode the three percent-encoded characters.
+    sed -E 's/chaperon:sid=[^,]*,proj=[^,]*(,user=([^:]*))?\:END/\2/g' \
+    | sed \
+        -e 's/%2C/,/g' \
+        -e 's/%3A/:/g' \
+        -e 's/%3D/=/g'
 }

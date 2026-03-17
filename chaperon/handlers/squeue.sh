@@ -120,7 +120,7 @@ handle_squeue() {
     # For "user" and "none" scopes, just show all user jobs directly
     if [[ "$scope" == "user" || "$scope" == "none" ]]; then
         local rc=0
-        "$real_squeue" --me "${validated_flags[@]}" || rc=$?
+        "$real_squeue" --me "${validated_flags[@]}" | _strip_chaperon_tags || rc=$?
         return "$rc"
     fi
 
@@ -138,6 +138,6 @@ handle_squeue() {
     job_id_list="$(echo "$scoped_job_ids" | tr '\n' ',' | sed 's/,$//')"
 
     local rc=0
-    "$real_squeue" --me -j "$job_id_list" "${validated_flags[@]}" || rc=$?
+    "$real_squeue" --me -j "$job_id_list" "${validated_flags[@]}" | _strip_chaperon_tags || rc=$?
     return "$rc"
 }

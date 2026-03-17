@@ -563,6 +563,81 @@ else
     fi
 fi
 
+# 5n. Comment stripping — _strip_chaperon_tags restores user comments
+#     These are unit tests of the sed pipeline; no Slurm needed.
+_HANDLER_LIB="$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+if [[ -f "$_HANDLER_LIB" ]]; then
+    # Source just the strip function (avoid side effects from the full lib)
+    eval "$(sed -n '/^_strip_chaperon_tags()/,/^}/p' "$_HANDLER_LIB")"
+
+    # 5n-1: Tag with user comment → user comment restored
+    _in='Comment=chaperon:sid=99.100,proj=aabbcc112233,user=my training run:END'
+    _out=$(echo "$_in" | _strip_chaperon_tags)
+    if [[ "$_out" == "Comment=my training run" ]]; then
+        pass "Comment stripping: user comment restored from tag"
+    else
+        fail "Comment stripping: user comment" "expected 'Comment=my training run', got '$_out'"
+    fi
+
+    # 5n-2: Tag without user comment → empty
+    _in='Comment=chaperon:sid=99.100,proj=aabbcc112233:END'
+    _out=$(echo "$_in" | _strip_chaperon_tags)
+    if [[ "$_out" == "Comment=" ]]; then
+        pass "Comment stripping: empty when no user comment"
+    else
+        fail "Comment stripping: empty comment" "expected 'Comment=', got '$_out'"
+    fi
+
+    # 5n-3: Encoded special characters decoded
+    _in='chaperon:sid=1.2,proj=aabb,user=k%3Dv%2C t%3Af:END'
+    _out=$(echo "$_in" | _strip_chaperon_tags)
+    if [[ "$_out" == "k=v, t:f" ]]; then
+        pass "Comment stripping: percent-encoded chars decoded"
+    else
+        fail "Comment stripping: decode" "expected 'k=v, t:f', got '$_out'"
+    fi
+
+    # 5n-4: Non-chaperon comments pass through unchanged
+    _in='Comment=just a normal comment'
+    _out=$(echo "$_in" | _strip_chaperon_tags)
+    if [[ "$_out" == "$_in" ]]; then
+        pass "Comment stripping: non-chaperon comments unchanged"
+    else
+        fail "Comment stripping: passthrough" "expected '$_in', got '$_out'"
+    fi
+
+    # 5n-5: squeue tabular format (tag embedded in line)
+    _in='  12345   myuser   RUNNING   chaperon:sid=1.2,proj=abc123def456,user=hello world:END'
+    _out=$(echo "$_in" | _strip_chaperon_tags)
+    if [[ "$_out" == "  12345   myuser   RUNNING   hello world" ]]; then
+        pass "Comment stripping: squeue tabular output"
+    else
+        fail "Comment stripping: tabular" "got '$_out'"
+    fi
+
+    # 5n-6: JSON output format
+    _in='  "comment": "chaperon:sid=1.2,proj=abc123def456,user=my job:END",'
+    _out=$(echo "$_in" | _strip_chaperon_tags)
+    if [[ "$_out" == '  "comment": "my job",' ]]; then
+        pass "Comment stripping: JSON output format"
+    else
+        fail "Comment stripping: JSON" "got '$_out'"
+    fi
+
+    # 5n-7: Pipe-delimited (parsable squeue) with empty comment
+    _in='12345|myuser|RUNNING|chaperon:sid=1.2,proj=abc123def456:END|node01'
+    _out=$(echo "$_in" | _strip_chaperon_tags)
+    if [[ "$_out" == "12345|myuser|RUNNING||node01" ]]; then
+        pass "Comment stripping: parsable format, empty comment"
+    else
+        fail "Comment stripping: parsable" "got '$_out'"
+    fi
+
+    unset -f _strip_chaperon_tags
+else
+    skip "Comment stripping tests — _handler_lib.sh not found"
+fi
+
 echo ""
 
 if [[ "$QUICK_MODE" == true ]]; then

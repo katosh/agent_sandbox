@@ -1,5 +1,7 @@
 # Chaperon: Secure Slurm Proxy for Sandboxed Sessions
 
+> **Disclaimer:** The chaperon is a best-effort security mechanism. It has not been formally audited and comes with **no guarantees**. While it aims to prevent sandbox bypass via Slurm, there may be edge cases, Slurm version-specific behaviors, or site-specific configurations that weaken its protections. Review the [Security Properties](#security-properties) and [Known Limitations](#blocked-commands) sections, and test against your environment before relying on it. Use at your own risk.
+
 ## Problem
 
 The previous Slurm isolation model exposed the munge authentication socket (`/run/munge`) read-only inside the sandbox, allowing the PATH-shadowing wrappers to authenticate with slurmctld. This meant anything inside the sandbox that could talk to munge — a crafted binary, Python ctypes, a direct `socat` call — could submit jobs without going through the sandbox wrappers. PATH shadowing was a speed bump, not a wall.
@@ -155,12 +157,18 @@ The sbatch handler (`handlers/sbatch.sh`) performs three validation steps before
 2. **CWD validation**: The requested working directory must be a physical path under the project directory (resolves symlinks to prevent escape).
 3. **Job wrapping**: The user's script is written to a temp file, and a wrapper script is generated that runs it inside `sandbox-exec.sh --project-dir $PROJECT_DIR`. The wrapper is submitted to the real sbatch.
 
-### Job Tagging via `--comment`
+### Job Tagging and Scoping via `--comment`
 
-Every job submitted through the chaperon is tagged with a structured `--comment`:
+The chaperon needs to track which jobs belong to which sandbox session/project so that `squeue`, `scancel`, and other scoped handlers can filter appropriately. This is done by injecting a structured tag into Slurm's `--comment` field on every submitted job.
+
+**Why `--comment` and not `--job-name`?** The `--job-name` (`-J`) field is user-visible, commonly set by workflows and scripts, and used for human identification (e.g., `alignment-step1`, `train-model`). Overwriting or prefixing it would break existing workflows that parse job names. The `--comment` field, by contrast, is rarely used in practice — it's a free-text metadata field that most users never set, and it doesn't appear in default `squeue` output. This makes it ideal for machine-readable tagging without interfering with user workflows.
+
+**What happens to user-supplied comments?** If the user passes `--comment "my note"` to sbatch, the chaperon preserves it by appending it (percent-encoded) to the tag as `user=my%20note`. The encoding prevents crafted comments from injecting fake `chaperon:`, `sid=`, or `proj=` patterns that would confuse scope filtering. When the sandbox user queries jobs (via `squeue`, `scontrol show job`, or `sacct`), the chaperon tag is automatically stripped and the original comment is restored — the user sees `my note`, not the internal tag.
+
+#### Tag format
 
 ```
-chaperon:sid=<session_id>,proj=<project_hash>[,user=<original_comment>]
+chaperon:sid=<session_id>,proj=<project_hash>[,user=<original_comment>]:END
 ```
 
 | Field | Content | Purpose |
@@ -168,6 +176,7 @@ chaperon:sid=<session_id>,proj=<project_hash>[,user=<original_comment>]
 | `sid` | `<PID>.<epoch>` | Unique per chaperon instance (session scope) |
 | `proj` | First 12 hex of `md5(project_dir)` | Groups jobs by project (project scope) |
 | `user` | User's original `--comment` value (percent-encoded) | Preserves user metadata |
+| `:END` | Literal end marker | Unambiguous tag boundary for stripping (colons are percent-encoded in user values, so `:END` cannot appear inside the encoded comment) |
 
 This tag is set once at submission and is **inherited by array tasks**, **survives preemption** (job ID may change, comment does not), and is **queryable via squeue/sacct**:
 
@@ -317,6 +326,20 @@ Read-only scheduler diagnostics passthrough. Denies `--reset` (clears scheduler 
 
 Blocked entirely. `sreport` generates accounting reports across many sub-report types, many of which enumerate users and accounts. Use `sacct` with formatting options for similar data scoped to your user.
 
+### Comment Stripping
+
+The chaperon injects structured tags into Slurm's `--comment` field for scoping, but the sandbox user should never see these internals. The `_strip_chaperon_tags()` function in `_handler_lib.sh` is piped over the output of all user-facing handlers that may display comments: **squeue**, **scontrol** (`show job`), and **sacct**.
+
+The stripping pipeline:
+1. **Extracts the user value**: regex matches the full tag `chaperon:sid=...,proj=...[,user=VALUE]:END` and replaces it with just `VALUE` (or empty string if no user comment was set)
+2. **Decodes percent-encoding**: restores `%2C` → `,`, `%3A` → `:`, `%3D` → `=`
+
+The `:END` marker makes extraction reliable across all Slurm output formats (tabular, parsable/pipe-delimited, JSON, YAML, `scontrol` key=value). Because colons are percent-encoded (`%3A`) in user values, `:END` cannot appear inside the encoded comment, providing an unambiguous boundary.
+
+**Result**: sandbox users see their original `--comment` value (or an empty field) — the Slurm interface behaves as expected with no chaperon artifacts visible.
+
+Comments on jobs **not** submitted through the chaperon (e.g., in `user`/`none` scope modes) pass through unchanged.
+
 ### Blocked Commands
 
 The following commands are routed to `blocked.sh` (no handler):
@@ -380,6 +403,12 @@ The test suite (`test.sh` sections 5–6) verifies:
 - `srun` in allocation mode wraps command in sandbox-exec.sh
 - `_CHAPERON_FIFO_DIR` is set inside sandbox
 - Chaperon request FIFO exists inside sandbox
+- Comment stripping (`_strip_chaperon_tags`):
+  - User comment restored from chaperon tag
+  - Empty result when no user comment was set
+  - Percent-encoded special characters decoded correctly
+  - Non-chaperon comments pass through unchanged
+  - Correct across output formats: tabular, JSON, pipe-delimited (parsable)
 - `sbatch --wrap` via chaperon submits jobs successfully
 - No infinite recursion in chaperon sbatch path
 - Denied flags (`--uid`, `--get-user-env`) are rejected
