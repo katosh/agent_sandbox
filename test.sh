@@ -70,6 +70,8 @@ sandbox() {
         -e '^Warning: landlock_add_rule' \
         -e '^Warning: Restoring stale backup' \
         -e '^WARNING: ' \
+        -e '^sandbox: WARNING: ' \
+        -e '^  These variables are ' \
         -e '^  User enumeration' \
         -e '^  Individual file' \
         -e '^  Current backend' \

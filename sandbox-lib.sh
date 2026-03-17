@@ -279,9 +279,8 @@ _load_untrusted_config() {
         [[ "$_known_vars" == *" $_unknown_var "* ]] || _unknown_list+=("$_unknown_var")
     done < <(grep -oE '^[A-Z_][A-Z_0-9]*\+?=' "$_conf" | sed 's/+\?=$//' | sort -u)
     if [[ ${#_unknown_list[@]} -gt 0 ]]; then
-        echo "WARNING: ${_label} sets ${#_unknown_list[@]} unknown variable(s): ${_unknown_list[*]}" >&2
-        echo "  These are ignored and can be removed. Compare with the current template:" >&2
-        echo "  diff $_conf $SANDBOX_DIR/sandbox.conf" >&2
+        echo "sandbox: WARNING: ${_label} ($(basename "$_conf")) sets ${#_unknown_list[@]} unknown variable(s): ${_unknown_list[*]}" >&2
+        echo "  These variables are ignored. They may be from an older version — re-run install.sh to update." >&2
     fi
 
     # Serialize current state for the subprocess
