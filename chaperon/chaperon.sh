@@ -125,8 +125,11 @@ while true; do
     REQ_SCRIPT=""
     REQ_RESP_FIFO=""
 
+    # Read body lines with a timeout to prevent a malicious sender from
+    # blocking the chaperon by sending a header but never sending END.
     _line=""
-    while IFS= read -r _line <&"$READ_FD"; do
+    _body_timeout=30
+    while IFS= read -r -t "$_body_timeout" _line <&"$READ_FD"; do
         case "$_line" in
             ARG\ *)
                 _encoded="${_line#ARG }"
