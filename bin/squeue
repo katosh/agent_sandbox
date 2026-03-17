@@ -1,0 +1,5 @@
+#!/bin/bash --
+# Sandbox squeue — shadows /usr/bin/squeue inside the sandbox.
+# Delegates to chaperon stub which filters output to scoped jobs.
+_BIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+exec "$_BIN_DIR/../chaperon/stubs/squeue" "$@"

@@ -129,8 +129,8 @@ for file in sandbox-lib.sh sandbox-exec.sh sbatch-sandbox.sh srun-sandbox.sh san
     cp "$SCRIPT_DIR/$file" "$SANDBOX_DIR/$file"
 done
 
-for file in sbatch srun scancel tmux; do
-    cp "$SCRIPT_DIR/bin/$file" "$SANDBOX_DIR/bin/$file"
+for file in "$SCRIPT_DIR"/bin/*; do
+    cp "$file" "$SANDBOX_DIR/bin/"
 done
 
 for file in bwrap.sh firejail.sh landlock.sh landlock-sandbox.py generate-seccomp.py; do
@@ -152,10 +152,7 @@ chmod +x "$SANDBOX_DIR/sandbox-exec.sh"
 chmod +x "$SANDBOX_DIR/sbatch-sandbox.sh"
 chmod +x "$SANDBOX_DIR/srun-sandbox.sh"
 chmod +x "$SANDBOX_DIR/test.sh"
-chmod +x "$SANDBOX_DIR/bin/sbatch"
-chmod +x "$SANDBOX_DIR/bin/srun"
-chmod +x "$SANDBOX_DIR/bin/scancel"
-chmod +x "$SANDBOX_DIR/bin/tmux"
+chmod +x "$SANDBOX_DIR"/bin/*
 chmod +x "$SANDBOX_DIR/chaperon/chaperon.sh"
 chmod +x "$SANDBOX_DIR"/chaperon/stubs/*
 # Re-protect library files that shouldn't be directly executed

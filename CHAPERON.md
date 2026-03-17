@@ -327,7 +327,7 @@ The test suite (`test.sh` sections 5–6) verifies:
 5. Binary blocking is automatic: backends scan `chaperon/stubs/` at startup to build the block list (any executable file not starting with `_` is blocked)
 6. `install.sh` uses globs to copy handlers and stubs — no edits needed
 
-To block a command without proxying it (like srun), create a standalone stub that prints an error without sourcing `_stub_lib.sh`.
+To block a command without proxying it, create a standalone stub that prints an error without sourcing `_stub_lib.sh`.
 
 ### Adding a new allowed sbatch flag
 

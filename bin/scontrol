@@ -1,0 +1,5 @@
+#!/bin/bash --
+# Sandbox scontrol — shadows /usr/bin/scontrol inside the sandbox.
+# Delegates to chaperon stub which validates subcommands and scopes job ops.
+_BIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+exec "$_BIN_DIR/../chaperon/stubs/scontrol" "$@"

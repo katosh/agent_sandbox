@@ -2,17 +2,18 @@
 # chaperon/stubs/srun — Chaperon-proxied srun stub
 #
 # All srun invocations go through the chaperon, which runs OUTSIDE the
-# sandbox and has access to munge for Slurm authentication.  The chaperon
-# handler validates flags and only allows step launching (SLURM_JOB_ID set).
+# sandbox and has access to munge for Slurm authentication.  Two modes:
 #
-# On the login node (no SLURM_JOB_ID), the handler rejects the request.
-# On compute nodes (SLURM_JOB_ID set), the handler validates flags against
-# a whitelist and execs real srun for job-step launching (MPI).
+#   Allocation mode (login node, no SLURM_JOB_ID):
+#     Validates flags, wraps the command in sandbox-exec.sh so compute-node
+#     processes inherit sandbox restrictions, then calls real srun.
 #
-# Security: munge is intentionally blocked inside the sandbox.  Proxying
-# srun through the chaperon provides munge access for step launching
-# while preventing arbitrary job submission (flag whitelist + SLURM_JOB_ID
-# check in the handler, which runs outside the sandbox).
+#   Step mode (compute node, SLURM_JOB_ID set):
+#     Validates flags against step-only whitelist, execs real srun directly
+#     for MPI/multi-process step launching.
+#
+# --pty is denied in both modes (no PTY passthrough via protocol).
+# Munge is never exposed inside the sandbox.
 
 set -euo pipefail
 

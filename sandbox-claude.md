@@ -1,7 +1,14 @@
 
 # Sandbox Environment
 
-You are in a kernel-enforced filesystem sandbox. Write access: `$SANDBOX_PROJECT_DIR` and `~/.claude/` only. Credentials (`~/.ssh`, `~/.aws`, `~/.gnupg`) are inaccessible. Slurm jobs (`sbatch`/`srun`) inherit sandbox restrictions automatically.
+You are in a kernel-enforced filesystem sandbox. Write access: `$SANDBOX_PROJECT_DIR` and `~/.claude/` only. Credentials (`~/.ssh`, `~/.aws`, `~/.gnupg`) are inaccessible.
+
+Slurm commands are proxied through the chaperon and inherit sandbox restrictions:
+- `sbatch` — job submission (wrapped in sandbox on compute nodes)
+- `srun` — step launching inside jobs, or sandboxed non-interactive execution from login node (`--pty` not supported)
+- `scancel` — cancel jobs (scoped to this project by default)
+- `squeue` — view job queue (scoped to sandbox-submitted jobs)
+- `scontrol` — show/hold/release/requeue/update jobs (scoped); read-only for nodes/partitions/config
 
 If you get "No such file or directory" or "Permission denied" on a path the user expects to be accessible, the path is not in the sandbox's `READONLY_MOUNTS`. Tell the user to add it to `READONLY_MOUNTS` in `~/.claude/sandbox/sandbox.conf` and restart the sandbox. Keep this brief — one sentence.
 

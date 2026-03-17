@@ -4,8 +4,8 @@
 # Cancels Slurm jobs, scoped by querying the chaperon tag in --comment.
 #
 # Scope levels (configured via CHAPERON_SCANCEL_SCOPE in sandbox.conf):
-#   "session"  — only jobs tagged with THIS session's ID (default)
-#   "project"  — jobs tagged with the same project hash (any session)
+#   "project"  — jobs tagged with the same project hash, any session (default)
+#   "session"  — only jobs tagged with THIS session's ID
 #   "user"     — any job tagged by any chaperon instance of this user
 #
 # The tag is set by the sbatch handler:
