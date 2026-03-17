@@ -122,43 +122,57 @@ OS user separation handles credential isolation — the agent physically cannot 
 
 ---
 
-## 4. Network Isolation
+## 4. Network Controls
 
-**What it solves:** The current sandbox shares the host network stack. The [chaperon](CHAPERON.md) removed the dependency on in-sandbox network access for Slurm (munge socket is blocked, all Slurm communication goes through FIFOs). However, the agent still has unrestricted outbound network and could exfiltrate data via `curl`, `wget`, or any TCP connection. Claude Code requires HTTPS access to `api.anthropic.com` — the goal is to allow that while blocking everything else.
+**What it solves:** The current sandbox shares the host network stack. The [chaperon](CHAPERON.md) removed the dependency on in-sandbox network access for Slurm (munge socket is blocked, all Slurm communication goes through FIFOs). However, the agent still has unrestricted outbound network — it can reach any host the user can, using the same institutional IP.
+
+Agents legitimately need general web access: reading documentation, downloading papers (often through institutional proxy/IP for paywall access), installing packages, cloning repos. The goal is not to cut off network access, but to **route agent traffic through a controllable path** where agent-specific policies can be applied — blocking certain services, logging traffic, or rate-limiting — without breaking research workflows.
+
+**Threat model:** The concern is not bulk data transfer (the agent already has API access to exfiltrate context). It's about preventing the agent from reaching services it shouldn't: SSH to an unsandboxed shell, internal REST APIs, cloud metadata endpoints (169.254.169.254), or other agents' sandboxes. General HTTPS to the open web (research, PyPI, GitHub, paper access) is typically fine.
 
 **Effort:** Varies by option (see below). **Category:** Admin-enforced (Options A, B) or self-serve (Option C).
 
-### Option A: Per-UID iptables Rules
+### Option A: Per-UID iptables/nftables Rules
 
 **Requires:** Dedicated `${USER}_ai` accounts (Section 3). **Effort:** Medium.
 
-The simplest admin approach — iptables `--uid-owner` matches on the agent's UID, so no changes to the sandbox itself are needed:
+The simplest admin approach — iptables `--uid-owner` matches on the agent's UID, so no changes to the sandbox itself are needed. Rules selectively block dangerous services while allowing general web access:
 
 ```bash
 # Allow loopback and established connections
 iptables -A OUTPUT -m owner --uid-owner alice_ai -o lo -j ACCEPT
 iptables -A OUTPUT -m owner --uid-owner alice_ai -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-# Allow Anthropic API (Claude Code)
-iptables -A OUTPUT -m owner --uid-owner alice_ai -d <anthropic_api_ips> -p tcp --dport 443 -j ACCEPT
+# --- Block dangerous destinations first (order matters: checked before ACCEPT) ---
+# Block SSH out (prevents escape to unsandboxed shell)
+iptables -A OUTPUT -m owner --uid-owner alice_ai -p tcp --dport 22 -j DROP
 
-# Allow Slurm controller (only needed if chaperon is not used)
-# iptables -A OUTPUT -m owner --uid-owner alice_ai -d <slurmctld_ip> -p tcp --dport 6817 -j ACCEPT
+# Block cloud metadata endpoint
+iptables -A OUTPUT -m owner --uid-owner alice_ai -d 169.254.169.254 -j DROP
 
-# Allow DNS (needed for API hostname resolution)
+# Block internal network ranges (adjust to your environment)
+iptables -A OUTPUT -m owner --uid-owner alice_ai -d 10.0.0.0/8 -j DROP
+iptables -A OUTPUT -m owner --uid-owner alice_ai -d 172.16.0.0/12 -j DROP
+
+# --- Allow general access (after blocks) ---
+# DNS, HTTPS, HTTP — research, API, packages, papers via institutional IP
 iptables -A OUTPUT -m owner --uid-owner alice_ai -p udp --dport 53 -j ACCEPT
+iptables -A OUTPUT -m owner --uid-owner alice_ai -p tcp --dport 443 -j ACCEPT
+iptables -A OUTPUT -m owner --uid-owner alice_ai -p tcp --dport 80 -j ACCEPT
 
-# Block everything else
+# Drop everything else (non-HTTP protocols to external hosts)
 iptables -A OUTPUT -m owner --uid-owner alice_ai -j DROP
 ```
 
-**Pros:** Transparent to the sandboxed process — no proxy configuration needed; `pip install`, `git clone`, etc. work if their destinations are allowlisted. **Cons:** Requires dedicated accounts (Section 3); Anthropic API IPs may change (use DNS-based ipset for robustness); allowlisting additional destinations (PyPI, GitHub, conda) dilutes the isolation.
+Rules are evaluated top-to-bottom: dangerous destinations are dropped first, then HTTP/HTTPS to anywhere else is allowed, and non-web protocols (raw TCP, SMTP, etc.) are dropped at the end. This preserves research workflows (paper access, package installation, web search) while blocking known-dangerous paths.
+
+**Pros:** Transparent to the sandboxed process — no proxy configuration needed; institutional IP preserved for paper access; easy to audit and extend. **Cons:** Requires dedicated accounts (Section 3); can't inspect HTTPS content (only destination IP/port); a determined agent could exfiltrate via any allowed HTTPS connection.
 
 ### Option B: cgroup + nftables Matching
 
 **Requires:** Admin (nftables, cgroup setup). **Does not require** dedicated accounts. **Effort:** Medium.
 
-Modern nftables (≥ 0.9.3, Linux ≥ 4.10) can match packets by cgroup membership instead of UID. The sandbox launches processes inside a dedicated cgroup slice, and nftables restricts that slice's outbound traffic:
+Modern nftables (≥ 0.9.3, Linux ≥ 4.10) can match packets by cgroup membership instead of UID. The sandbox launches processes inside a dedicated cgroup slice, and nftables applies the same targeted-block policy as Option A — but keyed on cgroup membership rather than UID:
 
 ```bash
 # Launch sandbox inside a cgroup slice (sandbox-exec.sh would do this)
@@ -167,60 +181,74 @@ systemd-run --user --scope --slice=sandbox.slice -- sandbox-exec.sh ...
 
 ```nft
 table inet sandbox_filter {
+    # Destinations to block for sandboxed agents
+    set blocked_nets {
+        type ipv4_addr; flags interval
+        elements = {
+            169.254.169.254,    # cloud metadata
+            10.0.0.0/8,         # internal network (adjust to environment)
+            172.16.0.0/12       # internal network
+        }
+    }
+
     chain output {
         type filter hook output priority 0; policy accept;
 
-        # Only apply to sandboxed processes
+        # Match only sandboxed processes via cgroup
+        # (cgroup path varies by distro — verify with: cat /proc/self/cgroup)
         socket cgroupv2 level 2 "user.slice/user-1001.slice/user@1001.service/sandbox.slice" \
-            meta l4proto tcp th dport 443 ip daddr @anthropic_api accept
+            ip daddr @blocked_nets drop
 
+        # Block SSH out from sandbox (prevents escape to unsandboxed shell)
         socket cgroupv2 level 2 "user.slice/user-1001.slice/user@1001.service/sandbox.slice" \
-            meta l4proto udp th dport 53 accept
+            meta l4proto tcp th dport 22 drop
 
-        socket cgroupv2 level 2 "user.slice/user-1001.slice/user@1001.service/sandbox.slice" \
-            oifname "lo" accept
-
-        # Drop everything else from the sandbox slice
-        socket cgroupv2 level 2 "user.slice/user-1001.slice/user@1001.service/sandbox.slice" \
-            drop
+        # Everything else from sandbox is allowed (research, API, packages)
     }
 }
 ```
 
-**Pros:** No dedicated accounts needed — cgroup membership identifies sandboxed processes; transparent to the process (no proxy config); works with any backend. **Cons:** cgroup path hierarchy varies by distro and systemd version — the nftables rules must match the actual cgroup tree; `systemd-run --user --scope` may require `loginctl enable-linger` for the user; multi-user deployments need per-user rules or a common slice; more complex to set up and debug than UID-based rules.
+**Pros:** No dedicated accounts needed — cgroup membership identifies sandboxed processes; transparent to the process (no proxy config); institutional IP preserved; default-allow keeps research workflows intact; works with any backend. **Cons:** cgroup path hierarchy varies by distro and systemd version — the nftables rules must match the actual cgroup tree; `systemd-run --user --scope` may require `loginctl enable-linger` for the user; multi-user deployments need per-user rules or a common slice.
 
-### Option C: Network Namespace + Allowlist Proxy
+### Option C: Network Namespace + Policy Proxy
 
-**Does not require** dedicated accounts or admin. **Effort:** Medium (self-serve).
+**Does not require** dedicated accounts or admin. **Effort:** Medium-high (self-serve).
 
-Bwrap supports `--unshare-net`, which places the sandbox in a network namespace with **no interfaces at all** — complete network isolation. The challenge is restoring the one connection Claude Code needs (HTTPS to `api.anthropic.com`).
-
-The approach mirrors the chaperon pattern: a small proxy runs outside the sandbox, listens on a Unix socket (bind-mounted into the sandbox), and forwards only to allowlisted destinations. Claude Code supports `HTTPS_PROXY` / `ALL_PROXY`, which can be pointed at the socket:
+Bwrap supports `--unshare-net`, which places the sandbox in a network namespace with **no interfaces at all**. All network access is then restored through a proxy running outside the sandbox, listening on a Unix socket (bind-mounted in, like the chaperon FIFOs). The proxy becomes a policy enforcement point — it can allow general web access while blocking specific destinations, logging requests, or applying rate limits.
 
 ```
 sandbox-exec.sh
-  ├── start allowlist-proxy on Unix socket (outside sandbox)
-  │     └── forwards CONNECT requests only to api.anthropic.com:443
+  ├── start policy-proxy on Unix socket (outside sandbox)
+  │     ├── allows: general HTTPS/HTTP (research, papers, packages)
+  │     ├── blocks: SSH, internal networks, metadata endpoint
+  │     └── logs: all CONNECT requests (destination + timestamp)
   ├── --unshare-net (no network interfaces inside sandbox)
   ├── bind-mount proxy socket into sandbox
-  ├── export HTTPS_PROXY=socks5://... or http://unix:...
+  ├── export HTTPS_PROXY=http+unix:///path/to/proxy.sock
   └── enter sandbox
-        └── curl, Claude Code → proxy socket → allowlisted destination
+        └── all outbound traffic → proxy socket → policy check → internet
 ```
 
-The proxy would be a small Go/Python/Rust binary or a `socat`/`microsocks` wrapper. Requests to non-allowlisted destinations are rejected at the proxy.
+The proxy could be a lightweight HTTP CONNECT proxy (e.g., a small Go binary, or Python's `http.server` with CONNECT support) with a deny-list of destinations. Since it sees every connection request, it can:
 
-**Pros:** No admin involvement; no dedicated accounts; strongest isolation (zero network interfaces — even abstract Unix sockets are unreachable); works today with bwrap and firejail (`--net=none`). **Cons:** Tools like `pip install`, `git clone`, `conda install` fail unless they are also configured to use the proxy or their destinations are allowlisted; the proxy is an additional component to maintain; not available on Landlock (no network namespace support); latency overhead from the proxy hop (negligible for API calls, potentially noticeable for bulk downloads).
+- **Block by destination**: SSH (port 22), internal IPs, metadata endpoints
+- **Log**: record every outbound connection for audit
+- **Rate-limit**: prevent bulk exfiltration
+- **Preserve institutional IP**: the proxy runs on the host, so outbound connections use the institutional IP — paper access through publisher paywalls works as expected
+
+**Pros:** No admin involvement; no dedicated accounts; strongest isolation (zero network interfaces — abstract Unix sockets unreachable); full visibility into outbound connections; policy is code (version-controlled, testable). **Cons:** All tools must respect `HTTPS_PROXY` / `http_proxy` (most do — curl, pip, conda, git, wget — but some don't); the proxy is an additional component to build and maintain; not available on Landlock (no network namespace support); adds a hop for every connection.
 
 ### Comparison
 
-| | Dedicated accounts? | Admin needed? | Transparent to process? | Abstract sockets blocked? | Landlock? |
-|---|---|---|---|---|---|
-| **A: UID iptables** | Yes (Section 3) | Yes | Yes | No | Yes |
-| **B: cgroup nftables** | No | Yes | Yes | No | Yes |
-| **C: netns + proxy** | No | No | No (`HTTPS_PROXY`) | Yes | No |
+| | Accounts? | Admin? | Transparent? | Abstract sockets? | Logging? | Landlock? |
+|---|---|---|---|---|---|---|
+| **A: UID iptables** | Yes (#3) | Yes | Yes | No | No (add auditd) | Yes |
+| **B: cgroup nftables** | No | Yes | Yes | No | No (add auditd) | Yes |
+| **C: netns + proxy** | No | No | No (`HTTPS_PROXY`) | Blocked | Built-in | No |
 
-**Recommendation:** Option C is deployable today without admin help and provides the strongest isolation (no network interfaces at all). Option B is the best admin-assisted approach for environments where proxy configuration is impractical (many tools need network access). Option A is simplest if dedicated accounts (Section 3) are already deployed.
+All three options use a **default-allow** policy for general web access (research, packages, papers) with **targeted blocks** on dangerous services (SSH, internal networks, metadata endpoints). The difference is where enforcement happens: in the kernel (A, B) or in a userspace proxy (C).
+
+**Recommendation:** Option B is the best balance for admin-managed deployments — no dedicated accounts needed, transparent to processes, and works with all backends. Option C provides the deepest control (logging, rate-limiting, policy-as-code) and requires no admin, but needs proxy configuration. Option A is simplest if dedicated accounts (Section 3) are already deployed.
 
 ---
 
@@ -283,10 +311,10 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 | 1 | [Enforce sandbox on Slurm jobs](#1-enforce-sandbox-on-agent-submitted-slurm-jobs) *(largely superseded by [chaperon](CHAPERON.md))* | Medium | Admin-enforced | Server-side complement to the chaperon — job submit plugin sandboxes all jobs unless caller provides bypass token (eBPF LSM protects token from `no_new_privs` processes). Optional if the chaperon meets your needs |
 | 2 | [Admin-owned sandbox installation](#2-admin-owned-sandbox-installation) ([details](ADMIN_INSTALL.md)) | Low-medium | Admin-enforced | Users weakening config; sandbox self-protection; multi-level config with post-merge validation; [backend selection](ADMIN_INSTALL.md#choosing-a-backend-on-ubuntu-2404) (bwrap via AppArmor recommended, firejail alternative); [seccomp trade-offs](ADMIN_INSTALL.md#seccomp-filter--hpc-compatibility); [Landlock fallback gaps](ADMIN_INSTALL.md#landlock-fallback) |
 | 3 | [Dedicated `${USER}_ai` accounts](#3-dedicated-user_ai-accounts) | High | Admin-enforced | Same-UID credential access; OS-level separation |
-| 4 | [Network isolation](#4-network-isolation) | Medium | Admin-enforced or self-serve | Data exfiltration via network — three options: UID iptables (requires #3), cgroup nftables (no #3), or netns + proxy (no admin) |
+| 4 | [Network controls](#4-network-controls) | Medium | Admin-enforced or self-serve | Agent-specific network policy (block SSH escape, internal services, metadata endpoint) while preserving web access for research — three options: UID iptables (requires #3), cgroup nftables (no #3), or netns + policy proxy (no admin) |
 | 5 | [Audit logging](#5-audit-logging) | Low-medium | Admin-enforced (requires #3) | Visibility, compliance, forensics |
 
-Sections 1, 2, and 4 are independent and can be deployed individually. Section 1 is optional if the [chaperon](CHAPERON.md) meets your Slurm enforcement needs — it adds server-side defense-in-depth. Section 2 includes backend selection for Ubuntu 24.04+ — an AppArmor profile for bwrap (recommended) or firejail avoids falling back to Landlock. Section 4 has three options with different trade-offs — Option C (netns + proxy) requires no admin or dedicated accounts. Section 5 requires Section 3 (dedicated accounts).
+Sections 1, 2, and 4 are independent and can be deployed individually. Section 1 is optional if the [chaperon](CHAPERON.md) meets your Slurm enforcement needs — it adds server-side defense-in-depth. Section 2 includes backend selection for Ubuntu 24.04+ — an AppArmor profile for bwrap (recommended) or firejail avoids falling back to Landlock. Section 4 applies agent-specific network policy (default-allow for research, targeted blocks on SSH/internal services) with three options — Option C (netns + proxy) requires no admin or dedicated accounts. Section 5 requires Section 3 (dedicated accounts).
 
 ---
 
