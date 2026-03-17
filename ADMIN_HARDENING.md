@@ -24,8 +24,6 @@ The current user-space sandbox is entirely self-serve: it protects against accid
 ## 1. Enforce Sandbox on Agent-Submitted Slurm Jobs
 
 > **Largely superseded by the chaperon.** The [chaperon](CHAPERON.md) — a zero-trust Slurm proxy introduced after this section was written — provides a stronger default boundary than the token-based approach described here. The chaperon blocks all Slurm authentication assets (munge socket, Slurm binaries, Slurm config) inside the sandbox and proxies all job submission through a validated, argument-whitelisted named-pipe protocol. Every job is automatically wrapped in `sandbox-exec.sh` on the compute node.
->
-> The token-based approach below remains relevant as an **additional server-side layer** for environments that want admin-enforced guarantees beyond the user-space chaperon — particularly to protect against agents that might bypass the sandbox entirely (e.g., via SSH escape to an unsandboxed shell) or to enforce sandboxing for users who haven't installed the sandbox. If the chaperon meets your needs, this section is optional.
 
 **What it solves:** Server-side enforcement of sandbox wrapping on Slurm jobs, using a job submit plugin and an eBPF LSM-protected bypass token. Complements the chaperon by adding a second enforcement layer at the Slurm controller. Users who do not use the sandbox are unaffected — their workflow does not change.
 
