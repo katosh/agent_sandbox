@@ -88,26 +88,28 @@ The installer:
 │   ├── handlers/
 │   │   ├── _handler_lib.sh  # Arg whitelisting, CWD validation, job wrapping
 │   │   ├── sbatch.sh     # Validates, wraps, submits via real sbatch
-│   │   ├── scancel.sh    # Validates job scope, cancels via real scancel
 │   │   ├── srun.sh       # Validates srun flags, wraps or execs real srun
+│   │   ├── scancel.sh    # Validates job scope, cancels via real scancel
 │   │   ├── squeue.sh     # Filters squeue output to scoped jobs
 │   │   ├── scontrol.sh   # Scoped scontrol: show, hold, release, update
-│   │   ├── sacct.sh      # User-scoped sacct
+│   │   ├── sacct.sh      # User-scoped sacct (--allusers denied)
 │   │   ├── sacctmgr.sh   # Read-only cluster/QOS/TRES queries
+│   │   ├── sinfo.sh      # Read-only partition/node info
+│   │   ├── sstat.sh      # User-scoped job step statistics
+│   │   ├── sprio.sh      # User-scoped job priority factors
+│   │   ├── sshare.sh     # User-scoped fairshare data
+│   │   ├── sdiag.sh      # Read-only scheduler diagnostics
+│   │   ├── sreport.sh    # Blocked (user enumeration risk)
 │   │   └── blocked.sh    # Generic "command blocked" response
-│   └── stubs/
-│       ├── _stub_lib.sh  # Stub→chaperon communication
-│       ├── sbatch        # PATH-shadowing stub (talks to chaperon)
-│       ├── scancel       # PATH-shadowing stub (talks to chaperon)
-│       ├── srun          # PATH-shadowing stub (talks to chaperon)
-│       ├── squeue        # PATH-shadowing stub (talks to chaperon)
-│       ├── scontrol      # PATH-shadowing stub (talks to chaperon)
-│       ├── sacct         # PATH-shadowing stub (talks to chaperon)
-│       └── sacctmgr      # PATH-shadowing stub (talks to chaperon)
-└── bin/
-    ├── sbatch            # Fallback PATH shadow (delegates to chaperon stub)
-    ├── scancel           # Fallback PATH shadow (delegates to chaperon stub)
-    └── srun              # Fallback PATH shadow (delegates to chaperon stub)
+│   └── stubs/            # PATH-shadowing stubs (all talk to chaperon)
+│       ├── _stub_lib.sh  # Stub→chaperon communication library
+│       ├── sbatch, srun, scancel, squeue, scontrol
+│       ├── sacct, sacctmgr, sinfo, sstat, sprio, sshare, sdiag, sreport
+│       └── salloc, sattach, sbcast, scrontab, scrun, strigger  # blocked
+├── bin/                  # Fallback PATH shadows (delegate to stubs)
+│   ├── sbatch, srun, scancel, squeue, scontrol, sacct, sacctmgr
+│   ├── sinfo, sstat, sprio, sshare, sdiag, sreport
+│   └── salloc, sattach, sbcast, scrontab, scrun, strigger, tmux
 ```
 
 ### Backends

@@ -124,6 +124,7 @@ mkdir -p "$SANDBOX_DIR/bin"
 mkdir -p "$SANDBOX_DIR/backends"
 mkdir -p "$SANDBOX_DIR/chaperon/handlers"
 mkdir -p "$SANDBOX_DIR/chaperon/stubs"
+mkdir -p "$SANDBOX_DIR/conf.d"
 
 for file in sandbox-lib.sh sandbox-exec.sh sbatch-sandbox.sh srun-sandbox.sh sandbox-claude.md sandbox-settings.json sandbox-tmux.conf test.sh; do
     cp "$SCRIPT_DIR/$file" "$SANDBOX_DIR/$file"
@@ -148,6 +149,15 @@ for file in "$SCRIPT_DIR"/chaperon/stubs/*; do
     cp "$file" "$SANDBOX_DIR/chaperon/stubs/"
 done
 
+# Copy example conf.d files (don't overwrite user customizations)
+for file in "$SCRIPT_DIR"/conf.d/*.conf; do
+    [[ -f "$file" ]] || continue
+    local_name="$(basename "$file")"
+    if [[ ! -f "$SANDBOX_DIR/conf.d/$local_name" ]]; then
+        cp "$file" "$SANDBOX_DIR/conf.d/$local_name"
+    fi
+done
+
 chmod +x "$SANDBOX_DIR/sandbox-exec.sh"
 chmod +x "$SANDBOX_DIR/sbatch-sandbox.sh"
 chmod +x "$SANDBOX_DIR/srun-sandbox.sh"
@@ -164,7 +174,7 @@ echo "  ✓ Scripts installed"
 
 if [[ -f "$SANDBOX_DIR/sandbox.conf" ]]; then
     echo "  ✓ sandbox.conf already exists (not overwriting)"
-    echo "    Compare with latest: diff $SANDBOX_DIR/sandbox.conf $SCRIPT_DIR/sandbox.conf"
+    echo "    Review new options:  diff $SANDBOX_DIR/sandbox.conf $SCRIPT_DIR/sandbox.conf"
 else
     cp "$SCRIPT_DIR/sandbox.conf" "$SANDBOX_DIR/sandbox.conf"
     echo "  ✓ Created sandbox.conf — edit to customize permissions"

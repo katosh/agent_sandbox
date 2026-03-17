@@ -11,6 +11,13 @@ Slurm commands are proxied through the chaperon and inherit sandbox restrictions
 - `scontrol` — show/hold/release/requeue/update jobs (scoped); read-only for nodes/partitions/config
 - `sacct` — job accounting history (scoped to your user only)
 - `sacctmgr` — read-only cluster/QOS/TRES info (user/account queries blocked)
+- `sinfo` — partition/node status (read-only)
+- `sstat` — running job step statistics (scoped to your jobs)
+- `sprio` — job priority factors (scoped to your user)
+- `sshare` — fairshare data (scoped to your user)
+- `sdiag` — scheduler diagnostics (read-only)
+
+Blocked commands (not available): `salloc`, `sattach`, `sbcast`, `scrontab`, `scrun`, `strigger`, `sreport`.
 
 If you get "No such file or directory" or "Permission denied" on a path the user expects to be accessible, the path is not in the sandbox's `READONLY_MOUNTS`. Tell the user to add it to `READONLY_MOUNTS` in `~/.claude/sandbox/sandbox.conf` and restart the sandbox. Keep this brief — one sentence.
 

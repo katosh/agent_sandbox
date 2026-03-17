@@ -52,11 +52,13 @@ sandbox-exec.sh
 | **handlers/scontrol.sh** | Outside sandbox | Validates scontrol subcommands; scopes job operations to chaperon-submitted jobs |
 | **handlers/sacct.sh** | Outside sandbox | Scopes sacct to current user only (--allusers denied) |
 | **handlers/sacctmgr.sh** | Outside sandbox | Read-only cluster/QOS/TRES queries; blocks user/account enumeration |
-| **stubs/scancel** | Inside sandbox | Sends cancel requests to chaperon via named pipe |
-| **stubs/squeue** | Inside sandbox | Sends squeue requests to chaperon via named pipe |
-| **stubs/scontrol** | Inside sandbox | Sends scontrol requests to chaperon via named pipe |
-| **stubs/sacct** | Inside sandbox | Sends sacct requests to chaperon via named pipe |
-| **stubs/sacctmgr** | Inside sandbox | Sends sacctmgr requests to chaperon via named pipe |
+| **handlers/sinfo.sh** | Outside sandbox | Read-only partition/node info passthrough |
+| **handlers/sstat.sh** | Outside sandbox | User-scoped job step statistics |
+| **handlers/sprio.sh** | Outside sandbox | User-scoped job priority factors |
+| **handlers/sshare.sh** | Outside sandbox | User-scoped fairshare data |
+| **handlers/sdiag.sh** | Outside sandbox | Read-only scheduler diagnostics |
+| **handlers/sreport.sh** | Outside sandbox | Blocked (user enumeration risk) |
+| **stubs/** | Inside sandbox | PATH-shadowing stubs — all use `_stub_lib.sh` to send requests via named pipe |
 | **stubs/_stub_lib.sh** | Inside sandbox | Stub-to-chaperon communication helpers |
 
 ## File Structure
@@ -68,22 +70,24 @@ chaperon/
 ├── handlers/
 │   ├── _handler_lib.sh      # Arg whitelisting, CWD validation, job wrapping
 │   ├── sbatch.sh            # Validates, wraps, submits via real sbatch
-│   ├── scancel.sh           # Validates job scope, cancels via real scancel
 │   ├── srun.sh              # Validates srun flags, wraps or execs real srun
+│   ├── scancel.sh           # Validates job scope, cancels via real scancel
 │   ├── squeue.sh            # Filters squeue output to scoped jobs
-│   ├── scontrol.sh          # Scoped scontrol: show, hold, release, requeue, update
+│   ├── scontrol.sh          # Scoped scontrol: show, hold, release, update
 │   ├── sacct.sh             # User-scoped sacct (--allusers denied)
 │   ├── sacctmgr.sh          # Read-only cluster/QOS/TRES queries
-│   └── blocked.sh           # Generic "blocked" response
-└── stubs/
-    ├── _stub_lib.sh          # Stub→chaperon communication
-    ├── sbatch                # PATH-shadowing stub (talks to chaperon)
-    ├── scancel               # Sends cancel requests to chaperon
-    ├── srun                  # PATH-shadowing stub (talks to chaperon)
-    ├── squeue                # PATH-shadowing stub (talks to chaperon)
-    ├── scontrol              # PATH-shadowing stub (talks to chaperon)
-    ├── sacct                 # PATH-shadowing stub (talks to chaperon)
-    └── sacctmgr              # PATH-shadowing stub (talks to chaperon)
+│   ├── sinfo.sh             # Read-only partition/node info
+│   ├── sstat.sh             # User-scoped job step statistics
+│   ├── sprio.sh             # User-scoped job priority factors
+│   ├── sshare.sh            # User-scoped fairshare data
+│   ├── sdiag.sh             # Read-only scheduler diagnostics
+│   ├── sreport.sh           # Blocked (user enumeration risk)
+│   └── blocked.sh           # Generic "command blocked" response
+└── stubs/                   # PATH-shadowing stubs (all talk to chaperon)
+    ├── _stub_lib.sh          # Stub→chaperon communication library
+    ├── sbatch, srun, scancel, squeue, scontrol
+    ├── sacct, sacctmgr, sinfo, sstat, sprio, sshare, sdiag, sreport
+    └── salloc, sattach, sbcast, scrontab, scrun, strigger  # blocked
 ```
 
 ## Protocol: `CHAPERON/1`
@@ -287,6 +291,43 @@ The sacctmgr handler (`handlers/sacctmgr.sh`) is heavily restricted to prevent u
 **Denied show targets**: `user`, `account`, `association`, `coordinator`, `event`, `reservation`, `transaction`, `wckey` — all expose user/group data.
 
 **Denied subcommands**: `add`, `modify`, `delete`, `archive`, `dump`, `load`, `reconfigure` — all write operations.
+
+### sinfo Handler
+
+Read-only passthrough for partition/node status. No scoping needed — this is system information. Unknown flags are rejected.
+
+### sstat Handler
+
+Shows statistics for running job steps. Job step IDs (format `jobid.stepid`) are validated — the base job ID must be in the current scope. Uses `_validate_job_in_scope` from `_handler_lib.sh`.
+
+### sprio Handler
+
+Shows priority factors for pending jobs. Always injects `--user=$(whoami)` to scope output to the current user. `--allusers` and `--user` are denied.
+
+### sshare Handler
+
+Shows fairshare data. Always injects `--user=$(whoami)`. Denies `--all`, `--user`, and `--accounts` to prevent enumerating other users' fairshare allocations.
+
+### sdiag Handler
+
+Read-only scheduler diagnostics passthrough. Denies `--reset` (clears scheduler statistics — a write operation).
+
+### sreport Handler
+
+Blocked entirely. `sreport` generates accounting reports across many sub-report types, many of which enumerate users and accounts. Use `sacct` with formatting options for similar data scoped to your user.
+
+### Blocked Commands
+
+The following commands are routed to `blocked.sh` (no handler):
+
+| Command | Reason |
+|---|---|
+| `salloc` | Interactive allocations can't be safely proxied (requires PTY) |
+| `sattach` | Attaching to step I/O could interfere with other jobs |
+| `sbcast` | File broadcast bypasses sandbox restrictions |
+| `scrontab` | Recurring jobs would bypass sandbox wrapping |
+| `scrun` | OCI container launcher bypasses sandbox |
+| `strigger` | Event triggers can execute arbitrary commands |
 
 ## What Gets Blocked Inside the Sandbox
 
