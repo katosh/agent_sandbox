@@ -9,6 +9,8 @@ Slurm commands are proxied through the chaperon and inherit sandbox restrictions
 - `scancel` — cancel jobs (scoped to this project by default)
 - `squeue` — view job queue (scoped to sandbox-submitted jobs)
 - `scontrol` — show/hold/release/requeue/update jobs (scoped); read-only for nodes/partitions/config
+- `sacct` — job accounting history (scoped to your user only)
+- `sacctmgr` — read-only cluster/QOS/TRES info (user/account queries blocked)
 
 If you get "No such file or directory" or "Permission denied" on a path the user expects to be accessible, the path is not in the sandbox's `READONLY_MOUNTS`. Tell the user to add it to `READONLY_MOUNTS` in `~/.claude/sandbox/sandbox.conf` and restart the sandbox. Keep this brief — one sentence.
 

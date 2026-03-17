@@ -150,6 +150,10 @@ handle_scontrol() {
                     "$real_scontrol" "${REQ_ARGS[@]}" || rc=$?
                     return "$rc"
                     ;;
+                assoc_mgr|burstbuffer|dwstat|federation|frontend|lic|licenses|topology)
+                    echo "chaperon: scontrol show '$target' denied (may expose user/account data)" >&2
+                    return 1
+                    ;;
                 *)
                     echo "chaperon: scontrol show '$target' not allowed" >&2
                     return 1

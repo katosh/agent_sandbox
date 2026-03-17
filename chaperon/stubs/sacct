@@ -1,0 +1,13 @@
+#!/bin/bash --
+# chaperon/stubs/sacct — Chaperon-proxied sacct stub
+#
+# Proxies sacct through the chaperon, which enforces user scoping
+# (--allusers and --user denied, --user=$(whoami) always injected).
+
+set -euo pipefail
+
+_STUB_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+source "$_STUB_DIR/_stub_lib.sh"
+
+chaperon_call sacct "$@"
+exit $?

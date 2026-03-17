@@ -50,9 +50,13 @@ sandbox-exec.sh
 | **handlers/srun.sh** | Outside sandbox | Validates srun flags; alloc mode wraps command in sandbox-exec.sh, step mode execs real srun |
 | **handlers/squeue.sh** | Outside sandbox | Filters squeue output to only show jobs in scope |
 | **handlers/scontrol.sh** | Outside sandbox | Validates scontrol subcommands; scopes job operations to chaperon-submitted jobs |
+| **handlers/sacct.sh** | Outside sandbox | Scopes sacct to current user only (--allusers denied) |
+| **handlers/sacctmgr.sh** | Outside sandbox | Read-only cluster/QOS/TRES queries; blocks user/account enumeration |
 | **stubs/scancel** | Inside sandbox | Sends cancel requests to chaperon via named pipe |
 | **stubs/squeue** | Inside sandbox | Sends squeue requests to chaperon via named pipe |
 | **stubs/scontrol** | Inside sandbox | Sends scontrol requests to chaperon via named pipe |
+| **stubs/sacct** | Inside sandbox | Sends sacct requests to chaperon via named pipe |
+| **stubs/sacctmgr** | Inside sandbox | Sends sacctmgr requests to chaperon via named pipe |
 | **stubs/_stub_lib.sh** | Inside sandbox | Stub-to-chaperon communication helpers |
 
 ## File Structure
@@ -68,6 +72,8 @@ chaperon/
 │   ├── srun.sh              # Validates srun flags, wraps or execs real srun
 │   ├── squeue.sh            # Filters squeue output to scoped jobs
 │   ├── scontrol.sh          # Scoped scontrol: show, hold, release, requeue, update
+│   ├── sacct.sh             # User-scoped sacct (--allusers denied)
+│   ├── sacctmgr.sh          # Read-only cluster/QOS/TRES queries
 │   └── blocked.sh           # Generic "blocked" response
 └── stubs/
     ├── _stub_lib.sh          # Stub→chaperon communication
@@ -75,7 +81,9 @@ chaperon/
     ├── scancel               # Sends cancel requests to chaperon
     ├── srun                  # PATH-shadowing stub (talks to chaperon)
     ├── squeue                # PATH-shadowing stub (talks to chaperon)
-    └── scontrol              # PATH-shadowing stub (talks to chaperon)
+    ├── scontrol              # PATH-shadowing stub (talks to chaperon)
+    ├── sacct                 # PATH-shadowing stub (talks to chaperon)
+    └── sacctmgr              # PATH-shadowing stub (talks to chaperon)
 ```
 
 ## Protocol: `CHAPERON/1`
@@ -259,6 +267,26 @@ The scontrol handler (`handlers/scontrol.sh`) allows a subset of scontrol subcom
 Denied subcommands: `shutdown`, `reconfigure`, `create`, `delete`, and all others.
 
 Denied update keys: `UserId`, `GroupId`, `WorkDir`, `AdminComment`, and all keys not in the whitelist. See `handlers/scontrol.sh` for the full list.
+
+### sacct Handler
+
+The sacct handler (`handlers/sacct.sh`) enforces user-level scoping:
+
+- Always injects `--user=$(whoami)` — only the current user's jobs are shown
+- `--allusers`, `--user`, `--uid`, `--accounts` are denied
+- Job-level scoping (by chaperon comment) is intentionally not applied — sacct is retrospective and the full job history is useful for debugging
+
+### sacctmgr Handler
+
+The sacctmgr handler (`handlers/sacctmgr.sh`) is heavily restricted to prevent user/group enumeration:
+
+| Subcommand | Allowed targets |
+|---|---|
+| `show` / `list` | `cluster`, `qos`, `tres`, `configuration` |
+
+**Denied show targets**: `user`, `account`, `association`, `coordinator`, `event`, `reservation`, `transaction`, `wckey` — all expose user/group data.
+
+**Denied subcommands**: `add`, `modify`, `delete`, `archive`, `dump`, `load`, `reconfigure` — all write operations.
 
 ## What Gets Blocked Inside the Sandbox
 

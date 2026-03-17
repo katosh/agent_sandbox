@@ -92,6 +92,8 @@ The installer:
 │   │   ├── srun.sh       # Validates srun flags, wraps or execs real srun
 │   │   ├── squeue.sh     # Filters squeue output to scoped jobs
 │   │   ├── scontrol.sh   # Scoped scontrol: show, hold, release, update
+│   │   ├── sacct.sh      # User-scoped sacct
+│   │   ├── sacctmgr.sh   # Read-only cluster/QOS/TRES queries
 │   │   └── blocked.sh    # Generic "command blocked" response
 │   └── stubs/
 │       ├── _stub_lib.sh  # Stub→chaperon communication
@@ -99,7 +101,9 @@ The installer:
 │       ├── scancel       # PATH-shadowing stub (talks to chaperon)
 │       ├── srun          # PATH-shadowing stub (talks to chaperon)
 │       ├── squeue        # PATH-shadowing stub (talks to chaperon)
-│       └── scontrol      # PATH-shadowing stub (talks to chaperon)
+│       ├── scontrol      # PATH-shadowing stub (talks to chaperon)
+│       ├── sacct         # PATH-shadowing stub (talks to chaperon)
+│       └── sacctmgr      # PATH-shadowing stub (talks to chaperon)
 └── bin/
     ├── sbatch            # Fallback PATH shadow (delegates to chaperon stub)
     ├── scancel           # Fallback PATH shadow (delegates to chaperon stub)
@@ -265,7 +269,9 @@ Inside the sandbox, all Slurm authentication and binaries are **blocked** — mu
 - **Stub srun:** Proxied through the chaperon like sbatch. Two modes: **allocation mode** (login node) — validates flags, wraps the command in `sandbox-exec.sh` so compute-node processes are sandboxed, then calls real srun. **Step mode** (inside an sbatch job, `SLURM_JOB_ID` set) — validates flags against a step-only whitelist and execs real srun directly for MPI/multi-process step launching. `--pty` is denied (no PTY passthrough). The chaperon runs outside the sandbox and has munge access — munge is never exposed inside the sandbox.
 - **Stub scancel:** Sends cancel requests to the chaperon, which filters job IDs by scope (session, project, or user). By default, jobs submitted by any sandbox session with the same project directory can be cancelled. Configurable via `CHAPERON_SCANCEL_SCOPE` in `sandbox.conf`.
 - **Stub squeue:** Proxied through the chaperon. Output is filtered to only show jobs within scope. The agent sees only its own sandbox-submitted jobs, not other users' jobs or unrelated jobs.
-- **Stub scontrol:** Proxied through the chaperon. Read-only commands (`show node`, `show partition`, `show config`) pass through. Job operations (`show job`, `hold`, `release`, `requeue`, `update job`) are scoped to chaperon-submitted jobs. Dangerous subcommands (`shutdown`, `reconfigure`, etc.) are denied.
+- **Stub scontrol:** Proxied through the chaperon. Read-only commands (`show node`, `show partition`, `show config`) pass through. Job operations (`show job`, `hold`, `release`, `requeue`, `update job`) are scoped to chaperon-submitted jobs. Dangerous subcommands (`shutdown`, `reconfigure`, etc.) and user-enumerating targets (`show assoc_mgr`) are denied.
+- **Stub sacct:** Proxied through the chaperon. Always scoped to the current user (`--user=$(whoami)` injected). `--allusers`, `--user`, and `--accounts` are denied to prevent viewing other users' job history.
+- **Stub sacctmgr:** Proxied through the chaperon. Only read-only queries for cluster, QOS, TRES, and config are allowed. User/account enumeration (`show user`, `show account`, `show association`) and all write operations are denied.
 - **Chaperon proxy:** Validates arguments against a whitelist of ~40 safe sbatch flags (rejects `--uid`, `--export`, `--get-user-env`, etc.), validates CWD is under the project directory, wraps the job in `sandbox-exec.sh`, and submits via the real sbatch.
 - **Security:** Named pipes with per-session temp directories, the chaperon dies with its parent (PR_SET_PDEATHSIG + liveness polling), and all user data is base64-encoded in the protocol (injection-proof).
 

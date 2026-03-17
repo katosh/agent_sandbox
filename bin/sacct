@@ -1,0 +1,5 @@
+#!/bin/bash --
+# Sandbox sacct — shadows /usr/bin/sacct inside the sandbox.
+# Delegates to chaperon stub which enforces user scoping.
+_BIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+exec "$_BIN_DIR/../chaperon/stubs/sacct" "$@"

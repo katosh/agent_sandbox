@@ -1,0 +1,13 @@
+#!/bin/bash --
+# chaperon/stubs/sacctmgr — Chaperon-proxied sacctmgr stub
+#
+# Proxies sacctmgr through the chaperon, which only allows read-only
+# queries that don't enumerate users (show cluster/qos/tres/config).
+
+set -euo pipefail
+
+_STUB_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+source "$_STUB_DIR/_stub_lib.sh"
+
+chaperon_call sacctmgr "$@"
+exit $?

@@ -1,0 +1,5 @@
+#!/bin/bash --
+# Sandbox sacctmgr — shadows /usr/bin/sacctmgr inside the sandbox.
+# Delegates to chaperon stub which restricts to safe read-only queries.
+_BIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+exec "$_BIN_DIR/../chaperon/stubs/sacctmgr" "$@"
