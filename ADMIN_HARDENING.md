@@ -2,13 +2,13 @@
 
 > **Disclaimer:** This document reflects personal analysis and has not been formally reviewed by a security professional. The hardening suggestions are best-effort recommendations based on publicly available documentation and testing on a limited set of systems. The environment may differ. Review all changes with your security team before deploying to production.
 
-The [sandbox](README.md) is fully user-space, requiring no root or admin involvement. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents, with Slurm job wrapping as a default-on soft boundary.
+The [sandbox](README.md) is fully user-space, requiring no root or admin involvement. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents. Slurm access is mediated by the [chaperon](CHAPERON.md) — a zero-trust proxy that blocks all Slurm authentication assets inside the sandbox and validates every job submission.
 
 > **Ubuntu 24.04 consideration:** Ubuntu 24.04 enables AppArmor's restriction on unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`), which prevents bubblewrap from working. Without admin intervention, the sandbox falls back to the **Landlock** backend, which has significant limitations (no mount namespace, no `/tmp` isolation, no sandbox self-protection, `systemd-run` escape; see the comparison table under §2). **Recommended:** Create an AppArmor profile to allow bwrap (see §2 below). This is low effort and gives users the strongest backend. Alternatively, installing firejail (setuid) also bypasses the restriction.
 
 This document describes **improvements** that could close remaining gaps. Sections 1 and 2 are independent and can be deployed individually. Sections 3–5 build on each other (4 and 5 require 3). They are ordered roughly from least to most effort.
 
-> **My priority:** Section 1 (enforcing sandbox on agent-submitted Slurm jobs) is the improvement I'd most like to see. It closes the main gap in the current setup (Slurm PATH shadowing) with moderate admin effort and no workflow changes for users.
+> **Update:** The [chaperon](CHAPERON.md) now provides a hard Slurm boundary by default (no admin setup needed). Section 1 below is still useful as a server-side complement, but the chaperon has closed the main gap that motivated it. My current priority is **Section 2** (admin-owned installation for policy enforcement).
 
 ### Self-serve vs. admin-enforced
 
@@ -23,7 +23,11 @@ The current user-space sandbox is entirely self-serve: it protects against accid
 
 ## 1. Enforce Sandbox on Agent-Submitted Slurm Jobs
 
-**What it solves:** The user-space Slurm wrappers are a soft boundary — PATH shadowing and binary relocation can be bypassed. This approach ensures every Slurm job submitted from within the sandbox is **sandboxed on the compute node** too, using a Slurm job submit plugin and an eBPF LSM-protected bypass token. Users who do not use the sandbox are unaffected — their workflow does not change.
+> **Largely superseded by the chaperon.** The [chaperon](CHAPERON.md) — a zero-trust Slurm proxy introduced after this section was written — provides a stronger default boundary than the token-based approach described here. The chaperon blocks all Slurm authentication assets (munge socket, Slurm binaries, Slurm config) inside the sandbox and proxies all job submission through a validated, argument-whitelisted named-pipe protocol. Every job is automatically wrapped in `sandbox-exec.sh` on the compute node.
+>
+> The token-based approach below remains relevant as an **additional server-side layer** for environments that want admin-enforced guarantees beyond the user-space chaperon — particularly to protect against agents that might bypass the sandbox entirely (e.g., via SSH escape to an unsandboxed shell) or to enforce sandboxing for users who haven't installed the sandbox. If the chaperon meets your needs, this section is optional.
+
+**What it solves:** Server-side enforcement of sandbox wrapping on Slurm jobs, using a job submit plugin and an eBPF LSM-protected bypass token. Complements the chaperon by adding a second enforcement layer at the Slurm controller. Users who do not use the sandbox are unaffected — their workflow does not change.
 
 **Effort:** Medium. **Category:** Admin-enforced.
 
@@ -224,13 +228,13 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 
 | # | Improvement | Effort | Category | What It Closes |
 |---|---|---|---|---|
-| 1 | [Enforce sandbox on Slurm jobs](#1-enforce-sandbox-on-agent-submitted-slurm-jobs) | Medium | Admin-enforced | Agent submitting unsandboxed Slurm jobs — job submit plugin sandboxes all jobs unless caller provides bypass token (eBPF LSM protects token from `no_new_privs` processes) |
+| 1 | [Enforce sandbox on Slurm jobs](#1-enforce-sandbox-on-agent-submitted-slurm-jobs) *(largely superseded by [chaperon](CHAPERON.md))* | Medium | Admin-enforced | Server-side complement to the chaperon — job submit plugin sandboxes all jobs unless caller provides bypass token (eBPF LSM protects token from `no_new_privs` processes). Optional if the chaperon meets your needs |
 | 2 | [Admin-owned sandbox installation](#2-admin-owned-sandbox-installation) ([details](ADMIN_INSTALL.md)) | Low-medium | Admin-enforced | Users weakening config; sandbox self-protection; multi-level config with post-merge validation; [backend selection](ADMIN_INSTALL.md#choosing-a-backend-on-ubuntu-2404) (bwrap via AppArmor recommended, firejail alternative); [seccomp trade-offs](ADMIN_INSTALL.md#seccomp-filter--hpc-compatibility); [Landlock fallback gaps](ADMIN_INSTALL.md#landlock-fallback) |
 | 3 | [Dedicated `${USER}_ai` accounts](#3-dedicated-user_ai-accounts) | High | Admin-enforced | Same-UID credential access; OS-level separation |
 | 4 | [Network isolation](#4-network-isolation) | Medium-high | Admin-enforced (requires #3) | Data exfiltration via network |
 | 5 | [Audit logging](#5-audit-logging) | Low-medium | Admin-enforced (requires #3) | Visibility, compliance, forensics |
 
-Sections 1 and 2 are independent and can be deployed individually. Section 2 includes backend selection for Ubuntu 24.04+ — an AppArmor profile for bwrap (recommended) or firejail avoids falling back to Landlock. Sections 4 and 5 require Section 3 (dedicated accounts).
+Sections 1 and 2 are independent and can be deployed individually. Section 1 is optional if the [chaperon](CHAPERON.md) meets your Slurm enforcement needs — it adds server-side defense-in-depth. Section 2 includes backend selection for Ubuntu 24.04+ — an AppArmor profile for bwrap (recommended) or firejail avoids falling back to Landlock. Sections 4 and 5 require Section 3 (dedicated accounts).
 
 ---
 

@@ -11,8 +11,10 @@ AI coding agents like Claude Code are powerful — they read files, write code, 
 - **GPG keys** (`~/.gnupg/`) — signing identity
 - **All lab data** — including other people's projects, possibly clinical data
 - **Environment secrets** — `GITHUB_PAT`, `OPENAI_API_KEY`, etc.
+- **User enumeration & profile extraction** — LDAP/AD directories expose every user on the cluster (`getent passwd`, `finger`); an agent can extract real names, home directory paths, login history, and organizational structure for thousands of users
+- **Other users' data** — shared filesystems (NFS, Lustre) often have permissive group permissions; an agent with your credentials can read or modify files belonging to other lab members
 
-An agent working on one project shouldn't be able to read your SSH keys, exfiltrate API tokens, or accidentally overwrite someone else's data. A **sandbox** restricts the agent to only what it needs.
+An agent working on one project shouldn't be able to read your SSH keys, exfiltrate API tokens, enumerate users on the cluster, or accidentally overwrite someone else's data. A **sandbox** restricts the agent to only what it needs.
 
 ### Why Not a Full Container?
 
@@ -355,6 +357,8 @@ Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,a
 | Agent reads `~/.aws` credentials | Hidden or blocked (same as SSH keys) | **Hard** |
 | Agent writes to other projects | Only project dir is writable | **Hard** |
 | Agent reads other users' data | Only explicitly allowed paths are accessible | **Hard** |
+| User enumeration & profile extraction | LDAP/AD directories (`/etc/passwd`, `finger`) are hidden or restricted (bwrap/firejail/landlock) | **Hard** — prevents agent from mapping organizational structure or extracting real names and login history |
+| Extraction of other users' data | Shared filesystems (NFS, Lustre) are restricted; only the project directory and specified paths are accessible | **Hard** — prevents credential-based access to other lab members' data |
 | Agent escapes via Unix sockets | Bwrap/firejail: filesystem-based sockets (e.g. `/run/dbus`) hidden by mount namespace, but abstract sockets (`@/org/...`) remain accessible (shared network namespace). Landlock: cannot block `AF_UNIX connect` | **Partial** (bwrap/firejail) / **None** (Landlock) |
 | Agent escapes via PID namespace | Bwrap/firejail: isolated PID namespace. Landlock: host PIDs visible | **Hard** (bwrap/firejail) / **None** (Landlock) |
 | Agent uses dangerous syscalls | All backends block `io_uring`, `userfaultfd`, `kexec` via seccomp-bpf. Firejail: built-in. Landlock: custom filter in `landlock-sandbox.py` (requires kernel ≥ 5.13). Bwrap: generated filter via `generate-seccomp.py` | **Hard** — all backends |

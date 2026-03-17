@@ -39,29 +39,34 @@ sandbox-exec.sh
 
 ### Component Roles
 
-| Component | Location | Role |
-|---|---|---|
-| **chaperon.sh** | Outside sandbox | Main loop: reads requests, dispatches to handlers, writes responses |
-| **protocol.sh** | Shared (both sides) | `CHAPERON/1` wire protocol: base64 encode/decode, message framing |
-| **handlers/sbatch.sh** | Outside sandbox | Validates sbatch args, wraps job in sandbox-exec.sh, submits to real sbatch |
-| **handlers/blocked.sh** | Outside sandbox | Returns "command not allowed" for unsupported Slurm commands |
-| **handlers/_handler_lib.sh** | Outside sandbox | Argument whitelist, CWD validation, wrapper script generation |
-| **handlers/scancel.sh** | Outside sandbox | Validates job scope, cancels via real scancel |
-| **stubs/sbatch** | Inside sandbox | Parses user's sbatch invocation, sends request via named pipe |
-| **stubs/srun** | Inside sandbox | Sends srun requests to chaperon via named pipe |
-| **handlers/srun.sh** | Outside sandbox | Validates srun flags; alloc mode wraps command in sandbox-exec.sh, step mode execs real srun |
-| **handlers/squeue.sh** | Outside sandbox | Filters squeue output to only show jobs in scope |
-| **handlers/scontrol.sh** | Outside sandbox | Validates scontrol subcommands; scopes job operations to chaperon-submitted jobs |
-| **handlers/sacct.sh** | Outside sandbox | Scopes sacct to current user only (--allusers denied) |
-| **handlers/sacctmgr.sh** | Outside sandbox | Read-only cluster/QOS/TRES queries; blocks user/account enumeration |
-| **handlers/sinfo.sh** | Outside sandbox | Read-only partition/node info passthrough |
-| **handlers/sstat.sh** | Outside sandbox | User-scoped job step statistics |
-| **handlers/sprio.sh** | Outside sandbox | User-scoped job priority factors |
-| **handlers/sshare.sh** | Outside sandbox | User-scoped fairshare data |
-| **handlers/sdiag.sh** | Outside sandbox | Read-only scheduler diagnostics |
-| **handlers/sreport.sh** | Outside sandbox | Blocked (user enumeration risk) |
-| **stubs/** | Inside sandbox | PATH-shadowing stubs — all use `_stub_lib.sh` to send requests via named pipe |
-| **stubs/_stub_lib.sh** | Inside sandbox | Stub-to-chaperon communication helpers |
+**Trusted side** (runs outside the sandbox, has Slurm credentials):
+
+| Component | Role |
+|---|---|
+| **chaperon.sh** | Main loop: reads requests from FIFO, dispatches to handlers, writes responses |
+| **handlers/_handler_lib.sh** | Shared utilities: argument whitelisting, CWD validation, job wrapping, comment tag encoding/stripping |
+| **handlers/sbatch.sh** | Validates args, wraps job in `sandbox-exec.sh`, submits to real sbatch |
+| **handlers/srun.sh** | Validates flags; allocation mode wraps in `sandbox-exec.sh`, step mode execs real srun |
+| **handlers/scancel.sh** | Validates job scope, forwards to real scancel |
+| **handlers/squeue.sh** | Scopes output to session/project, strips chaperon tags |
+| **handlers/scontrol.sh** | Scoped `show job`, `hold`, `release`, `requeue`, `update`; strips chaperon tags |
+| **handlers/sacct.sh** | User-scoped accounting; strips chaperon tags |
+| **handlers/sacctmgr.sh** | Read-only cluster/QOS/TRES queries; blocks user enumeration |
+| **handlers/sinfo.sh, sstat.sh, sprio.sh, sshare.sh, sdiag.sh** | Read-only or user-scoped passthrough |
+| **handlers/sreport.sh, blocked.sh** | Blocked (user enumeration risk / unsupported commands) |
+
+**Untrusted side** (runs inside the sandbox, no Slurm credentials):
+
+| Component | Role |
+|---|---|
+| **stubs/{sbatch,srun,scancel,...}** | PATH-shadow the real Slurm binaries; serialize the user's command into a FIFO request and relay the response |
+| **stubs/_stub_lib.sh** | Shared stub helpers: FIFO communication, request framing, response parsing |
+
+**Shared:**
+
+| Component | Role |
+|---|---|
+| **protocol.sh** | `CHAPERON/1` wire protocol: base64 encode/decode, message framing |
 
 ## File Structure
 
