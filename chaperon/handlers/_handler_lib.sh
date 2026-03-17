@@ -400,12 +400,8 @@ _get_scoped_jobs() {
             _query_chaperon_jobs "chaperon:.*proj=${proj_hash}"
             ;;
         user|none)
-            # "user" returns all chaperon-tagged jobs; "none" returns ALL user jobs
-            if [[ "$scope" == "none" ]]; then
-                squeue --me -h -o "%i" 2>/dev/null || true
-            else
-                _query_chaperon_jobs "chaperon:"
-            fi
+            # Both "user" and "none" return ALL jobs of the current user
+            squeue --me -h -o "%i" 2>/dev/null || true
             ;;
         *)
             echo "sandbox: unknown SLURM_SCOPE value: '$scope'. Valid values: session, project, user, none" >&2
