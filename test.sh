@@ -296,11 +296,25 @@ if sandbox bash -c 'echo ${GITHUB_PAT:-UNSET}'; then
     fi
 fi
 
+# OPENAI_API_KEY is blocked by default, but may be unblocked by agent
+# profiles (aider, codex, opencode) via env.conf.  Test accordingly.
+_openai_should_be_blocked=true
+for _agent in aider codex opencode; do
+    [[ -d "$HOME/.codex" ]] || command -v "$_agent" &>/dev/null 2>&1 && _openai_should_be_blocked=false
+done
 if sandbox bash -c 'echo ${OPENAI_API_KEY:-UNSET}'; then
     if [[ "$OUTPUT" == "UNSET" ]]; then
-        pass "OPENAI_API_KEY is blocked"
+        if "$_openai_should_be_blocked"; then
+            pass "OPENAI_API_KEY is blocked"
+        else
+            fail "OPENAI_API_KEY should be unblocked (agent env.conf)" "$OUTPUT"
+        fi
     else
-        fail "OPENAI_API_KEY leaked into sandbox" "$OUTPUT"
+        if "$_openai_should_be_blocked"; then
+            fail "OPENAI_API_KEY leaked into sandbox" "$OUTPUT"
+        else
+            pass "OPENAI_API_KEY unblocked by agent profile (aider/codex/opencode detected)"
+        fi
     fi
 fi
 
