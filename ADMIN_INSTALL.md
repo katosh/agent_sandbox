@@ -325,6 +325,7 @@ The sandbox uses `--allusers` to disable firejail's built-in `/etc/passwd` filte
 | Internal state exposure | None | `/run/firejail/mnt/seccomp/` readable (reveals BPF filter) |
 | Attack surface | Minimal, no setuid | Setuid root binary on every node |
 | CVE history | [4 CVEs](https://www.opencve.io/cve?search=bubblewrap), 0 root exploits, none since 2020 | [18 CVEs](https://www.cvedetails.com/vulnerability-list/vendor_id-16191/Firejail.html), 12 local root exploits ([details](APPTAINER_COMPARISON.md#firejail-18-cves-12-are-local-root)) |
+| Supplementary groups | Display as `nogroup` (user namespace limitation — file perms unaffected) | Correct display (setuid avoids user namespace) |
 | AppArmor on Ubuntu 24.04+ | Requires admin AppArmor profile | Works without admin action |
 
 ---
