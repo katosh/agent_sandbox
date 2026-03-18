@@ -355,7 +355,7 @@ fi
 
 # Claude-specific overlay tests (only if Claude is installed/configured)
 if [[ -d "$HOME/.claude" ]] || command -v claude &>/dev/null; then
-    if sandbox bash -c 'cat "$CLAUDE_CONFIG_DIR/CLAUDE.md" 2>/dev/null | grep -q "Sandbox Environment"'; then
+    if sandbox bash -c 'cat "$CLAUDE_CONFIG_DIR/CLAUDE.md" 2>/dev/null | grep -q "Sandbox Integrity"'; then
         pass "CLAUDE.md overlay contains sandbox instructions (via CLAUDE_CONFIG_DIR)"
     else
         fail "CLAUDE.md overlay missing sandbox instructions"
