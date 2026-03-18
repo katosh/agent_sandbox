@@ -41,17 +41,16 @@ handle_sbatch() {
 
     # Determine submission mode: SCRIPT or --wrap
     if [[ -n "$REQ_SCRIPT" ]]; then
-        # Script mode: wrap the script
+        # Script mode: build a self-contained wrapper with the script
+        # inlined via heredoc (no temp files on NFS needed).
         local wrapper
         wrapper="$(mktemp "${TMPDIR:-/tmp}/chaperon-wrapper-XXXXXX.sh")"
 
         create_wrapped_script "$sandbox_exec" "$project_dir" "$REQ_SCRIPT" "$wrapper"
 
-        # Submit
+        # Submit and clean up the local wrapper (only needed on login node).
         local rc=0
         "$real_sbatch" "${VALIDATED_ARGS[@]}" "$wrapper" || rc=$?
-
-        # Clean up wrapper (original script cleaned up by wrapper's trap)
         rm -f "$wrapper"
         return "$rc"
     else

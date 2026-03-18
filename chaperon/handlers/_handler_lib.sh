@@ -297,24 +297,35 @@ create_wrapped_script() {
         echo "sandbox: stripped $stripped_count unsafe #SBATCH directive(s) from script (denied flags are not allowed in directives either)" >&2
     fi
 
-    # Create a temp file for the original script (compute node needs it on NFS).
-    # Strip #SBATCH directives from the script body — they'll be in the wrapper.
-    local orig_script
-    orig_script="$(mktemp "${TMPDIR:-/tmp}/chaperon-script-XXXXXX.sh")"
-    printf '%s\n' "$script_content" | grep -vE '^[[:space:]]*#SBATCH' >> "$orig_script" || true
-    chmod +x "$orig_script"
+    # Strip #SBATCH directives from script body — they're in the wrapper header.
+    local script_body
+    script_body="$(printf '%s\n' "$script_content" | grep -vE '^[[:space:]]*#SBATCH' || true)"
 
-    # Build wrapper with validated #SBATCH directives
+    # Generate a unique EOF marker and verify it doesn't collide with
+    # the script content.  This lets us inline the entire script via
+    # heredoc — no temp files, no NFS issues, no cleanup needed.
+    local eof_marker="_CHAPERON_EOF_${RANDOM}_${RANDOM}_$$"
+    if printf '%s' "$script_body" | grep -qF "$eof_marker"; then
+        echo "sandbox: script contains the internal heredoc marker '$eof_marker'. This is astronomically unlikely — please resubmit." >&2
+        return 1
+    fi
+
+    # Build a self-contained wrapper:
+    #   1. #SBATCH directives (validated)
+    #   2. Inline script extracted via heredoc
+    #   3. sandbox-exec.sh runs the inlined script via sh -c
     {
         printf '#!/bin/bash --\n'
         if [[ -n "$safe_directives" ]]; then
             printf '%s' "$safe_directives"
         fi
-        printf '\n# --- Chaperon wrapper (auto-generated) ---\n'
-        printf '# Clean up original script on exit\n'
-        printf 'trap %s EXIT\n' "$(printf "'rm -f %q'" "$orig_script")"
-        printf 'exec %q --project-dir %q -- %q\n' \
-            "$sandbox_exec" "$project_dir" "$orig_script"
+        printf '\n# --- Chaperon wrapper (auto-generated, no temp files) ---\n'
+        printf '_SCRIPT=$(cat <<'"'"'%s'"'"'\n' "$eof_marker"
+        printf '%s\n' "$script_body"
+        printf '%s\n' "$eof_marker"
+        printf ')\n'
+        printf 'exec %q --project-dir %q -- sh -c "$_SCRIPT"\n' \
+            "$sandbox_exec" "$project_dir"
     } > "$output_file"
     chmod +x "$output_file"
 }

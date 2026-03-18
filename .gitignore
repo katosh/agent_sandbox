@@ -11,3 +11,4 @@ slurm-*.out
 .opencode/
 test-projects/
 slurm-*.out
+.chaperon-*
