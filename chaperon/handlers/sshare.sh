@@ -51,7 +51,7 @@ handle_sshare() {
 
     local real_sshare="${REAL_SSHARE:-/usr/bin/sshare}"
     if [[ ! -x "$real_sshare" ]]; then
-        echo "sandbox: sshare binary not found at $real_sshare — is Slurm installed?" >&2
+        _sandbox_warn "sshare binary not found at $real_sshare — is Slurm installed?"
         return 1
     fi
 
@@ -62,22 +62,22 @@ handle_sshare() {
         case "$arg" in
             # Denied: enumeration flags
             -a|--all|--allusers)
-                echo "sandbox: sshare '--allusers' is not allowed — only your own fairshare data is shown inside the sandbox." >&2
+                _sandbox_deny "sshare '--allusers' is not allowed — only your own fairshare data is shown inside the sandbox."
                 return 1
                 ;;
             -u|--user|--user=*)
-                echo "sandbox: sshare '--user' is not allowed — the sandbox automatically scopes to your user." >&2
+                _sandbox_deny "sshare '--user' is not allowed — the sandbox automatically scopes to your user."
                 return 1
                 ;;
             -A|--accounts|--account|--accounts=*|--account=*)
-                echo "sandbox: sshare '--accounts' is not allowed — account-level queries could enumerate other users." >&2
+                _sandbox_deny "sshare '--accounts' is not allowed — account-level queries could enumerate other users."
                 return 1
                 ;;
             --*=*)
                 if _is_sshare_allowed "$arg"; then
                     validated_flags+=("$arg")
                 else
-                    echo "sandbox: sshare flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "sshare flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
@@ -89,12 +89,12 @@ handle_sshare() {
                         validated_flags+=("${REQ_ARGS[$i]}")
                     fi
                 else
-                    echo "sandbox: sshare flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "sshare flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
             *)
-                echo "sandbox: unexpected sshare argument: '$arg'" >&2
+                _sandbox_warn "unexpected sshare argument: '$arg'"
                 return 1
                 ;;
         esac

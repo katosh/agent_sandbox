@@ -62,7 +62,7 @@ handle_squeue() {
 
     local real_squeue="${REAL_SQUEUE:-/usr/bin/squeue}"
     if [[ ! -x "$real_squeue" ]]; then
-        echo "sandbox: squeue binary not found at $real_squeue — is Slurm installed?" >&2
+        _sandbox_warn "squeue binary not found at $real_squeue — is Slurm installed?"
         return 1
     fi
 
@@ -89,7 +89,7 @@ handle_squeue() {
                 if _is_squeue_allowed "$arg"; then
                     validated_flags+=("$arg")
                 else
-                    echo "sandbox: squeue flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "squeue flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
@@ -101,12 +101,12 @@ handle_squeue() {
                         validated_flags+=("${REQ_ARGS[$i]}")
                     fi
                 else
-                    echo "sandbox: squeue flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "squeue flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
             *)
-                echo "sandbox: unexpected squeue argument: '$arg'" >&2
+                _sandbox_warn "unexpected squeue argument: '$arg'"
                 return 1
                 ;;
         esac

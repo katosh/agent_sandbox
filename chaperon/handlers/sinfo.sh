@@ -53,7 +53,7 @@ handle_sinfo() {
 
     local real_sinfo="${REAL_SINFO:-/usr/bin/sinfo}"
     if [[ ! -x "$real_sinfo" ]]; then
-        echo "sandbox: sinfo binary not found at $real_sinfo — is Slurm installed?" >&2
+        _sandbox_warn "sinfo binary not found at $real_sinfo — is Slurm installed?"
         return 1
     fi
 
@@ -65,14 +65,14 @@ handle_sinfo() {
         case "$arg" in
             # Deny --user (doesn't exist for sinfo, but block it to be safe)
             -u|--user|--user=*)
-                echo "sandbox: sinfo '--user' is not allowed — sinfo does not support user filtering." >&2
+                _sandbox_warn "sinfo '--user' is not allowed — sinfo does not support user filtering."
                 return 1
                 ;;
             --*=*)
                 if _is_sinfo_allowed "$arg"; then
                     validated_flags+=("$arg")
                 else
-                    echo "sandbox: sinfo flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "sinfo flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
@@ -84,12 +84,12 @@ handle_sinfo() {
                         validated_flags+=("${REQ_ARGS[$i]}")
                     fi
                 else
-                    echo "sandbox: sinfo flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "sinfo flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
             *)
-                echo "sandbox: unexpected sinfo argument: '$arg'" >&2
+                _sandbox_warn "unexpected sinfo argument: '$arg'"
                 return 1
                 ;;
         esac

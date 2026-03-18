@@ -64,7 +64,7 @@ handle_sacct() {
 
     local real_sacct="${REAL_SACCT:-/usr/bin/sacct}"
     if [[ ! -x "$real_sacct" ]]; then
-        echo "sandbox: sacct binary not found at $real_sacct — is Slurm installed?" >&2
+        _sandbox_warn "sacct binary not found at $real_sacct — is Slurm installed?"
         return 1
     fi
 
@@ -75,30 +75,30 @@ handle_sacct() {
         case "$arg" in
             # Denied: user scope is enforced by the chaperon
             -a|--allusers)
-                echo "sandbox: sacct '--allusers' is not allowed — only your own jobs are shown inside the sandbox." >&2
+                _sandbox_deny "sacct '--allusers' is not allowed — only your own jobs are shown inside the sandbox."
                 return 1
                 ;;
             -u|--user|--user=*)
-                echo "sandbox: sacct '--user' is not allowed — the sandbox automatically scopes to your user." >&2
+                _sandbox_deny "sacct '--user' is not allowed — the sandbox automatically scopes to your user."
                 return 1
                 ;;
             --uid|--uid=*)
-                echo "sandbox: sacct '--uid' is not allowed — the sandbox automatically scopes to your user." >&2
+                _sandbox_deny "sacct '--uid' is not allowed — the sandbox automatically scopes to your user."
                 return 1
                 ;;
             -A|--accounts|--accounts=*)
-                echo "sandbox: sacct '--accounts' is not allowed — account-level queries could enumerate other users." >&2
+                _sandbox_deny "sacct '--accounts' is not allowed — account-level queries could enumerate other users."
                 return 1
                 ;;
             -W|--wckeys|--wckeys=*)
-                echo "sandbox: sacct '--wckeys' is not allowed." >&2
+                _sandbox_deny "sacct '--wckeys' is not allowed."
                 return 1
                 ;;
             --*=*)
                 if _is_sacct_allowed "$arg"; then
                     validated_flags+=("$arg")
                 else
-                    echo "sandbox: sacct flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "sacct flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
@@ -110,12 +110,12 @@ handle_sacct() {
                         validated_flags+=("${REQ_ARGS[$i]}")
                     fi
                 else
-                    echo "sandbox: sacct flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "sacct flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
             *)
-                echo "sandbox: unexpected sacct argument: '$arg'" >&2
+                _sandbox_warn "unexpected sacct argument: '$arg'"
                 return 1
                 ;;
         esac

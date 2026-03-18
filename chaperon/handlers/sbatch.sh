@@ -20,7 +20,7 @@ handle_sbatch() {
     # Find real sbatch
     local real_sbatch="${REAL_SBATCH:-/usr/bin/sbatch}"
     if [[ ! -x "$real_sbatch" ]]; then
-        echo "sandbox: sbatch binary not found at $real_sbatch — is Slurm installed?" >&2
+        _sandbox_warn "sbatch binary not found at $real_sbatch — is Slurm installed?"
         return 1
     fi
 

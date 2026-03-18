@@ -33,7 +33,7 @@ handle_sdiag() {
 
     local real_sdiag="${REAL_SDIAG:-/usr/bin/sdiag}"
     if [[ ! -x "$real_sdiag" ]]; then
-        echo "sandbox: sdiag binary not found at $real_sdiag — is Slurm installed?" >&2
+        _sandbox_warn "sdiag binary not found at $real_sdiag — is Slurm installed?"
         return 1
     fi
 
@@ -44,14 +44,14 @@ handle_sdiag() {
         case "$arg" in
             # Denied: write operation
             -r|--reset)
-                echo "sandbox: sdiag '--reset' is not allowed — resetting scheduler statistics is a write operation." >&2
+                _sandbox_deny "sdiag '--reset' is not allowed — resetting scheduler statistics is a write operation."
                 return 1
                 ;;
             --*=*)
                 if _is_sdiag_allowed "$arg"; then
                     validated_flags+=("$arg")
                 else
-                    echo "sandbox: sdiag flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "sdiag flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
@@ -59,12 +59,12 @@ handle_sdiag() {
                 if _is_sdiag_allowed "$arg"; then
                     validated_flags+=("$arg")
                 else
-                    echo "sandbox: sdiag flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "sdiag flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
             *)
-                echo "sandbox: unexpected sdiag argument: '$arg'" >&2
+                _sandbox_warn "unexpected sdiag argument: '$arg'"
                 return 1
                 ;;
         esac

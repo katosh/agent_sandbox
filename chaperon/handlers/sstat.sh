@@ -48,7 +48,7 @@ _validate_sstat_jobs_in_scope() {
         # Strip array task suffix if present
         base_id="${base_id%%_*}"
         if [[ ! "$base_id" =~ ^[0-9]+$ ]]; then
-            echo "sandbox: sstat '$entry' is not a valid job step ID." >&2
+            _sandbox_warn "sstat '$entry' is not a valid job step ID."
             return 1
         fi
         if ! _validate_job_in_scope "$base_id" "$scope" "$project_dir"; then
@@ -64,7 +64,7 @@ handle_sstat() {
 
     local real_sstat="${REAL_SSTAT:-/usr/bin/sstat}"
     if [[ ! -x "$real_sstat" ]]; then
-        echo "sandbox: sstat binary not found at $real_sstat — is Slurm installed?" >&2
+        _sandbox_warn "sstat binary not found at $real_sstat — is Slurm installed?"
         return 1
     fi
 
@@ -79,7 +79,7 @@ handle_sstat() {
         case "$arg" in
             # Deny --allusers (doesn't exist but block to be safe)
             --allusers)
-                echo "sandbox: sstat '--allusers' is not allowed — only your own jobs are accessible inside the sandbox." >&2
+                _sandbox_deny "sstat '--allusers' is not allowed — only your own jobs are accessible inside the sandbox."
                 return 1
                 ;;
             # Capture --jobs value for scope validation
@@ -88,7 +88,7 @@ handle_sstat() {
                     jobs_value="${arg#--jobs=}"
                     validated_flags+=("$arg")
                 else
-                    echo "sandbox: sstat flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "sstat flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
@@ -99,7 +99,7 @@ handle_sstat() {
                     jobs_value="${REQ_ARGS[$i]}"
                     validated_flags+=("${REQ_ARGS[$i]}")
                 else
-                    echo "sandbox: sstat '$arg' requires a value (job step ID list)." >&2
+                    _sandbox_warn "sstat '$arg' requires a value (job step ID list)."
                     return 1
                 fi
                 ;;
@@ -107,7 +107,7 @@ handle_sstat() {
                 if _is_sstat_allowed "$arg"; then
                     validated_flags+=("$arg")
                 else
-                    echo "sandbox: sstat flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "sstat flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
@@ -119,12 +119,12 @@ handle_sstat() {
                         validated_flags+=("${REQ_ARGS[$i]}")
                     fi
                 else
-                    echo "sandbox: sstat flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "sstat flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
             *)
-                echo "sandbox: unexpected sstat argument: '$arg'" >&2
+                _sandbox_warn "unexpected sstat argument: '$arg'"
                 return 1
                 ;;
         esac
@@ -143,7 +143,7 @@ handle_sstat() {
 
     # sstat requires --jobs; validate that requested jobs are in scope
     if [[ -z "$jobs_value" ]]; then
-        echo "sandbox: sstat requires --jobs/-j with a job step ID list (e.g., sstat -j 12345.0)." >&2
+        _sandbox_warn "sstat requires --jobs/-j with a job step ID list (e.g., sstat -j 12345.0)."
         return 1
     fi
 

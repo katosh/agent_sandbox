@@ -58,14 +58,14 @@ handle_scontrol() {
 
     local real_scontrol="${REAL_SCONTROL:-/usr/bin/scontrol}"
     if [[ ! -x "$real_scontrol" ]]; then
-        echo "sandbox: scontrol binary not found at $real_scontrol — is Slurm installed?" >&2
+        _sandbox_warn "scontrol binary not found at $real_scontrol — is Slurm installed?"
         return 1
     fi
 
     local scope="${SLURM_SCOPE:-project}"
 
     if [[ ${#REQ_ARGS[@]} -eq 0 ]]; then
-        echo "sandbox: scontrol requires a subcommand. Allowed: show, hold, release, requeue, update job" >&2
+        _sandbox_warn "scontrol requires a subcommand. Allowed: show, hold, release, requeue, update job"
         return 1
     fi
 
@@ -76,7 +76,7 @@ handle_scontrol() {
         # ── Read-only show commands ──
         show)
             if [[ ${#REQ_ARGS[@]} -lt 2 ]]; then
-                echo "sandbox: scontrol show requires a target: job, node, partition, config, step" >&2
+                _sandbox_warn "scontrol show requires a target: job, node, partition, config, step"
                 return 1
             fi
             local target="${REQ_ARGS[1],,}"
@@ -114,11 +114,11 @@ handle_scontrol() {
                     return "$rc"
                     ;;
                 assoc_mgr|burstbuffer|dwstat|federation|frontend|lic|licenses|topology)
-                    echo "sandbox: scontrol show '$target' is not allowed — it may expose user or account data." >&2
+                    _sandbox_deny "scontrol show '$target' is not allowed — it may expose user or account data."
                     return 1
                     ;;
                 *)
-                    echo "sandbox: scontrol show '$target' is not allowed. Allowed targets: job, node, partition, config, step" >&2
+                    _sandbox_deny "scontrol show '$target' is not allowed. Allowed targets: job, node, partition, config, step"
                     return 1
                     ;;
             esac
@@ -127,7 +127,7 @@ handle_scontrol() {
         # ── Scoped job actions ──
         hold|release|requeue)
             if [[ ${#REQ_ARGS[@]} -lt 2 ]]; then
-                echo "sandbox: scontrol $subcmd requires a job ID." >&2
+                _sandbox_warn "scontrol $subcmd requires a job ID."
                 return 1
             fi
             local job_id="${REQ_ARGS[1]}"
@@ -142,12 +142,12 @@ handle_scontrol() {
         # ── Scoped job update ──
         update)
             if [[ ${#REQ_ARGS[@]} -lt 3 ]]; then
-                echo "sandbox: usage: scontrol update job <JOBID> <Key>=<Value> ..." >&2
+                _sandbox_warn "usage: scontrol update job <JOBID> <Key>=<Value> ..."
                 return 1
             fi
             local update_target="${REQ_ARGS[1]}"
             if [[ "$update_target" != "job" && "$update_target" != "JobId" && "$update_target" != "jobid" ]]; then
-                echo "sandbox: scontrol update is only allowed for jobs (e.g., scontrol update job 12345 TimeLimit=2:00:00)." >&2
+                _sandbox_deny "scontrol update is only allowed for jobs (e.g., scontrol update job 12345 TimeLimit=2:00:00)."
                 return 1
             fi
 
@@ -168,7 +168,7 @@ handle_scontrol() {
                     if _is_update_key_allowed "$key"; then
                         update_params+=("$param")
                     else
-                        echo "sandbox: scontrol update key '$key' is not allowed. Allowed keys: Comment, Deadline, Nice, Priority, TimeLimit, NumCPUs, NumNodes, Partition, QOS, etc." >&2
+                        _sandbox_deny "scontrol update key '$key' is not allowed. Allowed keys: Comment, Deadline, Nice, Priority, TimeLimit, NumCPUs, NumNodes, Partition, QOS, etc."
                         return 1
                     fi
                 fi
@@ -176,14 +176,14 @@ handle_scontrol() {
             done
 
             if [[ -z "$job_id" ]]; then
-                echo "sandbox: scontrol update requires a job ID." >&2
+                _sandbox_warn "scontrol update requires a job ID."
                 return 1
             fi
             if ! _validate_job_in_scope "$job_id" "$scope" "$project_dir"; then
                 return 1
             fi
             if [[ ${#update_params[@]} -eq 0 ]]; then
-                echo "sandbox: scontrol update requires at least one Key=Value pair (e.g., TimeLimit=2:00:00)." >&2
+                _sandbox_warn "scontrol update requires at least one Key=Value pair (e.g., TimeLimit=2:00:00)."
                 return 1
             fi
 
@@ -201,7 +201,7 @@ handle_scontrol() {
 
         # ── Everything else denied ──
         *)
-            echo "sandbox: scontrol '$subcmd' is not allowed. Allowed: show, hold, release, requeue, update job" >&2
+            _sandbox_deny "scontrol '$subcmd' is not allowed. Allowed: show, hold, release, requeue, update job"
             return 1
             ;;
     esac
