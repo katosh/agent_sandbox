@@ -15,12 +15,13 @@ A secure admin installation has two parts: a **root-owned config** (tamper-proof
 # Copy the sandbox to a root-owned directory
 sudo mkdir -p /app/lib/agent-sandbox
 sudo cp sandbox.conf sandbox-lib.sh sandbox-exec.sh \
-      sbatch-sandbox.sh srun-sandbox.sh sandbox-tmux.conf \
+      sbatch-sandbox.sh srun-sandbox.sh sandbox-tmux.conf test.sh \
       /app/lib/agent-sandbox/
 sudo cp -r backends/ /app/lib/agent-sandbox/backends/
 sudo cp -r agents/ /app/lib/agent-sandbox/agents/
 sudo cp -r bin/ /app/lib/agent-sandbox/bin/
 sudo cp -r chaperon/ /app/lib/agent-sandbox/chaperon/
+sudo cp -r conf.d/ /app/lib/agent-sandbox/conf.d/ 2>/dev/null || true
 sudo chown -R root:root /app/lib/agent-sandbox
 sudo chmod -R 755 /app/lib/agent-sandbox
 
@@ -88,11 +89,13 @@ Without an admin config, the sandbox loads a single `sandbox.conf` from `~/.conf
 | `BLOCKED_ENV_VARS` | Yes — block more env vars | **No — restored with warning** |
 | `EXTRA_BLOCKED_PATHS` | Yes — block more paths | **No — restored with warning** |
 | `TOKEN_FILE` / `SANDBOX_BYPASS_TOKEN` | No — would overwrite | **No — restored with warning** |
+| `ALLOWED_ENV_VARS` | Yes — unblock specific env vars | N/A (additive) |
 | `PRIVATE_TMP` | Yes | Yes |
 | `BIND_DEV_PTS` | Yes | Yes |
 | `FILTER_PASSWD` | Yes | Yes |
 | `SANDBOX_BACKEND` | Yes | Yes |
 | `SLURM_SCOPE` | Yes | Yes |
+| `HOME_ACCESS` | Yes | Yes |
 
 ### Admin enforcement: subprocess isolation + policy merge
 
@@ -180,6 +183,12 @@ DENIED_WRITABLE_PATHS=(
 PRIVATE_TMP=true
 FILTER_PASSWD=true
 
+# Home access mode: restricted (default), tmpwrite, read, write.
+# "tmpwrite" gives a writable tmpfs HOME (ephemeral — lost on exit).
+# "read"/"write" expose the real HOME (credentials still hidden).
+# Users can override: HOME_ACCESS=tmpwrite sandbox-exec ...
+HOME_ACCESS="restricted"
+
 # Slurm job scope: controls which jobs sandboxed agents can see/manage.
 #   "project"  — jobs from any sandbox session with the same project dir (default)
 #   "session"  — only jobs submitted by THIS sandbox session
@@ -203,7 +212,7 @@ SLURM_SCOPE="project"
 # SANDBOX_EXEC="/app/lib/agent-sandbox/sandbox-exec.sh"
 ```
 
-**`SLURM_SCOPE` environment override:** Users can override the configured `SLURM_SCOPE` at launch time without editing any config file: `SLURM_SCOPE=session sandbox-exec.sh -- claude`. The environment value is saved before config loading and restored afterward, so it takes precedence over both admin and user configs.
+**Environment overrides:** Users can override `SLURM_SCOPE` and `HOME_ACCESS` at launch time without editing any config file: `SLURM_SCOPE=session sandbox-exec.sh -- claude` or `HOME_ACCESS=tmpwrite sandbox-exec.sh -- bash`. The environment values are saved before config loading and restored afterward, so they take precedence over both admin and user configs.
 
 ## Example User Config
 
@@ -252,11 +261,25 @@ EXTRA_WRITABLE_PATHS+=(
 
 These configs also run in isolated subprocesses and go through admin enforcement — they cannot remove admin-set entries.
 
+## Chaperon: Slurm Proxy
+
+The chaperon is a zero-trust Slurm proxy that sits between the sandboxed agent and the real Slurm commands. Inside the sandbox, Slurm binaries (`sbatch`, `srun`, `scancel`, `squeue`, etc.) are replaced with stubs that communicate with a chaperon process running outside the sandbox via FIFO IPC. The chaperon validates every request against a flag whitelist, wraps submitted jobs to re-enter the sandbox on compute nodes, and scopes `squeue`/`scancel` to the agent's own jobs.
+
+**Key security properties:**
+- Real Slurm binaries are blocked inside the sandbox (bind-mounted to `/dev/null` on bwrap/firejail, munge socket blocked on all backends)
+- Dangerous flags (`--uid`, `--export`, `--prolog`, `--bcast`, `--container`) are rejected
+- Job wrapping: sbatch scripts are inlined via heredoc into a wrapper that calls `sandbox-exec.sh` on the compute node — no temp files on NFS
+- Job scoping via `--comment` tags: `squeue`/`scancel` only see jobs submitted by this sandbox session/project (configurable via `SLURM_SCOPE`)
+- Scope-widening flags (`squeue --me`, `scancel --all`, `scancel -u <user>`) are silently mapped to "all jobs in your scope" — transparent to the user
+- All denials include prompt-injection recovery messages that re-anchor the agent to its instructions
+
+See [CHAPERON.md](CHAPERON.md) for the full protocol, supported commands, and flag whitelists.
+
 ## Testing
 
 Two test suites validate the sandbox:
 
-- **`test.sh`** — run on every install to verify backend isolation: filesystem, env blocking, overlays, Slurm wrappers, security hardening, symlink/hardlink attacks, `/proc` escapes, FD inheritance, signal isolation, TIOCSTI, cgroup/userns restrictions, deterministic isolation, concurrent instances. Tests all available backends (bwrap, firejail, landlock).
+- **`test.sh`** — run on every install to verify backend isolation: filesystem, env blocking, agent overlays, chaperon Slurm proxy (flag validation, job submission, scoped cancel, transparent squeue/scancel, comment tag stripping), security hardening, symlink/hardlink attacks, `/proc` escapes, FD inheritance, signal isolation, TIOCSTI, cgroup/userns restrictions, deterministic isolation, concurrent instances. Tests all available backends (bwrap, firejail, landlock).
 - **`test-admin.sh`** — run on admin installs to verify config enforcement: admin entries survive user tampering, `DENIED_WRITABLE_PATHS`, `HOME_READONLY` escalation blocking, scalar protection, `HOME` override resistance, `conf.d` enforcement, subprocess isolation of escape attempts, admin Slurm wrappers. Skips automatically if no admin config is found.
 
 ```bash
