@@ -145,22 +145,6 @@ backend_prepare() {
             # Resolve symlinks — bwrap can't bind-mount over a symlink.
             local _resolved
             _resolved="$(readlink -f "$blocked")"
-            # If the resolved target is under a HOME_READONLY path, it's
-            # already inaccessible for writes inside the ro-mounted HOME.
-            # Attempting --ro-bind there would fail ("Read-only file system")
-            # because bwrap can't create mount points inside ro mounts.
-            # This commonly happens with dotfile managers that symlink
-            # ~/.claude/CLAUDE.md → ~/.dotfiles/.claude/CLAUDE.md.
-            local _under_ro=false
-            for _ro_path in "${HOME_READONLY[@]}"; do
-                if [[ "$_resolved" == "$HOME/$_ro_path"* ]]; then
-                    _under_ro=true
-                    break
-                fi
-            done
-            if "$_under_ro"; then
-                continue
-            fi
             BWRAP_ARGS+=(--ro-bind /dev/null "$_resolved")
         fi
     done
