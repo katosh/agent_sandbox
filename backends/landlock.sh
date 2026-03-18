@@ -100,12 +100,13 @@ backend_prepare() {
 
     # --- Filter environment variables ---
     for var in "${BLOCKED_ENV_VARS[@]}"; do
-        unset "$var" 2>/dev/null || true
+        _is_allowed_env "$var" || unset "$var" 2>/dev/null || true
     done
 
-    # Also block any SSH_* vars not in the explicit blocklist
+    # Also block any SSH_* vars not in the explicit blocklist.
+    # To let a specific SSH_* variable through, add it to ALLOWED_ENV_VARS.
     while IFS='=' read -r name _; do
-        [[ "$name" == SSH_* ]] && unset "$name" 2>/dev/null || true
+        [[ "$name" == SSH_* ]] && ! _is_allowed_env "$name" && unset "$name" 2>/dev/null || true
     done < <(env)
 
     # Agent-specific environment exports (e.g., CLAUDE_CONFIG_DIR)

@@ -288,12 +288,13 @@ backend_prepare() {
     done
 
     for var in "${BLOCKED_ENV_VARS[@]}"; do
-        BWRAP_ARGS+=(--unsetenv "$var")
+        _is_allowed_env "$var" || BWRAP_ARGS+=(--unsetenv "$var")
     done
 
-    # Also block any SSH_* vars not in the explicit blocklist
+    # Also block any SSH_* vars not in the explicit blocklist.
+    # To let a specific SSH_* variable through, add it to ALLOWED_ENV_VARS.
     while IFS='=' read -r name _; do
-        [[ "$name" == SSH_* ]] && BWRAP_ARGS+=(--unsetenv "$name") || true
+        [[ "$name" == SSH_* ]] && ! _is_allowed_env "$name" && BWRAP_ARGS+=(--unsetenv "$name") || true
     done < <(env)
 
 }
@@ -306,11 +307,11 @@ backend_exec() {
     # and /proc/1/environ is safe.  The --unsetenv flags remain as
     # defense-in-depth.
     for _var in "${BLOCKED_ENV_VARS[@]}"; do
-        unset "$_var" 2>/dev/null || true
+        _is_allowed_env "$_var" || unset "$_var" 2>/dev/null || true
     done
     # SSH_* vars (same set collected during backend_prepare)
     while IFS='=' read -r _name _; do
-        [[ "$_name" == SSH_* ]] && unset "$_name" 2>/dev/null || true
+        [[ "$_name" == SSH_* ]] && ! _is_allowed_env "$_name" && unset "$_name" 2>/dev/null || true
     done < <(env)
 
     # Open seccomp FD now (after sandbox-exec.sh's FD cleanup) and

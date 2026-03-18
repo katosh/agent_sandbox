@@ -157,6 +157,18 @@ BLOCKED_ENV_VARS=(
     "TMUX" "TMUX_PANE"
 )
 
+# Allowed env vars: overrides BLOCKED_ENV_VARS and the SSH_* catch-all
+ALLOWED_ENV_VARS=()
+
+# ── Helper: check if an env var is in ALLOWED_ENV_VARS ────────
+# Used by backends to skip blocking for explicitly allowed vars.
+_is_allowed_env() {
+    local _var="$1"
+    for _a in "${ALLOWED_ENV_VARS[@]}"; do
+        [[ "$_var" == "$_a" ]] && return 0
+    done
+    return 1
+}
 
 # ── Helpers: boolean normalization ─────────────────────────────
 # Accept true/True/TRUE/yes/1 as truthy; everything else is false.
@@ -224,7 +236,7 @@ fi
 # to serialize/deserialize state and by _enforce_admin_policy to merge.
 _CONFIG_ARRAYS=(
     ALLOWED_PROJECT_PARENTS READONLY_MOUNTS HOME_READONLY HOME_WRITABLE
-    BLOCKED_FILES BLOCKED_ENV_VARS EXTRA_BLOCKED_PATHS
+    BLOCKED_FILES BLOCKED_ENV_VARS ALLOWED_ENV_VARS EXTRA_BLOCKED_PATHS
     EXTRA_WRITABLE_PATHS DENIED_WRITABLE_PATHS
 )
 _CONFIG_SCALARS=(
@@ -448,6 +460,7 @@ _enforce_admin_policy() {
     # Save the user's arrays before restoring admin values.
     local _user_bf=("${BLOCKED_FILES[@]}")
     local _user_bev=("${BLOCKED_ENV_VARS[@]}")
+    local _user_aev=("${ALLOWED_ENV_VARS[@]}")
     local _user_ebp=("${EXTRA_BLOCKED_PATHS[@]}")
     local _user_hw=("${HOME_WRITABLE[@]}")
     local _user_ewp=("${EXTRA_WRITABLE_PATHS[@]}")
@@ -458,6 +471,7 @@ _enforce_admin_policy() {
     # --- Restore admin base values ---
     BLOCKED_FILES=("${_ADMIN_BLOCKED_FILES[@]}")
     BLOCKED_ENV_VARS=("${_ADMIN_BLOCKED_ENV_VARS[@]}")
+    ALLOWED_ENV_VARS=("${_ADMIN_ALLOWED_ENV_VARS[@]}")
     EXTRA_BLOCKED_PATHS=("${_ADMIN_EXTRA_BLOCKED_PATHS[@]}")
     HOME_READONLY=("${_ADMIN_HOME_READONLY[@]}")
     EXTRA_WRITABLE_PATHS=("${_ADMIN_EXTRA_WRITABLE_PATHS[@]}")
@@ -484,6 +498,7 @@ _enforce_admin_policy() {
     }
     _merge_additions _user_bf   _ADMIN_BLOCKED_FILES          BLOCKED_FILES
     _merge_additions _user_bev  _ADMIN_BLOCKED_ENV_VARS       BLOCKED_ENV_VARS
+    _merge_additions _user_aev  _ADMIN_ALLOWED_ENV_VARS       ALLOWED_ENV_VARS
     _merge_additions _user_ebp  _ADMIN_EXTRA_BLOCKED_PATHS    EXTRA_BLOCKED_PATHS
     _merge_additions _user_ewp  _ADMIN_EXTRA_WRITABLE_PATHS   EXTRA_WRITABLE_PATHS
     _merge_additions _user_rom  _ADMIN_READONLY_MOUNTS        READONLY_MOUNTS
@@ -566,6 +581,7 @@ _snapshot_admin_config() {
 
     _ADMIN_BLOCKED_FILES=("${BLOCKED_FILES[@]}")
     _ADMIN_BLOCKED_ENV_VARS=("${BLOCKED_ENV_VARS[@]}")
+    _ADMIN_ALLOWED_ENV_VARS=("${ALLOWED_ENV_VARS[@]}")
     _ADMIN_EXTRA_BLOCKED_PATHS=("${EXTRA_BLOCKED_PATHS[@]}")
     _ADMIN_HOME_READONLY=("${HOME_READONLY[@]}")
     _ADMIN_HOME_WRITABLE=("${HOME_WRITABLE[@]}")
