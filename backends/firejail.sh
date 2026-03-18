@@ -177,58 +177,77 @@ backend_prepare() {
     # instance runs with fewer privileges than the parent sandbox.
 
     # --- Home directory paths ---
-    # --private gives us a clean tmpfs $HOME. --whitelist brings back
-    # specific paths from the real home into the private home.
+    if [[ "${HOME_ACCESS:-restricted}" == "restricted" ]]; then
+        # Whitelist mode: tmpfs $HOME, selectively mount listed paths
+        for subdir in "${HOME_READONLY[@]}"; do
+            local full_path="$HOME/$subdir"
+            if [[ -e "$full_path" ]]; then
+                FIREJAIL_ARGS+=(--whitelist="$full_path")
+                FIREJAIL_ARGS+=(--read-only="$full_path")
+            fi
+        done
 
-    for subdir in "${HOME_READONLY[@]}"; do
-        local full_path="$HOME/$subdir"
-        if [[ -e "$full_path" ]]; then
-            FIREJAIL_ARGS+=(--whitelist="$full_path")
-            FIREJAIL_ARGS+=(--read-only="$full_path")
-        fi
-    done
+        for subdir in "${HOME_WRITABLE[@]}"; do
+            local full_path="$HOME/$subdir"
+            if [[ -e "$full_path" ]]; then
+                FIREJAIL_ARGS+=(--whitelist="$full_path")
+            fi
+        done
 
-    for subdir in "${HOME_WRITABLE[@]}"; do
-        local full_path="$HOME/$subdir"
-        if [[ -e "$full_path" ]]; then
-            FIREJAIL_ARGS+=(--whitelist="$full_path")
+        # Sandbox scripts
+        if [[ "$SANDBOX_DIR" == "$HOME"* ]]; then
+            FIREJAIL_ARGS+=(--whitelist="$SANDBOX_DIR")
         fi
-    done
+
+        # Project directory
+        if [[ "$project_dir" == "$HOME"* ]]; then
+            FIREJAIL_ARGS+=(--whitelist="$project_dir")
+        fi
+
+        # Lock HOME read-only, then re-enable writable paths
+        FIREJAIL_ARGS+=(--read-only="$HOME")
+
+        for subdir in "${HOME_WRITABLE[@]}"; do
+            local full_path="$HOME/$subdir"
+            if [[ -e "$full_path" ]]; then
+                FIREJAIL_ARGS+=(--read-write="$full_path")
+            fi
+        done
+
+        if [[ "$project_dir" == "$HOME"* ]]; then
+            FIREJAIL_ARGS+=(--read-write="$project_dir")
+        fi
+    else
+        # read/write: full HOME visible, blacklist credential dirs
+        for _blocked_sub in "${_HOME_ALWAYS_BLOCKED[@]}"; do
+            local _bp="$HOME/$_blocked_sub"
+            [[ -e "$_bp" ]] && FIREJAIL_ARGS+=(--blacklist="$_bp")
+        done
+
+        if [[ "${HOME_ACCESS}" == "read" ]]; then
+            FIREJAIL_ARGS+=(--read-only="$HOME")
+            for subdir in "${HOME_WRITABLE[@]}"; do
+                local full_path="$HOME/$subdir"
+                if [[ -e "$full_path" ]]; then
+                    FIREJAIL_ARGS+=(--read-write="$full_path")
+                fi
+            done
+            if [[ "$project_dir" == "$HOME"* ]]; then
+                FIREJAIL_ARGS+=(--read-write="$project_dir")
+            fi
+        fi
+        # write mode: full HOME writable, project dir already writable
+    fi
 
     # Sandbox scripts (read-only inside sandbox, unless it IS the project dir)
-    if [[ "$SANDBOX_DIR" == "$HOME"* ]]; then
-        FIREJAIL_ARGS+=(--whitelist="$SANDBOX_DIR")
-    fi
     if [[ "$SANDBOX_DIR" != "$project_dir" ]]; then
         FIREJAIL_ARGS+=(--read-only="$SANDBOX_DIR")
-    fi
-
-    # --- Project directory (writable) ---
-    if [[ "$project_dir" == "$HOME"* ]]; then
-        FIREJAIL_ARGS+=(--whitelist="$project_dir")
-    fi
-    # Paths outside $HOME are visible by default (--private only affects $HOME)
-
-    # --- Make $HOME read-only, then re-enable writes for specific paths ---
-    # The tmpfs created by --whitelist is writable by default. Lock it down
-    # and then --read-write the specific paths that need write access.
-    FIREJAIL_ARGS+=(--read-only="$HOME")
-
-    for subdir in "${HOME_WRITABLE[@]}"; do
-        local full_path="$HOME/$subdir"
-        if [[ -e "$full_path" ]]; then
-            FIREJAIL_ARGS+=(--read-write="$full_path")
-        fi
-    done
-
-    if [[ "$project_dir" == "$HOME"* ]]; then
-        FIREJAIL_ARGS+=(--read-write="$project_dir")
     fi
 
     # Additional writable directories
     for _extra_rw in "${EXTRA_WRITABLE_PATHS[@]}"; do
         if [[ -d "$_extra_rw" ]]; then
-            if [[ "$_extra_rw" == "$HOME"* ]]; then
+            if [[ "${HOME_ACCESS:-restricted}" == "restricted" && "$_extra_rw" == "$HOME"* ]]; then
                 FIREJAIL_ARGS+=(--whitelist="$_extra_rw")
             fi
             FIREJAIL_ARGS+=(--read-write="$_extra_rw")

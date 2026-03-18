@@ -80,9 +80,10 @@ if [[ -n "$BACKEND_OVERRIDE" ]]; then
     export SANDBOX_BACKEND="$BACKEND_OVERRIDE"
 fi
 
-# Save SLURM_SCOPE from environment before config loading overwrites it.
+# Save env overrides before config loading overwrites them.
 # This allows users to override with: SLURM_SCOPE=session sandbox-exec.sh ...
 _SLURM_SCOPE_ENV="${SLURM_SCOPE:-}"
+_HOME_ACCESS_ENV="${HOME_ACCESS:-}"
 
 source "$SCRIPT_DIR/sandbox-lib.sh"
 
@@ -113,6 +114,17 @@ if [[ $# -eq 0 ]]; then
     echo "      sandbox-exec.sh -- claude      (Claude Code)" >&2
     exit 1
 fi
+
+# Restore env overrides (saved before config loading)
+if [[ -n "${_HOME_ACCESS_ENV:-}" ]]; then
+    HOME_ACCESS="$_HOME_ACCESS_ENV"
+fi
+
+# Validate HOME_ACCESS
+case "${HOME_ACCESS:-restricted}" in
+    restricted|read|write) ;;
+    *) echo "Error: HOME_ACCESS must be 'restricted', 'read', or 'write' (got '${HOME_ACCESS}')." >&2; exit 1 ;;
+esac
 
 # Detect and load backend
 detect_backend

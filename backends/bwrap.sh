@@ -83,32 +83,59 @@ backend_prepare() {
         fi
     done
 
-    # --- Blank home, then selectively re-mount ---
-    BWRAP_ARGS+=(--tmpfs "$HOME")
+    # --- Home directory ---
+    if [[ "${HOME_ACCESS:-restricted}" == "restricted" ]]; then
+        # Blank home with tmpfs, selectively re-mount listed paths
+        BWRAP_ARGS+=(--tmpfs "$HOME")
 
-    for subdir in "${HOME_READONLY[@]}"; do
-        local full_path="$HOME/$subdir"
-        if [[ -e "$full_path" ]]; then
-            BWRAP_ARGS+=(--ro-bind "$full_path" "$full_path")
-        fi
-    done
+        for subdir in "${HOME_READONLY[@]}"; do
+            local full_path="$HOME/$subdir"
+            if [[ -e "$full_path" ]]; then
+                BWRAP_ARGS+=(--ro-bind "$full_path" "$full_path")
+            fi
+        done
 
-    for subdir in "${HOME_WRITABLE[@]}"; do
-        local full_path="$HOME/$subdir"
-        if [[ -e "$full_path" ]]; then
-            BWRAP_ARGS+=(--bind "$full_path" "$full_path")
+        for subdir in "${HOME_WRITABLE[@]}"; do
+            local full_path="$HOME/$subdir"
+            if [[ -e "$full_path" ]]; then
+                BWRAP_ARGS+=(--bind "$full_path" "$full_path")
+            fi
+        done
+    else
+        # read/write: bind real HOME, then hide credential dirs
+        if [[ "${HOME_ACCESS}" == "read" ]]; then
+            BWRAP_ARGS+=(--ro-bind "$HOME" "$HOME")
+        else
+            BWRAP_ARGS+=(--bind "$HOME" "$HOME")
         fi
-    done
+
+        # Always hide credential directories
+        for _blocked_sub in "${_HOME_ALWAYS_BLOCKED[@]}"; do
+            local _bp="$HOME/$_blocked_sub"
+            [[ -e "$_bp" ]] && BWRAP_ARGS+=(--tmpfs "$_bp")
+        done
+
+        # In read mode, writable paths still need explicit rw bind
+        if [[ "${HOME_ACCESS}" == "read" ]]; then
+            for subdir in "${HOME_WRITABLE[@]}"; do
+                local full_path="$HOME/$subdir"
+                if [[ -e "$full_path" ]]; then
+                    BWRAP_ARGS+=(--bind "$full_path" "$full_path")
+                fi
+            done
+        fi
+    fi
 
     BWRAP_ARGS+=(--ro-bind "$SANDBOX_DIR" "$SANDBOX_DIR")
 
-    # If the project dir is under $HOME, bind it BEFORE remount-ro
-    # so bwrap can create the mount point on the writable tmpfs.
+    # If the project dir is under $HOME, bind it writable
     if [[ "$project_dir" == "$HOME"* ]]; then
         BWRAP_ARGS+=(--bind "$project_dir" "$project_dir")
     fi
 
-    BWRAP_ARGS+=(--remount-ro "$HOME")
+    if [[ "${HOME_ACCESS:-restricted}" == "restricted" ]]; then
+        BWRAP_ARGS+=(--remount-ro "$HOME")
+    fi
 
     # Agent-specific file hiding (e.g., CLAUDE.md, AGENTS.md) is handled
     # by BLOCKED_FILES, populated from agents/*/hide.conf by _apply_agent_profiles().

@@ -70,22 +70,37 @@ backend_prepare() {
     [[ -d /run/nscd ]]             && LANDLOCK_ARGS+=(--ro /run/nscd)
     [[ -d /run/systemd/resolve ]]  && LANDLOCK_ARGS+=(--ro /run/systemd/resolve)
 
-    # Read-only home paths (files and directories)
-    for subdir in "${HOME_READONLY[@]}"; do
-        local full_path="$HOME/$subdir"
-        if [[ -e "$full_path" ]]; then
-            LANDLOCK_ARGS+=(--ro "$full_path")
-        fi
-    done
+    # --- Home directory ---
+    if [[ "${HOME_ACCESS:-restricted}" == "restricted" ]]; then
+        # Grant individual paths only
+        for subdir in "${HOME_READONLY[@]}"; do
+            local full_path="$HOME/$subdir"
+            if [[ -e "$full_path" ]]; then
+                LANDLOCK_ARGS+=(--ro "$full_path")
+            fi
+        done
 
-    # Writable home paths (files and directories)
-    for subdir in "${HOME_WRITABLE[@]}"; do
-        local full_path="$HOME/$subdir"
-        if [[ -e "$full_path" ]]; then
-            LANDLOCK_ARGS+=(--rw "$full_path")
+        for subdir in "${HOME_WRITABLE[@]}"; do
+            local full_path="$HOME/$subdir"
+            if [[ -e "$full_path" ]]; then
+                LANDLOCK_ARGS+=(--rw "$full_path")
+            fi
+        done
+    else
+        # read/write: grant full HOME
+        # NOTE: Landlock cannot hide subdirs (.ssh, .aws, .gnupg) when
+        # the parent directory is already granted — rules are additive.
+        echo "sandbox: note: HOME_ACCESS=${HOME_ACCESS} with landlock cannot hide ~/.ssh, ~/.aws, ~/.gnupg (Landlock limitation)" >&2
+        if [[ "${HOME_ACCESS}" == "read" ]]; then
+            LANDLOCK_ARGS+=(--ro "$HOME")
+            for subdir in "${HOME_WRITABLE[@]}"; do
+                local full_path="$HOME/$subdir"
+                [[ -e "$full_path" ]] && LANDLOCK_ARGS+=(--rw "$full_path")
+            done
+        else
+            LANDLOCK_ARGS+=(--rw "$HOME")
         fi
-    done
-
+    fi
 
     # Sandbox scripts directory: read-only (for chaperon stubs, bin/, etc.)
     LANDLOCK_ARGS+=(--ro "$SANDBOX_DIR")

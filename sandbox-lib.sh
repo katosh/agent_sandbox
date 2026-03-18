@@ -96,6 +96,18 @@ HOME_WRITABLE=(
     # automatically by agent profiles in agents/<name>/home.conf.
 )
 
+# Home access mode:
+#   restricted — (default) tmpfs HOME with selective mounts from lists above
+#   read       — full HOME readable; .ssh/.aws/.gnupg still hidden
+#   write      — full HOME writable; .ssh/.aws/.gnupg still hidden
+# Can override via env: HOME_ACCESS=read sandbox-exec.sh -- bash
+HOME_ACCESS="restricted"
+
+# Credential dirs that are ALWAYS hidden regardless of HOME_ACCESS mode.
+# In restricted mode these are hidden implicitly (never listed in HOME_READONLY).
+# In read/write modes they are explicitly blocked (tmpfs/blacklist).
+_HOME_ALWAYS_BLOCKED=(".ssh" ".aws" ".gnupg")
+
 BLOCKED_FILES=()
 
 EXTRA_BLOCKED_PATHS=()
@@ -241,7 +253,7 @@ _CONFIG_ARRAYS=(
 )
 _CONFIG_SCALARS=(
     SANDBOX_BACKEND PRIVATE_TMP FILTER_PASSWD BIND_DEV_PTS
-    SLURM_SCOPE
+    SLURM_SCOPE HOME_ACCESS
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
 _ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS EXTRA_BLOCKED_PATHS)
