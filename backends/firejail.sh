@@ -69,6 +69,7 @@ backend_prepare() {
     FIREJAIL_ARGS=(
         --noprofile
         --quiet
+        --private-cwd="$project_dir"
         --caps.drop=all
         --nonewprivs
         --seccomp.drop=io_uring_setup,io_uring_enter,io_uring_register,userfaultfd,kexec_load,kexec_file_load

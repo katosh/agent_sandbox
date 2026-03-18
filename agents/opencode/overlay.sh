@@ -12,7 +12,9 @@ agent_prepare_config() {
     local project_dir="$1"
 
     # --- Determine the real config directory ---
-    local real_opencode_dir="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
+    # Always use ~/.config/opencode as the base (not OPENCODE_CONFIG_DIR,
+    # which may already point to sandbox-config from a parent invocation).
+    local real_opencode_dir="$HOME/.config/opencode"
 
     local config_dir="$real_opencode_dir/sandbox-config"
     chmod u+w "$config_dir" 2>/dev/null || true

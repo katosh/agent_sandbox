@@ -12,8 +12,10 @@ agent_prepare_config() {
     local project_dir="$1"
 
     # --- Determine the real config directory ---
-    # Honour an existing CLAUDE_CONFIG_DIR; default to ~/.claude
-    local real_claude_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+    # Always use ~/.claude as the base (not CLAUDE_CONFIG_DIR, which may
+    # already point to sandbox-config from a parent sandbox invocation —
+    # e.g., compute-node re-entry via sbatch wrapping).
+    local real_claude_dir="$HOME/.claude"
 
     local config_dir="$real_claude_dir/sandbox-config"
     # Unlock for regeneration (may have been locked by a prior run).

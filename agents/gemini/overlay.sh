@@ -11,8 +11,9 @@ agent_prepare_config() {
     local project_dir="$1"
 
     # --- Determine the real config directory ---
-    # Honour an existing GEMINI_CONFIG_DIR; default to ~/.gemini
-    local real_gemini_dir="${GEMINI_CONFIG_DIR:-$HOME/.gemini}"
+    # Always use ~/.gemini as the base (not GEMINI_CONFIG_DIR, which may
+    # already point to sandbox-config from a parent sandbox invocation).
+    local real_gemini_dir="$HOME/.gemini"
 
     local config_dir="$real_gemini_dir/sandbox-config"
     chmod u+w "$config_dir" 2>/dev/null || true

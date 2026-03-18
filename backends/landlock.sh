@@ -87,6 +87,9 @@ backend_prepare() {
     done
 
 
+    # Sandbox scripts directory: read-only (for chaperon stubs, bin/, etc.)
+    LANDLOCK_ARGS+=(--ro "$SANDBOX_DIR")
+
     # Project directory: writable
     LANDLOCK_ARGS+=(--rw "$project_dir")
 

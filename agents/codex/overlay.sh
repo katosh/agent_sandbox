@@ -11,8 +11,9 @@ agent_prepare_config() {
     local project_dir="$1"
 
     # --- Determine the real config directory ---
-    # Honour an existing CODEX_HOME; default to ~/.codex
-    local real_codex_dir="${CODEX_HOME:-$HOME/.codex}"
+    # Always use ~/.codex as the base (not CODEX_HOME, which may
+    # already point to sandbox-config from a parent sandbox invocation).
+    local real_codex_dir="$HOME/.codex"
 
     local config_dir="$real_codex_dir/sandbox-config"
     chmod u+w "$config_dir" 2>/dev/null || true
