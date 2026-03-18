@@ -53,9 +53,8 @@ agent_prepare_config() {
         ln -snf "$item" "$target" 2>/dev/null || true
     done
 
-    chmod a-w "$config_dir" 2>/dev/null || true
-
     _AGENT_SANDBOX_CONFIG_DIRS+=("$config_dir")
+    _AGENT_PROTECTED_FILES+=("$config_dir/AGENTS.md")
 
     # Export OPENCODE_CONFIG_DIR so OpenCode reads from merged config
     _AGENT_ENV_EXPORTS+=("OPENCODE_CONFIG_DIR=$config_dir")

@@ -138,13 +138,19 @@ backend_prepare() {
         fi
     done
 
-    # Make agent sandbox-config directories read-only inside the sandbox.
-    # These contain merged instruction files (CLAUDE.md, settings.json, etc.)
-    # that must not be modifiable by the sandboxed agent. The chmod a-w in
-    # the overlay is insufficient (owner can chmod +w), so we use ro-bind.
+    # Mount agent sandbox-config directories writable so the agent can
+    # create lock files, session data, caches, etc.  Then overlay the
+    # merged instruction files (CLAUDE.md, settings.json) as individual
+    # read-only bind-mounts so the agent cannot modify them.
     for _agent_dir in "${_AGENT_SANDBOX_CONFIG_DIRS[@]:-}"; do
         if [[ -n "$_agent_dir" && -d "$_agent_dir" ]]; then
-            BWRAP_ARGS+=(--ro-bind "$_agent_dir" "$_agent_dir")
+            BWRAP_ARGS+=(--bind "$_agent_dir" "$_agent_dir")
+            # Protect merged config files — agent must not modify these
+            for _protected in "${_AGENT_PROTECTED_FILES[@]:-}"; do
+                if [[ -f "$_protected" ]]; then
+                    BWRAP_ARGS+=(--ro-bind "$_protected" "$_protected")
+                fi
+            done
         fi
     done
 

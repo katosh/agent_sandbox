@@ -112,12 +112,13 @@ json.dump(user, sys.stdout, indent=2)
         ln -snf "$item" "$target" 2>/dev/null || true
     done
 
-    # Lock the sandbox-config directory to prevent sandboxed agents from
-    # deleting or replacing the read-only merged files (rm requires dir write).
-    chmod a-w "$config_dir" 2>/dev/null || true
-
-    # Register for bwrap ro-bind (prevents rm/chmod bypass inside sandbox)
+    # Register the config dir for writable bind-mount, and mark the
+    # merged files as protected (individual ro-bind inside the sandbox).
+    # The directory must be writable so claude can create lock files,
+    # session data, MCP caches, etc.
     _AGENT_SANDBOX_CONFIG_DIRS+=("$config_dir")
+    _AGENT_PROTECTED_FILES+=("$config_dir/CLAUDE.md")
+    [[ -f "$config_dir/settings.json" ]] && _AGENT_PROTECTED_FILES+=("$config_dir/settings.json")
 
     # Export CLAUDE_CONFIG_DIR so Claude reads from merged config
     _AGENT_ENV_EXPORTS+=("CLAUDE_CONFIG_DIR=$config_dir")

@@ -61,9 +61,8 @@ agent_prepare_config() {
         ln -snf "$item" "$target" 2>/dev/null || true
     done
 
-    chmod a-w "$config_dir" 2>/dev/null || true
-
     _AGENT_SANDBOX_CONFIG_DIRS+=("$config_dir")
+    _AGENT_PROTECTED_FILES+=("$config_dir/GEMINI.md")
 
     # Export GEMINI_CONFIG_DIR so Gemini reads from merged config
     _AGENT_ENV_EXPORTS+=("GEMINI_CONFIG_DIR=$config_dir")
