@@ -297,23 +297,28 @@ create_wrapped_script() {
         echo "sandbox: stripped $stripped_count unsafe #SBATCH directive(s) from script (denied flags are not allowed in directives either)" >&2
     fi
 
-    # Create a temp file for the original script (compute node needs it on NFS).
-    # Strip #SBATCH directives from the script body — they'll be in the wrapper.
+    # Create a temp file for the original script on the SHARED filesystem,
+    # inside the project directory. This ensures:
+    #   1. The compute node can access it (project dir is on NFS)
+    #   2. The sandbox can exec it (project dir is mounted writable)
+    # Using a dotfile prefix to keep it out of `ls` output.
     local orig_script
-    orig_script="$(mktemp "${TMPDIR:-/tmp}/chaperon-script-XXXXXX.sh")"
+    orig_script="$(mktemp "$project_dir/.chaperon-script-XXXXXX.sh")"
     printf '%s\n' "$script_content" | grep -vE '^[[:space:]]*#SBATCH' >> "$orig_script" || true
     chmod +x "$orig_script"
 
-    # Build wrapper with validated #SBATCH directives
+    # Build wrapper with validated #SBATCH directives.
+    # The wrapper also cleans up both temp files (itself + orig_script).
+    # We don't use `exec` so the EXIT trap fires after sandbox-exec exits.
     {
         printf '#!/bin/bash --\n'
         if [[ -n "$safe_directives" ]]; then
             printf '%s' "$safe_directives"
         fi
         printf '\n# --- Chaperon wrapper (auto-generated) ---\n'
-        printf '# Clean up original script on exit\n'
-        printf 'trap %s EXIT\n' "$(printf "'rm -f %q'" "$orig_script")"
-        printf 'exec %q --project-dir %q -- %q\n' \
+        printf '# Clean up temp files on exit (wrapper + original script)\n'
+        printf 'trap %s EXIT\n' "$(printf "'rm -f %q %q'" "$orig_script" "$output_file")"
+        printf '%q --project-dir %q -- %q\n' \
             "$sandbox_exec" "$project_dir" "$orig_script"
     } > "$output_file"
     chmod +x "$output_file"
