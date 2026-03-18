@@ -347,7 +347,12 @@ create_wrapped_command() {
 
 # Session ID: unique per chaperon process.  Combine PID and epoch
 # so that recycled PIDs from a later boot don't collide.
-_CHAPERON_SESSION_ID="${BASHPID:-$$}.$(date +%s)"
+# Guard: only set once per chaperon process — _handler_lib.sh is
+# re-sourced for each handler dispatch, but the session ID must remain
+# stable across all requests within the same chaperon instance.
+if [[ -z "${_CHAPERON_SESSION_ID:-}" ]]; then
+    _CHAPERON_SESSION_ID="${BASHPID:-$$}.$(date +%s)"
+fi
 
 # Build the --comment value for sbatch.
 # Usage: _build_chaperon_comment <project_dir>

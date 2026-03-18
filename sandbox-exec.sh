@@ -80,6 +80,10 @@ if [[ -n "$BACKEND_OVERRIDE" ]]; then
     export SANDBOX_BACKEND="$BACKEND_OVERRIDE"
 fi
 
+# Save SLURM_SCOPE from environment before config loading overwrites it.
+# This allows users to override with: SLURM_SCOPE=session sandbox-exec.sh ...
+_SLURM_SCOPE_ENV="${SLURM_SCOPE:-}"
+
 source "$SCRIPT_DIR/sandbox-lib.sh"
 
 # Default to current directory
@@ -158,6 +162,10 @@ fi
 if [[ -n "$_CHAPERON_DIR" ]]; then
     # Export config vars that chaperon handlers need (shell variables
     # are not inherited by child processes unless exported).
+    # Restore env override if the user set SLURM_SCOPE before sandbox launch.
+    if [[ -n "${_SLURM_SCOPE_ENV:-}" ]]; then
+        SLURM_SCOPE="$_SLURM_SCOPE_ENV"
+    fi
     export SLURM_SCOPE="${SLURM_SCOPE:-project}"
 
     "$SCRIPT_DIR/chaperon/chaperon.sh" \

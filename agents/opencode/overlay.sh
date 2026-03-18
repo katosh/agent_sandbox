@@ -29,9 +29,9 @@ agent_prepare_config() {
             echo ""
             cat "$sandbox_snippet"
         fi
-    } > "$config_dir/AGENTS.md.tmp"
-    chmod a-w "$config_dir/AGENTS.md.tmp" 2>/dev/null || true
-    mv -f "$config_dir/AGENTS.md.tmp" "$config_dir/AGENTS.md"
+    } > "$config_dir/AGENTS.md.tmp.$$"
+    chmod a-w "$config_dir/AGENTS.md.tmp.$$" 2>/dev/null || true
+    mv -f "$config_dir/AGENTS.md.tmp.$$" "$config_dir/AGENTS.md"
 
     # --- Symlink everything else (preserve fresher sandbox copies) ---
     for item in "$real_opencode_dir"/* "$real_opencode_dir"/.*; do

@@ -32,9 +32,9 @@ agent_prepare_config() {
         if [[ -f "$sandbox_snippet" ]]; then
             cat "$sandbox_snippet"
         fi
-    } > "$config_dir/CLAUDE.md.tmp"
-    chmod a-w "$config_dir/CLAUDE.md.tmp" 2>/dev/null || true
-    mv -f "$config_dir/CLAUDE.md.tmp" "$config_dir/CLAUDE.md"
+    } > "$config_dir/CLAUDE.md.tmp.$$"
+    chmod a-w "$config_dir/CLAUDE.md.tmp.$$" 2>/dev/null || true
+    mv -f "$config_dir/CLAUDE.md.tmp.$$" "$config_dir/CLAUDE.md"
 
     # --- Merge settings.json ---
     local sandbox_settings="$SANDBOX_DIR/agents/claude/settings.json"
@@ -58,8 +58,8 @@ for rule in sandbox.get('permissions', {}).get('allow', []):
         existing.append(rule)
 user['permissions']['allow'] = existing
 json.dump(user, sys.stdout, indent=2)
-" "$user_settings" "$sandbox_settings" > "$config_dir/settings.json.tmp"
-        mv -f "$config_dir/settings.json.tmp" "$config_dir/settings.json"
+" "$user_settings" "$sandbox_settings" > "$config_dir/settings.json.tmp.$$"
+        mv -f "$config_dir/settings.json.tmp.$$" "$config_dir/settings.json"
     elif [[ -f "$user_settings" ]]; then
         cp "$user_settings" "$config_dir/settings.json"
     fi
