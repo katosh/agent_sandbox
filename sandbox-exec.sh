@@ -123,9 +123,6 @@ _detect_agents
 _apply_agent_profiles
 prepare_agent_configs "$PROJECT_DIR"
 
-# Prepare prompt indicator (conda-style PS1 prefix)
-_prepare_prompt_rc
-
 # ── Chaperon: create FIFO directory ───────────────────────────────
 # Create the FIFO directory BEFORE backend_prepare so backends can
 # add bind-mounts for it. The chaperon process is started AFTER
@@ -187,9 +184,6 @@ _sandbox_cleanup() {
     fi
     if [[ -n "${_CHAPERON_DIR:-}" ]]; then
         rm -rf "$_CHAPERON_DIR" 2>/dev/null || true
-    fi
-    if [[ -n "${_PROMPT_RC_DIR:-}" ]]; then
-        rm -rf "$_PROMPT_RC_DIR" 2>/dev/null || true
     fi
 }
 trap _sandbox_cleanup EXIT

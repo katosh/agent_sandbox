@@ -127,29 +127,6 @@ backend_prepare() {
         export _CHAPERON_FIFO_DIR
     fi
 
-    # Prompt indicator: landlock has no mount namespace, so we use env vars.
-    # PROMPT_COMMAND prepends SANDBOX_PROMPT to PS1 for bash.
-    # For zsh, ZDOTDIR points to a wrapper dir that sources the originals.
-    #
-    # Uses a named function (__sandbox_prompt) to avoid conflicting with
-    # conda/mamba's own PROMPT_COMMAND hooks. The function strips any
-    # existing prefix first to prevent accumulation in subshells.
-    if [[ -n "${SANDBOX_PROMPT:-}" ]]; then
-        local _prompt="${SANDBOX_PROMPT//%b/landlock}"
-        export SANDBOX_PROMPT="$_prompt"
-
-        # Bash: define a prompt function and prepend to PROMPT_COMMAND
-        local _existing="${PROMPT_COMMAND:-}"
-        export PROMPT_COMMAND='__sandbox_prompt(){ PS1="${SANDBOX_PROMPT}${PS1#"${SANDBOX_PROMPT}"}"; }; __sandbox_prompt;'"${_existing:+ $_existing}"
-
-        # Zsh: ZDOTDIR points to wrapper dir that sources originals
-        if [[ -n "${_PROMPT_ZDOTDIR:-}" && -d "${_PROMPT_ZDOTDIR:-}" ]]; then
-            export ZDOTDIR="$_PROMPT_ZDOTDIR"
-            # Landlock needs read access to the ZDOTDIR
-            LANDLOCK_ARGS+=(--ro "$_PROMPT_RC_DIR")
-        fi
-    fi
-
 }
 
 backend_exec() {

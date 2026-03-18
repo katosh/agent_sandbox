@@ -304,15 +304,6 @@ backend_prepare() {
         FIREJAIL_ARGS+=(--whitelist="$_CHAPERON_FIFO_DIR")
     fi
 
-    # Prompt indicator: firejail forcibly resets PROMPT_COMMAND to ":"
-    # (a no-op) and cannot overlay individual files like bwrap.
-    # We export SANDBOX_PROMPT so scripts/tools can detect the sandbox,
-    # but the PS1 prefix only works with the bwrap and landlock backends.
-    if [[ -n "${SANDBOX_PROMPT:-}" ]]; then
-        local _prompt="${SANDBOX_PROMPT//%b/firejail}"
-        export SANDBOX_PROMPT="$_prompt"
-    fi
-
 }
 
 backend_exec() {

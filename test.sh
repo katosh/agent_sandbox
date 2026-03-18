@@ -422,43 +422,6 @@ fi
 
 echo ""
 
-# ── 4b. Prompt indicator ───────────────────────────────────────────
-
-# SANDBOX_PROMPT should be set as env var inside the sandbox
-if sandbox bash -c 'echo "${SANDBOX_PROMPT:-UNSET}"'; then
-    if [[ "$OUTPUT" == "(sandbox) " ]]; then
-        pass "SANDBOX_PROMPT set inside sandbox"
-    elif [[ "$OUTPUT" == "UNSET" ]]; then
-        fail "SANDBOX_PROMPT not set inside sandbox"
-    else
-        pass "SANDBOX_PROMPT set inside sandbox (custom: $OUTPUT)"
-    fi
-fi
-
-# bwrap: prompt prefix should appear in PS1 (via .bashrc overlay)
-if is_bwrap; then
-    if sandbox bash -i -c 'echo "$PS1"'; then
-        if echo "$OUTPUT" | grep -qF '(sandbox)'; then
-            pass "PS1 prefixed with (sandbox) via .bashrc overlay"
-        else
-            fail "PS1 not prefixed with sandbox indicator" "$OUTPUT"
-        fi
-    fi
-fi
-
-# landlock: PROMPT_COMMAND should be set (prepends to PS1)
-if is_landlock; then
-    if sandbox bash --norc -c 'echo "${PROMPT_COMMAND:-UNSET}"'; then
-        if echo "$OUTPUT" | grep -qF '__sandbox_prompt'; then
-            pass "PROMPT_COMMAND set with __sandbox_prompt hook"
-        else
-            fail "PROMPT_COMMAND not set for landlock backend" "$OUTPUT"
-        fi
-    fi
-fi
-
-echo ""
-
 # ── 5. Chaperon: Slurm proxy and isolation ────────────────────────
 
 echo "5. Chaperon: Slurm proxy and isolation"

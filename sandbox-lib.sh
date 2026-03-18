@@ -127,10 +127,6 @@ PRIVATE_TMP=true
 # landlock: not supported (no mount namespace).
 FILTER_PASSWD=true
 
-# Prompt indicator prefix, shown in interactive shells (like conda's "(env_name) ").
-# Set to "" to disable. Supports %b for backend name.
-SANDBOX_PROMPT="(sandbox) "
-
 # Bind host /dev into the sandbox instead of bwrap's minimal devtmpfs.
 # Required for tmux (pty allocation) on kernels < 5.4. Exposes host
 # /dev/pts — on kernels < 6.2 a same-user process could use TIOCSTI
@@ -245,7 +241,7 @@ _CONFIG_ARRAYS=(
 )
 _CONFIG_SCALARS=(
     SANDBOX_BACKEND PRIVATE_TMP FILTER_PASSWD BIND_DEV_PTS
-    SLURM_SCOPE SANDBOX_PROMPT
+    SLURM_SCOPE
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
 _ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS EXTRA_BLOCKED_PATHS)
@@ -957,114 +953,6 @@ prepare_agent_configs() {
             agent_prepare_config "$project_dir"
         fi
     done
-}
-
-# ── Prompt indicator (conda/mamba style) ────────────────────────
-#
-# Prepends a configurable marker (e.g., "(sandbox) ") to the shell
-# prompt, exactly like conda/mamba prepend "(env_name) " on activate.
-#
-# The mechanism varies by backend:
-#
-#   bwrap:    Generates wrapper .bashrc/.zshrc with the user's original
-#             content + prompt suffix, bind-mounted over the originals.
-#             Most reliable — the prompt block runs AFTER .bashrc.
-#
-#   firejail: Cannot overlay individual files. Uses PROMPT_COMMAND
-#             (bash) and ZDOTDIR (zsh) environment variables.
-#             The zsh ZDOTDIR wrapper sources $HOME/.zshrc then appends.
-#             Bash PROMPT_COMMAND may be overwritten by .bashrc on some
-#             systems — use the bwrap backend for guaranteed prompts.
-#
-#   landlock: Same as firejail (no mount namespace).
-#
-# Globals set:
-#   _PROMPT_RC_DIR          — temp dir with wrapper files (cleaned by trap)
-#   _PROMPT_BASHRC          — path to bwrap-style wrapper .bashrc (inline)
-#   _PROMPT_ZSHRC           — path to bwrap-style wrapper .zshrc (inline)
-#   _PROMPT_ZDOTDIR         — path to ZDOTDIR with source-based .zshrc
-
-_PROMPT_RC_DIR=""
-_PROMPT_BASHRC=""
-_PROMPT_ZSHRC=""
-_PROMPT_ZDOTDIR=""
-
-_prepare_prompt_rc() {
-    _PROMPT_BASHRC=""
-    _PROMPT_ZSHRC=""
-    _PROMPT_ZDOTDIR=""
-
-    [[ -z "${SANDBOX_PROMPT:-}" ]] && return 0
-
-    _PROMPT_RC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sandbox-prompt-XXXXXX")"
-
-    # ── bwrap-style: inline user content + prompt block ──────────
-    # Used by bwrap (bind-mounted over original, runs after all content).
-
-    # Bash
-    {
-        if [[ -f "$HOME/.bashrc" ]]; then
-            cat "$HOME/.bashrc"
-        fi
-        cat <<'PROMPT_BLOCK'
-
-# --- Sandbox prompt indicator (auto-generated) ---
-if [[ $- == *i* && -n "${SANDBOX_PROMPT:-}" ]]; then
-    PS1="${SANDBOX_PROMPT}${PS1:-\\$ }"
-fi
-PROMPT_BLOCK
-    } > "$_PROMPT_RC_DIR/.bashrc"
-    _PROMPT_BASHRC="$_PROMPT_RC_DIR/.bashrc"
-
-    # Zsh
-    {
-        if [[ -f "$HOME/.zshrc" ]]; then
-            cat "$HOME/.zshrc"
-        fi
-        cat <<'PROMPT_BLOCK'
-
-# --- Sandbox prompt indicator (auto-generated) ---
-if [[ -o interactive && -n "${SANDBOX_PROMPT:-}" ]]; then
-    PS1="${SANDBOX_PROMPT}${PS1:-$ }"
-fi
-PROMPT_BLOCK
-    } > "$_PROMPT_RC_DIR/.zshrc"
-    _PROMPT_ZSHRC="$_PROMPT_RC_DIR/.zshrc"
-
-    # ── ZDOTDIR-style: source originals from $HOME ───────────────
-    # Used by firejail/landlock (no file overlay possible).
-    # ZDOTDIR tells zsh to read dotfiles from this dir instead of $HOME.
-    # Each wrapper sources the real file then appends the prompt block.
-
-    local zdot="$_PROMPT_RC_DIR/zdotdir"
-    mkdir -p "$zdot"
-
-    # .zshenv — always sourced first (interactive + non-interactive)
-    cat > "$zdot/.zshenv" <<'EOF'
-[[ -f "$HOME/.zshenv" ]] && source "$HOME/.zshenv"
-EOF
-
-    # .zprofile — sourced by login shells
-    cat > "$zdot/.zprofile" <<'EOF'
-[[ -f "$HOME/.zprofile" ]] && source "$HOME/.zprofile"
-EOF
-
-    # .zshrc — sourced by interactive shells
-    cat > "$zdot/.zshrc" <<'ZSHRC_EOF'
-[[ -f "$HOME/.zshrc" ]] && source "$HOME/.zshrc"
-
-# --- Sandbox prompt indicator (auto-generated) ---
-if [[ -o interactive && -n "${SANDBOX_PROMPT:-}" ]]; then
-    PS1="${SANDBOX_PROMPT}${PS1:-$ }"
-fi
-ZSHRC_EOF
-
-    # .zlogin — sourced after .zshrc for login shells
-    cat > "$zdot/.zlogin" <<'EOF'
-[[ -f "$HOME/.zlogin" ]] && source "$HOME/.zlogin"
-EOF
-
-    _PROMPT_ZDOTDIR="$zdot"
 }
 
 # ── Backend detection ───────────────────────────────────────────

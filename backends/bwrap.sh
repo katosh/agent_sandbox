@@ -100,15 +100,6 @@ backend_prepare() {
         fi
     done
 
-    # Prompt indicator: overlay wrapper .bashrc/.zshrc (later --ro-bind
-    # overrides the earlier one from HOME_READONLY).
-    if [[ -n "${_PROMPT_BASHRC:-}" && -f "${_PROMPT_BASHRC:-}" ]]; then
-        BWRAP_ARGS+=(--ro-bind "$_PROMPT_BASHRC" "$HOME/.bashrc")
-    fi
-    if [[ -n "${_PROMPT_ZSHRC:-}" && -f "${_PROMPT_ZSHRC:-}" ]]; then
-        BWRAP_ARGS+=(--ro-bind "$_PROMPT_ZSHRC" "$HOME/.zshrc")
-    fi
-
     BWRAP_ARGS+=(--ro-bind "$SANDBOX_DIR" "$SANDBOX_DIR")
 
     # If the project dir is under $HOME, bind it BEFORE remount-ro
@@ -279,12 +270,6 @@ backend_prepare() {
     BWRAP_ARGS+=(--setenv SANDBOX_PROJECT_DIR "$project_dir")
     # Prepend chaperon stubs to PATH (before bin/ for sbatch/srun override)
     BWRAP_ARGS+=(--setenv PATH "$SANDBOX_DIR/chaperon/stubs:$SANDBOX_DIR/bin:${PATH}")
-
-    # Prompt indicator (read by wrapper .bashrc/.zshrc)
-    if [[ -n "${SANDBOX_PROMPT:-}" ]]; then
-        local _prompt="${SANDBOX_PROMPT//%b/bwrap}"
-        BWRAP_ARGS+=(--setenv SANDBOX_PROMPT "$_prompt")
-    fi
 
     # Bind-mount chaperon FIFO directory into the sandbox (writable for
     # per-request response FIFOs created by stubs)
