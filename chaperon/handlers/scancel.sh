@@ -62,7 +62,7 @@ handle_scancel() {
 
     local real_scancel="${REAL_SCANCEL:-/usr/bin/scancel}"
     if [[ ! -x "$real_scancel" ]]; then
-        echo "sandbox: scancel binary not found at $real_scancel — is Slurm installed?" >&2
+        _sandbox_warn "scancel binary not found at $real_scancel — is Slurm installed?"
         return 1
     fi
 
@@ -93,7 +93,7 @@ handle_scancel() {
                 if _is_scancel_allowed "$arg"; then
                     validated_flags+=("$arg")
                 else
-                    echo "sandbox: scancel flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "scancel flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
@@ -105,7 +105,7 @@ handle_scancel() {
                         validated_flags+=("${REQ_ARGS[$i]}")
                     fi
                 else
-                    echo "sandbox: scancel flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "scancel flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
@@ -121,7 +121,7 @@ handle_scancel() {
                 if [[ "$base_id" =~ ^[0-9]+$ ]]; then
                     requested_ids+=("$arg")
                 else
-                    echo "sandbox: '$arg' is not a valid job ID. Job IDs must start with a number (e.g., 12345, 12345_0, 12345_[0-10])." >&2
+                    _sandbox_warn "'$arg' is not a valid job ID. Job IDs must start with a number (e.g., 12345, 12345_0, 12345_[0-10])."
                     return 1
                 fi
                 ;;
@@ -159,7 +159,7 @@ handle_scancel() {
             fi
         done
         if "$any_exist"; then
-            echo "sandbox: cannot cancel — the requested job(s) were not submitted by this $scope. Only sandbox-submitted jobs can be cancelled." >&2
+            _sandbox_deny "cannot cancel — the requested job(s) were not submitted by this $scope. Only sandbox-submitted jobs can be cancelled."
         else
             echo "sandbox: no sandbox-submitted jobs found in queue." >&2
         fi
@@ -188,7 +188,7 @@ handle_scancel() {
             if "$matched"; then
                 final_ids+=("$req_id")
             else
-                echo "sandbox: cannot cancel job $req_id — it was not submitted by this $scope." >&2
+                _sandbox_deny "cannot cancel job $req_id — it was not submitted by this $scope."
             fi
         done
     fi
@@ -198,7 +198,7 @@ handle_scancel() {
             # No jobs to cancel — not an error
             return 0
         elif [[ ${#requested_ids[@]} -gt 0 ]]; then
-            echo "sandbox: none of the requested jobs were submitted by this $scope." >&2
+            _sandbox_deny "none of the requested jobs were submitted by this $scope."
             return 1
         fi
         return 0

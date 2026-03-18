@@ -25,7 +25,7 @@ handle_sreport() {
                     "$real_sreport" "$arg" || rc=$?
                     return "$rc"
                 else
-                    echo "sandbox: sreport binary not found at $real_sreport — is Slurm installed?" >&2
+                    _sandbox_warn "sreport binary not found at $real_sreport — is Slurm installed?"
                     return 1
                 fi
                 ;;
@@ -33,7 +33,7 @@ handle_sreport() {
         (( i++ )) || true
     done
 
-    echo "sandbox: sreport is not allowed — its many report types can enumerate users and accounts." >&2
-    echo "sandbox: use 'sacct' with formatting options instead (e.g., sacct --format=JobID,Account,User,Elapsed,State)." >&2
+    _sandbox_deny "sreport is not allowed — its many report types can enumerate users and accounts."
+    _sandbox_warn "use 'sacct' with formatting options instead (e.g., sacct --format=JobID,Account,User,Elapsed,State)."
     return 1
 }

@@ -146,7 +146,7 @@ handle_srun() {
 
     local real_srun="${REAL_SRUN:-/usr/bin/srun}"
     if [[ ! -x "$real_srun" ]]; then
-        echo "sandbox: srun binary not found at $real_srun — is Slurm installed?" >&2
+        _sandbox_warn "srun binary not found at $real_srun — is Slurm installed?"
         return 1
     fi
 
@@ -183,53 +183,53 @@ handle_srun() {
         case "$arg" in
             # ── Always denied ──
             --pty)
-                echo "sandbox: srun '--pty' is not allowed — interactive PTY sessions cannot be proxied through the sandbox. Use 'sbatch' for job submission or 'srun' without --pty." >&2
+                _sandbox_deny "srun '--pty' is not allowed — interactive PTY sessions cannot be proxied through the sandbox. Use 'sbatch' for job submission or 'srun' without --pty."
                 return 1
                 ;;
             --jobid|--jobid=*|-j)
-                echo "sandbox: srun '$arg' is not allowed — attaching to other jobs' allocations is restricted." >&2
+                _sandbox_deny "srun '$arg' is not allowed — attaching to other jobs' allocations is restricted."
                 return 1
                 ;;
             --uid|--uid=*|--gid|--gid=*)
-                echo "sandbox: srun '$arg' is not allowed — jobs must run as your own user." >&2
+                _sandbox_deny "srun '$arg' is not allowed — jobs must run as your own user."
                 return 1
                 ;;
             --export|--export=*)
-                echo "sandbox: srun '$arg' is not allowed — environment variable injection could bypass sandbox restrictions." >&2
+                _sandbox_deny "srun '$arg' is not allowed — environment variable injection could bypass sandbox restrictions."
                 return 1
                 ;;
             --chdir|--chdir=*|-D)
-                echo "sandbox: srun '$arg' is not allowed — the working directory is set automatically." >&2
+                _sandbox_deny "srun '$arg' is not allowed — the working directory is set automatically."
                 return 1
                 ;;
             --get-user-env|--get-user-env=*)
-                echo "sandbox: srun '$arg' is not allowed — it can leak environment variables from outside the sandbox." >&2
+                _sandbox_deny "srun '$arg' is not allowed — it can leak environment variables from outside the sandbox."
                 return 1
                 ;;
             --propagate|--propagate=*)
-                echo "sandbox: srun '$arg' is not allowed — resource limit propagation is restricted." >&2
+                _sandbox_deny "srun '$arg' is not allowed — resource limit propagation is restricted."
                 return 1
                 ;;
             --prolog|--prolog=*|--epilog|--epilog=*|--task-prolog|--task-prolog=*|--task-epilog|--task-epilog=*)
-                echo "sandbox: srun '$arg' is not allowed — custom prolog/epilog scripts could run outside sandbox control." >&2
+                _sandbox_deny "srun '$arg' is not allowed — custom prolog/epilog scripts could run outside sandbox control."
                 return 1
                 ;;
             --bcast|--bcast=*)
-                echo "sandbox: srun '$arg' is not allowed — binary broadcasting could bypass sandbox wrapping." >&2
+                _sandbox_deny "srun '$arg' is not allowed — binary broadcasting could bypass sandbox wrapping."
                 return 1
                 ;;
             --container|--container=*)
-                echo "sandbox: srun '$arg' is not allowed — OCI containers would bypass sandbox restrictions." >&2
+                _sandbox_deny "srun '$arg' is not allowed — OCI containers would bypass sandbox restrictions."
                 return 1
                 ;;
             --network|--network=*)
-                echo "sandbox: srun '$arg' is not allowed — network namespace manipulation is restricted." >&2
+                _sandbox_deny "srun '$arg' is not allowed — network namespace manipulation is restricted."
                 return 1
                 ;;
             # ── Allocation flags: allowed in alloc mode, denied in step mode ──
             -A|--account|--account=*|-p|--partition|--partition=*|-q|--qos|--qos=*|-t|--time|--time=*|--reservation|--reservation=*|-J|--job-name|--job-name=*|--begin|--begin=*|--deadline|--deadline=*|--constraint|--constraint=*|--nice|--nice=*|--priority|--priority=*|--signal|--signal=*|--wckey|--wckey=*|--comment|--comment=*)
                 if [[ "$mode" == "step" ]]; then
-                    echo "sandbox: srun '$arg' is not allowed in step mode — steps inherit the parent job's resources. Use these flags with sbatch instead." >&2
+                    _sandbox_warn "srun '$arg' is not allowed in step mode — steps inherit the parent job's resources. Use these flags with sbatch instead."
                     return 1
                 fi
                 validated_flags+=("$arg")
@@ -243,7 +243,7 @@ handle_srun() {
                 if _is_srun_allowed "$arg" "$mode"; then
                     validated_flags+=("$arg")
                 else
-                    echo "sandbox: srun flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "srun flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
@@ -256,7 +256,7 @@ handle_srun() {
                         validated_flags+=("${REQ_ARGS[$i]}")
                     fi
                 else
-                    echo "sandbox: srun flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "srun flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
@@ -284,7 +284,7 @@ handle_srun() {
                 ;;
             esac
         done
-        echo "sandbox: srun requires a command to run (e.g., srun -n 4 ./my_program)" >&2
+        _sandbox_warn "srun requires a command to run (e.g., srun -n 4 ./my_program)"
         return 1
     fi
 

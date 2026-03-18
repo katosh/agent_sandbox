@@ -44,7 +44,7 @@ handle_sprio() {
 
     local real_sprio="${REAL_SPRIO:-/usr/bin/sprio}"
     if [[ ! -x "$real_sprio" ]]; then
-        echo "sandbox: sprio binary not found at $real_sprio — is Slurm installed?" >&2
+        _sandbox_warn "sprio binary not found at $real_sprio — is Slurm installed?"
         return 1
     fi
 
@@ -56,23 +56,23 @@ handle_sprio() {
         case "$arg" in
             # Deny --allusers
             --allusers)
-                echo "sandbox: sprio '--allusers' is not allowed — only your own jobs are shown inside the sandbox." >&2
+                _sandbox_deny "sprio '--allusers' is not allowed — only your own jobs are shown inside the sandbox."
                 return 1
                 ;;
             # Intercept --user: we always override to $(whoami)
             -u|--user)
-                echo "sandbox: sprio '--user' is not allowed — the sandbox automatically scopes to your user." >&2
+                _sandbox_deny "sprio '--user' is not allowed — the sandbox automatically scopes to your user."
                 return 1
                 ;;
             --user=*)
-                echo "sandbox: sprio '--user' is not allowed — the sandbox automatically scopes to your user." >&2
+                _sandbox_deny "sprio '--user' is not allowed — the sandbox automatically scopes to your user."
                 return 1
                 ;;
             --*=*)
                 if _is_sprio_allowed "$arg"; then
                     validated_flags+=("$arg")
                 else
-                    echo "sandbox: sprio flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "sprio flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
@@ -84,12 +84,12 @@ handle_sprio() {
                         validated_flags+=("${REQ_ARGS[$i]}")
                     fi
                 else
-                    echo "sandbox: sprio flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox." >&2
+                    _sandbox_warn "sprio flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
             *)
-                echo "sandbox: unexpected sprio argument: '$arg'" >&2
+                _sandbox_warn "unexpected sprio argument: '$arg'"
                 return 1
                 ;;
         esac
