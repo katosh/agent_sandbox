@@ -97,9 +97,10 @@ HOME_WRITABLE=(
 )
 
 # Home access mode:
-#   restricted — (default) tmpfs HOME with selective mounts from lists above
-#   read       — full HOME readable; .ssh/.aws/.gnupg still hidden
-#   write      — full HOME writable; .ssh/.aws/.gnupg still hidden
+#   restricted — (default) tmpfs HOME, selective mounts, read-only base
+#   tmpwrite   — like restricted but tmpfs is writable (ephemeral writes, lost on exit)
+#   read       — full real HOME readable; .ssh/.aws/.gnupg still hidden
+#   write      — full real HOME writable; .ssh/.aws/.gnupg still hidden
 # Can override via env: HOME_ACCESS=read sandbox-exec.sh -- bash
 HOME_ACCESS="restricted"
 

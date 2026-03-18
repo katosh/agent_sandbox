@@ -177,7 +177,7 @@ backend_prepare() {
     # instance runs with fewer privileges than the parent sandbox.
 
     # --- Home directory paths ---
-    if [[ "${HOME_ACCESS:-restricted}" == "restricted" ]]; then
+    if [[ "${HOME_ACCESS:-restricted}" == "restricted" || "${HOME_ACCESS}" == "tmpwrite" ]]; then
         # Whitelist mode: tmpfs $HOME, selectively mount listed paths
         for subdir in "${HOME_READONLY[@]}"; do
             local full_path="$HOME/$subdir"
@@ -204,19 +204,22 @@ backend_prepare() {
             FIREJAIL_ARGS+=(--whitelist="$project_dir")
         fi
 
-        # Lock HOME read-only, then re-enable writable paths
-        FIREJAIL_ARGS+=(--read-only="$HOME")
+        if [[ "${HOME_ACCESS}" == "restricted" ]]; then
+            # Lock HOME read-only, then re-enable writable paths
+            FIREJAIL_ARGS+=(--read-only="$HOME")
 
-        for subdir in "${HOME_WRITABLE[@]}"; do
-            local full_path="$HOME/$subdir"
-            if [[ -e "$full_path" ]]; then
-                FIREJAIL_ARGS+=(--read-write="$full_path")
+            for subdir in "${HOME_WRITABLE[@]}"; do
+                local full_path="$HOME/$subdir"
+                if [[ -e "$full_path" ]]; then
+                    FIREJAIL_ARGS+=(--read-write="$full_path")
+                fi
+            done
+
+            if [[ "$project_dir" == "$HOME"* ]]; then
+                FIREJAIL_ARGS+=(--read-write="$project_dir")
             fi
-        done
-
-        if [[ "$project_dir" == "$HOME"* ]]; then
-            FIREJAIL_ARGS+=(--read-write="$project_dir")
         fi
+        # tmpwrite: skip --read-only="$HOME" — tmpfs stays writable (ephemeral)
     else
         # read/write: full HOME visible, blacklist credential dirs
         for _blocked_sub in "${_HOME_ALWAYS_BLOCKED[@]}"; do

@@ -122,8 +122,8 @@ fi
 
 # Validate HOME_ACCESS
 case "${HOME_ACCESS:-restricted}" in
-    restricted|read|write) ;;
-    *) echo "Error: HOME_ACCESS must be 'restricted', 'read', or 'write' (got '${HOME_ACCESS}')." >&2; exit 1 ;;
+    restricted|tmpwrite|read|write) ;;
+    *) echo "Error: HOME_ACCESS must be 'restricted', 'tmpwrite', 'read', or 'write' (got '${HOME_ACCESS}')." >&2; exit 1 ;;
 esac
 
 # Detect and load backend

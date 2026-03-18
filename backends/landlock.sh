@@ -71,7 +71,9 @@ backend_prepare() {
     [[ -d /run/systemd/resolve ]]  && LANDLOCK_ARGS+=(--ro /run/systemd/resolve)
 
     # --- Home directory ---
-    if [[ "${HOME_ACCESS:-restricted}" == "restricted" ]]; then
+    if [[ "${HOME_ACCESS:-restricted}" == "restricted" || "${HOME_ACCESS}" == "tmpwrite" ]]; then
+        # tmpwrite note: Landlock has no tmpfs — falls back to restricted
+        # (only listed paths accessible). Use bwrap/firejail for tmpwrite.
         # Grant individual paths only
         for subdir in "${HOME_READONLY[@]}"; do
             local full_path="$HOME/$subdir"

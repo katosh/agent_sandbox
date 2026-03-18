@@ -84,7 +84,9 @@ backend_prepare() {
     done
 
     # --- Home directory ---
-    if [[ "${HOME_ACCESS:-restricted}" == "restricted" ]]; then
+    # restricted/tmpwrite: tmpfs HOME + selective mounts from lists
+    # read/write: bind real HOME + hide credential dirs
+    if [[ "${HOME_ACCESS:-restricted}" == "restricted" || "${HOME_ACCESS}" == "tmpwrite" ]]; then
         # Blank home with tmpfs, selectively re-mount listed paths
         BWRAP_ARGS+=(--tmpfs "$HOME")
 
@@ -133,6 +135,8 @@ backend_prepare() {
         BWRAP_ARGS+=(--bind "$project_dir" "$project_dir")
     fi
 
+    # In restricted mode, lock down the tmpfs HOME as read-only.
+    # In tmpwrite mode, the tmpfs stays writable (ephemeral writes).
     if [[ "${HOME_ACCESS:-restricted}" == "restricted" ]]; then
         BWRAP_ARGS+=(--remount-ro "$HOME")
     fi
