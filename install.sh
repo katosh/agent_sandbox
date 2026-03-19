@@ -184,6 +184,11 @@ if [[ -d "$SCRIPT_DIR/agents" ]]; then
             [[ -f "$file" ]] || continue
             cp "$file" "$SANDBOX_DIR/agents/$local_agent/"
         done
+        # Clean up stale files from previous installs (home.conf, hide.conf,
+        # env.conf were merged into config.conf)
+        for _stale in home.conf hide.conf env.conf; do
+            rm -f "$SANDBOX_DIR/agents/$local_agent/$_stale" 2>/dev/null || true
+        done
     done
     echo "  ✓ Agent profiles installed ($(ls -d "$SANDBOX_DIR"/agents/*/ 2>/dev/null | wc -l) agents)"
 fi

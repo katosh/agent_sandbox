@@ -45,9 +45,7 @@ Each agent profile directory (`agents/<name>/`) follows a file contract:
 | File | Purpose |
 |---|---|
 | `detect.sh` | Detection script — exits 0 if the agent is installed |
-| `home.conf` | `HOME_READONLY+=()` and `HOME_WRITABLE+=()` entries for the agent's dotfiles |
-| `hide.conf` | `BLOCKED_FILES+=()` entries for files to overlay with `/dev/null` |
-| `env.conf` | `BLOCKED_ENV_VARS` entries to *remove* (unblock) for this agent |
+| `config.conf` | Home paths, hidden files, env var unblocking (all in one file) |
 | `overlay.sh` | Config merging script — runs after backend detection (e.g., merge `CLAUDE.md`, create `settings.json`) |
 | `agent.md` | Sandbox-awareness instructions injected into the agent's context |
 | `settings.json` | Agent-specific settings template (optional, agent-dependent) |

@@ -872,81 +872,66 @@ _detect_agents() {
     fi
 }
 
-# _apply_agent_profiles — merge home.conf, hide.conf, env.conf into globals
+# _apply_agent_profiles — merge each agent's config.conf into globals
 _apply_agent_profiles() {
     local agents_dir="$SANDBOX_DIR/agents"
 
     for agent_name in "${_DETECTED_AGENTS[@]}"; do
         local profile_dir="$agents_dir/$agent_name"
+        local config="$profile_dir/config.conf"
+        [[ -f "$config" ]] || continue
 
-        # --- home.conf: add writable/readonly paths ---
-        if [[ -f "$profile_dir/home.conf" ]]; then
-            local AGENT_HOME_WRITABLE=()
-            local AGENT_HOME_READONLY=()
-            # shellcheck disable=SC1090
-            source "$profile_dir/home.conf"
+        # Source config.conf — declares AGENT_HOME_WRITABLE, AGENT_HOME_READONLY,
+        # AGENT_HIDE_FILES, AGENT_UNBLOCK_ENV_VARS arrays.
+        local AGENT_HOME_WRITABLE=() AGENT_HOME_READONLY=()
+        local AGENT_HIDE_FILES=() AGENT_UNBLOCK_ENV_VARS=()
+        # shellcheck disable=SC1090
+        source "$config"
 
-            for _path in "${AGENT_HOME_WRITABLE[@]}"; do
-                # Avoid duplicates
-                local _dup=false
-                for _existing in "${HOME_WRITABLE[@]}"; do
-                    [[ "$_existing" == "$_path" ]] && { _dup=true; break; }
-                done
-                $_dup || HOME_WRITABLE+=("$_path")
+        # Add writable/readonly home paths (skip duplicates)
+        local _path _dup _existing
+        for _path in "${AGENT_HOME_WRITABLE[@]}"; do
+            _dup=false
+            for _existing in "${HOME_WRITABLE[@]}"; do
+                [[ "$_existing" == "$_path" ]] && { _dup=true; break; }
             done
-
-            for _path in "${AGENT_HOME_READONLY[@]}"; do
-                local _dup=false
-                for _existing in "${HOME_READONLY[@]}"; do
-                    [[ "$_existing" == "$_path" ]] && { _dup=true; break; }
-                done
-                $_dup || HOME_READONLY+=("$_path")
+            $_dup || HOME_WRITABLE+=("$_path")
+        done
+        for _path in "${AGENT_HOME_READONLY[@]}"; do
+            _dup=false
+            for _existing in "${HOME_READONLY[@]}"; do
+                [[ "$_existing" == "$_path" ]] && { _dup=true; break; }
             done
-        fi
+            $_dup || HOME_READONLY+=("$_path")
+        done
 
-        # --- hide.conf: add files to BLOCKED_FILES ---
-        if [[ -f "$profile_dir/hide.conf" ]]; then
-            local AGENT_HIDE_FILES=()
-            # shellcheck disable=SC1090
-            source "$profile_dir/hide.conf"
-
-            for _file in "${AGENT_HIDE_FILES[@]}"; do
-                # Expand $HOME in the path
-                _file="${_file/\$HOME/$HOME}"
-                local _dup=false
-                for _existing in "${BLOCKED_FILES[@]}"; do
-                    [[ "$_existing" == "$_file" ]] && { _dup=true; break; }
-                done
-                $_dup || BLOCKED_FILES+=("$_file")
+        # Add hidden files to BLOCKED_FILES (expand $HOME)
+        local _file
+        for _file in "${AGENT_HIDE_FILES[@]}"; do
+            _file="${_file/\$HOME/$HOME}"
+            _dup=false
+            for _existing in "${BLOCKED_FILES[@]}"; do
+                [[ "$_existing" == "$_file" ]] && { _dup=true; break; }
             done
-        fi
+            $_dup || BLOCKED_FILES+=("$_file")
+        done
 
-        # --- env.conf: remove vars from BLOCKED_ENV_VARS ---
-        if [[ -f "$profile_dir/env.conf" ]]; then
-            local AGENT_UNBLOCK_ENV_VARS=()
-            # shellcheck disable=SC1090
-            source "$profile_dir/env.conf"
-
-            if [[ ${#AGENT_UNBLOCK_ENV_VARS[@]} -gt 0 ]]; then
-                local _new_blocked=()
-                for _var in "${BLOCKED_ENV_VARS[@]}"; do
-                    local _unblock=false
-                    for _unblock_var in "${AGENT_UNBLOCK_ENV_VARS[@]}"; do
-                        [[ "$_var" == "$_unblock_var" ]] && { _unblock=true; break; }
-                    done
-                    $_unblock || _new_blocked+=("$_var")
+        # Remove unblocked env vars from BLOCKED_ENV_VARS
+        if [[ ${#AGENT_UNBLOCK_ENV_VARS[@]} -gt 0 ]]; then
+            local _new_blocked=() _var _unblock _unblock_var
+            for _var in "${BLOCKED_ENV_VARS[@]}"; do
+                _unblock=false
+                for _unblock_var in "${AGENT_UNBLOCK_ENV_VARS[@]}"; do
+                    [[ "$_var" == "$_unblock_var" ]] && { _unblock=true; break; }
                 done
-                BLOCKED_ENV_VARS=("${_new_blocked[@]}")
-            fi
+                $_unblock || _new_blocked+=("$_var")
+            done
+            BLOCKED_ENV_VARS=("${_new_blocked[@]}")
         fi
-
-        # NOTE: We intentionally do NOT create stub directories for
-        # first-time usage. Creating dirs like ~/.config/opencode/ would
-        # cause the agent to be "detected" on subsequent runs even if
-        # it's not installed, which triggers env var unblocking from its
-        # env.conf (a security issue). The backends handle non-existent
-        # HOME_WRITABLE paths gracefully (they're skipped).
     done
+    # NOTE: We intentionally do NOT create stub directories for first-time
+    # usage. Creating dirs like ~/.config/opencode/ would cause the agent
+    # to be "detected" on subsequent runs even if it's not installed.
 }
 
 # prepare_agent_configs PROJECT_DIR — run each agent's overlay.sh
