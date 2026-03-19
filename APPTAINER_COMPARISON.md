@@ -8,7 +8,7 @@ Docker requires root and is not available on shared HPC clusters. The natural co
 
 Apptainer was designed for **reproducibility**: running the same software stack across different clusters. Its documented philosophy is ["integration over isolation"](https://apptainer.org/docs/admin/main/admin_quickstart.html), meaning containers share the host PID space, network, IPC, and home directory by default. This is deliberate, since HPC workloads need access to GPUs, InfiniBand, parallel filesystems, and Slurm.
 
-This sandbox was designed for **containment**: restricting what AI coding agents (Claude Code, Codex, Gemini CLI, Aider, OpenCode) can see and modify on the host. Its philosophy is isolation-first, with selective holes for what the agent needs (project directory, Slurm via chaperon proxy, agent-specific API keys via env.conf profiles).
+This sandbox was designed for **containment**: restricting what AI coding agents (Claude Code, Codex, Gemini CLI, Aider, OpenCode) can see and modify on the host. Its philosophy is isolation-first, with selective holes for what the agent needs (project directory, Slurm via chaperon proxy, agent-specific API keys via config.conf profiles).
 
 These are opposite defaults. An Apptainer container is wide-open unless you lock it down; the sandbox is locked-down unless you open it up.
 

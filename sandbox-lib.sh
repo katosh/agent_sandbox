@@ -93,7 +93,7 @@ HOME_READONLY=(
 HOME_WRITABLE=(
     ".cache/uv"
     # Agent-specific paths (e.g., .claude, .codex, .gemini) are added
-    # automatically by agent profiles in agents/<name>/home.conf.
+    # automatically by agent profiles in agents/<name>/config.conf.
 )
 
 # Home access mode:
@@ -831,7 +831,7 @@ generate_filtered_passwd() {
 # ── Agent detection and profile system ─────────────────────────────
 #
 # Scans agents/*/detect.sh to find installed agents, then merges their
-# home.conf, hide.conf, and env.conf into the global sandbox arrays.
+# config.conf into the global sandbox arrays.
 # Each agent's overlay.sh handles config file merging (e.g., CLAUDE.md).
 #
 # Data flow:

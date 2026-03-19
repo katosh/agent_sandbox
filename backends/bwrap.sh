@@ -142,7 +142,7 @@ backend_prepare() {
     fi
 
     # Agent-specific file hiding (e.g., CLAUDE.md, AGENTS.md) is handled
-    # by BLOCKED_FILES, populated from agents/*/hide.conf by _apply_agent_profiles().
+    # by BLOCKED_FILES, populated from agents/*/config.conf by _apply_agent_profiles().
 
     for blocked in "${BLOCKED_FILES[@]}"; do
         if [[ -e "$blocked" ]]; then

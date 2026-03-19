@@ -281,13 +281,11 @@ The sandbox uses an auto-detection system to find installed agents and apply per
 | `detect.sh` | Returns 0 if the agent is installed/configured |
 | `overlay.sh` | Config merging (e.g., CLAUDE.md + sandbox instructions) |
 | `agent.md` | Sandbox instructions injected into the agent's instruction file |
-| `home.conf` | Home directory paths (writable + readonly) |
-| `hide.conf` | Files to overlay with /dev/null (e.g., hide real CLAUDE.md) |
-| `env.conf` | Environment variables to unblock from the default blocklist |
+| `config.conf` | Home paths, hidden files, env var unblocking (all in one) |
 
-**How it works:** At sandbox start, all `agents/*/detect.sh` are scanned. Every matching profile's paths, hidden files, and env var unblocks are merged into the global sandbox config. Then each matching agent's `overlay.sh` runs to handle config file merging.
+**How it works:** At sandbox start, all `agents/*/detect.sh` are scanned. Every matching profile's `config.conf` is merged into the global sandbox config (home paths, hidden files, env var unblocks). Then each matching agent's `overlay.sh` runs to handle config file merging.
 
-**Credentials are isolated per-agent:** The base config blocks all API keys. Each agent's `env.conf` unblocks only what it needs — Claude uses OAuth (no env vars), Codex unblocks `OPENAI_API_KEY` and `CODEX_API_KEY`, Gemini unblocks `GOOGLE_API_KEY`.
+**Credentials are isolated per-agent:** The base config blocks all API keys. Each agent's `config.conf` unblocks only what it needs — Claude uses OAuth (no env vars), Codex unblocks `OPENAI_API_KEY` and `CODEX_API_KEY`, Gemini unblocks `GOOGLE_API_KEY`.
 
 Customize agent instructions via `~/.config/agent-sandbox/agents/<name>/agent.md`.
 

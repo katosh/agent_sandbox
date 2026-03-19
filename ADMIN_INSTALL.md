@@ -166,7 +166,7 @@ HOME_READONLY=(
 
 HOME_WRITABLE=(
     # Agent-specific paths (e.g., .claude, .codex) are added
-    # automatically by agent profiles in agents/<name>/home.conf.
+    # automatically by agent profiles in agents/<name>/config.conf.
 )
 
 # Paths that must NEVER be writable — user EXTRA_WRITABLE_PATHS entries
