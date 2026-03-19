@@ -3,7 +3,7 @@
 #
 # What this script does:
 #   1. Detects available sandbox backends (bwrap, firejail, landlock)
-#   2. Installs bubblewrap via Homebrew if needed (and available)
+#   2. Checks for sandbox backends (bwrap, firejail, landlock)
 #   3. Copies sandbox scripts to ~/.config/agent-sandbox/
 #   4. Installs agent profiles (Claude, Codex, Gemini, Aider, OpenCode)
 #   5. Creates a default sandbox.conf (won't overwrite yours)
@@ -28,11 +28,10 @@ Options:
   -h, --help                Show this help
 
 What this script does:
-  1. Detects available sandbox backends (bwrap, firejail, landlock)
-  2. Installs bubblewrap via Homebrew if needed (and available)
-  3. Copies all sandbox scripts to ~/.config/agent-sandbox/
-  4. Installs agent profiles (Claude, Codex, Gemini, Aider, OpenCode)
-  5. Creates sandbox.conf if it doesn't exist (never overwrites yours)
+  1. Checks for sandbox backends (bwrap, firejail, landlock)
+  2. Copies all sandbox scripts to ~/.config/agent-sandbox/
+  3. Installs agent profiles (Claude, Codex, Gemini, Aider, OpenCode)
+  4. Creates sandbox.conf if it doesn't exist (never overwrites yours)
   6. Creates conf.d/ for per-project overrides
   7. Runs a quick smoke test to verify everything works
 
