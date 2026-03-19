@@ -415,16 +415,33 @@ _build_chaperon_comment() {
     printf '%s' "$tag"
 }
 
-# Query squeue for job IDs matching a chaperon tag pattern.
+# Query squeue (+ sacct fallback) for job IDs matching a chaperon tag pattern.
 # Usage: _query_chaperon_jobs <grep_pattern>
 # Prints matching job IDs (one per line).
 _query_chaperon_jobs() {
     local pattern="$1"
     local _real_squeue="${REAL_SQUEUE:-/usr/bin/squeue}"
-    timeout 10 "$_real_squeue" --me -h -o "%i %k" 2>/dev/null \
+    local _real_sacct="${REAL_SACCT:-/usr/bin/sacct}"
+    local _results
+
+    # squeue: pending/running jobs
+    _results="$(timeout 10 "$_real_squeue" --me -h -o "%i %k" 2>/dev/null \
         | grep -E "$pattern" \
-        | awk '{print $1}' \
-        || true
+        | awk '{print $1}')" || true
+
+    # sacct fallback: recently completed jobs (if slurmdbd is available)
+    if [[ -x "$_real_sacct" ]]; then
+        local _sacct_results
+        _sacct_results="$(timeout 10 "$_real_sacct" -u "$(id -un)" \
+            -n -o "JobID%20,Comment%200" -X --starttime=now-7days 2>/dev/null \
+            | grep -E "$pattern" \
+            | awk '{print $1}')" || true
+        if [[ -n "$_sacct_results" ]]; then
+            _results="$(printf '%s\n%s' "${_results:-}" "$_sacct_results" | sort -u)"
+        fi
+    fi
+
+    [[ -n "${_results:-}" ]] && printf '%s\n' "$_results"
 }
 
 # Get the set of job IDs that this scope allows.
@@ -445,7 +462,18 @@ _get_scoped_jobs() {
         user|none)
             # Both "user" and "none" return ALL jobs of the current user
             local _real_squeue="${REAL_SQUEUE:-/usr/bin/squeue}"
-            timeout 10 "$_real_squeue" --me -h -o "%i" 2>/dev/null || true
+            local _real_sacct="${REAL_SACCT:-/usr/bin/sacct}"
+            local _user_jobs
+            _user_jobs="$(timeout 10 "$_real_squeue" --me -h -o "%i" 2>/dev/null)" || true
+            # sacct fallback for completed jobs
+            if [[ -x "$_real_sacct" ]]; then
+                local _sacct_jobs
+                _sacct_jobs="$(timeout 10 "$_real_sacct" -u "$(id -un)" \
+                    -n -o "JobID%20" -X --starttime=now-7days 2>/dev/null \
+                    | awk '{print $1}')" || true
+                [[ -n "$_sacct_jobs" ]] && _user_jobs="$(printf '%s\n%s' "${_user_jobs:-}" "$_sacct_jobs" | sort -u)"
+            fi
+            [[ -n "${_user_jobs:-}" ]] && printf '%s\n' "$_user_jobs"
             ;;
         *)
             _sandbox_warn "unknown SLURM_SCOPE value: '$scope'. Valid values: session, project, user, none"
@@ -454,8 +482,41 @@ _get_scoped_jobs() {
     esac
 }
 
+# ── Query a job's comment (squeue → sacct fallback) ──────────────
+# squeue only shows pending/running jobs. For recently completed jobs,
+# fall back to sacct (which queries the persistent accounting database).
+# Returns the comment string, or empty if the job is not found.
+_get_job_comment() {
+    local base_id="$1"
+    local _real_squeue="${REAL_SQUEUE:-/usr/bin/squeue}"
+    local _real_sacct="${REAL_SACCT:-/usr/bin/sacct}"
+    local comment
+
+    # Try squeue first (fast, no database dependency)
+    comment="$(timeout 10 "$_real_squeue" -j "$base_id" --me -h -o "%k" 2>/dev/null)" || true
+    if [[ -n "$comment" ]]; then
+        printf '%s' "$comment"
+        return 0
+    fi
+
+    # Fall back to sacct (persistent, survives job completion)
+    if [[ -x "$_real_sacct" ]]; then
+        comment="$(timeout 10 "$_real_sacct" -j "$base_id" -u "$(id -un)" \
+            -n -o "Comment%200" -X --starttime=now-7days 2>/dev/null \
+            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+            | head -1)" || true
+        if [[ -n "$comment" ]]; then
+            printf '%s' "$comment"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 # ── Validate that a single job ID is in scope ────────────────────
-# Uses a targeted squeue query instead of fetching all scoped jobs.
+# Uses a targeted squeue query (with sacct fallback) instead of
+# fetching all scoped jobs.
 # Shared by scontrol, sstat, and any handler that needs per-job validation.
 _validate_job_in_scope() {
     local job_id="$1" scope="$2" project_dir="$3"
@@ -466,10 +527,9 @@ _validate_job_in_scope() {
         return 1
     fi
 
-    # Query only this specific job's comment
-    local _real_squeue="${REAL_SQUEUE:-/usr/bin/squeue}"
+    # Query the job's comment (squeue first, sacct fallback)
     local comment
-    comment="$(timeout 10 "$_real_squeue" -j "$base_id" --me -h -o "%k" 2>/dev/null)" || true
+    comment="$(_get_job_comment "$base_id")" || true
 
     if [[ -z "$comment" ]]; then
         _sandbox_warn "job $job_id not found in queue or not owned by you."
