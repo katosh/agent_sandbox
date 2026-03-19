@@ -31,9 +31,9 @@ _sandbox_deny() {
 #
 # Handled by stub/protocol (not denied — intercepted before reaching here):
 #   --wrap        — stub converts to SCRIPT in protocol
-#   --chdir / -D  — stub sends CWD in protocol, handler validates it
 #
 # Denied (security-critical):
+#   --chdir / -D  — CWD comes from stub's pwd, validated against project dir
 #   --uid / --gid — must not impersonate other users
 #   --get-user-env — can leak host environment
 #   --propagate   — can propagate unsafe rlimits
