@@ -1040,8 +1040,9 @@ detect_backend() {
         fi
     )" >&2
     echo "" >&2
-    echo "  Fix:" >&2
-    echo "    Install bubblewrap:  brew install bubblewrap" >&2
+    echo "  Fix (in order of recommendation):" >&2
+    echo "    Install bubblewrap:  sudo apt install bubblewrap" >&2
+    echo "                         brew install bubblewrap  (user-local, no root)" >&2
     echo "    Install firejail:    sudo apt install firejail" >&2
     echo "    Or ensure kernel ≥ 5.13 with Landlock enabled." >&2
     exit 1

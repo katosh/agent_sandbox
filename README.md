@@ -45,9 +45,9 @@ For the full architecture and security analysis, see [Chaperon: Secure Slurm Pro
 ### Prerequisites
 
 - Linux HPC with Slurm (kernel ≥ 3.8)
-- **Bubblewrap backend**: requires `kernel.unprivileged_userns_clone = 1` and [Homebrew](https://brew.sh/) for installation. On Ubuntu 24.04+, AppArmor may also need configuration — see [Troubleshooting](#setting-up-uid-map-permission-denied-ubuntu-2404).
-- **Firejail backend**: requires `firejail` installed with setuid root (`sudo apt install firejail`). Works when AppArmor blocks unprivileged user namespaces (which breaks bwrap).
-- **Landlock backend**: requires kernel ≥ 5.13 (Ubuntu 22.04+). Works without root, even when AppArmor blocks user namespaces. No Homebrew needed — uses Python 3 only.
+- **Bubblewrap backend** (recommended): `sudo apt install bubblewrap` or `brew install bubblewrap`. Requires unprivileged user namespaces. On Ubuntu 24.04+, AppArmor may need an admin profile — see [Troubleshooting](#setting-up-uid-map-permission-denied-ubuntu-2404).
+- **Firejail backend**: `sudo apt install firejail` (setuid root binary). Works when AppArmor blocks unprivileged user namespaces.
+- **Landlock backend**: kernel ≥ 5.13 (Ubuntu 22.04+), Python 3. No install needed but weakest isolation.
 
 ### One-Command Setup
 
@@ -60,7 +60,7 @@ bash agent_sandbox/install.sh
 ```
 
 The installer:
-1. Installs `bubblewrap` via Homebrew (if not already available) and copies all three backend files (bwrap, firejail, landlock)
+1. Detects available backends (bwrap, firejail, landlock) and shows install guidance if none found
 2. Copies scripts to `~/.config/agent-sandbox/`
 3. Installs agent profiles (Claude, Codex, Gemini, Aider, OpenCode)
 4. Creates `~/.config/agent-sandbox/sandbox.conf` (your personal config — won't overwrite)
@@ -300,7 +300,22 @@ The outer tmux socket is blocked (escape risk). A nested tmux runs inside the sa
 ## Troubleshooting
 
 ### "bwrap: No such file or directory"
-Install bubblewrap: `brew install bubblewrap`
+
+Install bubblewrap via your system package manager (needs root):
+```bash
+sudo apt install bubblewrap    # Debian/Ubuntu
+sudo dnf install bubblewrap    # RHEL/Fedora/Rocky
+```
+
+**No root access?** Install via [Homebrew](https://brew.sh/) (a package manager that installs into your home directory — no root needed, widely used on HPC clusters for user-local tools):
+```bash
+# Install Homebrew itself (one-time, ~2 min)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Follow the instructions it prints to add brew to your PATH, then:
+brew install bubblewrap
+```
+Homebrew installs to `~/.linuxbrew/` and doesn't touch system directories. The sandbox auto-detects bwrap from `$PATH` including `~/.linuxbrew/bin/`.
 
 ### "bwrap: Creating new namespace failed: Operation not permitted"
 The kernel doesn't allow unprivileged user namespaces. Check: `cat /proc/sys/kernel/unprivileged_userns_clone` — it must be `1`.
@@ -378,7 +393,7 @@ Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,a
 
 | Tool | Available? | Pros | Cons |
 |---|---|---|---|
-| **[Bubblewrap](https://github.com/containers/bubblewrap)** | ✅ Yes (Homebrew) | Mount namespace isolation, paths hidden entirely (ENOENT), file overlays, Slurm binary relocation, sandbox self-protection, seccomp via generated BPF filter (io_uring/userfaultfd/kexec) | Requires unprivileged user namespaces; blocked by AppArmor on Ubuntu 24.04+ without admin help |
+| **[Bubblewrap](https://github.com/containers/bubblewrap)** | `apt`/`dnf`/`brew` | Mount namespace isolation, paths hidden entirely (ENOENT), file overlays, Slurm binary relocation, sandbox self-protection, seccomp via generated BPF filter (io_uring/userfaultfd/kexec) | Requires unprivileged user namespaces; blocked by AppArmor on Ubuntu 24.04+ without admin help |
 | **[Firejail](https://firejail.wordpress.com/)** | ✅ Yes (`apt install`) | Mount namespace (ENOENT), PID namespace, built-in seccomp + io_uring + userfaultfd blocked, caps dropping, works when AppArmor blocks user namespaces | Requires setuid root binary |
 | **[Landlock](https://docs.kernel.org/userspace-api/landlock.html)** | ✅ Yes (kernel ≥ 5.13) | No root or admin needed, works on Ubuntu 24.04 despite AppArmor, pure kernel LSM, no external dependencies (Python 3 only) | No mount namespace — blocked paths return EACCES not ENOENT, no file overlays, no PID isolation, no Slurm binary relocation, no sandbox self-protection, cannot block Unix socket connect (see [Admin Hardening](ADMIN_HARDENING.md)) |
 | **[Apptainer/Singularity](https://apptainer.org/)** | ✅ Yes (lmod) | Full container, HPC-native | Heavy — requires container images, path mapping |

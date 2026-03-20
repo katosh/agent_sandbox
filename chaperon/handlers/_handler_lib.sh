@@ -29,9 +29,11 @@ _sandbox_deny() {
 # Only these flags are forwarded to the real sbatch. This is a security
 # boundary: flags that could bypass sandboxing are excluded.
 #
-# Excluded (security-critical):
-#   --wrap        — reconstructed by handler (user data via protocol)
-#   --chdir / -D  — CWD comes from protocol, validated against project dir
+# Handled by stub/protocol (not denied — intercepted before reaching here):
+#   --wrap        — stub converts to SCRIPT in protocol
+#
+# Denied (security-critical):
+#   --chdir / -D  — CWD comes from stub's pwd, validated against project dir
 #   --uid / --gid — must not impersonate other users
 #   --get-user-env — can leak host environment
 #   --propagate   — can propagate unsafe rlimits
@@ -39,6 +41,7 @@ _sandbox_deny() {
 #   --prolog / --epilog / --task-prolog / --task-epilog — run arbitrary scripts
 #   --burst-buffer-file / --bbf — arbitrary file access
 #   --bcast       — copy binary to nodes (bypass wrapping)
+#   --container   — OCI containers bypass sandbox
 #
 # Format: space-delimited, both short and long forms.
 # Flags that take a value are marked with "=" suffix in _SBATCH_VALUE_FLAGS.
