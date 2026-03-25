@@ -108,6 +108,7 @@ sandbox() {
         -e '^WARNING: ' \
         -e '^sandbox: WARNING: ' \
         -e '^sandbox: detected agents: ' \
+        -e '^sandbox: [a-z]* | project: ' \
         -e '^  These variables are ' \
         -e '^  User enumeration' \
         -e '^  Individual file' \
@@ -272,10 +273,21 @@ fi
 rm -f "$TESTFILE"
 
 # Home directory not writable (outside allowed paths)
-if sandbox bash -c "touch \$HOME/test-readonly 2>&1"; then
-    fail "Home directory is writable (should be read-only/blocked)"
+# In tmpwrite mode, $HOME is an ephemeral tmpfs — writes succeed but are
+# lost on exit, which is the intended behaviour.  Only test for read-only
+# enforcement in restricted mode.
+if [[ "${HOME_ACCESS:-tmpwrite}" == "tmpwrite" ]]; then
+    if sandbox bash -c "touch \$HOME/test-tmpwrite && rm -f \$HOME/test-tmpwrite"; then
+        pass "Home directory is writable (ephemeral tmpfs — expected for tmpwrite)"
+    else
+        fail "Home directory is not writable (tmpwrite mode should allow ephemeral writes)"
+    fi
 else
-    pass "Home directory is read-only"
+    if sandbox bash -c "touch \$HOME/test-readonly 2>&1"; then
+        fail "Home directory is writable (should be read-only/blocked)"
+    else
+        pass "Home directory is read-only"
+    fi
 fi
 
 echo ""
