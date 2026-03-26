@@ -324,10 +324,16 @@ sudo dnf install bubblewrap    # RHEL/Fedora/Rocky
 
 **No root access?** Install via [Homebrew](https://brew.sh/) (a package manager that installs into your home directory — no root needed, widely used on HPC clusters for user-local tools):
 ```bash
-# Install Homebrew itself (one-time, ~2 min)
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+# Install Homebrew to ~/.linuxbrew (one-time, ~2 min)
+# The default installer tries /home/linuxbrew/.linuxbrew which needs sudo.
+# Setting the prefix explicitly installs under your home directory instead.
+mkdir -p ~/.linuxbrew
+curl -fsSL https://github.com/Homebrew/brew/tarball/master | tar xz --strip-components=1 -C ~/.linuxbrew
 
-# Follow the instructions it prints to add brew to your PATH, then:
+# Add to PATH (add this to your .bashrc/.zshrc to persist across sessions)
+eval "$(~/.linuxbrew/bin/brew shellenv)"
+
+# Install bubblewrap
 brew install bubblewrap
 ```
 Homebrew installs to `~/.linuxbrew/` and doesn't touch system directories. The sandbox auto-detects bwrap from `$PATH` including `~/.linuxbrew/bin/`.
