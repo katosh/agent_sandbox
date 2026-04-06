@@ -116,14 +116,15 @@ backend_prepare() {
     done
 
     # --- Filter environment variables ---
+    _warn_pattern_blocked_vars
     for var in "${BLOCKED_ENV_VARS[@]}"; do
         _is_allowed_env "$var" || unset "$var" 2>/dev/null || true
     done
 
-    # Also block any SSH_* vars not in the explicit blocklist.
-    # To let a specific SSH_* variable through, add it to ALLOWED_ENV_VARS.
+    # Block credential-pattern vars (SSH_*, *_TOKEN, CI_*, etc.) from BLOCKED_ENV_PATTERNS.
+    # To let a specific variable through, add it to ALLOWED_ENV_VARS.
     while IFS='=' read -r name _; do
-        [[ "$name" == SSH_* ]] && ! _is_allowed_env "$name" && unset "$name" 2>/dev/null || true
+        _is_blocked_by_pattern "$name" && { unset "$name" 2>/dev/null || true; } || true
     done < <(env)
 
     # Agent-specific environment exports (e.g., CLAUDE_CONFIG_DIR)
@@ -147,6 +148,11 @@ backend_prepare() {
 }
 
 backend_exec() {
+    # Fork bomb defense-in-depth: set per-UID RLIMIT_NPROC before exec.
+    if [[ -n "${SANDBOX_NPROC_LIMIT:-}" ]]; then
+        ulimit -u "$SANDBOX_NPROC_LIMIT" 2>/dev/null || true
+    fi
+
     python3 "$LANDLOCK_SANDBOX" "${LANDLOCK_ARGS[@]}" -- "$@"
     exit $?
 }

@@ -163,15 +163,19 @@ while true; do
         continue
     fi
 
-    # Validate RESP_FIFO: must be under FIFO_DIR and contain no ".." components
-    # to prevent path traversal attacks.
-    if [[ "$REQ_RESP_FIFO" != "$FIFO_DIR/"* ]] || [[ "$REQ_RESP_FIFO" == *".."* ]]; then
-        echo "chaperon: RESP_FIFO path traversal rejected: $REQ_RESP_FIFO" >&2
+    # Validate RESP_FIFO: must be FIFO_DIR/resp-XXXXXX/fifo, no ".." components,
+    # not a symlink. The stub creates an atomic directory (mktemp -d) with a
+    # FIFO inside, so the expected structure is deterministic.
+    if [[ "$REQ_RESP_FIFO" != "$FIFO_DIR/"*/fifo ]] || [[ "$REQ_RESP_FIFO" == *".."* ]]; then
+        echo "chaperon: RESP_FIFO path validation failed: $REQ_RESP_FIFO" >&2
         continue
     fi
 
-    if [[ ! -p "$REQ_RESP_FIFO" ]]; then
-        echo "chaperon: RESP_FIFO not a FIFO: $REQ_RESP_FIFO" >&2
+    # Reject symlinks: -p follows symlinks, so a symlink → FIFO would pass.
+    # A malicious process could race to replace the FIFO with a symlink
+    # pointing outside the FIFO directory to intercept the response.
+    if [[ -L "$REQ_RESP_FIFO" ]] || [[ ! -p "$REQ_RESP_FIFO" ]]; then
+        echo "chaperon: RESP_FIFO is symlink or not a FIFO: $REQ_RESP_FIFO" >&2
         continue
     fi
 

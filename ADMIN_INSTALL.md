@@ -85,6 +85,7 @@ Without an admin config, the sandbox loads a single `sandbox.conf` from `~/.conf
 | `HOME_WRITABLE` | Yes (but not items in admin's `HOME_READONLY`) | N/A (additive) |
 | `BLOCKED_FILES` | Yes — block more files | **No — restored with warning** |
 | `BLOCKED_ENV_VARS` | Yes — block more env vars | **No — restored with warning** |
+| `BLOCKED_ENV_PATTERNS` | Yes — add more glob patterns | **No — restored with warning** |
 | `EXTRA_BLOCKED_PATHS` | Yes — block more paths | **No — restored with warning** |
 | `TOKEN_FILE` / `SANDBOX_BYPASS_TOKEN` | No — would overwrite | **No — restored with warning** |
 | `ALLOWED_ENV_VARS` | Yes — unblock specific env vars | N/A (additive) |
@@ -101,7 +102,7 @@ User configs (`user.conf`, `conf.d/*.conf`) are loaded in an **isolated subproce
 
 This eliminates entire attack classes: function overrides (`source`, `eval`, `builtin`), DEBUG/RETURN traps, `exit`/`return` escapes, IFS manipulation, and background processes — none can escape the subprocess boundary. The merge logic runs in the parent shell, unreachable from user config.
 
-**Enforced arrays** (`BLOCKED_FILES`, `BLOCKED_ENV_VARS`, `EXTRA_BLOCKED_PATHS`): admin entries are always present. User additions are preserved, but user removals are undone with a warning:
+**Enforced arrays** (`BLOCKED_FILES`, `BLOCKED_ENV_VARS`, `BLOCKED_ENV_PATTERNS`, `EXTRA_BLOCKED_PATHS`): admin entries are always present. User additions are preserved, but user removals are undone with a warning:
 
 ```
 WARNING: User config removed admin-enforced BLOCKED_ENV_VARS entry 'GITHUB_TOKEN' — restored.

@@ -210,8 +210,8 @@ fi
 unset GITHUB_TOKEN
 clean_user_conf
 
-# ── T05: User ALLOWED_ENV_VARS overrides SSH_* catch-all ──
-echo "  T05: User ALLOWED_ENV_VARS overrides SSH_* catch-all"
+# ── T05: User ALLOWED_ENV_VARS overrides SSH_* pattern ──
+echo "  T05: User ALLOWED_ENV_VARS overrides SSH_* pattern"
 write_user_conf 'ALLOWED_ENV_VARS+=("SSH_TTY")'
 export SSH_TTY="/dev/pts/test-T05"
 export SSH_CONNECTION="1.2.3.4 1234 5.6.7.8 22"

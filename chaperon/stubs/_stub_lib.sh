@@ -31,14 +31,20 @@ chaperon_call() {
         has_script=true
     fi
 
-    # Create a per-request response FIFO with unpredictable name (mktemp)
-    local resp_fifo
-    resp_fifo="$(mktemp -u "$fifo_dir/resp-XXXXXX")"
-    mkfifo "$resp_fifo" 2>/dev/null || {
+    # Create a per-request response FIFO inside an atomically-created directory.
+    # mktemp -d uses O_CREAT|O_EXCL internally, eliminating the TOCTOU window
+    # that mktemp -u + mkfifo would have. mkfifo -m sets permissions atomically.
+    local resp_fifo _resp_dir
+    _resp_dir="$(mktemp -d "$fifo_dir/resp-XXXXXX")" || {
+        echo "error: cannot create response FIFO directory" >&2
+        return 127
+    }
+    resp_fifo="$_resp_dir/fifo"
+    mkfifo -m 600 "$resp_fifo" || {
+        rm -rf "$_resp_dir"
         echo "error: cannot create response FIFO" >&2
         return 127
     }
-    chmod 600 "$resp_fifo"
 
     # Build the entire request message into a variable first, then write
     # atomically. For messages under PIPE_BUF (4096 bytes on Linux) a single
@@ -79,12 +85,12 @@ chaperon_call() {
     if ! chaperon_read_response "$resp_fd" 30; then
         echo "error: failed to read chaperon response (timeout or error)" >&2
         exec {resp_fd}<&-
-        rm -f "$resp_fifo"
+        rm -rf "$(dirname "$resp_fifo")"
         return 127
     fi
 
     exec {resp_fd}<&-
-    rm -f "$resp_fifo"
+    rm -rf "$(dirname "$resp_fifo")"
 
     # Print stdout
     if [[ -n "$RESP_STDOUT_B64" ]]; then

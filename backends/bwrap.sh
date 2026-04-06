@@ -312,14 +312,17 @@ backend_prepare() {
         export "$_key=$_val"
     done
 
+    # Warn about pattern-blocked vars (helps users diagnose missing env vars)
+    _warn_pattern_blocked_vars
+
     for var in "${BLOCKED_ENV_VARS[@]}"; do
         _is_allowed_env "$var" || BWRAP_ARGS+=(--unsetenv "$var")
     done
 
-    # Also block any SSH_* vars not in the explicit blocklist.
-    # To let a specific SSH_* variable through, add it to ALLOWED_ENV_VARS.
+    # Block credential-pattern vars (SSH_*, *_TOKEN, CI_*, etc.) from BLOCKED_ENV_PATTERNS.
+    # To let a specific variable through, add it to ALLOWED_ENV_VARS.
     while IFS='=' read -r name _; do
-        [[ "$name" == SSH_* ]] && ! _is_allowed_env "$name" && BWRAP_ARGS+=(--unsetenv "$name") || true
+        _is_blocked_by_pattern "$name" && BWRAP_ARGS+=(--unsetenv "$name") || true
     done < <(env)
 
 }
@@ -334,9 +337,9 @@ backend_exec() {
     for _var in "${BLOCKED_ENV_VARS[@]}"; do
         _is_allowed_env "$_var" || unset "$_var" 2>/dev/null || true
     done
-    # SSH_* vars (same set collected during backend_prepare)
+    # Credential-pattern vars (SSH_*, *_TOKEN, CI_*, etc.) — same set as backend_prepare
     while IFS='=' read -r _name _; do
-        [[ "$_name" == SSH_* ]] && ! _is_allowed_env "$_name" && unset "$_name" 2>/dev/null || true
+        _is_blocked_by_pattern "$_name" && { unset "$_name" 2>/dev/null || true; } || true
     done < <(env)
 
     # Open seccomp FD now (after sandbox-exec.sh's FD cleanup) and
@@ -346,6 +349,12 @@ backend_exec() {
         exec {_seccomp_fd}<"$_SECCOMP_TMPFILE"
         rm -f "$_SECCOMP_TMPFILE"
         BWRAP_ARGS=("${BWRAP_ARGS[@]/__SECCOMP_FD__/$_seccomp_fd}")
+    fi
+
+    # Fork bomb defense-in-depth: set per-UID RLIMIT_NPROC before exec.
+    # Inherited by bwrap and all child processes inside the sandbox.
+    if [[ -n "${SANDBOX_NPROC_LIMIT:-}" ]]; then
+        ulimit -u "$SANDBOX_NPROC_LIMIT" 2>/dev/null || true
     fi
 
     exec "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"

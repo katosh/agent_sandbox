@@ -161,20 +161,52 @@ SANDBOX_BACKEND="${SANDBOX_BACKEND:-}"
 # Slurm wrapper name).
 SANDBOX_BYPASS_TOKEN=""
 
+# Process limit (defense-in-depth against fork bombs). Empty = no limit.
+# Sets RLIMIT_NPROC via ulimit -u / firejail --rlimit-nproc.
+# Note: counts per-UID system-wide, not per-sandbox. Admin cgroups with
+# pids.max are the primary defense; this is a supplemental safeguard.
+SANDBOX_NPROC_LIMIT=""
+
 BLOCKED_ENV_VARS=(
-    "GITHUB_PAT" "GITHUB_TOKEN" "GH_TOKEN"
+    # API tokens & keys (specific names not caught by BLOCKED_ENV_PATTERNS)
+    "GITHUB_PAT"
     "OPENAI_API_KEY" "ANTHROPIC_API_KEY"
-    "ZENODO_TOKEN" "HF_TOKEN"
+    # Cloud & service credentials
     "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_SESSION_TOKEN"
     "ST_AUTH" "SW2_URL"
+    # Database credentials
+    "DATABASE_URL" "PGPASSWORD" "MYSQL_PWD" "MONGO_URI"
+    "REDIS_URL"
+    # Google service account
+    "GOOGLE_APPLICATION_CREDENTIALS"
+    # Personal / email
     "MUTT_EMAIL_ADDRESS" "MUTT_REALNAME" "MUTT_SMTP_URL"
-    "KRB5CCNAME" "SSH_CLIENT" "SSH_CONNECTION" "SSH_TTY"
+    # Session / system info
+    "KRB5CCNAME"
     "SLURM_CONF" "SLURM_CONFIG_DIR"
     "DBUS_SESSION_BUS_ADDRESS" "OLDPWD"
     "TMUX" "TMUX_PANE"
+    # Note: SSH_*, *_TOKEN, *_SECRET, *_PASSWORD, *_API_KEY, *_CREDENTIAL,
+    # *_SECRET_KEY, *_PRIVATE_KEY, DOCKER_*, CI_*, AZURE_*, GCP_*, etc.
+    # are blocked by BLOCKED_ENV_PATTERNS patterns (below).
+    # Vars like GITHUB_TOKEN, GH_TOKEN, HF_TOKEN, ZENODO_TOKEN,
+    # VAULT_TOKEN, NPM_TOKEN, REDIS_PASSWORD, VAULT_ADDR, PIP_PASSWORD
+    # are caught by those patterns and don't need explicit listing here.
 )
 
-# Allowed env vars: overrides BLOCKED_ENV_VARS and the SSH_* catch-all
+# Credential-pattern globs: block env vars matching common credential naming
+# conventions. Configurable via sandbox.conf / user.conf (admin-enforced).
+# To let a specific variable through, add it to ALLOWED_ENV_VARS.
+BLOCKED_ENV_PATTERNS=(
+    "SSH_*"
+    "*_TOKEN"  "*_SECRET"  "*_PASSWORD"  "*_CREDENTIAL"
+    "*_API_KEY"  "*_SECRET_KEY"  "*_PRIVATE_KEY"
+    "AZURE_*"  "GCP_*"  "GCLOUD_*"  "GOOGLE_CLOUD_*"
+    "DOCKER_*"  "REGISTRY_*"
+    "CI_*"  "GITLAB_*"  "JENKINS_*"  "BUILDKITE_*"  "CIRCLECI_*"
+)
+
+# Allowed env vars: overrides both BLOCKED_ENV_VARS and BLOCKED_ENV_PATTERNS (incl. SSH_*)
 ALLOWED_ENV_VARS=()
 
 # ── Helper: check if an env var is in ALLOWED_ENV_VARS ────────
@@ -185,6 +217,40 @@ _is_allowed_env() {
         [[ "$_var" == "$_a" ]] && return 0
     done
     return 1
+}
+
+# ── Helper: check if an env var matches a hardcoded credential pattern ──
+# Returns 0 (true) if the variable should be blocked by pattern.
+# ALLOWED_ENV_VARS overrides pattern matches.
+_is_blocked_by_pattern() {
+    local _var="$1"
+    _is_allowed_env "$_var" && return 1
+    for _glob in "${BLOCKED_ENV_PATTERNS[@]}"; do
+        # shellcheck disable=SC2254
+        case "$_var" in $_glob) return 0 ;; esac
+    done
+    return 1
+}
+
+# ── Helper: emit a one-time warning listing all pattern-blocked env vars ──
+# Called once by each backend during prepare, only when SANDBOX_QUIET is false.
+# Shows which vars will be blocked by the credential-pattern globs so users
+# can diagnose missing vars and know to use ALLOWED_ENV_VARS to override.
+_warn_pattern_blocked_vars() {
+    _is_true "${SANDBOX_QUIET:-false}" && return
+    # Suppress on compute nodes: the chaperon (outside sandbox) passes its
+    # full environment to sbatch. The warning would appear in job stderr
+    # (readable by the sandboxed agent) and leak how many secrets exist.
+    [[ -n "${SLURM_JOB_ID:-}" ]] && return
+    local _count=0
+    while IFS='=' read -r _name _; do
+        _is_blocked_by_pattern "$_name" && (( _count++ )) || true
+    done < <(env)
+    if [[ $_count -gt 0 ]]; then
+        # Only print count, not names — the names of credentials are themselves
+        # sensitive (reveal what services the user authenticates to).
+        echo "sandbox: $_count env var(s) blocked by credential patterns (see sandbox.conf)" >&2
+    fi
 }
 
 # ── Helpers: boolean normalization ─────────────────────────────
@@ -253,15 +319,15 @@ fi
 # to serialize/deserialize state and by _enforce_admin_policy to merge.
 _CONFIG_ARRAYS=(
     ALLOWED_PROJECT_PARENTS READONLY_MOUNTS HOME_READONLY HOME_WRITABLE
-    BLOCKED_FILES BLOCKED_ENV_VARS ALLOWED_ENV_VARS EXTRA_BLOCKED_PATHS
-    EXTRA_WRITABLE_PATHS DENIED_WRITABLE_PATHS
+    BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS ALLOWED_ENV_VARS
+    EXTRA_BLOCKED_PATHS EXTRA_WRITABLE_PATHS DENIED_WRITABLE_PATHS
 )
 _CONFIG_SCALARS=(
     SANDBOX_BACKEND PRIVATE_TMP FILTER_PASSWD BIND_DEV_PTS
-    SLURM_SCOPE HOME_ACCESS SANDBOX_QUIET
+    SLURM_SCOPE HOME_ACCESS SANDBOX_QUIET SANDBOX_NPROC_LIMIT
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
-_ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS EXTRA_BLOCKED_PATHS)
+_ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS EXTRA_BLOCKED_PATHS)
 # Token paths are admin-only — set in the admin config (sourced directly),
 # never extracted from user configs.  Keeping them out of _CONFIG_SCALARS
 # prevents users from overriding them and avoids declare -p failures when
@@ -460,6 +526,11 @@ _enforce_admin_policy() {
         for _item in "${BLOCKED_ENV_VARS[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
         $_found || echo "WARNING: ${_label} removed admin-enforced BLOCKED_ENV_VARS entry '${_a}' — restored." >&2
     done
+    for _a in "${_ADMIN_BLOCKED_ENV_PATTERNS[@]}"; do
+        _found=false
+        for _item in "${BLOCKED_ENV_PATTERNS[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
+        $_found || echo "WARNING: ${_label} removed admin-enforced BLOCKED_ENV_PATTERNS entry '${_a}' — restored." >&2
+    done
     for _a in "${_ADMIN_EXTRA_BLOCKED_PATHS[@]}"; do
         _found=false
         for _item in "${EXTRA_BLOCKED_PATHS[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
@@ -477,6 +548,7 @@ _enforce_admin_policy() {
     # Save the user's arrays before restoring admin values.
     local _user_bf=("${BLOCKED_FILES[@]}")
     local _user_bev=("${BLOCKED_ENV_VARS[@]}")
+    local _user_bep=("${BLOCKED_ENV_PATTERNS[@]}")
     local _user_aev=("${ALLOWED_ENV_VARS[@]}")
     local _user_ebp=("${EXTRA_BLOCKED_PATHS[@]}")
     local _user_hw=("${HOME_WRITABLE[@]}")
@@ -488,6 +560,7 @@ _enforce_admin_policy() {
     # --- Restore admin base values ---
     BLOCKED_FILES=("${_ADMIN_BLOCKED_FILES[@]}")
     BLOCKED_ENV_VARS=("${_ADMIN_BLOCKED_ENV_VARS[@]}")
+    BLOCKED_ENV_PATTERNS=("${_ADMIN_BLOCKED_ENV_PATTERNS[@]}")
     ALLOWED_ENV_VARS=("${_ADMIN_ALLOWED_ENV_VARS[@]}")
     EXTRA_BLOCKED_PATHS=("${_ADMIN_EXTRA_BLOCKED_PATHS[@]}")
     HOME_READONLY=("${_ADMIN_HOME_READONLY[@]}")
@@ -515,6 +588,7 @@ _enforce_admin_policy() {
     }
     _merge_additions _user_bf   _ADMIN_BLOCKED_FILES          BLOCKED_FILES
     _merge_additions _user_bev  _ADMIN_BLOCKED_ENV_VARS       BLOCKED_ENV_VARS
+    _merge_additions _user_bep  _ADMIN_BLOCKED_ENV_PATTERNS   BLOCKED_ENV_PATTERNS
     _merge_additions _user_aev  _ADMIN_ALLOWED_ENV_VARS       ALLOWED_ENV_VARS
     _merge_additions _user_ebp  _ADMIN_EXTRA_BLOCKED_PATHS    EXTRA_BLOCKED_PATHS
     _merge_additions _user_ewp  _ADMIN_EXTRA_WRITABLE_PATHS   EXTRA_WRITABLE_PATHS
@@ -598,6 +672,7 @@ _snapshot_admin_config() {
 
     _ADMIN_BLOCKED_FILES=("${BLOCKED_FILES[@]}")
     _ADMIN_BLOCKED_ENV_VARS=("${BLOCKED_ENV_VARS[@]}")
+    _ADMIN_BLOCKED_ENV_PATTERNS=("${BLOCKED_ENV_PATTERNS[@]}")
     _ADMIN_ALLOWED_ENV_VARS=("${ALLOWED_ENV_VARS[@]}")
     _ADMIN_EXTRA_BLOCKED_PATHS=("${EXTRA_BLOCKED_PATHS[@]}")
     _ADMIN_HOME_READONLY=("${HOME_READONLY[@]}")
@@ -918,7 +993,8 @@ _apply_agent_profiles() {
             $_dup || BLOCKED_FILES+=("$_file")
         done
 
-        # Remove unblocked env vars from BLOCKED_ENV_VARS
+        # Unblock env vars: remove from BLOCKED_ENV_VARS and add to
+        # ALLOWED_ENV_VARS (so credential-pattern globs don't re-block them).
         if [[ ${#AGENT_UNBLOCK_ENV_VARS[@]} -gt 0 ]]; then
             local _new_blocked=() _var _unblock _unblock_var
             for _var in "${BLOCKED_ENV_VARS[@]}"; do
@@ -929,6 +1005,9 @@ _apply_agent_profiles() {
                 $_unblock || _new_blocked+=("$_var")
             done
             BLOCKED_ENV_VARS=("${_new_blocked[@]}")
+            # Add to ALLOWED_ENV_VARS so BLOCKED_ENV_PATTERNS patterns
+            # (e.g., *_API_KEY matching OPENAI_API_KEY) don't re-block them.
+            ALLOWED_ENV_VARS+=("${AGENT_UNBLOCK_ENV_VARS[@]}")
         fi
     done
     # NOTE: We intentionally do NOT create stub directories for first-time

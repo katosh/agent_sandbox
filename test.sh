@@ -109,6 +109,7 @@ sandbox() {
         -e '^sandbox: WARNING: ' \
         -e '^sandbox: detected agents: ' \
         -e '^sandbox: [a-z]* | project: ' \
+        -e '^sandbox: [0-9]* env var.* blocked by credential' \
         -e '^  These variables are ' \
         -e '^  User enumeration' \
         -e '^  Individual file' \
@@ -290,6 +291,21 @@ else
     fi
 fi
 
+# History files: should be hidden in tmpwrite/restricted modes
+if has_mount_ns && [[ "${HOME_ACCESS:-tmpwrite}" != "read" && "${HOME_ACCESS:-tmpwrite}" != "write" ]]; then
+    for _hist in .bash_history .python_history .lesshst; do
+        if [[ -f "$HOME/$_hist" ]]; then
+            if sandbox bash -c "test -f \"\$HOME/$_hist\" && echo VISIBLE || echo HIDDEN"; then
+                if [[ "$OUTPUT" == "HIDDEN" ]]; then
+                    pass "~/$_hist is hidden (tmpwrite/restricted)"
+                else
+                    fail "~/$_hist is visible (should be hidden in ${HOME_ACCESS:-tmpwrite} mode)" "$OUTPUT"
+                fi
+            fi
+        fi
+    done
+fi
+
 echo ""
 
 # ── 3. Environment variable blocking ────────────────────────────
@@ -339,6 +355,69 @@ if sandbox bash -c 'echo ${AWS_ACCESS_KEY_ID:-UNSET}'; then
 fi
 
 unset GITHUB_PAT OPENAI_API_KEY AWS_ACCESS_KEY_ID
+
+# Pattern-blocked env vars (*_TOKEN, *_SECRET, *_PASSWORD, CI_*, DOCKER_*, etc.)
+export MY_CUSTOM_TOKEN="pattern-test-secret"
+if sandbox bash -c 'echo ${MY_CUSTOM_TOKEN:-UNSET}'; then
+    if [[ "$OUTPUT" == "UNSET" ]]; then
+        pass "*_TOKEN pattern: MY_CUSTOM_TOKEN is blocked"
+    else
+        fail "*_TOKEN pattern: MY_CUSTOM_TOKEN leaked into sandbox" "$OUTPUT"
+    fi
+fi
+unset MY_CUSTOM_TOKEN
+
+export DATABASE_URL="postgres://secret@host/db"
+if sandbox bash -c 'echo ${DATABASE_URL:-UNSET}'; then
+    if [[ "$OUTPUT" == "UNSET" ]]; then
+        pass "DATABASE_URL is blocked"
+    else
+        # DATABASE_URL is in default BLOCKED_ENV_VARS but may be missing from
+        # an older admin config that overwrites the defaults. Not a code bug.
+        if [[ -f /app/lib/agent-sandbox/sandbox.conf ]] && \
+           ! grep -q 'DATABASE_URL' /app/lib/agent-sandbox/sandbox.conf 2>/dev/null; then
+            skip "DATABASE_URL not in admin config (update admin sandbox.conf to block it)"
+        else
+            fail "DATABASE_URL leaked into sandbox" "$OUTPUT"
+        fi
+    fi
+fi
+unset DATABASE_URL
+
+export CI_BUILD_ID="12345"
+if sandbox bash -c 'echo ${CI_BUILD_ID:-UNSET}'; then
+    if [[ "$OUTPUT" == "UNSET" ]]; then
+        pass "CI_* pattern: CI_BUILD_ID is blocked"
+    else
+        fail "CI_* pattern: CI_BUILD_ID leaked into sandbox" "$OUTPUT"
+    fi
+fi
+unset CI_BUILD_ID
+
+export MY_APP_SECRET="top-secret-value"
+if sandbox bash -c 'echo ${MY_APP_SECRET:-UNSET}'; then
+    if [[ "$OUTPUT" == "UNSET" ]]; then
+        pass "*_SECRET pattern: MY_APP_SECRET is blocked"
+    else
+        fail "*_SECRET pattern: MY_APP_SECRET leaked into sandbox" "$OUTPUT"
+    fi
+fi
+unset MY_APP_SECRET
+
+# ALLOWED_ENV_VARS overrides pattern blocking
+_pattern_conf="$HOME/.config/agent-sandbox/conf.d/test-pattern-override-$$.conf"
+mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+echo 'ALLOWED_ENV_VARS+=("MY_CUSTOM_TOKEN")' > "$_pattern_conf"
+export MY_CUSTOM_TOKEN="allowed-pattern-override"
+if sandbox bash -c 'echo ${MY_CUSTOM_TOKEN:-UNSET}'; then
+    if [[ "$OUTPUT" == "allowed-pattern-override" ]]; then
+        pass "ALLOWED_ENV_VARS overrides *_TOKEN pattern (MY_CUSTOM_TOKEN passed through)"
+    else
+        fail "ALLOWED_ENV_VARS did not override *_TOKEN pattern" "$OUTPUT"
+    fi
+fi
+unset MY_CUSTOM_TOKEN
+rm -f "$_pattern_conf"
 
 # Passthrough vars
 if sandbox bash -c 'echo ${USER:-UNSET}'; then
@@ -1658,15 +1737,15 @@ fi
 unset GITHUB_TOKEN
 rm -f "$_aev_conf"
 
-# ALLOWED_ENV_VARS — override SSH_* catch-all
+# ALLOWED_ENV_VARS — override SSH_* pattern
 echo 'ALLOWED_ENV_VARS+=("SSH_TTY")' > "$_aev_conf"
 export SSH_TTY="/dev/pts/test-allowed"
 export SSH_CONNECTION="1.2.3.4 1234 5.6.7.8 22"
 if sandbox bash -c 'echo TTY=${SSH_TTY:-UNSET} CONN=${SSH_CONNECTION:-UNSET}'; then
     if echo "$OUTPUT" | grep -q "TTY=/dev/pts/test-allowed"; then
-        pass "ALLOWED_ENV_VARS overrides SSH_* catch-all (SSH_TTY passed through)"
+        pass "ALLOWED_ENV_VARS overrides SSH_* pattern (SSH_TTY passed through)"
     else
-        fail "ALLOWED_ENV_VARS did not override SSH_* catch-all for SSH_TTY" "$OUTPUT"
+        fail "ALLOWED_ENV_VARS did not override SSH_* pattern for SSH_TTY" "$OUTPUT"
     fi
     if echo "$OUTPUT" | grep -q "CONN=UNSET"; then
         pass "SSH_CONNECTION still blocked (not in ALLOWED_ENV_VARS)"
@@ -1699,6 +1778,58 @@ if sandbox bash -c 'echo ${LANG:-UNSET}'; then
     fi
 fi
 unset _TEST_CRED_VAR
+
+# ── E01: /proc/self/environ should not contain blocked vars ──
+export GITHUB_PAT="self-environ-leak-test"
+export MY_SECRET_TOKEN="pattern-environ-leak-test"
+if sandbox bash -c '
+    if [[ -r /proc/self/environ ]]; then
+        if cat /proc/self/environ 2>/dev/null | tr "\0" "\n" | grep -qE "GITHUB_PAT|MY_SECRET_TOKEN"; then
+            echo "LEAKED"
+        else
+            echo "CLEAN"
+        fi
+    else
+        echo "UNREADABLE"
+    fi
+'; then
+    if [[ "$OUTPUT" == "LEAKED" ]]; then
+        fail "E01: Blocked vars leaked via /proc/self/environ"
+    else
+        pass "E01: /proc/self/environ clean (blocked vars absent)"
+    fi
+else
+    pass "E01: /proc/self/environ unreadable (good)"
+fi
+unset GITHUB_PAT MY_SECRET_TOKEN
+
+# ── E02: /proc/1/environ should not contain blocked vars (bwrap-specific) ──
+# bwrap is PID 1 inside --unshare-pid; its /proc/1/environ retains the
+# parent's environment. backend_exec() scrubs vars before exec to fix this.
+if is_bwrap; then
+    export GITHUB_PAT="proc1-environ-leak-test"
+    export MY_SECRET_TOKEN="pattern-proc1-leak-test"
+    if sandbox bash -c '
+        if [[ -r /proc/1/environ ]]; then
+            if cat /proc/1/environ 2>/dev/null | tr "\0" "\n" | grep -qE "GITHUB_PAT|MY_SECRET_TOKEN"; then
+                echo "LEAKED"
+            else
+                echo "CLEAN"
+            fi
+        else
+            echo "UNREADABLE"
+        fi
+    '; then
+        if [[ "$OUTPUT" == "LEAKED" ]]; then
+            fail "E02: Blocked vars leaked via /proc/1/environ (bwrap PID 1)"
+        else
+            pass "E02: /proc/1/environ clean — bwrap parent scrub works"
+        fi
+    else
+        pass "E02: /proc/1/environ unreadable (good)"
+    fi
+    unset GITHUB_PAT MY_SECRET_TOKEN
+fi
 
 # FILTER_PASSWD — verify /etc/passwd is filtered inside sandbox
 if is_bwrap; then

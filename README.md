@@ -195,7 +195,7 @@ The default config ships with commented-out example paths that you should **repl
 - **`READONLY_MOUNTS`** — Every path listed here is readable by the agent. The system paths (`/usr`, `/lib`, `/bin`, `/sbin`, `/etc`) are required for basic functionality. Lab storage paths should be limited to what the agent needs — mounting your PI's entire fast directory is convenient but exposes all data under it. Consider mounting only the specific subdirectory the agent will work with.
 - **`EXTRA_BLOCKED_PATHS`** — Use this to carve out sensitive subdirectories from otherwise-visible mounts (e.g. clinical data under a lab storage path).
 - **`HOME_READONLY`** — Each entry is visible inside the sandbox. The defaults cover shell config and tools; entries are marked in `sandbox.conf` with why they're needed. Remove any you don't use.
-- **`BLOCKED_ENV_VARS`** — Check your environment (`env | grep -iE 'token|key|secret|pat|auth'`) and add any site-specific secrets.
+- **`BLOCKED_ENV_VARS`** / **`BLOCKED_ENV_PATTERNS`** — Patterns (`*_TOKEN`, `SSH_*`, `CI_*`, etc.) catch most credentials automatically. Check your environment (`env | grep -iE 'token|key|secret|pat|auth'`) and add any site-specific secrets with unusual names.
 
 ### Common Customizations
 
@@ -210,7 +210,7 @@ EXTRA_WRITABLE_PATHS=("/shared/scratch/agent-output")
 EXTRA_BLOCKED_PATHS=("/shared/lab/clinical_restricted")
 
 # Allow GitHub CLI: add ".config/gh" to HOME_READONLY
-# and remove "GITHUB_TOKEN" "GH_TOKEN" from BLOCKED_ENV_VARS
+# and add "GITHUB_TOKEN" "GH_TOKEN" to ALLOWED_ENV_VARS
 ```
 
 ### Per-Project Overrides
@@ -265,7 +265,7 @@ For Claude Code, the sandbox overlays `~/.claude/settings.json` to auto-allow to
 
 **IPC / `/dev/shm`** is shared because MPI, NCCL, and CUDA use it for inter-process communication and GPU coordination. Isolating it (`--unshare-ipc` / `--ipc-namespace`) would break multi-process HPC workloads. Can be enabled in `sandbox.conf` if not needed.
 
-**Environment variables:** The sandbox inherits your shell environment and blocks `BLOCKED_ENV_VARS` (API tokens, secrets). To grant access, remove the variable from the blocklist.
+**Environment variables:** The sandbox inherits your shell environment, blocks specific names via `BLOCKED_ENV_VARS`, and blocks credential-pattern globs via `BLOCKED_ENV_PATTERNS` (`*_TOKEN`, `SSH_*`, `CI_*`, etc.). To grant access, add the variable to `ALLOWED_ENV_VARS`.
 
 ---
 
@@ -391,7 +391,7 @@ Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,a
 | Threat | Protection | Strength |
 |---|---|---|
 | Agent reads SSH keys | Hidden (bwrap/firejail: ENOENT) or blocked (Landlock: EACCES) | **Hard** — kernel-enforced |
-| Agent reads API tokens from env | `BLOCKED_ENV_VARS` removed from environment | **Hard** — all backends |
+| Agent reads API tokens from env | `BLOCKED_ENV_VARS` + `BLOCKED_ENV_PATTERNS` removed from environment | **Hard** — all backends |
 | Agent reads `~/.aws` credentials | Hidden or blocked (same as SSH keys) | **Hard** |
 | Agent writes to other projects | Only project dir is writable | **Hard** |
 | Agent reads other users' data | Only explicitly allowed paths are accessible | **Hard** |
@@ -442,8 +442,8 @@ Sorted by perceived severity (security impact first, then operational issues).
 | **All** | `/dev/shm` is writable and shared (IPC namespace not isolated by default) — could be used for covert cross-sandbox communication | `firejail --ipc-namespace`, `bwrap --unshare-ipc` |
 | **Landlock** | User enumeration via LDAP/AD — `getent passwd` reveals all directory users | No mount namespace to overlay files or block sockets; set `FILTER_PASSWD=false` if LDAP lookups are needed |
 | **bwrap/Firejail** | `/tmp` isolated by default (`PRIVATE_TMP=true`) — breaks MPI shared-memory transport and NCCL inter-GPU sockets | Set `PRIVATE_TMP=false` in `sandbox.conf` for HPC multi-process workloads |
-| **All** | Environment variable blocking uses a denylist (`BLOCKED_ENV_VARS`) — new secrets added to the environment are unprotected until manually added to the list | Review your environment (`env \| grep -iE 'token\|key\|secret\|auth'`) and add site-specific secrets. See [Admin Hardening](ADMIN_HARDENING.md) for an allowlist approach |
-| **All** | No resource exhaustion limits — a sandboxed process can consume unlimited CPU, memory, processes, and disk space in the project directory | See [Admin Hardening](ADMIN_HARDENING.md) for `ulimit` and cgroup-based limits. Slurm-submitted jobs are limited by the scheduler, but the login-node agent process has no resource caps |
+| **All** | Environment variable blocking uses explicit names (`BLOCKED_ENV_VARS`) and glob patterns (`BLOCKED_ENV_PATTERNS` — e.g. `*_TOKEN`, `SSH_*`, `CI_*`). Patterns catch most credential conventions automatically, but secrets with unusual names may slip through | Review your environment (`env \| grep -iE 'token\|key\|secret\|auth'`), add names to `BLOCKED_ENV_VARS` or patterns to `BLOCKED_ENV_PATTERNS`, and use `ALLOWED_ENV_VARS` to override. See [Admin Hardening](ADMIN_HARDENING.md) for an allowlist approach |
+| **All** | No resource exhaustion limits by default — a sandboxed process can consume unlimited CPU, memory, processes, and disk space in the project directory | Set `SANDBOX_NPROC_LIMIT` in `sandbox.conf` for fork bomb defense. See [Admin Hardening](ADMIN_HARDENING.md) for cgroup-based limits. Slurm-submitted jobs are limited by the scheduler |
 | **All** | No audit/logging trail — there is no persistent log of sandbox sessions, chaperon requests, or denied access attempts | The chaperon prints errors to stderr per-request but does not persist them. Consider redirecting to a log file or using `logger` for syslog integration |
 | **All** | `srun --pty` (interactive PTY) is not supported through the chaperon protocol. Some advanced srun flags may be blocked — check the denied list in [CHAPERON.md](CHAPERON.md) if a launch fails | Use `sbatch` for interactive-like workflows, or `srun` without `--pty` for non-interactive execution |
 | **All** | Chaperon temp files (wrapper scripts, original scripts) in `$TMPDIR` persist after SIGKILL since the cleanup trap cannot fire | Stale files are named `chaperon-*` in `$TMPDIR`; periodic cleanup recommended on NFS-backed tmp |
