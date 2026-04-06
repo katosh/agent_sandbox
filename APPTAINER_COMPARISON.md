@@ -102,7 +102,7 @@ Neither approach provides complete isolation. Both share these weaknesses:
 | **SSH escape** | If `~/.ssh` is exposed, agent can SSH to localhost for an unsandboxed shell. | `$HOME` bind-mounted by default, so `~/.ssh` is exposed unless `--contain` is used. |
 | **`/dev/shm` / IPC** | Isolated on bwrap (`--unshare-ipc`) and firejail (`--ipc-namespace`). Shared on Landlock. | Writable and shared by default. |
 | **`memfd_create`** | Not blocked (needed by CUDA, PyTorch, JAX). Docker's default seccomp profile also allows it. `userfaultfd` and `io_uring` are blocked by all three backends via seccomp. | Not blocked (no seccomp by default). |
-| **Slurm wrapping** | Soft boundary. Munge auth available, PATH shadowing bypassable (see [Admin Hardening §1](ADMIN_HARDENING.md#1-enforce-sandbox-on-agent-submitted-slurm-jobs)). | No wrapping at all. Slurm fully accessible. |
+| **Slurm wrapping** | Munge socket blocked (all backends). Slurm binaries blocked (bwrap/firejail) or PATH-shadowed only (Landlock — real `/usr/bin/sbatch` callable but munge auth fails). See [Admin Hardening §1](ADMIN_HARDENING.md#1-enforce-sandbox-on-agent-submitted-slurm-jobs) | No wrapping at all. Slurm fully accessible. |
 
 The sandbox has additional backend-specific gaps documented in the [README's Known Limitations](README.md#known-limitations):
 
