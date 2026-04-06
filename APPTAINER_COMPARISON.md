@@ -25,7 +25,7 @@ These are opposite defaults. An Apptainer container is wide-open unless you lock
 | Home directory | Blank tmpfs + selective re-mount | [Bind-mounts `$HOME`](https://apptainer.org/docs/user/main/bind_paths_and_mounts.html) | Isolated (empty `$HOME`) |
 | CWD bind mount | Project dir only | Full CWD | CWD |
 | Host `/proc` | Isolated (unshare-pid) | Full host `/proc` | Isolated |
-| Env var filtering | ✓ (blocks SSH_*, credentials) | ✗ (inherits host environment) | Partial (`--cleanenv`) |
+| Env var filtering | ✓ (explicit names + credential patterns: SSH_*, *_TOKEN, CI_*, etc.) | ✗ (inherits host environment) | Partial (`--cleanenv`) |
 | Passwd/group filtering | ✓ (system accounts + current user) | Generates container-local files, but includes user info | Same |
 | Seccomp | ✓ (bwrap: generated BPF; firejail: --seccomp.drop; landlock: custom) | ✗ ([not applied by default](https://apptainer.org/docs/user/main/security_options.html)) | ✗ |
 | io_uring blocked | ✓ (all three backends) | ✗ | ✗ |

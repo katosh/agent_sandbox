@@ -139,7 +139,7 @@ The communication channel uses named pipes (FIFOs) in a per-session temporary di
 
 1. **Per-session directory**: `mktemp -d` creates a directory with `chmod 700` — only the owning user can access it. The directory is bind-mounted into the sandbox so both sides can reach it.
 2. **Persistent request pipe**: A single `req` FIFO handles all requests. The chaperon opens it O_RDWR to prevent blocking and avoid EOF between requests.
-3. **Per-request response pipes**: Each stub creates a response FIFO with an unpredictable name (`mktemp -u`), sends the path in the request, and reads the response from it. This prevents response mixing between concurrent requests.
+3. **Per-request response pipes**: Each stub creates an atomically-named directory (`mktemp -d`) containing a response FIFO (`fifo`), sends the path in the request, and reads the response from it. This eliminates the TOCTOU window that `mktemp -u` + `mkfifo` would have. The FIFO is created with `mkfifo -m 600` (permissions set atomically).
 4. **No FD inheritance needed**: Unlike socketpairs, FIFOs are filesystem-backed and survive bwrap's FD closing (which closes all FDs > 2). No exemptions needed.
 5. **Timeouts**: The stub reads responses with a 30-second timeout (`chaperon_read_response` in `_stub_lib.sh`) to prevent infinite hangs if the chaperon dies. The chaperon uses a 30-second body read timeout and a 10-second response write timeout to prevent stalls from malicious or dead stubs. All internal squeue calls (for scope resolution) use `timeout 10`.
 6. **Cleanup on exit**: The chaperon's EXIT trap removes the entire FIFO directory.
@@ -396,10 +396,10 @@ The following commands are routed to `blocked.sh` (no handler):
 3. **Argument whitelisting**: Only explicitly allowed sbatch flags are forwarded. The whitelist is conservative — new Slurm flags must be manually added.
 4. **CWD validation**: The working directory is resolved to a physical path (following symlinks) and validated as being under the project directory. Both sbatch and srun (allocation mode) perform this check.
 5. **Always wrapped**: Every job submitted through the chaperon is wrapped in `sandbox-exec.sh`, ensuring compute-node execution inherits sandbox restrictions.
-6. **FIFO security**: Communication uses named pipes in a per-session temp directory with 700 permissions. Response FIFOs use unpredictable names (mktemp) and are validated against path traversal.
+6. **FIFO security**: Communication uses named pipes in a per-session temp directory with 700 permissions. Response FIFOs are created inside atomically-named subdirectories (`mktemp -d`), validated against path traversal (`..`) and symlinks (`-L` check), and must match the expected `FIFO_DIR/resp-XXXXXX/fifo` structure.
 7. **Die-with-parent**: The chaperon sets `PR_SET_PDEATHSIG` and polls parent liveness every 5 seconds as a fallback.
 8. **Handler dispatch validation**: Command names are validated against `^[a-z_][a-z0-9_]*$` to prevent path traversal in handler lookup.
-9. **TOCTOU prevention**: Response FIFOs are opened to a held FD immediately after validation, and writes go through the FD (not the path).
+9. **TOCTOU prevention**: Response FIFOs are opened to a held FD immediately after validation, and writes go through the FD (not the path). Symlinks are rejected before the `-p` (FIFO) check to prevent symlink-following attacks.
 10. **#SBATCH directive filtering**: `#SBATCH` directives are filtered against the flag whitelist — safe directives pass through, dangerous ones are stripped.
 11. **Atomic request writes**: Request messages are built into a buffer and written with `flock` on the request FIFO lock file to prevent interleaving from concurrent stubs.
 12. **scancel scoping**: Job cancellation is restricted to jobs submitted by this session/project/user, preventing cancellation of other users' jobs.
