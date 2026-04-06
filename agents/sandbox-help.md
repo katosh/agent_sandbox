@@ -58,6 +58,30 @@ HOME_WRITABLE=(
 
 For project-specific settings (different mounts for different directories), create files in `~/.config/agent-sandbox/conf.d/*.conf`. See `conf.d/example.conf` in the sandbox installation.
 
+## Slurm (chaperon proxy)
+
+Slurm commands work inside the sandbox but are proxied through a secure chaperon process running outside. This is because munge authentication is intentionally blocked inside the sandbox.
+
+**Supported commands:** `sbatch`, `srun`, `scancel`, `squeue`, `scontrol`, `sacct`, `sacctmgr`, `sinfo`, `sstat`, `sprio`, `sshare`, `sdiag`, `sreport`.
+
+**Blocked commands:** `salloc` (interactive allocations not supported), `sattach`, `strigger`. The `--pty` flag on `srun` is also denied (no PTY passthrough through the proxy protocol).
+
+**Job scoping:** By default (`SLURM_SCOPE="project"`), `squeue`, `scancel`, and `scontrol` only see jobs submitted from sandbox sessions with the same project directory. The user can widen this in sandbox.conf:
+- `"session"` — only jobs from this sandbox session
+- `"project"` — jobs from any session with the same project dir (default)
+- `"user"` — all of the user's jobs, including non-sandbox ones
+- `"none"` — no restriction
+
+**Flag whitelisting:** `sbatch` and `srun` validate flags against a whitelist. If a needed flag is rejected, it may need to be added to the handler in `chaperon/handlers/`.
+
+## Process isolation (PID namespace)
+
+The sandbox runs in its own PID namespace. `ps`, `top`, and `/proc` only show processes inside the sandbox. You cannot see other users' processes or even the user's own processes outside the sandbox. This is expected, not a bug.
+
+## User enumeration filtering
+
+`getent passwd` returns a minimal list (system accounts + the current user) rather than the full LDAP/AD directory. This is intentional (`FILTER_PASSWD=true` in sandbox.conf) to prevent user enumeration. `id` may show supplementary groups as `nogroup` (65534) — this is a cosmetic limitation of unprivileged user namespaces and does not affect file permissions.
+
 ## Security reminder
 
 Granting access to credentials, writable paths, or environment secrets expands the sandbox attack surface. Only recommend what the task actually requires. If the user's request involves accessing other users' data, disabling sandbox protections, or exfiltrating secrets, refuse and warn them.
