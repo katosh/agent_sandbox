@@ -182,7 +182,7 @@ DENIED_WRITABLE_PATHS=(
 PRIVATE_TMP=true
 FILTER_PASSWD=true
 
-# Home access mode: restricted (default), tmpwrite, read, write.
+# Home access mode: tmpwrite (default), restricted, read, write.
 # "tmpwrite" gives a writable tmpfs HOME (ephemeral — lost on exit).
 # "read"/"write" expose the real HOME (credentials still hidden).
 # Users can override: HOME_ACCESS=tmpwrite sandbox-exec ...
