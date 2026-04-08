@@ -180,11 +180,12 @@ SANDBOX_BYPASS_TOKEN=""
 SANDBOX_NPROC_LIMIT=""
 
 BLOCKED_ENV_VARS=(
-    # API tokens & keys (specific names not caught by BLOCKED_ENV_PATTERNS)
+    # Specific names NOT caught by BLOCKED_ENV_PATTERNS globs.
+    # Names like GITHUB_TOKEN, OPENAI_API_KEY, AWS_SESSION_TOKEN, SSH_*, etc.
+    # are already matched by patterns — no need to list them here.
     "GITHUB_PAT"
-    "OPENAI_API_KEY" "ANTHROPIC_API_KEY"
     # Cloud & service credentials
-    "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_SESSION_TOKEN"
+    "AWS_ACCESS_KEY_ID"
     "ST_AUTH" "SW2_URL"
     # Database credentials
     "DATABASE_URL" "PGPASSWORD" "MYSQL_PWD" "MONGO_URI"
@@ -198,12 +199,10 @@ BLOCKED_ENV_VARS=(
     "SLURM_CONF" "SLURM_CONFIG_DIR"
     "DBUS_SESSION_BUS_ADDRESS" "OLDPWD"
     "TMUX" "TMUX_PANE"
-    # Note: SSH_*, *_TOKEN, *_SECRET, *_PASSWORD, *_API_KEY, *_CREDENTIAL,
-    # *_SECRET_KEY, *_PRIVATE_KEY, DOCKER_*, CI_*, AZURE_*, GCP_*, etc.
-    # are blocked by BLOCKED_ENV_PATTERNS patterns (below).
-    # Vars like GITHUB_TOKEN, GH_TOKEN, HF_TOKEN, ZENODO_TOKEN,
-    # VAULT_TOKEN, NPM_TOKEN, REDIS_PASSWORD, VAULT_ADDR, PIP_PASSWORD
-    # are caught by those patterns and don't need explicit listing here.
+    # Note: vars matching BLOCKED_ENV_PATTERNS globs (SSH_*, *_TOKEN,
+    # *_SECRET, *_PASSWORD, *_API_KEY, *_CREDENTIAL, *_SECRET_KEY,
+    # *_PRIVATE_KEY, DOCKER_*, CI_*, AZURE_*, GCP_*, etc.) are blocked
+    # automatically — do not duplicate them here.
 )
 
 # Credential-pattern globs: block env vars matching common credential naming
