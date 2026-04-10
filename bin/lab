@@ -1,0 +1,264 @@
+#!/bin/bash --
+# lab — Project-local JupyterLab launcher and kernel manager.
+# (Run `lab help` for full usage.)
+
+set -eo pipefail
+
+PROG="lab"
+DIR="$PWD"
+: "${JUPYTER_CONFIG_DIR:=$DIR/.jupyter}"
+: "${JUPYTER_DATA_DIR:=$DIR/.jupyter/share/jupyter}"
+KERNELS_DIR="$JUPYTER_DATA_DIR/kernels"
+VENV_DIR="$DIR/.venv"
+
+export JUPYTER_CONFIG_DIR JUPYTER_DATA_DIR
+
+err() { echo "$PROG: $*" >&2; }
+die() { err "$@"; exit 1; }
+
+usage() {
+    cat <<'HELP'
+lab — Project-local JupyterLab launcher and kernel manager.
+
+Runs JupyterLab from the current directory with all configuration and
+kernels under ./.jupyter, so each project gets its own reproducible Jupyter
+setup with no writes to ~/.local. Kernels are built from per-project `uv`
+venvs and registered into the project's Jupyter data dir, which makes them
+visible to the Jupyter session started by `lab` and to any agent running in
+the same sandboxed working directory.
+
+USAGE
+  lab                          Start JupyterLab in the current directory
+  lab help                     Show this help
+  lab kernel add [NAME]        Create ./.venv (if missing) and register it
+                               as a project-local kernel. NAME defaults to
+                               the current directory name.
+  lab kernel list              List project-local kernels
+  lab kernel remove NAME       Unregister a project-local kernel
+  lab password                 Set a persistent password for this project's
+                               JupyterLab (stored in ./.jupyter)
+
+KERNEL WORKFLOW
+  Quick start in any project directory:
+      lab kernel add           # creates .venv, registers it as a kernel
+      lab                      # starts JupyterLab; the new kernel
+                               #   appears in the launcher
+  Then install whatever else you need into the venv:
+      uv pip install --python .venv/bin/python pandas numpy ...
+  The running kernel uses the same .venv, so packages become available
+  immediately (re-import, or restart-and-run-all).
+
+NETWORK ACCESS
+  By default `lab` binds to 127.0.0.1, so only browsers on the same host
+  can connect. This is the safe default but usually isn't what you want
+  on HPC, where you'll be connecting from your laptop. Two common options:
+
+    1. Bind to all interfaces — simplest, requires that you trust the
+       network and rely on Jupyter's token/password for auth:
+           IP=0.0.0.0 lab            # or:  lab --ip 0.0.0.0
+       Anyone who can reach the host on the bound port can now attempt
+       to connect. For untrusted networks, also enable TLS by setting
+       JUPYTER_CERTFILE and JUPYTER_KEYFILE so the connection is HTTPS.
+
+    2. SSH tunnel — works with the default 127.0.0.1, no firewall holes:
+           ssh -L 8888:localhost:8888 user@host
+       Then open http://localhost:8888 in your laptop's browser.
+
+AUTHENTICATION
+  Each time `lab` starts, jupyter-lab prints a URL with a one-time token:
+      http://<host>:<port>/lab?token=<random>
+  Click or copy that URL — the token authenticates your browser session.
+  Watch the startup output: the URL is printed near the bottom, after
+  the extension load messages.
+
+  Prefer a persistent password instead? Set one once:
+      lab password
+  The password is hashed and stored in ./.jupyter/jupyter_server_config.json
+  (project-local, no global state). On subsequent starts, jupyter-lab will
+  show a password prompt instead of issuing a token URL.
+
+SERVER OPTIONS
+  Any jupyter-lab flag works as pass-through, e.g.:
+    --port N                   Bind port (default: $PORT or 8888)
+    --ip ADDR                  Bind address (default: $IP or 127.0.0.1)
+    --no-browser               Don't open a browser
+    --ServerApp.token=...      Set/override the auth token explicitly
+
+ENVIRONMENT VARIABLES
+  PORT, IP                     Defaults for --port / --ip
+                               (set IP=0.0.0.0 for remote access)
+  JUPYTER_CERTFILE             TLS certificate path (enables HTTPS if set)
+  JUPYTER_KEYFILE              TLS private key  path (enables HTTPS if set)
+  JUPYTER_CONFIG_DIR           Override config dir (default: ./.jupyter)
+  JUPYTER_DATA_DIR             Override data  dir (default: ./.jupyter/share/jupyter)
+
+REQUIREMENTS
+  uv — used to run jupyter-lab via `uvx` and to manage kernel venvs.
+  If uv is not on PATH, install it (no root needed) with one of:
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    brew install uv
+  See https://docs.astral.sh/uv/ for details.
+
+JUPYTERLAB EXTENSIONS (installed at runtime by uvx)
+  jupyterlmod              Lmod / module integration for HPC
+  jupyterlab_notify        Cell completion notifications
+  jupyterlab_execute_time  Per-cell execution time display
+  jupyter-resource-usage   CPU / memory monitoring
+  jupyterlab-widgets       ipywidgets renderer
+  notebook-intelligence    Inline AI completion
+
+NOTES
+  - Sandbox-friendly: works inside the agent sandbox with no extra mounts;
+    ~/.cache/uv is writable under the default HOME_WRITABLE config.
+  - Kernels live entirely under ./.jupyter/share/jupyter/kernels/. Nothing
+    is written to ~/.local. Delete the .jupyter directory to start over.
+  - TLS cert paths must be visible inside the sandbox — do NOT put them
+    under ~/.ssh, which the sandbox blocks. ~/.config/jupyter-tls/ or a
+    project-local path both work.
+  - The agent (in another tmux pane in the same sandbox) can attach to a
+    running kernel and execute cells against it directly — variables and
+    loaded data persist between turns.
+HELP
+}
+
+require_uv() {
+    if ! command -v uv >/dev/null 2>&1; then
+        die "uv not found on PATH. Install it (no root needed) with one of:
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  brew install uv
+See https://docs.astral.sh/uv/ for details, or run \`$PROG help\`."
+    fi
+}
+
+sanitize_kernel_name() {
+    # Lowercase; collapse runs of non-[a-z0-9._-] into '-'; trim leading/trailing '-'.
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+        | sed -e 's/[^a-z0-9._-]\+/-/g' -e 's/^-\+//' -e 's/-\+$//'
+}
+
+ensure_venv_with_ipykernel() {
+    require_uv
+    if [ ! -x "$VENV_DIR/bin/python" ]; then
+        echo "$PROG: creating venv at $VENV_DIR" >&2
+        uv venv "$VENV_DIR"
+    fi
+    local missing=()
+    "$VENV_DIR/bin/python" -c "import ipykernel_launcher" 2>/dev/null || missing+=(ipykernel)
+    "$VENV_DIR/bin/python" -c "import ipywidgets"        2>/dev/null || missing+=(ipywidgets)
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "$PROG: installing ${missing[*]} into $VENV_DIR" >&2
+        uv pip install --python "$VENV_DIR/bin/python" "${missing[@]}"
+    fi
+}
+
+cmd_kernel_add() {
+    local raw_name="${1:-$(basename "$DIR")}"
+    local name; name="$(sanitize_kernel_name "$raw_name")"
+    [ -n "$name" ] || die "kernel add: empty name after sanitization"
+    ensure_venv_with_ipykernel
+    mkdir -p "$JUPYTER_CONFIG_DIR"
+    "$VENV_DIR/bin/python" -m ipykernel install \
+        --prefix "$JUPYTER_CONFIG_DIR" \
+        --name "$name" \
+        --display-name "$name (.venv)"
+    echo "$PROG: registered kernel '$name' → $KERNELS_DIR/$name" >&2
+}
+
+cmd_kernel_list() {
+    if [ ! -d "$KERNELS_DIR" ]; then
+        echo "$PROG: no project-local kernels (no $KERNELS_DIR)" >&2
+        return 0
+    fi
+    local found=0
+    for k in "$KERNELS_DIR"/*/; do
+        [ -d "$k" ] || continue
+        found=1
+        printf '  %s\n' "$(basename "$k")"
+    done
+    if [ "$found" -eq 0 ]; then
+        echo "$PROG: no project-local kernels in $KERNELS_DIR" >&2
+    fi
+}
+
+cmd_kernel_remove() {
+    local raw_name="${1:?usage: lab kernel remove NAME}"
+    local name; name="$(sanitize_kernel_name "$raw_name")"
+    local target="$KERNELS_DIR/$name"
+    [ -d "$target" ] || die "kernel remove: '$name' not found at $target"
+    rm -rf "$target"
+    echo "$PROG: removed kernel '$name'" >&2
+}
+
+cmd_kernel() {
+    local sub="${1:-}"
+    [ $# -gt 0 ] && shift
+    case "$sub" in
+        add)        cmd_kernel_add        "$@" ;;
+        list|ls)    cmd_kernel_list       "$@" ;;
+        remove|rm)  cmd_kernel_remove     "$@" ;;
+        ""|help|-h|--help)
+            cat >&2 <<'KHELP'
+Usage:
+  lab kernel add [NAME]      Create ./.venv (if missing) and register it
+                             as a kernel. NAME defaults to $(basename $PWD).
+  lab kernel list            List project-local kernels
+  lab kernel remove NAME     Unregister a project-local kernel
+KHELP
+            ;;
+        *) die "kernel: unknown subcommand '$sub' (try '$PROG help')" ;;
+    esac
+}
+
+cmd_password() {
+    require_uv
+    mkdir -p "$JUPYTER_CONFIG_DIR"
+    exec uvx --from jupyterlab jupyter-lab password "$@"
+}
+
+cmd_serve() {
+    require_uv
+    mkdir -p "$JUPYTER_CONFIG_DIR" "$JUPYTER_DATA_DIR"
+
+    # Refresh kernel deps in an existing .venv so registered kernels keep
+    # working after a venv rebuild. Skip silently if there's no .venv.
+    if [ -x "$VENV_DIR/bin/python" ]; then
+        local missing=()
+        "$VENV_DIR/bin/python" -c "import ipykernel_launcher" 2>/dev/null || missing+=(ipykernel)
+        "$VENV_DIR/bin/python" -c "import ipywidgets"        2>/dev/null || missing+=(ipywidgets)
+        if [ ${#missing[@]} -gt 0 ]; then
+            echo "$PROG: installing ${missing[*]} into $VENV_DIR" >&2
+            uv pip install --python "$VENV_DIR/bin/python" "${missing[@]}"
+        fi
+    fi
+
+    local tls_args=()
+    if [ -n "${JUPYTER_CERTFILE:-}" ] && [ -n "${JUPYTER_KEYFILE:-}" ]; then
+        tls_args=(--certfile "$JUPYTER_CERTFILE" --keyfile "$JUPYTER_KEYFILE")
+    fi
+
+    exec uvx --from jupyterlab \
+        --with jupyterlmod \
+        --with jupyterlab_notify \
+        --with jupyterlab_execute_time \
+        --with jupyter-resource-usage \
+        --with jupyterlab-widgets \
+        --with notebook-intelligence \
+        jupyter-lab \
+        --port "${PORT:-8888}" \
+        --ip "${IP:-127.0.0.1}" \
+        ${tls_args[@]+"${tls_args[@]}"} \
+        "$@"
+}
+
+main() {
+    case "${1:-}" in
+        help|-h|--help) usage ;;
+        kernel)         shift; cmd_kernel "$@" ;;
+        password)       shift; cmd_password "$@" ;;
+        "")             cmd_serve ;;
+        -*)             cmd_serve "$@" ;;
+        *)              die "unknown command '$1' (try '$PROG help')" ;;
+    esac
+}
+
+main "$@"

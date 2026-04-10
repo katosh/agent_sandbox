@@ -315,9 +315,21 @@ Customize agent instructions via `~/.config/agent-sandbox/agents/<name>/agent.md
 
 ---
 
-## Agent Teams / tmux (experimental)
+## Agent Teams / tmux
 
-The outer tmux socket is blocked (escape risk). A nested tmux runs inside the sandbox with `Ctrl-a` prefix: `sandbox-exec.sh -- tmux new-session claude`. On kernels < 5.4, set `BIND_DEV_PTS=true` in `sandbox.conf` for pty allocation (see Known Limitations). Customize via `~/.config/agent-sandbox/sandbox-tmux.conf`.
+The outer tmux socket is blocked (escape risk), but a **nested tmux** running inside the sandbox works well: `sandbox-exec.sh -- tmux new-session claude` (prefix is `Ctrl-a`). On kernels < 5.4, set `BIND_DEV_PTS=true` in `sandbox.conf` for pty allocation (see Known Limitations). Customize via `~/.config/agent-sandbox/sandbox-tmux.conf`.
+
+**Tip — long-lived Jupyter kernels for stateful experimentation:** The sandbox ships a `lab` utility (in `bin/`) that runs JupyterLab from the current directory with all configuration and kernels under `./.jupyter`, so each project gets its own reproducible Jupyter setup with no `~/.local` writes. Quick start in any project directory:
+
+```bash
+sandbox-exec.sh -- tmux new-session    # nested tmux inside the sandbox
+# in one pane:
+lab kernel add                          # creates ./.venv, registers it as a kernel
+lab                                     # starts JupyterLab (default 127.0.0.1:8888)
+# in another pane: start your agent (claude/codex/...) — it sees the same .venv
+```
+
+Run `lab help` for the full list of subcommands (`kernel add | list | remove`), pass-through server options, TLS env vars, and notes on installing `uv` if it's missing. Because the kernel runs in a long-lived Jupyter session, the agent can attach and execute cells against it directly — variables, loaded dataframes, and model state persist between turns. This lets the agent iteratively experiment with large datasets without paying the reload cost on every step, which is especially valuable when the data takes minutes to load. Both the kernel and the agent share the same sandboxed filesystem view, so the isolation guarantees still hold.
 
 ---
 
@@ -365,14 +377,11 @@ Replace `/path/to/bwrap` with the output of `which bwrap`. Then run `sudo apparm
 
 **Option 2 — Disable globally:** `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (persist with `/etc/sysctl.d/99-userns.conf`).
 
-### Firejail: Slurm "sbatch: error: ... Invalid user id"
-This was caused by firejail's `/etc/passwd` filtering, which removes UIDs >= `UID_MIN`. The sandbox now uses `--allusers` to disable this filtering, so this issue should no longer occur. If you still see it, ensure you're running the latest version of the sandbox scripts.
-
 ### Slurm commands fail inside the sandbox
 By design, `sbatch` inside the sandbox goes through the chaperon proxy. If it fails, check that the chaperon started successfully (look for "chaperon:" prefixed errors in stderr). The munge socket is intentionally blocked inside the sandbox — Slurm authentication happens in the chaperon, which runs outside. If `sbatch` fails with authentication errors, ensure `/run/munge/munge.socket.2` exists on the host.
 
 ### "Read-only file system" when writing
-By design. Only `$SANDBOX_PROJECT_DIR` and agent-specific directories are writable. If the agent needs to write somewhere else, either change `--project-dir` or add the path to `HOME_WRITABLE` in `sandbox.conf`.
+By design. Only `$SANDBOX_PROJECT_DIR` and agent-specific directories are writable. To grant write access elsewhere, add the path to `HOME_WRITABLE` (for entries under `$HOME`) or `EXTRA_WRITABLE_PATHS` (for paths outside `$HOME`, e.g. scratch directories) in `sandbox.conf`. Alternatively, run with a different `--project-dir`.
 
 ### Module commands don't work
 The sandbox passes through `BASH_ENV` (typically pointing to the lmod init script, e.g. `/app/lmod/lmod/init/bash`) which auto-initializes lmod in bash scripts. If `module` isn't available, check that `BASH_ENV` is set correctly for your site's lmod installation. For non-bash shells, source the appropriate lmod init file.
@@ -381,17 +390,7 @@ The sandbox passes through `BASH_ENV` (typically pointing to the lmod init scrip
 The tool's directory isn't mounted. Check if it's under a path in `READONLY_MOUNTS` or `HOME_READONLY`. Add it to the appropriate list in `sandbox.conf`.
 
 ### Can't create new conda/mamba environments
-Mamba root (`$MAMBA_ROOT_PREFIX`) is read-only by default. Either create environments outside the sandbox and use them inside, or add the mamba root to `HOME_WRITABLE` in `sandbox.conf` to make it writable.
-
-### eBPF token protection not blocking reads
-If verification step 2 (simulated sandboxed read) prints "FAIL: readable":
-1. Check the program is loaded: `sudo bpftool prog show | grep deny_token_read`
-2. Check the map has values: `sudo bpftool map dump id $(sudo bpftool map show | grep protected_file | head -1 | awk '{print $1}' | tr -d ':')`
-3. If `dev` is 0 or doesn't match the kernel encoding, re-run `load-token-protect.sh`. Note: `stat -c %d` returns old-format `dev_t`; the kernel uses `new_encode_dev` (`major << 20 | minor`). The loader script handles this.
-4. If reloading after an update, remove old pins first: `sudo rm -rf /sys/fs/bpf/token_protect`
-
-### eBPF: "bpf" not in active LSM list
-Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,apparmor,bpf`. Check current list: `cat /sys/kernel/security/lsm`.
+Mamba root (`$MAMBA_ROOT_PREFIX`) is read-only by default. Rather than opening it up, prefer **project-specific environments** that live inside `$SANDBOX_PROJECT_DIR` — they're isolated, reproducible, and writable without any config changes. [`uv`](https://docs.astral.sh/uv/) is a good fit: `uv venv .venv && uv pip install ...` creates a per-project Python environment in seconds, and `uv`'s cache (`~/.cache/uv`) is already writable in the default `HOME_WRITABLE`. The agent itself can set this up for you — just ask it to "create a uv environment for this project and install <packages>". If you really need shared mamba envs, either create them outside the sandbox and use them inside (read-only is fine for activation), or add `$MAMBA_ROOT_PREFIX` to `HOME_WRITABLE` in `sandbox.conf`.
 
 ---
 
@@ -406,14 +405,14 @@ Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,a
 | Agent reads other users' data | Only explicitly allowed paths are accessible | **Hard** |
 | User enumeration & profile extraction | LDAP/AD directories (`/etc/passwd`, `finger`) are hidden or restricted (bwrap/firejail/landlock) | **Hard** — prevents agent from mapping organizational structure or extracting real names and login history |
 | Extraction of other users' data | Shared filesystems (NFS, Lustre) are restricted; only the project directory and specified paths are accessible | **Hard** — prevents credential-based access to other lab members' data |
-| Agent escapes via Unix sockets | Bwrap/firejail: filesystem-based sockets (e.g. `/run/dbus`) hidden by mount namespace, but abstract sockets (`@/org/...`) remain accessible (shared network namespace). Landlock: cannot block `AF_UNIX connect` | **Partial** (bwrap/firejail) / **None** (Landlock) |
+| Agent escapes via Unix sockets | Bwrap/firejail: filesystem-based sockets (e.g. `/run/dbus`) hidden by mount namespace, but abstract sockets (`@/org/...`) remain accessible (shared network namespace). **Landlock: full escape** — `systemd-run --user` executes outside sandbox (reads `~/.ssh`, `~/.aws`, submits Slurm jobs). See [Admin Hardening §0](ADMIN_HARDENING.md) | **Partial** (bwrap/firejail) / **None** (Landlock) |
 | Agent escapes via PID namespace | Bwrap/firejail: isolated PID namespace. Landlock: host PIDs visible | **Hard** (bwrap/firejail) / **None** (Landlock) |
 | Agent uses dangerous syscalls | All backends block `io_uring`, `userfaultfd`, `kexec` via seccomp-bpf. Firejail: built-in. Landlock: custom filter in `landlock-sandbox.py` (requires kernel ≥ 5.13). Bwrap: generated filter via `generate-seccomp.py` | **Hard** — all backends |
-| Slurm job bypasses sandbox | Chaperon proxy: munge socket blocked, Slurm binaries blocked, argument whitelisting, all jobs wrapped in sandbox-exec.sh | **Hard** — munge auth unavailable inside sandbox; chaperon validates and wraps all submissions (see [CHAPERON.md](CHAPERON.md)) |
+| Slurm job bypasses sandbox | Chaperon proxy: munge socket blocked (bwrap/firejail), Slurm binaries blocked (bwrap/firejail), argument whitelisting, all jobs wrapped in sandbox-exec.sh. **Landlock: chaperon fully bypassable** — munge socket reachable and Slurm binaries callable | **Hard** (bwrap/firejail) / **None** (Landlock — see [Admin Hardening](ADMIN_HARDENING.md) §1 for SPANK plugin enforcement) |
 | Agent tampers with sandbox scripts | Read-only mount (bwrap/firejail) / not protected (Landlock) | **Hard** (bwrap/firejail) / **None** (Landlock) — see [Admin Hardening](ADMIN_HARDENING.md) §2 |
 | SSH escape (if `~/.ssh` exposed) | Not protected — sandbox does not restrict network | **None** — agent can SSH to localhost or other nodes to get an unsandboxed shell. **Do not expose `~/.ssh`** unless you understand this risk. |
 
-**Bottom line:** Filesystem isolation is kernel-enforced with all three backends. Bwrap/firejail add mount + PID namespace isolation. Landlock works without admin privileges but provides filesystem-only isolation. Slurm job submission is enforced by the chaperon proxy — munge auth is blocked inside the sandbox, so there is no way to submit jobs without going through the validated, wrapped path. For comparison with Apptainer, see [Sandbox vs. Apptainer](APPTAINER_COMPARISON.md).
+**Bottom line:** Filesystem isolation is kernel-enforced with all three backends. Bwrap/firejail add mount + PID namespace isolation. Landlock works without admin privileges but provides filesystem-only isolation. Slurm job submission is enforced by the chaperon proxy on bwrap/firejail — munge auth is blocked inside the sandbox, so there is no way to submit jobs without going through the validated, wrapped path. **On Landlock, the chaperon is fully bypassable** — Landlock cannot block `AF_UNIX connect()`, so the munge socket is reachable and `/usr/bin/sbatch` is directly callable. Landlock deployments with Slurm require [Admin Hardening](ADMIN_HARDENING.md) §1 (SPANK plugin) for server-side enforcement. For comparison with Apptainer, see [Sandbox vs. Apptainer](APPTAINER_COMPARISON.md).
 
 **Accepted risks (all backends):** Fileless execution via `memfd_create` (needed by CUDA/PyTorch/JAX). `/proc/net` information disclosure (needed for network stack). Abstract Unix sockets accessible (shared network namespace required for DNS/NSS). See the [pentest reports](pentest/) for detailed findings and analysis per backend.
 
@@ -425,7 +424,7 @@ Add `bpf` to the kernel boot parameters: `lsm=landlock,lockdown,yama,integrity,a
 |---|---|---|---|
 | **[Bubblewrap](https://github.com/containers/bubblewrap)** | `apt`/`dnf`/`brew` | Mount namespace isolation, paths hidden entirely (ENOENT), file overlays, Slurm binary relocation, sandbox self-protection, seccomp via generated BPF filter (io_uring/userfaultfd/kexec) | Requires unprivileged user namespaces; blocked by AppArmor on Ubuntu 24.04+ without admin help |
 | **[Firejail](https://firejail.wordpress.com/)** | ✅ Yes (`apt install`) | Mount namespace (ENOENT), PID namespace, built-in seccomp + io_uring + userfaultfd blocked, caps dropping, works when AppArmor blocks user namespaces | Requires setuid root binary |
-| **[Landlock](https://docs.kernel.org/userspace-api/landlock.html)** | ✅ Yes (kernel ≥ 5.13) | No root or admin needed, works on Ubuntu 24.04 despite AppArmor, pure kernel LSM, no external dependencies (Python 3 only) | No mount namespace — blocked paths return EACCES not ENOENT, no file overlays, no PID isolation, no Slurm binary relocation, no sandbox self-protection, cannot block Unix socket connect (see [Admin Hardening](ADMIN_HARDENING.md)) |
+| **[Landlock](https://docs.kernel.org/userspace-api/landlock.html)** | ✅ Yes (kernel ≥ 5.13) | No root or admin needed, works on Ubuntu 24.04 despite AppArmor, pure kernel LSM, no external dependencies (Python 3 only) | No mount namespace — blocked paths return EACCES not ENOENT, no file overlays, no PID isolation, no Slurm binary relocation, no sandbox self-protection, cannot block Unix socket connect (**chaperon fully bypassable** — see [Admin Hardening](ADMIN_HARDENING.md)) |
 | **[Apptainer/Singularity](https://apptainer.org/)** | ✅ Yes (lmod) | Full container, HPC-native | Heavy — requires container images, path mapping |
 | **Docker** | ❌ No | Industry standard | Requires root daemon; not available on shared HPC |
 
@@ -439,7 +438,7 @@ Sorted by perceived severity (security impact first, then operational issues).
 |---|---|---|
 | **All** | Network not isolated — agent can exfiltrate data via HTTP, reach cloud metadata endpoints (169.254.169.254), access internal services, or SSH to an unsandboxed shell if `~/.ssh` is exposed. Claude Code requires network for its API, so full isolation is not possible without a dedicated network namespace with selective forwarding | Do not expose `~/.ssh`; limit keys to single-service scopes (e.g. GitHub deploy keys only). See [Admin Hardening](ADMIN_HARDENING.md) for iptables/nftables templates to block metadata endpoints and restrict outbound connections |
 | **Firejail** | Setuid-root binary with a significant [CVE history](https://www.cvedetails.com/vulnerability-list/vendor_id-16191/Firejail.html) (18 CVEs, 12 local root exploits). Installing firejail adds a privileged attack surface to every node | Prefer bwrap where possible. See [Apptainer Comparison](APPTAINER_COMPARISON.md#security-track-record) for the full CVE breakdown |
-| **Landlock** | Cannot block `AF_UNIX connect()` — agent can reach D-Bus, systemd sockets for potential sandbox escape | Use bwrap or firejail; or see [Admin Hardening](ADMIN_HARDENING.md) |
+| **Landlock** | Cannot block `AF_UNIX connect()` — **full sandbox escape** via `systemd-run --user` if `user@.service` is running (reads `~/.ssh`, `~/.aws`, writes arbitrary files with no Landlock restrictions). Also bypasses chaperon (munge socket reachable) | **Use bwrap or firejail.** If Landlock-only: [Admin Hardening §0](ADMIN_HARDENING.md) (mask `user@.service`) is **mandatory** |
 | **Landlock** | No sandbox self-protection — agent can modify wrapper scripts. Current session is safe (kernel rules are irrevocable), but future sessions could be compromised | Use bwrap or firejail |
 | **Landlock** | No PID namespace — host processes visible via `/proc`. Agent could read `/proc/PID/environ` of same-UID processes (e.g. sbatch wrapper injecting bypass token) | Use bwrap or firejail for PID isolation; token exposure window is microseconds. A SPANK plugin would eliminate it entirely |
 | **bwrap** | Supplementary groups display as `nogroup` (65534) inside the sandbox. Unprivileged bwrap always creates a user namespace (required to obtain mount/PID namespaces without root), and that namespace can only map the caller's own UID/GID. All other GIDs appear unmapped. **File permissions still work correctly** — the kernel uses host credentials for filesystem access, so group-owned directories remain fully accessible. Only display tools (`id`, `ls -l`) are affected | Cosmetic only — no functional impact. A privileged bwrap installation (setuid or `CAP_SYS_ADMIN`) could avoid the user namespace entirely, preserving group display |
@@ -452,7 +451,7 @@ Sorted by perceived severity (security impact first, then operational issues).
 | **Landlock** | User enumeration via LDAP/AD — `getent passwd` reveals all directory users | No mount namespace to overlay files or block sockets; set `FILTER_PASSWD=false` if LDAP lookups are needed |
 | **Landlock** | `BLOCKED_FILES` has no effect — file overlays require a mount namespace, which Landlock doesn't have. Files listed in `BLOCKED_FILES` remain readable | Use bwrap or firejail for file-level hiding |
 | **Landlock** | `PRIVATE_TMP` has no effect — `/tmp` isolation requires a mount namespace. Sandboxed processes share the host `/tmp` | Use bwrap or firejail if `/tmp` isolation is needed |
-| **Landlock** | Real Slurm binaries (`/usr/bin/sbatch`, `/usr/bin/srun`, etc.) remain directly callable — no mount namespace to block them. Munge authentication is still blocked, so direct calls fail, but the binaries are discoverable | Use bwrap or firejail for binary blocking. See [Admin Hardening](ADMIN_HARDENING.md) for SPANK plugin enforcement |
+| **Landlock** | **Chaperon fully bypassable** — Landlock cannot block `AF_UNIX connect()`, so the munge socket (`/run/munge/munge.socket.2`) is reachable despite not being in the Landlock allowlist. Combined with directly callable Slurm binaries (`/usr/bin/sbatch`), agents can forge munge credentials and submit arbitrary unwrapped jobs, completely bypassing the chaperon | **Use bwrap or firejail.** If Landlock is the only option, [Admin Hardening](ADMIN_HARDENING.md) §1 (SPANK plugin) is **mandatory** for Slurm environments |
 | **bwrap/Firejail** | `/tmp` isolated by default (`PRIVATE_TMP=true`) — breaks MPI shared-memory transport and NCCL inter-GPU sockets | Set `PRIVATE_TMP=false` in `sandbox.conf` for HPC multi-process workloads |
 | **All** | Environment variable blocking uses explicit names (`BLOCKED_ENV_VARS`) and glob patterns (`BLOCKED_ENV_PATTERNS` — e.g. `*_TOKEN`, `SSH_*`, `CI_*`). Patterns catch most credential conventions automatically, but secrets with unusual names may slip through | Review your environment (`env \| grep -iE 'token\|key\|secret\|auth'`), add names to `BLOCKED_ENV_VARS` or patterns to `BLOCKED_ENV_PATTERNS`, and use `ALLOWED_ENV_VARS` to override. See [Admin Hardening](ADMIN_HARDENING.md) for an allowlist approach |
 | **All** | No resource exhaustion limits by default — a sandboxed process can consume unlimited CPU, memory, processes, and disk space in the project directory | Set `SANDBOX_NPROC_LIMIT` in `sandbox.conf` for fork bomb defense. See [Admin Hardening](ADMIN_HARDENING.md) for cgroup-based limits. Slurm-submitted jobs are limited by the scheduler |
