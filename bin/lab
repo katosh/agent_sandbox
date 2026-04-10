@@ -165,6 +165,27 @@ run_helper() {
     exec "$VENV_DIR/bin/python" "$HELPER_PY" "$@"
 }
 
+# Check for an already-running lab server by scanning jpserver-*.json files
+# in the runtime directory. Returns 0 (true) if a live server is found and
+# prints its URL to stderr; returns 1 (false) otherwise.
+check_existing_server() {
+    local runtime_dir="$JUPYTER_DATA_DIR/runtime"
+    [ -d "$runtime_dir" ] || return 1
+    local jf pid url
+    for jf in "$runtime_dir"/jpserver-*.json; do
+        [ -e "$jf" ] || continue
+        pid="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('pid',''))" "$jf" 2>/dev/null)" || continue
+        [ -n "$pid" ] || continue
+        if kill -0 "$pid" 2>/dev/null; then
+            url="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('url',''))" "$jf" 2>/dev/null)" || url="(unknown)"
+            echo "$PROG: lab is already running (pid $pid, $url)" >&2
+            echo "$PROG: use 'lab status' to see details, or 'lab stop' to shut it down." >&2
+            return 0
+        fi
+    done
+    return 1
+}
+
 cmd_kernel_add() {
     local raw_name="${1:-$(basename "$DIR")}"
     local name; name="$(sanitize_kernel_name "$raw_name")"
@@ -236,15 +257,10 @@ cmd_start() {
     require_uv
     mkdir -p "$JUPYTER_CONFIG_DIR" "$JUPYTER_DATA_DIR"
 
-    # Refuse if already running.
-    if [ -f "$BG_PID_FILE" ]; then
-        local old_pid
-        old_pid="$(cat "$BG_PID_FILE")"
-        if kill -0 "$old_pid" 2>/dev/null; then
-            echo "$PROG: lab already running (pid $old_pid).  Use 'lab stop' first." >&2
-            return 1
-        fi
-        rm -f "$BG_PID_FILE"
+    # Refuse if any lab server is already running for this project
+    # (catches both `lab` foreground and `lab start` background).
+    if check_existing_server; then
+        return 1
     fi
 
     # Reuse the existing ensure_venv block that cmd_serve has.
@@ -314,6 +330,11 @@ cmd_password() {
 cmd_serve() {
     require_uv
     mkdir -p "$JUPYTER_CONFIG_DIR" "$JUPYTER_DATA_DIR"
+
+    # Warn (but don't block) if a server is already running — the user may
+    # be intentionally starting a second one on a different port.
+    check_existing_server && \
+        echo "$PROG: starting anyway (Ctrl-C to abort)..." >&2
 
     # Refresh kernel deps in an existing .venv so registered kernels keep
     # working after a venv rebuild. Skip silently if there's no .venv.
