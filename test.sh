@@ -84,10 +84,12 @@ done
 PASS=0
 FAIL=0
 SKIP=0
+WARN=0
 
 pass() { ((PASS++)); echo "  ✓ $1"; }
 fail() { ((FAIL++)); echo "  ✗ $1"; [[ "$VERBOSE" == true && -n "${2:-}" ]] && echo "    $2"; }
 skip() { ((SKIP++)); echo "  ⊘ $1 (skipped)"; }
+warn() { ((WARN++)); echo "  ⚠ $1 (known limitation)"; }
 
 # Current backend being tested (set by run_tests)
 CURRENT_BACKEND=""
@@ -113,6 +115,8 @@ sandbox() {
         -e '^  These variables are ' \
         -e '^  User enumeration' \
         -e '^  Individual file' \
+        -e '^  Agents can bypass' \
+        -e '^  Use bwrap/firejail' \
         -e '^  Current backend' \
         -e '^Parent pid ' \
         -e '^Child process initialized' \
@@ -168,6 +172,7 @@ echo ""
 TOTAL_PASS=0
 TOTAL_FAIL=0
 TOTAL_SKIP=0
+TOTAL_WARN=0
 ANY_FAIL=false
 
 run_tests() {
@@ -175,6 +180,7 @@ CURRENT_BACKEND="$1"
 PASS=0
 FAIL=0
 SKIP=0
+WARN=0
 
 echo "┌───────────────────────────────────────────────"
 echo "│  Testing backend: $CURRENT_BACKEND"
@@ -549,12 +555,23 @@ if has_mount_ns; then
         fi
     fi
 else
-    # Landlock: /run/munge not granted → EACCES
-    if sandbox bash -c 'ls /run/munge/ 2>&1 || true'; then
-        if echo "$OUTPUT" | grep -qi "denied\|cannot\|error\|No such"; then
-            pass "Munge socket blocked inside sandbox (Landlock EACCES)"
+    # Landlock: AF_UNIX connect() bypasses Landlock filesystem rules.
+    # The munge socket is reachable even though /run/munge is not granted.
+    # This is a known Landlock limitation — document it as a warning.
+    if sandbox python3 -c "
+import socket, sys
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    sock.connect('/run/munge/munge.socket.2')
+    print('CONNECTED')
+    sock.close()
+except Exception as e:
+    print(f'BLOCKED: {e}')
+" 2>/dev/null; then
+        if echo "$OUTPUT" | grep -q "CONNECTED"; then
+            warn "Munge socket REACHABLE inside Landlock sandbox (AF_UNIX connect bypasses Landlock — chaperon is bypassable, SPANK plugin mandatory)"
         else
-            fail "Munge socket may be accessible inside sandbox" "$OUTPUT"
+            pass "Munge socket blocked inside sandbox (Landlock)"
         fi
     fi
 fi
@@ -571,9 +588,15 @@ if command -v sbatch &>/dev/null; then
             fi
         fi
     else
-        # Landlock: can't block under /usr (known limitation), but munge
-        # blocking makes it useless. Test that PATH shadowing works instead.
-        skip "/usr/bin/sbatch blocking — not applicable for Landlock (munge blocking sufficient)"
+        # Landlock: can't block /usr/bin/sbatch AND can't block munge socket.
+        # Agent can bypass chaperon entirely. Warn about the vulnerability.
+        if sandbox bash -c '/usr/bin/sbatch --version 2>&1 || true'; then
+            if echo "$OUTPUT" | grep -qi "slurm\|[0-9]\+\.[0-9]"; then
+                warn "/usr/bin/sbatch callable inside Landlock sandbox (combined with reachable munge socket, chaperon is fully bypassable — SPANK plugin mandatory)"
+            else
+                pass "/usr/bin/sbatch not functional inside Landlock sandbox"
+            fi
+        fi
     fi
 
     # Slurm config blocked (defense in depth)
@@ -819,6 +842,41 @@ if [[ -f "$_HANDLER_LIB" ]]; then
     unset -f _strip_chaperon_tags
 else
     skip "Comment stripping tests — _handler_lib.sh not found"
+fi
+
+# 5f. Landlock AF_UNIX connect bypass verification
+# Tests that Landlock cannot block connect() to filesystem Unix sockets
+# whose paths are NOT in the Landlock allowlist. This is a known kernel
+# limitation (no AF_UNIX support in any Landlock ABI as of kernel 6.11).
+if is_landlock && [[ -e /run/munge/munge.socket.2 ]]; then
+    # Test munge credential forging — the real security impact
+    if sandbox bash -c '/usr/bin/munge -n 2>/dev/null && echo FORGED || echo FAILED'; then
+        if [[ "$OUTPUT" == *"FORGED"* ]]; then
+            warn "Munge credentials forgeable inside Landlock sandbox (chaperon bypass confirmed — SPANK plugin mandatory)"
+        else
+            pass "Munge credential forging failed inside Landlock sandbox"
+        fi
+    fi
+fi
+
+# 5g. Landlock D-Bus/systemd-run escape test
+if is_landlock && [[ -S "/run/user/$(id -u)/systemd/private" ]]; then
+    local _escape_marker="/tmp/_sandbox_dbus_escape_test_$$"
+    if sandbox bash -c "
+XDG_RUNTIME_DIR=/run/user/\$(id -u) systemd-run --user --wait --collect \
+    --property=Type=oneshot \
+    -- bash -c 'echo ESCAPED > $_escape_marker' 2>/dev/null
+echo \$?
+" 2>/dev/null; then
+        if [[ -f "$_escape_marker" ]]; then
+            warn "systemd-run --user ESCAPES Landlock sandbox (full bypass — mask user@.service via ADMIN_HARDENING.md §0)"
+            rm -f "$_escape_marker"
+        else
+            pass "systemd-run --user did not escape Landlock sandbox"
+        fi
+    fi
+elif is_landlock; then
+    pass "systemd user instance not running (user@.service masked — D-Bus escape blocked)"
 fi
 
 echo ""
@@ -2045,16 +2103,17 @@ fi  # end of [[ "$QUICK_MODE" != true ]] block (sections 6-12)
 
 # ── Per-backend summary ──────────────────────────────────────────
 
-TOTAL=$((PASS + FAIL + SKIP))
+TOTAL=$((PASS + FAIL + SKIP + WARN))
 echo "════════════════════════════════════════════════"
 echo "  Backend: $CURRENT_BACKEND"
-echo "  Results: $PASS passed, $FAIL failed, $SKIP skipped (out of $TOTAL)"
+echo "  Results: $PASS passed, $FAIL failed, $WARN warnings, $SKIP skipped (out of $TOTAL)"
 echo "════════════════════════════════════════════════"
 echo ""
 
 TOTAL_PASS=$((TOTAL_PASS + PASS))
 TOTAL_FAIL=$((TOTAL_FAIL + FAIL))
 TOTAL_SKIP=$((TOTAL_SKIP + SKIP))
+TOTAL_WARN=$((TOTAL_WARN + WARN))
 [[ $FAIL -gt 0 ]] && ANY_FAIL=true
 }
 
@@ -2067,14 +2126,14 @@ done
 # ── Overall summary ──────────────────────────────────────────────
 
 if [[ ${#AVAILABLE_BACKENDS[@]} -gt 1 ]]; then
-    GRAND_TOTAL=$((TOTAL_PASS + TOTAL_FAIL + TOTAL_SKIP))
-    echo "╔═══════════════════════════════════════════════╗"
-    echo "║  Overall Results                              ║"
-    echo "╠═══════════════════════════════════════════════╣"
-    printf "║  Backends tested: %-27s ║\n" "${AVAILABLE_BACKENDS[*]}"
-    printf "║  %3d passed, %d failed, %d skipped (of %d)     ║\n" \
-        "$TOTAL_PASS" "$TOTAL_FAIL" "$TOTAL_SKIP" "$GRAND_TOTAL"
-    echo "╚═══════════════════════════════════════════════╝"
+    GRAND_TOTAL=$((TOTAL_PASS + TOTAL_FAIL + TOTAL_WARN + TOTAL_SKIP))
+    echo "╔═══════════════════════════════════════════════════════╗"
+    echo "║  Overall Results                                      ║"
+    echo "╠═══════════════════════════════════════════════════════╣"
+    printf "║  Backends tested: %-33s ║\n" "${AVAILABLE_BACKENDS[*]}"
+    printf "║  %3d passed, %d failed, %d warnings, %d skipped (of %d) ║\n" \
+        "$TOTAL_PASS" "$TOTAL_FAIL" "$TOTAL_WARN" "$TOTAL_SKIP" "$GRAND_TOTAL"
+    echo "╚═══════════════════════════════════════════════════════╝"
 fi
 
 # ── Admin hardening status (ADMIN_HARDENING.md) ──────────────────

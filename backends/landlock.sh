@@ -14,6 +14,9 @@
 #     This means:
 #       * Slurm wrapping relies on PATH shadowing only — the real
 #         /usr/bin/sbatch and /usr/bin/srun remain directly callable.
+#       * Munge socket is also accessible (Landlock cannot block
+#         AF_UNIX connect), so agents can bypass chaperon entirely.
+#         SPANK plugin enforcement (ADMIN_HARDENING.md §1) is mandatory.
 #       * Sandbox self-protection not possible — Landlock rules are
 #         additive, so can't make a subdir read-only when parent is
 #         writable. An agent could modify sandbox scripts to weaken
@@ -64,9 +67,16 @@ backend_prepare() {
     # Selectively grant /run subdirs — granting all of /run exposes
     # D-Bus and systemd user sockets, allowing sandbox escape via
     # systemd-run --user.
-    # Munge socket: NOT granted (chaperon handles auth outside).
-    # Intentionally blocked even on compute nodes: exposing munge would
-    # allow crafting arbitrary Slurm submissions that bypass the chaperon.
+    #
+    # WARNING: Munge socket (/run/munge) is NOT granted, but this does
+    # NOT block access. Landlock cannot restrict AF_UNIX connect() —
+    # path resolution during connect() bypasses Landlock filesystem
+    # rules entirely. A sandboxed process can connect to
+    # /run/munge/munge.socket.2, forge credentials, and call
+    # /usr/bin/sbatch directly (also not blockable without mount
+    # namespace). The chaperon is bypassed completely on Landlock.
+    # ADMIN_HARDENING.md §1 (SPANK plugin) is MANDATORY for Landlock
+    # deployments with Slurm.
     [[ -d /run/nscd ]]             && LANDLOCK_ARGS+=(--ro /run/nscd)
     [[ -d /run/systemd/resolve ]]  && LANDLOCK_ARGS+=(--ro /run/systemd/resolve)
 

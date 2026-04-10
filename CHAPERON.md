@@ -370,21 +370,23 @@ The following commands are routed to `blocked.sh` (no handler):
 
 | Resource | bwrap | firejail | landlock |
 |---|---|---|---|
-| `/run/munge/` (auth socket) | Hidden (tmpfs /run, not re-mounted) | `--blacklist=/run/munge` | Not granted (EACCES) |
-| `/usr/bin/{sbatch,srun,...}` | `--ro-bind /dev/null` | `--blacklist=` | Not blocked (known limitation) |
+| `/run/munge/` (auth socket) | Hidden (tmpfs /run, not re-mounted) | `--blacklist=/run/munge` | **NOT BLOCKED** — Landlock cannot restrict `AF_UNIX connect()` |
+| `/usr/bin/{sbatch,srun,...}` | `--ro-bind /dev/null` | `--blacklist=` | Not blocked (no mount namespace) |
 | `/etc/slurm/`, `/etc/slurm-llnl/` | `--tmpfs` | `--blacklist=` | Not blocked |
-| Munge auth capability | **None** — can't auth without socket | **None** | **None** — EACCES on socket |
+| Munge auth capability | **None** — can't auth without socket | **None** | **FULL** — socket reachable, credentials forgeable |
 
-**Defense in depth**: Without the munge socket, even finding a Slurm binary (on Landlock where `/usr/bin` can't be blocked) is useless — authentication will fail. The chaperon is the only path to Slurm interaction (job submission and step launching).
+**Defense in depth (bwrap/firejail)**: Without the munge socket, even finding a Slurm binary is useless — authentication will fail. The chaperon is the only path to Slurm interaction.
+
+> **⚠ Landlock: chaperon is fully bypassable.** Landlock cannot block `AF_UNIX connect()` (not available in any Landlock ABI version as of kernel 6.11). A sandboxed process can connect to `/run/munge/munge.socket.2`, forge credentials, and call `/usr/bin/sbatch` directly — completely bypassing the chaperon. **ADMIN_HARDENING.md §1 (SPANK plugin) is mandatory for Landlock deployments with Slurm.** Alternatively, use the bwrap or firejail backend.
 
 ## Comparison with Previous Architecture
 
 | Aspect | Previous (PATH wrappers) | Chaperon |
 |---|---|---|
-| Munge socket | **Exposed** (read-only inside sandbox) | **Blocked** (not mounted/blacklisted) |
-| Slurm binaries | **Relocated** (bwrap) or **available** (others) | **Blocked** (all backends) |
-| Bypass via crafted binary | **Possible** (munge auth available) | **Impossible** (no munge, no binaries) |
-| Bypass via `/usr/bin/sbatch` | **Possible** (firejail/landlock) | **Impossible** (blocked/blacklisted) |
+| Munge socket | **Exposed** (read-only inside sandbox) | **Blocked** (bwrap/firejail) / **Exposed** (Landlock — cannot block `AF_UNIX connect`) |
+| Slurm binaries | **Relocated** (bwrap) or **available** (others) | **Blocked** (bwrap/firejail) / **Available** (Landlock) |
+| Bypass via crafted binary | **Possible** (munge auth available) | **Impossible** (bwrap/firejail) / **Possible** (Landlock — munge reachable) |
+| Bypass via `/usr/bin/sbatch` | **Possible** (firejail/landlock) | **Impossible** (bwrap/firejail) / **Possible** (Landlock) |
 | Argument injection | **Possible** (wrappers pass-through) | **Blocked** (whitelist rejects unknown flags) |
 | Communication channel | PATH ordering (soft) | Named pipes (per-session temp dir, 700 permissions) |
 | Compute-node wrapping | Via wrapper scripts | Via wrapper scripts (same) |

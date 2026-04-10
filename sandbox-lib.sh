@@ -850,6 +850,11 @@ if [[ "${SANDBOX_BACKEND:-auto}" == "landlock" ]]; then
         echo "WARNING: BLOCKED_FILES has no effect with the Landlock backend." >&2
         echo "  Individual file blocking requires bwrap or firejail." >&2
     fi
+    if [[ -e /run/munge/munge.socket.2 ]]; then
+        echo "WARNING: Landlock cannot block AF_UNIX connect() — the munge socket is reachable." >&2
+        echo "  Agents can bypass the chaperon and submit arbitrary Slurm jobs." >&2
+        echo "  Use bwrap/firejail, or deploy the SPANK plugin (ADMIN_HARDENING.md §1)." >&2
+    fi
 fi
 if [[ "${SANDBOX_BACKEND:-auto}" != "bwrap" && "${SANDBOX_BACKEND:-auto}" != "auto" ]]; then
     if _is_true "${BIND_DEV_PTS:-false}"; then

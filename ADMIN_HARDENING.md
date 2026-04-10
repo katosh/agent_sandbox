@@ -2,7 +2,9 @@
 
 > **Disclaimer:** This document reflects personal analysis and has not been formally reviewed by a security professional. The hardening suggestions are best-effort recommendations based on publicly available documentation and testing on a limited set of systems. The environment may differ. Review all changes with your security team before deploying to production.
 
-The [sandbox](README.md) is fully user-space, requiring no root or admin involvement. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents. Slurm access is mediated by the [chaperon](CHAPERON.md) — a zero-trust proxy that blocks all Slurm authentication assets inside the sandbox and validates every job submission.
+The [sandbox](README.md) is fully user-space, requiring no root or admin involvement. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents. Slurm access is mediated by the [chaperon](CHAPERON.md) — a zero-trust proxy that blocks Slurm authentication assets inside the sandbox (bwrap/firejail) and validates every job submission.
+
+> **⚠ Landlock is not a full sandbox.** Landlock cannot block `AF_UNIX connect()` (not available in any Landlock ABI version as of kernel 6.11). This means: (1) the munge socket is reachable, so the **chaperon is fully bypassable** — agents can submit arbitrary unwrapped Slurm jobs; (2) if `user@.service` is running, agents can call `systemd-run --user` to **escape the sandbox entirely** — reading SSH keys, AWS credentials, and writing arbitrary files with no Landlock restrictions. **If Landlock is the only available backend, §0 (disable user@.service) and §1 (SPANK plugin) are mandatory, not optional.** Prefer bwrap or firejail whenever possible.
 
 > **Ubuntu 24.04 consideration:** Ubuntu 24.04 enables AppArmor's restriction on unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`), which prevents bubblewrap from working. Without admin intervention, the sandbox falls back to the **Landlock** backend, which has significant limitations (no mount namespace, no `/tmp` isolation, no sandbox self-protection, `systemd-run` escape; see the comparison table under §2). **Recommended:** Create an AppArmor profile to allow bwrap (see §2 below). This is low effort and gives users the strongest backend. Alternatively, installing firejail (setuid) also bypasses the restriction.
 
@@ -21,9 +23,29 @@ The current user-space sandbox is entirely self-serve: it protects against accid
 
 ---
 
+## 0. Disable systemd User Instances (Landlock Escape Prevention)
+
+**What it solves:** Landlock cannot block `AF_UNIX connect()`. If `user@.service` is running, a sandboxed process can call `systemd-run --user` to execute commands **completely outside the sandbox** — reading `~/.ssh`, `~/.aws`, writing arbitrary files, and submitting unwrapped Slurm jobs. This is a **full sandbox escape**, not a partial bypass.
+
+**Effort:** Minimal (one command). **Category:** Admin-enforced. **Mandatory for Landlock deployments.**
+
+```bash
+# Mask user@.service — prevents systemd user instances from starting
+sudo systemctl mask user@.service
+
+# Verify
+systemctl status user@501.service   # should show "masked"
+```
+
+**What is affected by disabling:** `gpg-agent` socket activation (users doing GPG signing would need to start `gpg-agent --daemon` manually), `systemctl --user` commands, and any user-level systemd services. On HPC login nodes this is rarely an issue — most user workflows don't depend on systemd user instances.
+
+**Note:** bwrap and firejail are **not affected** — they replace `/run` with a tmpfs (bwrap) or blacklist the socket (firejail), so the D-Bus socket is unreachable regardless.
+
+---
+
 ## 1. Enforce Sandbox on Agent-Submitted Slurm Jobs
 
-> **Largely superseded by the chaperon.** The [chaperon](CHAPERON.md) — a zero-trust Slurm proxy introduced after this section was written — provides a stronger default boundary than the token-based approach described here. The chaperon blocks all Slurm authentication assets (munge socket, Slurm binaries, Slurm config) inside the sandbox and proxies all job submission through a validated, argument-whitelisted named-pipe protocol. Every job is automatically wrapped in `sandbox-exec.sh` on the compute node.
+> **Largely superseded by the chaperon (bwrap/firejail only).** The [chaperon](CHAPERON.md) — a zero-trust Slurm proxy — provides a stronger default boundary than the token-based approach described here. On bwrap/firejail, the chaperon blocks all Slurm authentication assets (munge socket, Slurm binaries, Slurm config) inside the sandbox. **On Landlock, the chaperon is fully bypassable** — Landlock cannot block `AF_UNIX connect()`, so the munge socket is reachable and `/usr/bin/sbatch` is directly callable. **This SPANK plugin section is mandatory for Landlock deployments with Slurm.**
 
 **What it solves:** Server-side enforcement of sandbox wrapping on Slurm jobs, using a job submit plugin and an eBPF LSM-protected bypass token. Complements the chaperon by adding a second enforcement layer at the Slurm controller. Users who do not use the sandbox are unaffected — their workflow does not change.
 
@@ -124,7 +146,7 @@ OS user separation handles credential isolation — the agent physically cannot 
 
 ## 4. Network Controls
 
-**What it solves:** The current sandbox shares the host network stack. The [chaperon](CHAPERON.md) removed the dependency on in-sandbox network access for Slurm (munge socket is blocked, all Slurm communication goes through FIFOs). However, the agent still has unrestricted outbound network — it can reach any host the user can, using the same institutional IP.
+**What it solves:** The current sandbox shares the host network stack. The [chaperon](CHAPERON.md) removed the dependency on in-sandbox network access for Slurm on bwrap/firejail (munge socket is blocked, all Slurm communication goes through FIFOs). On Landlock, the munge socket remains accessible — see §1. However, the agent still has unrestricted outbound network — it can reach any host the user can, using the same institutional IP.
 
 Agents legitimately need general web access: reading documentation, downloading papers (often through institutional proxy/IP for paywall access), installing packages, cloning repos. The goal is not to cut off network access, but to **route agent traffic through a controllable path** where agent-specific policies can be applied — blocking certain services, logging traffic, or rate-limiting — without breaking research workflows.
 
