@@ -78,39 +78,33 @@ Slurm commands work inside the sandbox but are proxied through a secure chaperon
 
 ## Stateful experimentation with `lab`
 
-When a task involves expensive state — multi-minute dataset loads, trained models, large in-memory dataframes — reloading on every agent turn burns most of the turn budget. The sandbox ships a `lab` utility (in `bin/lab`, already on `$PATH`) that runs a long-lived JupyterLab in the project directory so a kernel stays alive across turns.
+The sandbox ships a `lab` utility (on `$PATH`) for iterative work with
+expensive state (dataframes, trained models, large datasets). It runs a
+project-local JupyterLab and provides CLI commands to execute code in
+running kernels, inspect live variables, and edit notebook cells — all
+without clicking through the web UI.
 
-### Setup
+For the full workflow, selector semantics, and troubleshooting, read
+`__SANDBOX_DIR__/agents/lab.md` or run `lab help`.
 
-From a nested tmux pane inside the sandbox:
+Quick start:
 ```bash
-lab kernel add    # creates ./.venv and registers it as a project-local kernel
-lab               # starts JupyterLab on 127.0.0.1:8888 (default)
+lab kernel add              # one-time: create .venv, register kernelspec
+lab start                   # background server (or `lab` in a tmux pane)
+lab notebook attach foo.ipynb
+lab kernel exec -n foo.ipynb "df = pd.read_csv('data.csv')"
+lab kernel exec -n foo.ipynb "df.shape"
+lab kernel inspect -n foo.ipynb
+lab notebook append -n foo.ipynb --execute "df.describe()"
 ```
-All config, kernels, and the venv live under `./.jupyter` and `./.venv` — nothing writes to `~/.local`, so the project is self-contained. Install extra packages into the kernel with:
-```bash
-uv pip install --python .venv/bin/python pandas numpy ...
-```
 
-### Attaching from the agent
+**Port collisions.** On multi-user machines, set a unique port:
+`PORT=9012 lab start`. Default is 8888.
 
-Once JupyterLab is running, the agent executes code against its kernel via `jupyter_client` (part of the `ipykernel` install in `./.venv`). The standard pattern:
+**Remote access.** SSH-tunnel (`ssh -L 8888:localhost:8888 user@host`)
+or `IP=0.0.0.0 lab` with `JUPYTER_CERTFILE`/`JUPYTER_KEYFILE` for TLS.
 
-1. Query JupyterLab's REST API at `http://127.0.0.1:8888/api/kernels` (with the session token from the startup URL or `./.jupyter/jupyter_server_config.json`) to list running kernel IDs.
-2. Resolve the connection file with `jupyter_client.find_connection_file(kernel_id)`.
-3. Use `BlockingKernelClient.execute_interactive(code)` to run cells.
-
-Variables, dataframes, and model state loaded in earlier cells stay live across turns — load once, iterate cheaply. For quick one-off commands, `jupyter console --existing <kernel_id>` also works.
-
-### Remote access
-
-Default bind is `127.0.0.1:8888`. For access from a laptop, prefer an SSH tunnel:
-```bash
-ssh -L 8888:localhost:8888 user@host
-```
-If binding to all interfaces (`IP=0.0.0.0 lab`), enable TLS by setting `JUPYTER_CERTFILE` and `JUPYTER_KEYFILE`. TLS cert paths must not live under `~/.ssh` (blocked by the sandbox); use `~/.config/jupyter-tls/` or a project-local path. Set a persistent password with `lab password` instead of copying the token URL each start.
-
-### Requirements — installing `uv`
+### Installing `uv`
 
 `lab` needs `uv` on `$PATH`. The default `curl -LsSf https://astral.sh/uv/install.sh | sh` from the upstream docs installs to `~/.local/bin`, which is in the sandbox's `HOME_READONLY` by default — so in-sandbox writes fail, and even if the user removes that entry, `HOME_ACCESS=tmpwrite` (the default) makes the install ephemeral (lost on sandbox exit).
 
@@ -120,11 +114,8 @@ curl -LsSf https://astral.sh/uv/install.sh | \
     env UV_UNMANAGED_INSTALL="$PWD/.local/bin" sh
 export PATH="$PWD/.local/bin:$PATH"   # add to project env/activate script to persist
 ```
-`UV_UNMANAGED_INSTALL` sets the install dir, skips shell-profile modification, and disables `uv self update` — exactly what you want for a scoped, project-local binary. uv's cache still lives at `~/.cache/uv` (which is in `HOME_WRITABLE` by default).
 
 **Alternative — user installs outside the sandbox** to `~/.local/bin` via the standard `curl ... | sh` command. The sandbox mounts `~/.local/bin` read-only, so the binary becomes visible on `$PATH` inside the sandbox after the next sandbox start.
-
-Run `lab help` for the full command list (`kernel add | list | remove`, `password`, pass-through server options, extension set).
 
 ## Process isolation (PID namespace)
 

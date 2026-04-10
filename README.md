@@ -323,17 +323,22 @@ Customize agent instructions via `~/.config/agent-sandbox/agents/<name>/agent.md
 
 The outer tmux socket is blocked (escape risk), but a **nested tmux** running inside the sandbox works well: `sandbox-exec.sh -- tmux new-session claude` (prefix is `Ctrl-a`). On kernels < 5.4, set `BIND_DEV_PTS=true` in `sandbox.conf` for pty allocation (see Known Limitations). Customize via `~/.config/agent-sandbox/sandbox-tmux.conf`.
 
-**Tip — long-lived Jupyter kernels for stateful experimentation:** The sandbox ships a `lab` utility (in `bin/`) that runs JupyterLab from the current directory with all configuration and kernels under `./.jupyter`, so each project gets its own reproducible Jupyter setup with no `~/.local` writes. Quick start in any project directory:
+**Tip — long-lived Jupyter kernels for stateful experimentation:** The sandbox ships a `lab` utility (in `bin/`) that runs a project-local JupyterLab and provides CLI access to running kernels so the agent can execute code, inspect live variables, and edit notebook cells without clicking through the web UI. Two run modes:
 
 ```bash
-sandbox-exec.sh -- tmux new-session    # nested tmux inside the sandbox
-# in one pane:
-lab kernel add                          # creates ./.venv, registers it as a kernel
-lab                                     # starts JupyterLab (default 127.0.0.1:8888)
-# in another pane: start your agent (claude/codex/...) — it sees the same .venv
+# Mode 1: user starts lab in a tmux pane inside the sandbox
+sandbox-exec.sh -- tmux new-session    # nested tmux
+lab kernel add && lab                   # foreground JupyterLab
+# agent (in another pane) attaches to the running kernel:
+lab kernel exec -n analysis.ipynb "df.describe()"
+
+# Mode 2: agent starts lab in the background
+lab kernel add && lab start             # daemonize (agent does this)
+lab notebook attach analysis.ipynb      # spawn kernel
+lab kernel exec -n analysis.ipynb "df = pd.read_csv('data.csv')"
 ```
 
-Run `lab help` for the full list of subcommands (`kernel add | list | remove`), pass-through server options, TLS env vars, and notes on installing `uv` if it's missing. Because the kernel runs in a long-lived Jupyter session, the agent can attach and execute cells against it directly — variables, loaded dataframes, and model state persist between turns. This lets the agent iteratively experiment with large datasets without paying the reload cost on every step, which is especially valuable when the data takes minutes to load. Both the kernel and the agent share the same sandboxed filesystem view, so the isolation guarantees still hold.
+On multi-user machines, pick a unique port to avoid collisions: `PORT=9012 lab start`. Variables, loaded dataframes, and model state persist between turns — load once, iterate cheaply. Both the kernel and the agent share the same sandboxed filesystem view, so the isolation guarantees hold. Run `lab help` for the full command list.
 
 ---
 
