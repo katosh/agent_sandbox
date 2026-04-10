@@ -4,9 +4,8 @@
 # Usage: sandbox-notify [MESSAGE]
 #
 # Notifies the user by:
-#   1. Ringing the bell + displaying a message in the sandbox's nested
-#      tmux (if running). The bell marks the window/tab; the
-#      display-message shows what happened.
+#   1. Ringing the terminal bell, which marks the window/tab in the
+#      inner tmux status bar (via monitor-bell).
 #   2. Asking the chaperon to ring the bell on the outer terminal,
 #      which marks the sandbox's tab in the outer tmux.
 #
@@ -15,14 +14,10 @@
 
 msg="${*:-Agent notification}"
 
-# Sanitize for tmux display-message: escape '#' to '##' to prevent
-# tmux format-sequence interpretation (e.g. #{...}, #W, #S).
-safe_msg="${msg//#/##}"
-
-# 1. Inner tmux: bell (marks the tab) + display-message (shows text).
-if tmux display-message "[sandbox] $safe_msg" 2>/dev/null; then
-    printf '\a'  # bell — marks the window if monitor-bell is on
-fi
+# 1. Inner tmux: ring the bell to mark the window/tab in the status bar.
+#    This is more useful than display-message because tmux's monitor-bell
+#    highlights which specific window needs attention.
+printf '\a' 2>/dev/null
 
 # 2. Outer tmux: relay via the chaperon (which runs outside the sandbox
 #    and rings the bell on the outer terminal to mark the tab).
