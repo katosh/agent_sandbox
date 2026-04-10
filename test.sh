@@ -79,6 +79,16 @@ done
 # Default project dir: use the repo itself
 [[ -z "$PROJECT_DIR" ]] && PROJECT_DIR="$SCRIPT_DIR"
 
+# ── Cleanup on exit/interrupt ─────────────────────────────────────
+# Track temp files created during the run; remove them on exit.
+_TEST_TEMP_FILES=()
+_test_cleanup() {
+    for _f in "${_TEST_TEMP_FILES[@]}"; do
+        rm -f "$_f" 2>/dev/null
+    done
+}
+trap _test_cleanup EXIT
+
 # ── Helpers ───────────────────────────────────────────────────────
 
 PASS=0
@@ -412,6 +422,7 @@ unset MY_APP_SECRET
 
 # ALLOWED_ENV_VARS overrides pattern blocking
 _pattern_conf="$HOME/.config/agent-sandbox/conf.d/test-pattern-override-$$.conf"
+_TEST_TEMP_FILES+=("$_pattern_conf")
 mkdir -p "$HOME/.config/agent-sandbox/conf.d"
 echo 'ALLOWED_ENV_VARS+=("MY_CUSTOM_TOKEN")' > "$_pattern_conf"
 export MY_CUSTOM_TOKEN="allowed-pattern-override"
@@ -436,6 +447,7 @@ fi
 
 # SANDBOX_ENV: per-project environment variable injection via conf.d
 _sandbox_env_conf="$HOME/.config/agent-sandbox/conf.d/test-sandbox-env-$$.conf"
+_TEST_TEMP_FILES+=("$_sandbox_env_conf")
 mkdir -p "$HOME/.config/agent-sandbox/conf.d"
 
 # Simple variable export
@@ -1220,6 +1232,7 @@ if ! is_landlock; then
     ln -sf "$_slink_real" "$_slink_link"
     # Temporarily add the symlink to BLOCKED_FILES via a conf.d snippet
     local _slink_conf="$HOME/.config/agent-sandbox/conf.d/test-symlink-blocked-$$.conf"
+    _TEST_TEMP_FILES+=("$_slink_conf")
     mkdir -p "$HOME/.config/agent-sandbox/conf.d"
     echo "BLOCKED_FILES+=( \"$_slink_link\" )" > "$_slink_conf"
     if sandbox bash -c "cat '$_slink_link' 2>&1; echo EXIT=\$?"; then
@@ -1848,6 +1861,7 @@ unset SSH_AUTH_SOCK SSH_CONNECTION SSH_CLIENT SSH_TTY
 # ALLOWED_ENV_VARS — override BLOCKED_ENV_VARS
 # Use a conf.d snippet to set ALLOWED_ENV_VARS for this test
 _aev_conf="$HOME/.config/agent-sandbox/conf.d/test-allowed-env-$$.conf"
+_TEST_TEMP_FILES+=("$_aev_conf")
 mkdir -p "$HOME/.config/agent-sandbox/conf.d"
 echo 'ALLOWED_ENV_VARS+=("GITHUB_TOKEN")' > "$_aev_conf"
 export GITHUB_TOKEN="allowed-env-test-value"
