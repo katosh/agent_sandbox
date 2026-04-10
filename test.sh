@@ -434,6 +434,72 @@ if sandbox bash -c 'echo ${USER:-UNSET}'; then
     fi
 fi
 
+# SANDBOX_ENV: per-project environment variable injection via conf.d
+_sandbox_env_conf="$HOME/.config/agent-sandbox/conf.d/test-sandbox-env-$$.conf"
+mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+
+# Simple variable export
+echo 'SANDBOX_ENV+=("MY_SANDBOX_TEST_VAR=hello-from-confd")' > "$_sandbox_env_conf"
+if sandbox bash -c 'echo ${MY_SANDBOX_TEST_VAR:-UNSET}'; then
+    if [[ "$OUTPUT" == "hello-from-confd" ]]; then
+        pass "SANDBOX_ENV: custom variable exported into sandbox"
+    else
+        fail "SANDBOX_ENV: variable not set (got '$OUTPUT')" "$OUTPUT"
+    fi
+fi
+
+# PATH prepend (should appear before chaperon stubs + sandbox bin)
+echo 'SANDBOX_ENV+=("PATH=/test-sandbox-env-path:${PATH}")' > "$_sandbox_env_conf"
+if sandbox bash -c 'echo "$PATH"'; then
+    # The sandbox PATH should contain our prefix somewhere in the middle
+    # (chaperon stubs and sandbox bin are prepended by the backend on top)
+    if echo "$OUTPUT" | grep -q '/test-sandbox-env-path:'; then
+        pass "SANDBOX_ENV: PATH entry present in sandbox PATH"
+    else
+        fail "SANDBOX_ENV: PATH entry missing from sandbox PATH" "$OUTPUT"
+    fi
+fi
+
+# XDG_CONFIG_HOME override
+echo 'SANDBOX_ENV+=("XDG_CONFIG_HOME=/tmp/test-xdg-config")' > "$_sandbox_env_conf"
+if sandbox bash -c 'echo "$XDG_CONFIG_HOME"'; then
+    if [[ "$OUTPUT" == "/tmp/test-xdg-config" ]]; then
+        pass "SANDBOX_ENV: XDG_CONFIG_HOME overridden"
+    else
+        fail "SANDBOX_ENV: XDG_CONFIG_HOME not set (got '$OUTPUT')" "$OUTPUT"
+    fi
+fi
+
+# Multiple variables in one SANDBOX_ENV
+cat > "$_sandbox_env_conf" <<'CONF'
+SANDBOX_ENV+=(
+    "TEST_A=alpha"
+    "TEST_B=bravo"
+)
+CONF
+if sandbox bash -c 'echo "$TEST_A:$TEST_B"'; then
+    if [[ "$OUTPUT" == "alpha:bravo" ]]; then
+        pass "SANDBOX_ENV: multiple variables exported correctly"
+    else
+        fail "SANDBOX_ENV: multi-variable export failed (got '$OUTPUT')" "$OUTPUT"
+    fi
+fi
+
+# Guard: SANDBOX_ENV should NOT apply when project dir doesn't match
+cat > "$_sandbox_env_conf" <<'CONF'
+[[ "$_PROJECT_DIR" == /nonexistent/path ]] || return 0
+SANDBOX_ENV+=("SHOULD_NOT_EXIST=leaked")
+CONF
+if sandbox bash -c 'echo ${SHOULD_NOT_EXIST:-UNSET}'; then
+    if [[ "$OUTPUT" == "UNSET" ]]; then
+        pass "SANDBOX_ENV: project-dir guard prevents leaking to other projects"
+    else
+        fail "SANDBOX_ENV: variable leaked despite project-dir guard" "$OUTPUT"
+    fi
+fi
+
+rm -f "$_sandbox_env_conf"
+
 echo ""
 
 # ── 4. Agent profile detection and config overlays ──────────────────

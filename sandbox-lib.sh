@@ -115,6 +115,14 @@ EXTRA_BLOCKED_PATHS=()
 
 EXTRA_WRITABLE_PATHS=()
 
+# Per-project environment variables (KEY=VALUE strings).
+# Applied to the host environment before the backend runs, so backend
+# PATH prepends (chaperon stubs, sandbox bin) layer on top naturally.
+# Use ${PATH} in values to reference the current PATH, e.g.:
+#   SANDBOX_ENV+=("PATH=/my/bin:${PATH}")
+# Set these in conf.d/*.conf files, guarded by _PROJECT_DIR.
+SANDBOX_ENV=()
+
 # Admin deny-list: paths that must NEVER be writable, regardless of
 # user config. EXTRA_WRITABLE_PATHS entries matching these (or under
 # them) are stripped with a warning. Admins set this in the admin sandbox.conf.
@@ -332,6 +340,7 @@ _CONFIG_ARRAYS=(
     ALLOWED_PROJECT_PARENTS READONLY_MOUNTS HOME_READONLY HOME_WRITABLE
     BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS ALLOWED_ENV_VARS
     EXTRA_BLOCKED_PATHS EXTRA_WRITABLE_PATHS DENIED_WRITABLE_PATHS
+    SANDBOX_ENV
 )
 _CONFIG_SCALARS=(
     SANDBOX_BACKEND PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD BIND_DEV_PTS

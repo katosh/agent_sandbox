@@ -101,6 +101,14 @@ PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
 # Load per-project config overrides (conf.d/*.conf)
 load_project_config "$PROJECT_DIR"
 
+# Apply per-project environment overrides (SANDBOX_ENV from conf.d/*.conf).
+# Done here so backends inherit the modified environment naturally —
+# e.g. PATH modifications are picked up when bwrap/landlock/firejail
+# prepend chaperon stubs.
+for _env_entry in "${SANDBOX_ENV[@]}"; do
+    export "$_env_entry"
+done
+
 # Validate
 if [[ ! -d "$PROJECT_DIR" ]]; then
     echo "Error: Project directory does not exist: $PROJECT_DIR" >&2
