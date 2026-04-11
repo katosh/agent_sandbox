@@ -10,7 +10,7 @@
 #   6. Runs the test suite to verify everything works
 #
 # Usage:
-#   git clone git@github.com:settylab/agent_sandbox.git
+#   git clone git@github.com:katosh/agent_sandbox.git
 #   bash agent_sandbox/install.sh
 #   bash agent_sandbox/install.sh --no-test
 
@@ -180,8 +180,8 @@ mkdir -p "$SANDBOX_DIR/chaperon/handlers"
 mkdir -p "$SANDBOX_DIR/chaperon/stubs"
 mkdir -p "$SANDBOX_DIR/conf.d"
 
-for file in sandbox-lib.sh sandbox-exec.sh sbatch-sandbox.sh srun-sandbox.sh sandbox-tmux.conf test.sh; do
-    cp "$SCRIPT_DIR/$file" "$SANDBOX_DIR/$file"
+for file in sandbox-lib.sh sandbox-exec.sh sbatch-sandbox.sh srun-sandbox.sh sandbox-tmux.conf test.sh test-admin.sh test-lab.sh VERSION; do
+    [[ -f "$SCRIPT_DIR/$file" ]] && cp "$SCRIPT_DIR/$file" "$SANDBOX_DIR/$file"
 done
 
 for file in "$SCRIPT_DIR"/bin/*; do
@@ -276,14 +276,23 @@ else
     fi
 fi
 
-# ── Step 6: Suggest shell alias ───────────────────────────────────
+# ── Step 6: Set up agent-sandbox command ─────────────────────────
 
-ALIAS_LINE="alias agent-sandbox='~/.config/agent-sandbox/sandbox-exec.sh --'"
+AGENT_SANDBOX_CMD=""
+
+# Check if agent-sandbox is already on PATH (e.g., from make install or Homebrew)
+if command -v agent-sandbox &>/dev/null; then
+    AGENT_SANDBOX_CMD="agent-sandbox"
+fi
+
+# Check for existing alias
+ALIAS_LINE="alias agent-sandbox='$SANDBOX_DIR/sandbox-exec.sh'"
 ALIAS_ALREADY=false
 
 for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.dotfiles/.bashrc" "$HOME/.dotfiles/.zshrc"; do
     if [[ -f "$rc" ]] && grep -qF "agent-sandbox" "$rc" 2>/dev/null; then
         ALIAS_ALREADY=true
+        AGENT_SANDBOX_CMD="agent-sandbox"
         break
     fi
 done
@@ -294,21 +303,28 @@ echo "  Installation complete! (backends: ${AVAILABLE_BACKENDS[*]})"
 echo ""
 echo "  Start an agent in the sandbox:"
 echo "    cd /your/project/dir"
-echo "    ~/.config/agent-sandbox/sandbox-exec.sh -- claude"
-echo "    ~/.config/agent-sandbox/sandbox-exec.sh -- codex"
-echo "    ~/.config/agent-sandbox/sandbox-exec.sh -- gemini"
+
+if [[ -n "$AGENT_SANDBOX_CMD" ]]; then
+    echo "    agent-sandbox claude"
+    echo "    agent-sandbox codex"
+    echo "    agent-sandbox gemini"
+else
+    echo "    $SANDBOX_DIR/sandbox-exec.sh claude"
+fi
 echo ""
 echo "  Customize permissions:"
-echo "    \$EDITOR ~/.config/agent-sandbox/sandbox.conf"
+echo "    \$EDITOR $SANDBOX_DIR/sandbox.conf"
 
-if [[ "$ALIAS_ALREADY" == false ]]; then
+if [[ -z "$AGENT_SANDBOX_CMD" && "$ALIAS_ALREADY" == false ]]; then
     echo ""
-    echo "  ── Optional: add a shell alias ──"
+    echo "  ── Tip: add agent-sandbox to your PATH ──"
     echo ""
-    echo "  For quick access, add this to your shell rc file:"
-    echo ""
+    echo "  Option 1 — alias (add to your .bashrc/.zshrc):"
     echo "    $ALIAS_LINE"
     echo ""
-    echo "  Then you can just run:  agent-sandbox claude"
+    echo "  Option 2 — install to ~/.local/bin via make:"
+    echo "    cd $(dirname "$SCRIPT_DIR") && make install"
+    echo ""
+    echo "  Then:  agent-sandbox claude"
 fi
 echo "════════════════════════════════════════════════"

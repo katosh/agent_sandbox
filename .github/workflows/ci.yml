@@ -1,0 +1,279 @@
+name: CI
+
+on:
+  push:
+    branches: [main, packaging]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Makefile install / uninstall ─────────────────────────────────
+  makefile:
+    name: "Makefile install (${{ matrix.prefix }})"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - prefix: "$HOME/.local"
+            label: "user-local"
+          - prefix: "/usr/local"
+            label: "system-wide"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: make install
+        run: |
+          if [[ "${{ matrix.prefix }}" == "/usr/local" ]]; then
+            sudo make install PREFIX=/usr/local
+          else
+            make install PREFIX="$HOME/.local"
+          fi
+
+      - name: Verify agent-sandbox --version
+        run: |
+          if [[ "${{ matrix.prefix }}" == "/usr/local" ]]; then
+            agent-sandbox --version
+          else
+            "$HOME/.local/bin/agent-sandbox" --version
+          fi
+
+      - name: Verify installed files
+        run: |
+          PREFIX="${{ matrix.prefix }}"
+          # Expand ~ in user-local case
+          [[ "$PREFIX" == '$HOME/.local' ]] && PREFIX="$HOME/.local"
+          test -x "$PREFIX/bin/agent-sandbox"
+          test -f "$PREFIX/lib/agent-sandbox/sandbox-exec.sh"
+          test -f "$PREFIX/lib/agent-sandbox/sandbox-lib.sh"
+          test -f "$PREFIX/lib/agent-sandbox/VERSION"
+          test -f "$PREFIX/lib/agent-sandbox/sandbox.conf"
+          test -d "$PREFIX/lib/agent-sandbox/agents/claude"
+          test -d "$PREFIX/lib/agent-sandbox/chaperon/handlers"
+          test -d "$PREFIX/lib/agent-sandbox/chaperon/stubs"
+          test -d "$PREFIX/lib/agent-sandbox/backends"
+          test -f "$PREFIX/share/doc/agent-sandbox/README.md"
+          echo "All files present"
+
+      - name: make install-conf
+        run: make install-conf CONFDIR=/tmp/test-conf
+
+      - name: Verify sandbox.conf created
+        run: test -f /tmp/test-conf/sandbox.conf
+
+      - name: make install-conf (idempotent)
+        run: |
+          echo "CUSTOM=true" >> /tmp/test-conf/sandbox.conf
+          make install-conf CONFDIR=/tmp/test-conf 2>&1 | grep -q "already exists"
+          grep -q "CUSTOM=true" /tmp/test-conf/sandbox.conf
+
+      - name: make uninstall
+        run: |
+          if [[ "${{ matrix.prefix }}" == "/usr/local" ]]; then
+            sudo make uninstall PREFIX=/usr/local
+          else
+            make uninstall PREFIX="$HOME/.local"
+          fi
+
+      - name: Verify uninstall removed files
+        run: |
+          PREFIX="${{ matrix.prefix }}"
+          [[ "$PREFIX" == '$HOME/.local' ]] && PREFIX="$HOME/.local"
+          ! test -e "$PREFIX/bin/agent-sandbox"
+          ! test -e "$PREFIX/lib/agent-sandbox"
+          ! test -e "$PREFIX/share/doc/agent-sandbox"
+          echo "Clean uninstall"
+
+  # ── DESTDIR packaging test ───────────────────────────────────────
+  destdir:
+    name: "DESTDIR packaging test"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: make install with DESTDIR
+        run: make install DESTDIR=/tmp/pkg PREFIX=/usr
+
+      - name: Verify DESTDIR layout
+        run: |
+          test -x /tmp/pkg/usr/bin/agent-sandbox
+          test -f /tmp/pkg/usr/lib/agent-sandbox/sandbox-exec.sh
+          test -f /tmp/pkg/usr/lib/agent-sandbox/VERSION
+          cat /tmp/pkg/usr/bin/agent-sandbox | grep -q '/usr/lib/agent-sandbox/sandbox-exec.sh'
+          echo "DESTDIR layout correct"
+
+  # ── Sandbox tests (bwrap) ───────────────────────────────────────
+  test-bwrap:
+    name: "Sandbox tests (bwrap)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Enable unprivileged user namespaces
+        run: |
+          # Ubuntu 24.04 restricts this via AppArmor
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
+
+      - name: Run quick test suite (bwrap)
+        run: bash test.sh --quick --backend bwrap
+
+  # ── Sandbox tests (landlock) ────────────────────────────────────
+  test-landlock:
+    name: "Sandbox tests (landlock)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Landlock support
+        id: landlock-check
+        run: |
+          if python3 backends/landlock-sandbox.py --check 2>/dev/null; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Landlock not available on this runner — skipping"
+          fi
+
+      - name: Run quick test suite (landlock)
+        if: steps.landlock-check.outputs.available == 'true'
+        run: bash test.sh --quick --backend landlock
+
+  # ── Sandbox tests (firejail) ────────────────────────────────────
+  test-firejail:
+    name: "Sandbox tests (firejail)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install firejail
+        run: sudo apt-get update && sudo apt-get install -y firejail
+
+      - name: Run quick test suite (firejail)
+        run: bash test.sh --quick --backend firejail
+
+  # ── sandbox-exec.sh CLI behavior ────────────────────────────────
+  cli:
+    name: "CLI behavior tests"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Enable unprivileged user namespaces
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
+
+      - name: "--version outputs version"
+        run: |
+          out=$(./sandbox-exec.sh --version)
+          echo "$out"
+          echo "$out" | grep -qE '^agent-sandbox [0-9]+\.[0-9]+\.[0-9]+$'
+
+      - name: "--version matches VERSION file"
+        run: |
+          file_ver=$(cat VERSION | tr -d '[:space:]')
+          cli_ver=$(./sandbox-exec.sh --version | awk '{print $2}')
+          [[ "$file_ver" == "$cli_ver" ]] || { echo "Mismatch: file=$file_ver cli=$cli_ver"; exit 1; }
+
+      - name: "--help includes version"
+        run: ./sandbox-exec.sh --help | head -1 | grep -q "agent-sandbox"
+
+      - name: "Unknown option errors"
+        run: |
+          ! ./sandbox-exec.sh --bogus 2>/dev/null
+          ./sandbox-exec.sh --bogus 2>&1 | grep -q "Unknown option"
+
+      - name: "No command errors"
+        run: |
+          ! ./sandbox-exec.sh 2>/dev/null
+          ./sandbox-exec.sh 2>&1 | grep -q "No command specified"
+
+      - name: "Command without -- separator works"
+        run: |
+          out=$(./sandbox-exec.sh echo hello 2>/dev/null)
+          [[ "$out" == "hello" ]] || { echo "Got: $out"; exit 1; }
+
+      - name: "Command with -- separator works"
+        run: |
+          out=$(./sandbox-exec.sh -- echo hello 2>/dev/null)
+          [[ "$out" == "hello" ]] || { echo "Got: $out"; exit 1; }
+
+      - name: "Options + command without -- works"
+        run: |
+          out=$(./sandbox-exec.sh --backend bwrap echo hello 2>/dev/null)
+          [[ "$out" == "hello" ]] || { echo "Got: $out"; exit 1; }
+
+  # ── Homebrew formula validation ─────────────────────────────────
+  homebrew:
+    name: "Homebrew install test"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Install bubblewrap (system package, not via brew)
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Enable unprivileged user namespaces (for bwrap)
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
+
+      - name: Build and install from local source via Homebrew
+        run: |
+          # Create a local formula that points at the checkout instead of a
+          # remote tarball.  This tests the exact same Makefile integration
+          # that the real formula uses after a release is tagged.
+          cat > /tmp/agent-sandbox.rb <<'FORMULA'
+          class AgentSandbox < Formula
+            desc "Kernel-enforced filesystem isolation for AI coding agents on Linux"
+            homepage "https://github.com/katosh/agent_sandbox"
+            url "file://SRCDIR", using: :nounzip
+            version "0.0.0-ci"
+            sha256 "SKIP"
+            license "MIT"
+            depends_on :linux
+            def install
+              system "make", "install", "PREFIX=#{prefix}"
+            end
+            test do
+              assert_match "agent-sandbox", shell_output("#{bin}/agent-sandbox --version")
+            end
+          end
+          FORMULA
+          # Point the formula at the checked-out source tree
+          # brew install --build-from-source needs a tarball, so we create one
+          SRCDIR="$(pwd)"
+          TAR="/tmp/agent-sandbox-ci.tar.gz"
+          tar czf "$TAR" --transform 's,^\./,agent_sandbox-ci/,' \
+              --exclude='.git' --exclude='slurm-*.out' .
+          SHA=$(shasum -a 256 "$TAR" | awk '{print $1}')
+          sed -i "s|file://SRCDIR|file://$TAR|" /tmp/agent-sandbox.rb
+          sed -i "s|SKIP|$SHA|" /tmp/agent-sandbox.rb
+          sed -i 's|, using: :nounzip||' /tmp/agent-sandbox.rb
+          echo "=== Formula ==="
+          cat /tmp/agent-sandbox.rb
+          echo ""
+          brew install --formula --build-from-source /tmp/agent-sandbox.rb
+
+      - name: Verify agent-sandbox on PATH
+        run: |
+          which agent-sandbox
+          agent-sandbox --version
+
+      - name: Smoke test from Homebrew install
+        run: |
+          out=$(agent-sandbox echo hello 2>/dev/null)
+          [[ "$out" == "hello" ]] || { echo "Got: '$out'"; exit 1; }
+          echo "Homebrew-installed sandbox works"

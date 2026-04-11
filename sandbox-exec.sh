@@ -23,13 +23,18 @@ PROJECT_DIR=""
 DRY_RUN=false
 BACKEND_OVERRIDE=""
 
+VERSION="$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo "unknown")"
+
 usage() {
+    echo "agent-sandbox $VERSION — kernel-enforced isolation for AI coding agents"
+    echo ""
     echo "Usage: sandbox-exec.sh [--project-dir DIR] [--backend BACKEND] [--dry-run] -- CMD [ARGS...]"
     echo ""
     echo "Options:"
     echo "  --project-dir DIR   Directory with write access (default: \$PWD)"
     echo "  --backend BACKEND   Force backend: bwrap, landlock, auto (default: auto)"
     echo "  --dry-run           Print the sandbox command without executing"
+    echo "  --version           Show version"
     echo "  --help              Show this help"
     echo ""
     echo "Examples:"
@@ -52,6 +57,10 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
+        --version)
+            echo "agent-sandbox $VERSION"
+            exit 0
+            ;;
         --help|-h)
             usage
             exit 0
@@ -60,10 +69,14 @@ while [[ $# -gt 0 ]]; do
             shift
             break
             ;;
-        *)
+        -*)
             echo "Error: Unknown option '$1'" >&2
             usage >&2
             exit 1
+            ;;
+        *)
+            # No '--' before command — treat first non-option arg as the command
+            break
             ;;
     esac
 done

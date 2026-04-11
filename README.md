@@ -1,44 +1,35 @@
-# Sandboxing AI Coding Agents on HPC
+# agent-sandbox
 
-> **Disclaimer:** This sandbox is a best-effort, user-space isolation layer. It is **not** a security product and comes with **no guarantees**. It reduces the attack surface of AI coding agents on shared HPC systems, but it cannot prevent all possible bypasses — see the [Security Summary](#security-summary) and [Admin Hardening Options](ADMIN_HARDENING.md) for known limitations. Use at your own risk.
+Kernel-enforced filesystem isolation for AI coding agents on Linux.
+
+Hides SSH keys, cloud credentials, GPG keys, and environment secrets from AI coding agents while letting them do their job. Three backends (bubblewrap, firejail, landlock), five agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode), zero containers.
+
+```bash
+agent-sandbox claude          # Claude Code, sandboxed
+agent-sandbox bash            # interactive shell, sandboxed
+```
+
+> **Disclaimer:** This sandbox is a best-effort, user-space isolation layer. It is **not** a security product and comes with **no guarantees**. It reduces the attack surface of AI coding agents on shared systems, but it cannot prevent all possible bypasses — see the [Security Summary](#security-summary) and [Admin Hardening Options](ADMIN_HARDENING.md) for known limitations. Use at your own risk.
 
 ## Why Sandbox?
 
-AI coding agents (Claude Code, Codex, Gemini, Aider, OpenCode, and others) are powerful — they read files, write code, run commands, and submit Slurm jobs on your behalf. But on a shared HPC system, your user account has access to a lot more than any single project needs:
+AI coding agents (Claude Code, Codex, Gemini, Aider, OpenCode, and others) are powerful — they read files, write code, and run commands on your behalf. But your user account has access to far more than any single project needs:
 
-- **SSH keys** (`~/.ssh/`) — access to GitHub, remote servers, other clusters
+- **SSH keys** (`~/.ssh/`) — access to GitHub, remote servers, other machines
 - **Cloud credentials** (`~/.aws/`, API tokens) — access to S3, cloud services
 - **GPG keys** (`~/.gnupg/`) — signing identity
-- **All lab data** — including other people's projects, possibly clinical data
+- **Other projects** — including sensitive data you don't want an agent to touch
 - **Environment secrets** — `GITHUB_PAT`, `OPENAI_API_KEY`, etc.
-- **User enumeration & profile extraction** — LDAP/AD directories expose every user on the cluster (`getent passwd`, `finger`); an agent can extract real names, home directory paths, login history, and organizational structure for thousands of users
 
-An agent working on one project shouldn't be able to read your SSH keys, exfiltrate API tokens, enumerate users on the cluster, or accidentally overwrite someone else's data. A **sandbox** restricts the agent to only what it needs.
+An agent working on one project shouldn't be able to read your SSH keys, exfiltrate API tokens, or accidentally overwrite someone else's data. A **sandbox** restricts the agent to only what it needs.
+
+**On shared/HPC systems**, the risks are amplified: LDAP/AD directories expose every user on the cluster, lab data from other projects is accessible, and Slurm job submission can escape filesystem restrictions entirely. See [HPC & Slurm Integration](#hpc--slurm-integration) for how agent-sandbox handles these.
 
 ### Why Not a Full Container?
 
-Docker provides strong isolation but requires root and is unavailable on shared HPC. Apptainer (the HPC container runtime) was designed for reproducibility, not containment. Its default configuration shares PID space, network, home directory, `/tmp`, and environment variables with the host, and applies no seccomp filter. The isolation is not actually stronger out of the box. See the [detailed comparison](APPTAINER_COMPARISON.md). On top of that, containers introduce significant friction on HPC:
+Docker requires root and is unavailable on many shared systems. Apptainer (the HPC container runtime) was designed for reproducibility, not containment — its default shares PID space, network, home directory, `/tmp`, and environment variables with the host. See the [detailed comparison](APPTAINER_COMPARISON.md).
 
-| Problem | Container Impact | Sandbox |
-|---|---|---|
-| **Filesystem mapping** | Must explicitly map every NFS path, home dir, scratch — get it wrong and paths differ inside vs. outside | Same filesystem, same paths. No mapping needed. |
-| **Path consistency** | Scripts that reference NFS paths may break inside the container if mounts differ | All paths are identical inside and outside. |
-| **Software stack** | Must install tools inside the image, or map `/app` — versions may conflict | Directly uses `/app`, lmod, your Homebrew — everything just works. |
-| **Image maintenance** | Must rebuild images when tools change | Nothing to rebuild. |
-| **Starting agents** | Must install and configure each agent inside each container image | `sandbox-exec.sh -- claude` — that's it. Works with any agent. |
-| **Slurm integration** | Either Slurm is inaccessible inside the container — making interactive agents on the login node pointless since they can't submit compute jobs — or jobs escape the container and run unsandboxed on compute nodes, defeating the isolation entirely | `sbatch`/`srun` are transparently wrapped so compute-node jobs inherit the same sandbox restrictions |
-
-The sandbox gives you **kernel-enforced filesystem isolation** with none of the path-mapping headaches. The agent sees the exact same filesystem as you, minus the secrets.
-
-### The Slurm Problem
-
-Filesystem isolation on the login node is only half the story. The main point of HPC is submitting work to compute nodes via Slurm. If the agent can run `sbatch` or `srun`, and those jobs execute **outside** the sandbox, then all restrictions are trivially bypassed — the agent just submits a job that reads `~/.ssh` on the compute node.
-
-This sandbox solves the Slurm problem with the **chaperon** — a zero-trust Slurm proxy that runs *outside* the sandbox and handles all job submission on behalf of the sandboxed process. Inside the sandbox, the munge authentication socket is blocked, all Slurm binaries are hidden or blacklisted, and Slurm configuration files are removed. The only way to submit jobs is through stub scripts that communicate with the chaperon via named pipes in a per-session temp directory (chmod 700, unpredictable response FIFO names). The chaperon validates arguments against a whitelist of safe sbatch flags, wraps every job in `sandbox-exec.sh` so compute-node jobs inherit the same sandbox, and rejects dangerous flags like `--uid`, `--get-user-env`, `--container`, and `--export`.
-
-Despite the heavy filtering, **the user-facing experience is indistinguishable from calling Slurm directly**: the sandboxed agent runs `sbatch`/`srun`/`squeue`/etc. exactly as it would outside the sandbox, sees the same exit codes, and reads stdout/stderr identical to what the real tools would print. All of the validation, scoping, and wrapping happens transparently in the chaperon.
-
-For the full architecture and security analysis, see [Chaperon: Secure Slurm Proxy](CHAPERON.md).
+Containers also introduce friction: filesystem mapping, path consistency issues, image maintenance, and per-agent installation inside each image. The sandbox gives you **kernel-enforced filesystem isolation** with none of these headaches. The agent sees the exact same filesystem as you, minus the secrets.
 
 ---
 
@@ -46,45 +37,83 @@ For the full architecture and security analysis, see [Chaperon: Secure Slurm Pro
 
 ### Prerequisites
 
-- Linux HPC with Slurm (kernel ≥ 3.8)
-- **Bubblewrap backend** (recommended): `sudo apt install bubblewrap` or `sudo dnf install bubblewrap`. Requires unprivileged user namespaces. On Ubuntu 24.04+, AppArmor may need an admin profile — see [Troubleshooting](#setting-up-uid-map-permission-denied-ubuntu-2404).
-- **Firejail backend**: `sudo apt install firejail` (setuid root binary). Works when AppArmor blocks unprivileged user namespaces.
-- **Landlock backend**: kernel ≥ 5.13 (Ubuntu 22.04+), Python 3. No install needed but weakest isolation.
+You need Linux (kernel ≥ 3.8) and at least one isolation backend. The sandbox auto-detects the best available at runtime.
 
-**No root access?** Install bubblewrap via [Homebrew](https://brew.sh/) — no sudo needed:
+**Bubblewrap** (recommended) — two install paths:
+
+| | System package (needs root or admin) | Homebrew (no root) |
+|---|---|---|
+| **Install** | `sudo apt install bubblewrap` | `brew install bubblewrap` |
+| **AppArmor (Ubuntu 24.04+)** | Included automatically | May need a [manual profile](#setting-up-uid-map-permission-denied-ubuntu-2404) |
+| **Best for** | Machines where you have root or a helpful admin | Shared HPC where you don't |
+
+<details>
+<summary><b>Installing Homebrew without root</b> (if you don't have it yet)</summary>
+
 ```bash
+# Install Homebrew to ~/.linuxbrew (one-time, ~2 min)
+# The default installer tries /home/linuxbrew/.linuxbrew which needs sudo.
+# Setting the prefix explicitly installs under your home directory instead.
 mkdir -p ~/.linuxbrew
 curl -fsSL https://github.com/Homebrew/brew/tarball/master \
   | tar xz --strip-components=1 -C ~/.linuxbrew
-eval "$(~/.linuxbrew/bin/brew shellenv)"  # add to .bashrc to persist
+
+# Add to PATH (add this to your .bashrc/.zshrc to persist across sessions)
+eval "$(~/.linuxbrew/bin/brew shellenv)"
+
+# Install bubblewrap
 brew install bubblewrap
 ```
 
-### One-Command Setup
+</details>
+
+**Alternatives** (if bubblewrap is unavailable):
+- **Firejail**: requires admin install (`sudo apt install firejail`). Works when AppArmor blocks user namespaces.
+- **Landlock**: kernel ≥ 5.13 (Ubuntu 22.04+), Python 3. No install needed but weakest isolation — see [Known Limitations](#known-limitations).
+
+### Install via Homebrew (recommended)
 
 ```bash
-# Clone the repo (if you haven't already)
-git clone git@github.com:settylab/agent_sandbox.git
+brew tap katosh/tools
+brew install agent-sandbox
+```
 
-# Run the installer
+### Install via Make
+
+```bash
+git clone https://github.com/katosh/agent_sandbox.git
+cd agent_sandbox
+
+# User-local (no root)
+make install                         # installs to ~/.local/
+
+# System-wide
+sudo make install PREFIX=/usr/local
+```
+
+This puts `agent-sandbox` on your `PATH` and installs the runtime to `$(PREFIX)/lib/agent-sandbox/`.
+
+Then create your config:
+
+```bash
+make install-conf    # creates ~/.config/agent-sandbox/sandbox.conf
+```
+
+### Install via install.sh (legacy)
+
+```bash
+git clone https://github.com/katosh/agent_sandbox.git
 bash agent_sandbox/install.sh
 ```
 
-The installer:
-1. Detects available backends (bwrap, firejail, landlock) and shows install guidance if none found
-2. Copies scripts to `~/.config/agent-sandbox/`
-3. Installs agent profiles (Claude, Codex, Gemini, Aider, OpenCode)
-4. Creates `~/.config/agent-sandbox/sandbox.conf` (your personal config — won't overwrite)
-5. Runs the test suite to verify everything works
+The installer copies everything to `~/.config/agent-sandbox/`, detects backends, and runs a smoke test. Your `sandbox.conf` is never overwritten.
 
 ### What Gets Installed
 
 ```
-~/.config/agent-sandbox/
-├── sandbox.conf          # ← Your permissions config — edit this
-├── sandbox-lib.sh        # Core library (config loading, backend detection)
+$(PREFIX)/lib/agent-sandbox/          # or ~/.config/agent-sandbox/ with install.sh
 ├── sandbox-exec.sh       # Main entry point (auto-selects backend)
-├── test.sh               # Test suite
+├── sandbox-lib.sh        # Core library (config loading, backend detection)
 ├── agents/               # Agent profiles (auto-detected at sandbox start)
 │   ├── claude/           # Claude Code — merges CLAUDE.md + settings.json
 │   ├── codex/            # OpenAI Codex CLI — merges AGENTS.md, unblocks OPENAI_API_KEY, CODEX_API_KEY
@@ -103,6 +132,10 @@ The installer:
 │   ├── handlers/         # Request handlers (sbatch, srun, scancel, etc.)
 │   └── stubs/            # PATH-shadowing stubs (all talk to chaperon)
 ├── bin/                  # Fallback PATH shadows (delegate to stubs)
+
+~/.config/agent-sandbox/
+├── sandbox.conf          # ← Your permissions config — edit this
+├── conf.d/               # Per-project overrides
 ```
 
 ### Backends
@@ -121,22 +154,25 @@ To force a backend: set `SANDBOX_BACKEND="firejail"` in `sandbox.conf` or use `-
 
 ### Updating
 
-To pick up newer scripts from the repo:
-
 ```bash
-cd /path/to/agent_sandbox && git pull
-bash install.sh
+# Homebrew
+brew upgrade agent-sandbox
+
+# Make
+cd /path/to/agent_sandbox && git pull && make install
+
+# install.sh
+cd /path/to/agent_sandbox && git pull && bash install.sh
 ```
 
 Your `sandbox.conf` is never overwritten, so your customizations are preserved.
 
 ### Running Tests
 
-The test suite verifies filesystem isolation, environment blocking, Slurm binary isolation, and overlay generation:
-
 ```bash
-bash test.sh            # run all tests (from the repo directory)
-bash test.sh --verbose   # show details on failure
+make check              # quick smoke test (from the repo directory)
+bash test.sh            # run all tests
+bash test.sh --verbose  # show details on failure
 ```
 
 ---
@@ -148,28 +184,20 @@ bash test.sh --verbose   # show details on failure
 ```bash
 cd /path/to/my-project
 
-# Claude Code
-~/.config/agent-sandbox/sandbox-exec.sh -- claude
-
-# OpenAI Codex
-~/.config/agent-sandbox/sandbox-exec.sh -- codex
-
-# Google Gemini
-~/.config/agent-sandbox/sandbox-exec.sh -- gemini
-
-# Or add an alias to .bashrc:
-# alias agent-sandbox='~/.config/agent-sandbox/sandbox-exec.sh --'
-# Then: agent-sandbox claude
+agent-sandbox claude       # Claude Code
+agent-sandbox codex        # OpenAI Codex
+agent-sandbox gemini       # Google Gemini
+agent-sandbox bash         # interactive shell
 ```
 
-The agent starts in your project directory with full read access to the HPC but write access **only** to that directory (plus ephemeral writes anywhere in `$HOME` — see [Home Access Modes](#home-access-modes)). SSH keys, API tokens, and credentials are invisible. Agent profiles are auto-detected — if both Claude and Codex are installed, both profiles activate simultaneously (each gets its own writable paths and credential access).
+The agent starts in your project directory with read access to the system but write access **only** to that directory (plus ephemeral writes anywhere in `$HOME` — see [Home Access Modes](#home-access-modes)). SSH keys, API tokens, and credentials are invisible. Agent profiles are auto-detected — if both Claude and Codex are installed, both profiles activate simultaneously (each gets its own writable paths and credential access).
 
 ### Verify the Sandbox
 
 ```bash
-~/.config/agent-sandbox/sandbox-exec.sh -- ls ~/.ssh        # → No such file / Permission denied
-~/.config/agent-sandbox/sandbox-exec.sh -- bash -c 'echo $GITHUB_PAT'  # → (empty)
-~/.config/agent-sandbox/sandbox-exec.sh -- squeue --me       # → works (Slurm accessible)
+agent-sandbox ls ~/.ssh                    # → No such file / Permission denied
+agent-sandbox bash -c 'echo $GITHUB_PAT'  # → (empty)
+agent-sandbox -- squeue --me               # → works (Slurm accessible, if on HPC)
 ```
 
 ---
@@ -197,7 +225,7 @@ The `HOME_ACCESS` setting in `sandbox.conf` controls how much of your home direc
 
 The default `tmpwrite` mode blanks `$HOME` with a tmpfs, re-mounts only the paths in `HOME_READONLY` and `HOME_WRITABLE`, but leaves the tmpfs writable. This means the agent can freely create files (lock files, caches, temp directories) anywhere in `$HOME`, but those writes vanish when the sandbox exits. Real home content not in the mount lists remains hidden. Credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`) are always blocked regardless of mode.
 
-Override per-session via environment: `HOME_ACCESS=read sandbox-exec.sh -- bash`
+Override per-session via environment: `HOME_ACCESS=read agent-sandbox bash`
 
 ### Review your config
 
@@ -281,7 +309,11 @@ For Claude Code, the sandbox overlays `~/.claude/settings.json` to auto-allow to
 
 ---
 
-## Slurm Integration (Chaperon)
+## HPC & Slurm Integration
+
+On shared HPC systems, the risks are amplified: LDAP/AD directories expose every user on the cluster (`getent passwd`, `finger`), other people's lab data is accessible via shared filesystems, and Slurm job submission can escape filesystem restrictions entirely — an agent just submits a job that reads `~/.ssh` on the compute node.
+
+### Chaperon: Secure Slurm Proxy
 
 Inside the sandbox, all Slurm authentication and binaries are **blocked** — munge socket hidden, `/usr/bin/sbatch` etc. blacklisted, `/etc/slurm` removed. Job submission goes through the **chaperon**, a proxy process running outside the sandbox that communicates via named pipes in a per-session temp directory.
 
@@ -289,7 +321,7 @@ Inside the sandbox, all Slurm authentication and binaries are **blocked** — mu
 
 - **Stub sbatch:** Parses `--wrap` and script arguments, sends them over the `CHAPERON/1` protocol to the chaperon, prints the response. The agent calls `sbatch` as normal.
 - **Stub srun:** Proxied through the chaperon like sbatch. Two modes: **allocation mode** (login node) — validates flags, wraps the command in `sandbox-exec.sh` so compute-node processes are sandboxed, then calls real srun. **Step mode** (inside an sbatch job, `SLURM_JOB_ID` set) — validates flags against a step-only whitelist and execs real srun directly for MPI/multi-process step launching. `--pty` is denied (no PTY passthrough). The chaperon runs outside the sandbox and has munge access — munge is never exposed inside the sandbox.
-- **Stub scancel:** Sends cancel requests to the chaperon, which filters job IDs by scope (session, project, or user). By default, jobs submitted by any sandbox session with the same project directory can be cancelled. Configurable via `SLURM_SCOPE` in `sandbox.conf`, or as an environment variable override: `SLURM_SCOPE=session sandbox-exec.sh -- claude`.
+- **Stub scancel:** Sends cancel requests to the chaperon, which filters job IDs by scope (session, project, or user). By default, jobs submitted by any sandbox session with the same project directory can be cancelled. Configurable via `SLURM_SCOPE` in `sandbox.conf`, or as an environment variable override: `SLURM_SCOPE=session agent-sandbox claude`.
 - **Stub squeue:** Proxied through the chaperon. Output is filtered to only show jobs within scope. The agent sees only its own sandbox-submitted jobs, not other users' jobs or unrelated jobs.
 - **Stub scontrol:** Proxied through the chaperon. Read-only commands (`show node`, `show partition`, `show config`) pass through. Job operations (`show job`, `hold`, `release`, `requeue`, `update job`) are scoped to chaperon-submitted jobs. Dangerous subcommands (`shutdown`, `reconfigure`, etc.) and user-enumerating targets (`show assoc_mgr`) are denied.
 - **Stub sacct:** Proxied through the chaperon. Always scoped to the current user (`--user=$(whoami)` injected). `--allusers`, `--user`, and `--accounts` are denied to prevent viewing other users' job history.
@@ -322,13 +354,13 @@ Customize agent instructions via `~/.config/agent-sandbox/agents/<name>/agent.md
 
 ## Agent Teams / tmux
 
-The outer tmux socket is blocked (escape risk), but a **nested tmux** running inside the sandbox works well: `sandbox-exec.sh -- tmux new-session claude` (prefix is `Ctrl-a`). On kernels < 5.4, set `BIND_DEV_PTS=true` in `sandbox.conf` for pty allocation (see Known Limitations). Customize via `~/.config/agent-sandbox/sandbox-tmux.conf`.
+The outer tmux socket is blocked (escape risk), but a **nested tmux** running inside the sandbox works well: `agent-sandbox tmux new-session claude` (prefix is `Ctrl-a`). On kernels < 5.4, set `BIND_DEV_PTS=true` in `sandbox.conf` for pty allocation (see Known Limitations). Customize via `~/.config/agent-sandbox/sandbox-tmux.conf`.
 
 **Tip — long-lived Jupyter kernels for stateful experimentation:** The sandbox ships a `lab` utility (in `bin/`) that runs a project-local JupyterLab and provides CLI access to running kernels so the agent can execute code, inspect live variables, and edit notebook cells without clicking through the web UI. Two run modes:
 
 ```bash
 # Mode 1: user starts lab in a tmux pane inside the sandbox
-sandbox-exec.sh -- tmux new-session    # nested tmux
+agent-sandbox tmux new-session         # nested tmux
 lab kernel add && lab                   # foreground JupyterLab
 # agent (in another pane) attaches to the running kernel:
 lab kernel exec -n analysis.ipynb "df.describe()"
@@ -356,27 +388,7 @@ For Claude Code, hooks are auto-configured via the settings.json overlay: the `N
 
 ### "bwrap: No such file or directory"
 
-Install bubblewrap via your system package manager (needs root):
-```bash
-sudo apt install bubblewrap    # Debian/Ubuntu
-sudo dnf install bubblewrap    # RHEL/Fedora/Rocky
-```
-
-**No root access?** Install via [Homebrew](https://brew.sh/) (a package manager that installs into your home directory — no root needed, widely used on HPC clusters for user-local tools):
-```bash
-# Install Homebrew to ~/.linuxbrew (one-time, ~2 min)
-# The default installer tries /home/linuxbrew/.linuxbrew which needs sudo.
-# Setting the prefix explicitly installs under your home directory instead.
-mkdir -p ~/.linuxbrew
-curl -fsSL https://github.com/Homebrew/brew/tarball/master | tar xz --strip-components=1 -C ~/.linuxbrew
-
-# Add to PATH (add this to your .bashrc/.zshrc to persist across sessions)
-eval "$(~/.linuxbrew/bin/brew shellenv)"
-
-# Install bubblewrap
-brew install bubblewrap
-```
-Homebrew installs to `~/.linuxbrew/` and doesn't touch system directories. The sandbox auto-detects bwrap from `$PATH` including `~/.linuxbrew/bin/`.
+Bubblewrap is not installed. See [Prerequisites](#prerequisites) for install options (system package or Homebrew without root).
 
 ### "bwrap: Creating new namespace failed: Operation not permitted"
 The kernel doesn't allow unprivileged user namespaces. Check: `cat /proc/sys/kernel/unprivileged_userns_clone` — it must be `1`.

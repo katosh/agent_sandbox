@@ -255,7 +255,36 @@ if sandbox bash -c 'echo ${GITHUB_PAT:-BLOCKED}'; then
 fi
 unset GITHUB_PAT
 
-# 5. Chaperon proxy — squeue completes without hanging
+# 5. Passwd filter / user enumeration prevention
+if is_bwrap; then
+    if sandbox bash -c 'wc -l < /etc/passwd'; then
+        _host_count=$(wc -l < /etc/passwd)
+        _sandbox_count="$OUTPUT"
+        if [[ "$_sandbox_count" -le "$_host_count" ]]; then
+            pass "Passwd filter active (host: $_host_count → sandbox: $_sandbox_count)"
+        else
+            fail "Passwd not filtered (sandbox has more lines than host)" "$OUTPUT"
+        fi
+    else
+        fail "Could not read /etc/passwd in sandbox" "$OUTPUT"
+    fi
+elif is_firejail; then
+    _host_getent=$(getent passwd | wc -l)
+    if sandbox bash -c 'getent passwd | wc -l'; then
+        _sandbox_getent="$OUTPUT"
+        if [[ "$_sandbox_getent" -le "$_host_getent" ]]; then
+            pass "User enum prevention (host: $_host_getent → sandbox: $_sandbox_getent)"
+        else
+            fail "getent not filtered (sandbox exposes more users)" "$OUTPUT"
+        fi
+    else
+        fail "Could not run getent in sandbox" "$OUTPUT"
+    fi
+else
+    skip "Passwd filter not supported on Landlock (no mount namespace)"
+fi
+
+# 6. Chaperon proxy — squeue completes without hanging
 if command -v /usr/bin/squeue &>/dev/null; then
     if sandbox bash -c 'squeue 2>&1; echo DONE'; then
         if echo "$OUTPUT" | grep -q "DONE"; then
