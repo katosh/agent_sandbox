@@ -55,7 +55,7 @@ You need Linux (kernel ≥ 3.8) and at least one isolation backend. The sandbox 
 # The default installer tries /home/linuxbrew/.linuxbrew which needs sudo.
 # Setting the prefix explicitly installs under your home directory instead.
 mkdir -p ~/.linuxbrew
-curl -fsSL https://github.com/Homebrew/brew/tarball/master \
+curl -fsSL https://github.com/Homebrew/brew/tarball/main \
   | tar xz --strip-components=1 -C ~/.linuxbrew
 
 # Add to PATH (add this to your .bashrc/.zshrc to persist across sessions)
