@@ -11,13 +11,13 @@
 #   bash test.sh --verbose                # show command output on failure
 #   bash test.sh --backend bwrap          # test only bwrap backend
 #
-# The --quick flag runs sections 1–5 only: sandbox boot, filesystem
-# isolation, environment blocking, config overlays, and chaperon
-# setup verification.  It does NOT submit any Slurm jobs.
+# The --quick flag runs a minimal smoke test (~5 checks per backend):
+# sandbox boot, filesystem isolation, credential blocking, project
+# write, and chaperon proxy.  Completes in seconds.  No Slurm jobs.
 #
-# The full test (default) additionally runs chaperon functional tests
-# (submits real Slurm jobs), escape vector tests, syscall restrictions,
-# resource isolation, credential protection, and stability tests.
+# The full test (default) runs all 12 sections including chaperon
+# functional tests (submits real Slurm jobs), escape vectors, syscall
+# restrictions, resource isolation, credential protection, and more.
 
 set -uo pipefail
 
@@ -36,7 +36,7 @@ while [[ $# -gt 0 ]]; do
 Usage: bash test.sh [OPTIONS] [PROJECT_DIR]
 
 Options:
-  --quick           Run sections 1-5 only (~2s, no Slurm jobs submitted)
+  --quick           Minimal smoke test (~5 checks/backend, no Slurm jobs)
   --full            Run all sections including Slurm job tests (default)
   --verbose         Show command output on failure
   --backend NAME    Test only one backend (bwrap, firejail, or landlock)
@@ -196,6 +196,103 @@ echo "┌───────────────────────�
 echo "│  Testing backend: $CURRENT_BACKEND"
 echo "└───────────────────────────────────────────────"
 echo ""
+
+# ── Quick smoke test (early return) ──────────────────────────────
+# Minimal deployment check: does the sandbox boot, isolate files,
+# block credentials, allow project writes, and proxy Slurm commands?
+# 5 sandbox calls — completes in seconds.
+
+if [[ "$QUICK_MODE" == true ]]; then
+
+# 1. Sandbox boots with correct backend
+if sandbox bash -c 'echo "$SANDBOX_ACTIVE:$SANDBOX_BACKEND"'; then
+    if [[ "$OUTPUT" == "1:$CURRENT_BACKEND" ]]; then
+        pass "Sandbox boots ($CURRENT_BACKEND)"
+    else
+        fail "Sandbox boots but env is wrong (expected 1:$CURRENT_BACKEND)" "$OUTPUT"
+    fi
+else
+    fail "Sandbox failed to start" "$OUTPUT"
+    # Cannot continue — report and return
+    TOTAL=$((PASS + FAIL + SKIP + WARN))
+    echo ""; echo "  Results: $PASS passed, $FAIL failed (out of $TOTAL)"; echo ""
+    TOTAL_PASS=$((TOTAL_PASS + PASS)); TOTAL_FAIL=$((TOTAL_FAIL + FAIL))
+    TOTAL_SKIP=$((TOTAL_SKIP + SKIP)); TOTAL_WARN=$((TOTAL_WARN + WARN))
+    ANY_FAIL=true
+    return
+fi
+
+# 2. Filesystem isolation — ~/.ssh should be blocked
+if [[ -d "$HOME/.ssh" ]]; then
+    if sandbox bash -c 'ls "$HOME/.ssh" >/dev/null 2>&1 && echo VISIBLE || echo BLOCKED'; then
+        if [[ "$OUTPUT" == "BLOCKED" ]]; then
+            pass "Filesystem isolation (~/.ssh blocked)"
+        else
+            fail "~/.ssh accessible inside sandbox (isolation broken)"
+        fi
+    fi
+else
+    skip "~/.ssh not present on host"
+fi
+
+# 3. Project directory is writable
+_tf="$PROJECT_DIR/.test-write-$$"
+if sandbox bash -c "touch '$_tf' && rm -f '$_tf'"; then
+    pass "Project directory is writable"
+else
+    fail "Project directory is not writable" "$OUTPUT"
+fi
+rm -f "$_tf"
+
+# 4. Credential blocking
+export GITHUB_PAT="test-secret"
+if sandbox bash -c 'echo ${GITHUB_PAT:-BLOCKED}'; then
+    if [[ "$OUTPUT" == "BLOCKED" ]]; then
+        pass "Credentials blocked (GITHUB_PAT)"
+    else
+        fail "GITHUB_PAT leaked into sandbox"
+    fi
+fi
+unset GITHUB_PAT
+
+# 5. Chaperon proxy — squeue completes without hanging
+if command -v /usr/bin/squeue &>/dev/null; then
+    if sandbox bash -c 'squeue 2>&1; echo DONE'; then
+        if echo "$OUTPUT" | grep -q "DONE"; then
+            pass "Chaperon proxy works (squeue completes)"
+        else
+            fail "squeue did not complete" "$OUTPUT"
+        fi
+    else
+        if echo "$OUTPUT" | grep -q "DONE"; then
+            pass "Chaperon proxy works (squeue completes)"
+        else
+            fail "squeue may have hung" "$OUTPUT"
+        fi
+    fi
+else
+    skip "Slurm not installed"
+fi
+
+# Per-backend summary (quick mode)
+TOTAL=$((PASS + FAIL + SKIP + WARN))
+echo ""
+echo "════════════════════════════════════════════════"
+echo "  Results: $PASS passed, $FAIL failed, $WARN warnings, $SKIP skipped (out of $TOTAL)"
+echo "════════════════════════════════════════════════"
+echo ""
+TOTAL_PASS=$((TOTAL_PASS + PASS))
+TOTAL_FAIL=$((TOTAL_FAIL + FAIL))
+TOTAL_SKIP=$((TOTAL_SKIP + SKIP))
+TOTAL_WARN=$((TOTAL_WARN + WARN))
+[[ $FAIL -gt 0 ]] && ANY_FAIL=true
+return
+fi
+# ── End quick smoke test ─────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════
+# Full test suite (sections 1–12)
+# ══════════════════════════════════════════════════════════════════
 
 # ── 1. Basic sandbox ─────────────────────────────────────────────
 
@@ -958,12 +1055,6 @@ elif is_landlock; then
 fi
 
 echo ""
-
-if [[ "$QUICK_MODE" == true ]]; then
-    echo "(quick mode — skipping sections 6–12)"
-    echo "  Run without --quick for functional, security, and stability tests."
-    echo "  Note: the full test submits real Slurm jobs."
-else
 
 # ── 6. Chaperon functional tests ─────────────────────────────────
 
@@ -2179,8 +2270,6 @@ fi
 
 echo ""
 
-fi  # end of [[ "$QUICK_MODE" != true ]] block (sections 6-12)
-
 # ── Per-backend summary ──────────────────────────────────────────
 
 TOTAL=$((PASS + FAIL + SKIP + WARN))
@@ -2216,56 +2305,37 @@ if [[ ${#AVAILABLE_BACKENDS[@]} -gt 1 ]]; then
     echo "╚═══════════════════════════════════════════════════════╝"
 fi
 
+if [[ "$QUICK_MODE" == true ]]; then
+    echo ""
+    echo "  For the complete test suite (env patterns, agent overlays,"
+    echo "  escape vectors, Slurm submission, security hardening):"
+    echo "    bash $SCRIPT_DIR/test.sh"
+    echo "  Note: the full test submits real jobs to the Slurm queue."
+fi
+
 # ── Admin hardening status (ADMIN_HARDENING.md) ──────────────────
+# Informational only — shows which optional admin hardening measures
+# are deployed.  Skipped in quick mode (deployment smoke test).
+
+if [[ "$QUICK_MODE" != true ]]; then
 
 echo ""
 echo "Admin hardening status (see ADMIN_HARDENING.md):"
 
-# §1 — Enforce sandbox on agent-submitted Slurm jobs
-_s1_parts=()
-_s1_missing=()
-
-# Token file exists?
-_token_path=""
-if [[ -n "${TOKEN_FILE:-}" ]]; then
-    _token_path="$TOKEN_FILE"
-elif [[ -f /app/lib/agent-sandbox/sandbox.conf ]]; then
-    _token_path=$(bash -c 'source /app/lib/agent-sandbox/sandbox.conf 2>/dev/null; echo "$TOKEN_FILE"')
-fi
-if [[ -n "$_token_path" && -f "$_token_path" ]]; then
-    _s1_parts+=("bypass token")
-else
-    _s1_missing+=("bypass token")
-fi
-
-# eBPF loaded?
-if command -v bpftool &>/dev/null && sudo -n bpftool prog list 2>/dev/null | grep -q 'deny_token_read'; then
-    _s1_parts+=("eBPF LSM")
-else
-    _s1_missing+=("eBPF LSM")
-fi
-
-# Job submit plugin?
-if [[ -f /etc/slurm/job_submit.lua ]] && grep -q 'SANDBOX_BYPASS\|sandbox' /etc/slurm/job_submit.lua 2>/dev/null; then
-    _s1_parts+=("job submit plugin")
-else
-    _s1_missing+=("job submit plugin")
-fi
-
-# System-wide wrappers?
-if [[ -f /usr/bin/sbatch ]] && head -1 /usr/bin/sbatch 2>/dev/null | grep -q bash; then
-    _s1_parts+=("sbatch/srun wrappers")
-else
-    _s1_missing+=("sbatch/srun wrappers")
-fi
-
-if [[ ${#_s1_missing[@]} -eq 0 ]]; then
-    echo "  ✓ §1 Slurm job enforcement: deployed (${_s1_parts[*]})"
-elif [[ ${#_s1_parts[@]} -gt 0 ]]; then
-    echo "  ◐ §1 Slurm job enforcement: partial (have: ${_s1_parts[*]}; missing: ${_s1_missing[*]})"
-else
-    echo "  · §1 Slurm job enforcement: not deployed"
-fi
+# §0 — systemd user instances (Landlock escape prevention)
+for b in "${AVAILABLE_BACKENDS[@]}"; do
+    if [[ "$b" == "landlock" ]]; then
+        if systemctl is-enabled user@.service &>/dev/null 2>&1; then
+            _user_svc=$(systemctl is-enabled user@.service 2>/dev/null || true)
+            if [[ "$_user_svc" == "masked" ]]; then
+                echo "  ✓ §0 systemd user@.service: masked (Landlock escape mitigated)"
+            else
+                echo "  ⚠ §0 systemd user@.service: active (Landlock escape possible — see ADMIN_HARDENING.md §0)"
+            fi
+        fi
+        break
+    fi
+done
 
 # §2 — Admin-owned sandbox installation
 _sandbox_dir="$(cd "$SCRIPT_DIR" && pwd)"
@@ -2276,22 +2346,9 @@ else
     echo "  · §2 Admin-owned installation: not deployed (scripts owned by user)"
 fi
 
-# §2 — systemd user instances (Landlock-only concern)
-for b in "${AVAILABLE_BACKENDS[@]}"; do
-    if [[ "$b" == "landlock" ]]; then
-        if systemctl is-enabled user@.service &>/dev/null 2>&1; then
-            _user_svc=$(systemctl is-enabled user@.service 2>/dev/null || true)
-            if [[ "$_user_svc" == "masked" ]]; then
-                echo "  ✓ §2 systemd user@.service: masked (Landlock escape mitigated)"
-            else
-                echo "  ⚠ §2 systemd user@.service: active (Landlock escape possible — see ADMIN_HARDENING.md §2)"
-            fi
-        fi
-        break
-    fi
-done
-
 echo ""
+
+fi  # end of admin hardening status (full mode only)
 
 if [[ "$ANY_FAIL" == true ]]; then
     echo ""

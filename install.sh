@@ -274,10 +274,6 @@ else
         echo "⚠ Some tests failed. Run 'bash $SANDBOX_DIR/test.sh --verbose' for details."
         exit 1
     fi
-
-    echo ""
-    echo "  For the full test suite (submits real Slurm jobs):"
-    echo "    bash $SANDBOX_DIR/test.sh"
 fi
 
 # ── Step 6: Suggest shell alias ───────────────────────────────────
