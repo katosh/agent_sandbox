@@ -98,6 +98,7 @@ fi
 _SLURM_SCOPE_ENV="${SLURM_SCOPE:-}"
 _HOME_ACCESS_ENV="${HOME_ACCESS:-}"
 _SANDBOX_QUIET_ENV="${SANDBOX_QUIET:-}"
+_SANDBOX_NPROC_LIMIT_ENV="${SANDBOX_NPROC_LIMIT:-}"
 
 source "$SCRIPT_DIR/sandbox-lib.sh"
 
@@ -143,6 +144,9 @@ if [[ -n "${_HOME_ACCESS_ENV:-}" ]]; then
 fi
 if [[ -n "${_SANDBOX_QUIET_ENV:-}" ]]; then
     SANDBOX_QUIET="$_SANDBOX_QUIET_ENV"
+fi
+if [[ -n "${_SANDBOX_NPROC_LIMIT_ENV:-}" ]]; then
+    SANDBOX_NPROC_LIMIT="$_SANDBOX_NPROC_LIMIT_ENV"
 fi
 
 # Validate HOME_ACCESS

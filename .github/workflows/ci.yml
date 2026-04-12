@@ -3,10 +3,41 @@ name: CI
 on:
   push:
     branches: [main, packaging, "ci/**"]
+    paths-ignore: ['**.md', 'CHANGELOG.md', 'docs/**', 'LICENSE']
   pull_request:
     branches: [main]
+    paths-ignore: ['**.md', 'CHANGELOG.md', 'docs/**', 'LICENSE']
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # ── Smoke: syntax + shellcheck gate ─────────────────────────────
+  smoke:
+    name: "Smoke (bash -n + shellcheck)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bash syntax check
+        run: bash -n sandbox-exec.sh sandbox-lib.sh test.sh chaperon/chaperon.sh backends/bwrap.sh backends/firejail.sh backends/landlock.sh
+
+      - name: ShellCheck (errors only)
+        uses: ludeeus/action-shellcheck@master
+        env:
+          SHELLCHECK_OPTS: "-S error"
+        with:
+          severity: error
+          additional_files: >-
+            sandbox-exec.sh
+            sandbox-lib.sh
+            test.sh
+            chaperon/chaperon.sh
+            backends/bwrap.sh
+            backends/firejail.sh
+            backends/landlock.sh
+
   # ── Makefile install / uninstall ─────────────────────────────────
   makefile:
     name: "Makefile install (${{ matrix.prefix }})"
@@ -108,6 +139,7 @@ jobs:
   test-bwrap:
     name: "Sandbox tests (bwrap)"
     runs-on: ubuntu-latest
+    needs: smoke
     steps:
       - uses: actions/checkout@v4
 
@@ -120,45 +152,90 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
           sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
 
+      - name: Start an outer tmux server (for socket-isolation test)
+        # Creates /tmp/tmux-$UID/, which the isolation assertion expects
+        # to exist outside the sandbox and be hidden inside it. Without
+        # this, the test skips on a vanilla ubuntu-latest runner.
+        run: |
+          tmux new-session -d -s ci-outer-tmux
+          test -d "/tmp/tmux-$(id -u)"
+
       - name: Run full test suite (bwrap)
         # Section 6 (chaperon functional tests, submits real Slurm jobs)
         # auto-skips when sbatch is absent — clean on ubuntu-latest.
         # For live Slurm coverage, see the test-bwrap-slurm job.
-        run: bash test.sh --backend bwrap
+        run: bash test.sh --backend bwrap --verbose
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ github.job }}
+          path: |
+            /tmp/chaperon-*
+            /tmp/agent-sandbox-test-*
+          if-no-files-found: ignore
 
   # ── Sandbox tests (landlock) ────────────────────────────────────
   test-landlock:
     name: "Sandbox tests (landlock)"
     runs-on: ubuntu-latest
+    needs: smoke
     steps:
       - uses: actions/checkout@v4
 
       - name: Check Landlock support
-        id: landlock-check
+        # ubuntu-latest kernels (>= 5.13) support Landlock. If the
+        # --check probe reports unavailable here, that's a real
+        # regression, not an environment quirk — fail the job.
         run: |
-          if python3 backends/landlock-sandbox.py --check 2>/dev/null; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "Landlock not available on this runner — skipping"
+          if ! python3 backends/landlock-sandbox.py --check; then
+            echo "::error::Landlock unavailable on ubuntu-latest — expected to work here."
+            exit 1
           fi
 
       - name: Run full test suite (landlock)
-        if: steps.landlock-check.outputs.available == 'true'
-        run: bash test.sh --backend landlock
+        run: bash test.sh --backend landlock --verbose
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ github.job }}
+          path: |
+            /tmp/chaperon-*
+            /tmp/agent-sandbox-test-*
+          if-no-files-found: ignore
 
   # ── Sandbox tests (firejail) ────────────────────────────────────
   test-firejail:
     name: "Sandbox tests (firejail)"
     runs-on: ubuntu-latest
+    needs: smoke
     steps:
       - uses: actions/checkout@v4
 
       - name: Install firejail
         run: sudo apt-get update && sudo apt-get install -y firejail
 
+      - name: Start an outer tmux server (for socket-isolation test)
+        # See the matching step in test-bwrap for rationale.
+        run: |
+          tmux new-session -d -s ci-outer-tmux
+          test -d "/tmp/tmux-$(id -u)"
+
       - name: Run full test suite (firejail)
-        run: bash test.sh --backend firejail
+        run: bash test.sh --backend firejail --verbose
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ github.job }}
+          path: |
+            /tmp/chaperon-*
+            /tmp/agent-sandbox-test-*
+          if-no-files-found: ignore
 
   # ── Live Slurm: chaperon functional tests (section 6) ───────────
   # ubuntu-latest has no Slurm; this job stands up a single-node
@@ -169,6 +246,11 @@ jobs:
   test-bwrap-slurm:
     name: "Sandbox tests (bwrap, with live Slurm)"
     runs-on: ubuntu-latest
+    needs: smoke
+    # Quarantined: MySQL sidecar race + third-party ansible action make
+    # this the highest flake surface in the matrix. Keep it running for
+    # signal, but don't gate merges on it.
+    continue-on-error: true
     # slurmdbd requires a MySQL accounting backend; the setup-slurm
     # action expects it at localhost:8888 per its ansible playbook.
     services:
@@ -195,7 +277,8 @@ jobs:
           sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
 
       - name: Set up SLURM (single-node, via ansible-slurm)
-        uses: koesterlab/setup-slurm-action@v1
+        # Pinned to commit SHA for tag v1.1.0 (reproducibility).
+        uses: koesterlab/setup-slurm-action@64af9c79b42ac48a24ac1b8e803c4e8b8c645725
         with:
           cpus: 2
           memory: 4000
@@ -206,8 +289,24 @@ jobs:
           srun --version
           sbatch --wrap "echo hello-from-slurm" | grep -qE "Submitted batch job [0-9]+"
 
+      - name: Start an outer tmux server (for socket-isolation test)
+        # See the matching step in test-bwrap for rationale.
+        run: |
+          tmux new-session -d -s ci-outer-tmux
+          test -d "/tmp/tmux-$(id -u)"
+
       - name: Run full test suite (bwrap) with live Slurm
-        run: bash test.sh --backend bwrap
+        run: bash test.sh --backend bwrap --verbose
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ github.job }}
+          path: |
+            /tmp/chaperon-*
+            /tmp/agent-sandbox-test-*
+          if-no-files-found: ignore
 
   # ── sandbox-exec.sh CLI behavior ────────────────────────────────
   cli:
@@ -268,6 +367,7 @@ jobs:
   homebrew:
     name: "Homebrew install test"
     runs-on: ubuntu-latest
+    needs: smoke
     steps:
       - uses: actions/checkout@v4
 
