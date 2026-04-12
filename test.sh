@@ -215,7 +215,6 @@ sandbox() {
         --project-dir "$PROJECT_DIR" -- "$@" 2>"$_stderr_file")
     local rc=$?
     OUTPUT_ERR=$(cat "$_stderr_file")
-    [[ "${VERBOSE:-}" == true ]] && cat "$_stderr_file" >&2
     rm -f "$_stderr_file"
     return $rc
 }
@@ -1877,7 +1876,9 @@ else
     # 6c-ter. #SBATCH --export=ALL directive in script body is allowed.
     # --export is safe because compute-node jobs run inside sandbox-exec.sh
     # which filters env vars regardless of what --export passes through.
-    _scriptfile=$(mktemp)
+    # Create script in PROJECT_DIR so it's visible inside the sandbox
+    # (mktemp creates in /tmp which is isolated by --private-tmp).
+    _scriptfile="$PROJECT_DIR/.sbatch-export-test-$$.sh"
     _TEST_TEMP_FILES+=("$_scriptfile")
     cat > "$_scriptfile" <<'SCRIPT'
 #!/bin/bash
