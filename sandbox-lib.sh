@@ -87,13 +87,19 @@ HOME_READONLY=(
     "micromamba"
     ".condarc"
     ".mambarc"
-    # Agent-specific paths are added automatically by agent profiles.
+    # Agent config files (auth tokens live under HOME_WRITABLE)
+    ".aider.conf.yml"
 )
 
 HOME_WRITABLE=(
     ".cache/uv"
-    # Agent-specific paths (e.g., .claude, .codex, .gemini) are added
-    # automatically by agent profiles in agents/<name>/config.conf.
+    # Agent state & credentials (persist across sandbox sessions).
+    # Missing entries are auto-created by _ensure_writable_home_dirs
+    # so first-run in-sandbox auth works without prior setup.
+    ".claude" ".claude.json" ".local/state/claude" ".local/share/claude"
+    ".codex"
+    ".gemini"
+    ".config/opencode"
 )
 
 # Home access mode:
@@ -109,7 +115,15 @@ HOME_ACCESS="tmpwrite"
 # In read/write modes they are explicitly blocked (tmpfs/blacklist).
 _HOME_ALWAYS_BLOCKED=(".ssh" ".aws" ".gnupg")
 
-BLOCKED_FILES=()
+BLOCKED_FILES=(
+    # Hide real agent instruction files so agents see only the merged
+    # copies exported via CLAUDE_CONFIG_DIR / CODEX_HOME / GEMINI_CONFIG_DIR
+    # / OPENCODE_CONFIG_DIR. Managed by agents/<name>/overlay.sh.
+    "$HOME/.claude/CLAUDE.md"
+    "$HOME/.codex/AGENTS.md"
+    "$HOME/.gemini/GEMINI.md"
+    "$HOME/.config/opencode/AGENTS.md"
+)
 
 EXTRA_BLOCKED_PATHS=()
 
@@ -231,7 +245,15 @@ BLOCKED_ENV_PATTERNS=(
 )
 
 # Allowed env vars: overrides both BLOCKED_ENV_VARS and BLOCKED_ENV_PATTERNS (incl. SSH_*)
-ALLOWED_ENV_VARS=()
+# Agent API keys are allowed by default so agents that use env-var auth
+# (codex, aider, opencode, gemini) work on first launch. Users who want
+# OAuth-only can drop entries via their sandbox.conf / conf.d overrides.
+ALLOWED_ENV_VARS=(
+    "ANTHROPIC_API_KEY"
+    "OPENAI_API_KEY"
+    "CODEX_API_KEY"
+    "GOOGLE_API_KEY"
+)
 
 # ── Helper: check if an env var is in ALLOWED_ENV_VARS ────────
 # Used by backends to skip blocking for explicitly allowed vars.
