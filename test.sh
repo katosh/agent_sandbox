@@ -1376,6 +1376,8 @@ else
     rm -rf "$PROTECTION_PROJECT"
 fi
 
+echo ""
+
 # ── 8. Escape vectors ─────────────────────────────────────────────
 
 echo "8. Escape vectors"
