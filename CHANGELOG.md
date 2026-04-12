@@ -28,6 +28,9 @@ Agent API keys are allowed by default so agents work out of the box.
 - **Firejail /var/tmp write leak:** firejail's `--private-tmp` only
   isolates `/tmp`, leaving `/var/tmp` writable on the host. Added
   `--blacklist=/var/tmp` to match bwrap/landlock isolation.
+- **Firejail /dev/shm write leak:** firejail's `--ipc-namespace` does
+  not mount a private `/dev/shm`. Added `--blacklist=/dev/shm` so
+  POSIX shared memory writes cannot leak to the host.
 
 ### Changed (breaking)
 
@@ -49,6 +52,9 @@ Agent API keys are allowed by default so agents work out of the box.
 - Agent instruction files (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
   `~/.gemini/GEMINI.md`, `~/.config/opencode/AGENTS.md`) are listed
   explicitly in `BLOCKED_FILES`.
+- Chaperon now allows `--export` in sbatch/srun. The flag was
+  previously blocked to prevent env var injection, but compute-node
+  jobs run inside `sandbox-exec.sh` which filters env vars regardless.
 - **sandbox-notify rewrite:** removed the chaperon notify relay
   (`chaperon/handlers/notify.sh`, `chaperon/stubs/notify`, FD-4
   plumbing). Notification now uses two native paths: direct `/dev/tty`
@@ -60,8 +66,9 @@ Agent API keys are allowed by default so agents work out of the box.
 
 - `SUPPRESS_AGENT_WARNINGS` config array — silence per-agent credential
   /path warnings. Accepts agent names or `"all"`.
-- Startup warning when an agent's declared credentials (env vars +
-  auth-marker files) look unreachable, with a login hint.
+- Startup warning when the sandbox actively blocks credentials the
+  agent has set (env vars present but filtered). No longer warns about
+  simply absent credentials. Auth markers suppress the warning.
 - Auto-creation of missing `$HOME` `HOME_WRITABLE` directories so
   first-time in-sandbox auth persists across sessions.
 - `_check_agent_requirements`, `_env_var_reachable`, `_path_is_writable`,
@@ -79,6 +86,10 @@ Agent API keys are allowed by default so agents work out of the box.
   sandbox.
 - `sandbox-notify` no longer errors when run without a controlling
   terminal (e.g. from agent hooks that redirect stdout).
+- Firejail `HOME_ACCESS=read/write` no longer fails when agent config
+  dirs are present (`--whitelist` triggered tmpfs HOME in these modes).
+- Firejail `HOME_ACCESS=read/write` credential dirs (`.ssh`, `.aws`,
+  `.gnupg`) properly hidden via `--blacklist`.
 
 ### CI
 
@@ -103,6 +114,8 @@ Agent API keys are allowed by default so agents work out of the box.
   `AGENT_AUTH_MARKERS` validation.
 - `sandbox_must_run` helper for deterministic setup; unified fixture
   cleanup on exit.
+- Cross-user Slurm job visibility: CI creates a second OS user with a
+  running job and verifies it is invisible inside the sandbox.
 
 ## [0.1.0] - 2026-04-11
 
