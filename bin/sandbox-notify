@@ -3,36 +3,52 @@
 #
 # Usage: sandbox-notify [MESSAGE]
 #
-# Notifies the user by:
-#   1. Ringing the terminal bell, which marks the window/tab in the
-#      inner tmux status bar (via monitor-bell).
-#   2. Asking the chaperon to ring the bell on the outer terminal,
-#      which marks the sandbox's tab in the outer tmux.
+# Rings the terminal bell, which marks the window/tab in the tmux
+# status bar (via monitor-bell). tmux's default `bell-action any`
+# propagates the BEL from a nested tmux out to the outer tmux, so a
+# single emission lights up both status bars.
 #
 # Used by agent hooks (Claude Code, etc.) and available to all agents
 # on $PATH inside the sandbox.
+#
+# Emission strategy, in order of preference:
+#
+#   1. /dev/tty  — fast path for interactive shells and for any agent
+#      process that inherited a controlling terminal. tmux sees the
+#      BEL on the inner pane's pty output and forwards via bell-action.
+#
+#   2. `tmux new-window -d …`  — fallback for agent subprocesses that
+#      have no controlling terminal. `new-window` is a pure IPC call
+#      to the tmux server (via the socket in $TMUX), so it works from
+#      any process. The ephemeral window's `printf '\a'` hits its own
+#      pty output; tmux's monitor-bell + bell-action=any chain does
+#      the rest. No daemon needed.
+#
+# The outer tmux's bell propagation is tmux's own bell-action feature
+# — no chaperon round-trip needed. See sandbox-tmux.conf for tuning.
 
 msg="${*:-Agent notification}"
 
-# 1. Inner tmux: ring the bell to mark the window/tab in the status bar.
-#    Write to /dev/tty (the controlling terminal) rather than stdout,
-#    which is often redirected when called from agent hooks. Inside a
-#    tmux pane, /dev/tty points to the pty that tmux monitors for bells.
-#
-#    Redirection order matters: `2>/dev/null` MUST come before
-#    `> /dev/tty`. Bash applies redirections left-to-right; if we wrote
-#    `> /dev/tty 2>/dev/null`, bash's "No such device or address" error
-#    would be emitted to the original stderr *before* the 2>/dev/null
-#    takes effect (agents invoked without a controlling terminal would
-#    see the error). Putting 2>/dev/null first silences it.
-printf '\a' 2>/dev/null > /dev/tty || true
-
-# 2. Outer tmux: relay via the chaperon (which runs outside the sandbox
-#    and rings the bell on the outer terminal to mark the tab).
-_BIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-_NOTIFY_STUB="$_BIN_DIR/../chaperon/stubs/notify"
-if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -f "$_NOTIFY_STUB" ]]; then
-    "$_NOTIFY_STUB" "$msg" 2>/dev/null || true
+# --- Try 1: write BEL directly to /dev/tty ---
+# Redirection order matters: `2>/dev/null` MUST come before
+# `> /dev/tty`. Bash applies redirections left-to-right; if we wrote
+# `> /dev/tty 2>/dev/null`, bash's "No such device or address" error
+# would be emitted to the original stderr *before* the 2>/dev/null
+# takes effect. Putting 2>/dev/null first silences it.
+if printf '\a' 2>/dev/null > /dev/tty; then
+    exit 0
 fi
 
+# --- Try 2: tmux native — spawn an ephemeral window that emits BEL ---
+# Requires $TMUX set (we're inside a tmux session) and tmux on PATH.
+# The `-d` keeps focus on the current window; the sleep briefly keeps
+# the new window alive long enough for tmux to register the bell
+# before the window closes (empirically, 50ms is plenty).
+if [[ -n "${TMUX:-}" ]] && command -v tmux &>/dev/null; then
+    tmux new-window -d -n '•bell' 'printf "\a"; sleep 0.05' 2>/dev/null && exit 0
+fi
+
+# --- No working path ---
+# Fail silently — the caller is typically a non-critical hook or an
+# agent's best-effort "please notify the user" call.
 exit 0

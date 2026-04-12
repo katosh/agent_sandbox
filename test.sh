@@ -2931,6 +2931,53 @@ else
     fail "sandbox-tmux.conf missing"
 fi
 
+# ── sandbox-notify ──────────────────────────────────────────────
+# sandbox-notify must exit cleanly even when run from a process with
+# no controlling terminal (the common case for agent subprocesses).
+# Previously it leaked "/dev/tty: No such device or address" to stderr
+# because bash's redirection-error path bypassed the 2>/dev/null.
+# Test the no-tty path by redirecting stdin from /dev/null so the
+# subprocess inherits no controlling terminal.
+if sandbox bash -c 'sandbox-notify "test" </dev/null 2>&1; echo rc=$?'; then
+    if [[ "$OUTPUT" == *"rc=0"* ]] && [[ "$OUTPUT" != *"No such device"* ]]; then
+        pass "sandbox-notify exits cleanly without controlling terminal"
+    else
+        fail "sandbox-notify leaked error or non-zero exit without tty" "$OUTPUT"
+    fi
+fi
+
+# sandbox-notify fallback path: verify that `tmux new-window -d …`
+# (the IPC call sandbox-notify uses when /dev/tty is unavailable)
+# actually works from a subprocess with stdin closed — i.e., no
+# controlling terminal. We just check the window was created and
+# reaped; tmux's native bell-action propagation is tested in tmux,
+# not here.
+if sandbox bash -c '
+    _sock=/tmp/sbxtest-bell-$$.sock
+    tmux -S "$_sock" new-session -d -s m "bash -i" 2>/dev/null || { echo "notmux"; exit 0; }
+    _before=$(tmux -S "$_sock" list-windows 2>/dev/null | wc -l)
+    # Invoke new-window with stdin closed → no controlling terminal for this call.
+    tmux -S "$_sock" new-window -d -n bell "printf \"\a\"; sleep 0.2" </dev/null 2>/dev/null
+    _rc=$?
+    _after=$(tmux -S "$_sock" list-windows 2>/dev/null | wc -l)
+    sleep 0.5
+    _final=$(tmux -S "$_sock" list-windows 2>/dev/null | wc -l)
+    tmux -S "$_sock" kill-server 2>/dev/null
+    rm -f "$_sock"
+    # Success = command accepted (rc=0), window count bumped then returned.
+    if [[ $_rc -eq 0 && $_after -gt $_before && $_final -eq $_before ]]; then
+        echo IPC_OK
+    else
+        echo "IPC_FAILED rc=$_rc before=$_before after=$_after final=$_final"
+    fi
+'; then
+    case "$OUTPUT" in
+        *IPC_OK*) pass "tmux new-window fallback works from no-tty subprocess (sandbox-notify path)" ;;
+        *notmux*) skip "sandbox-notify bell-fallback test — tmux not usable inside sandbox" ;;
+        *IPC_FAILED*) fail "tmux new-window fallback failed from no-tty subprocess" "$OUTPUT" ;;
+    esac
+fi
+
 # pty allocation and tmux (requires BIND_DEV_PTS=true on kernels < 5.4)
 if ! command -v python3 &>/dev/null; then
     skip "pty allocation test — python3 not available on host"
