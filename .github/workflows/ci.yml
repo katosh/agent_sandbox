@@ -177,6 +177,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/setup-sandbox-host
+
       - name: Check Landlock support
         # ubuntu-latest kernels (>= 5.13) support Landlock. If the
         # --check probe reports unavailable here, that's a real
@@ -208,8 +210,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/setup-sandbox-host
+
       - name: Install firejail
-        run: sudo apt-get update && sudo apt-get install -y firejail
+        run: sudo apt-get install -y firejail
 
       - name: Start an outer tmux server (for socket-isolation test)
         # See the matching step in test-bwrap for rationale.
@@ -279,8 +283,13 @@ jobs:
       - name: Create second user for cross-user Slurm visibility test
         run: |
           sudo useradd -m slurm-testuser
-          sudo -u slurm-testuser sbatch --wrap "sleep 300" \
-            | grep -qE "Submitted batch job [0-9]+"
+          # Register user in Slurm accounting (required for job submission)
+          sudo sacctmgr -i add account testaccount 2>/dev/null || true
+          sudo sacctmgr -i add user slurm-testuser account=testaccount 2>/dev/null || true
+          # Submit and verify
+          sudo -u slurm-testuser sbatch --wrap "sleep 300"
+          # Confirm the job is visible
+          squeue -u slurm-testuser -h -o "%i" | grep -qE "^[0-9]+$"
 
       - name: Start an outer tmux server (for socket-isolation test)
         # See the matching step in test-bwrap for rationale.

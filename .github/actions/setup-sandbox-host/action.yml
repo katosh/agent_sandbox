@@ -1,5 +1,5 @@
 name: "Setup sandbox host"
-description: "Install bubblewrap and enable unprivileged user namespaces on the runner"
+description: "Install bubblewrap, enable user namespaces, create test credential fixtures"
 runs:
   using: composite
   steps:
@@ -13,3 +13,22 @@ runs:
         # Ubuntu 24.04 restricts via AppArmor; 22.04 uses a legacy sysctl.
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
         sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
+
+    - name: Create dummy credential files for sandbox hiding tests
+      shell: bash
+      run: |
+        # The test suite skips credential-hiding assertions when these
+        # dirs/files don't exist on the host. Create minimal fixtures
+        # so every backend can verify they are properly hidden.
+        mkdir -p ~/.ssh ~/.aws ~/.gnupg
+        echo "dummy" > ~/.ssh/id_rsa
+        echo "dummy" > ~/.aws/credentials
+        echo "dummy" > ~/.gnupg/pubring.kbx
+        touch ~/.netrc
+        mkdir -p ~/.kube && echo "dummy" > ~/.kube/config
+        mkdir -p ~/.config/gcloud ~/.config/op ~/.config/helm
+        echo "dummy" > ~/.config/gcloud/credentials.db
+        echo "dummy" > ~/.config/op/config
+        echo "dummy" > ~/.config/helm/repositories.yaml
+        mkdir -p ~/.terraform.d
+        echo "dummy" > ~/.terraform.d/credentials.tfrc.json
