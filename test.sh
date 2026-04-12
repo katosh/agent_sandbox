@@ -86,11 +86,15 @@ done
 [[ -z "$PROJECT_DIR" ]] && PROJECT_DIR="$SCRIPT_DIR"
 
 # ── Cleanup on exit/interrupt ─────────────────────────────────────
-# Track temp files created during the run; remove them on exit.
+# Track temp files and dirs created during the run; remove them on exit.
 _TEST_TEMP_FILES=()
+_TEST_TEMP_DIRS=()
 _test_cleanup() {
     for _f in "${_TEST_TEMP_FILES[@]}"; do
         rm -f "$_f" 2>/dev/null
+    done
+    for _d in "${_TEST_TEMP_DIRS[@]}"; do
+        rm -rf "$_d" 2>/dev/null
     done
 }
 trap _test_cleanup EXIT
@@ -353,6 +357,45 @@ if sandbox bash -c 'echo $SANDBOX_BACKEND'; then
     fi
 fi
 
+# ── ALLOWED_PROJECT_PARENTS enforcement ──────────────────────────
+# sandbox-exec.sh must reject --project-dir paths that aren't under
+# any entry in ALLOWED_PROJECT_PARENTS (sandbox.conf:92-97). Build a
+# dir under /var/tmp (writable on virtually every host, never in the
+# default allow-list) and verify rejection with a clear error.
+#
+# Fallback: if /var/tmp isn't usable (rare — some hardened setups
+# mount it noexec or lock it down), fall back to /dev/shm. Both are
+# writable-by-user on essentially every Linux but outside the default
+# HOME / /fh/* prefixes.
+_reject_dir=$(mktemp -d "/var/tmp/sandbox-rejtest-XXXXXX" 2>/dev/null) || \
+    _reject_dir=$(mktemp -d "/dev/shm/sandbox-rejtest-XXXXXX" 2>/dev/null)
+if [[ -n "$_reject_dir" && -d "$_reject_dir" ]]; then
+    _TEST_TEMP_DIRS+=("$_reject_dir")
+    # Identify which parent we ended up under, so we can sanity-check
+    # the effective config doesn't accidentally list it.
+    _reject_parent="${_reject_dir%/*}"
+    _raw=$("$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$_reject_dir" -- true 2>&1)
+    _rc=$?
+    if [[ $_rc -ne 0 ]] && echo "$_raw" | grep -qiE "not.*allowed|not under any ALLOWED_PROJECT_PARENTS|must be under"; then
+        pass "ALLOWED_PROJECT_PARENTS rejects --project-dir outside listed prefixes"
+    else
+        # False-positive guard: if an admin or user config happens to
+        # list the parent we chose, the sandbox would legitimately
+        # accept it. Detect that and skip rather than report a bogus
+        # failure.
+        if grep -qE "\"${_reject_parent}\"" \
+            /app/lib/agent-sandbox/sandbox.conf \
+            "${HOME}/.config/agent-sandbox/sandbox.conf" 2>/dev/null; then
+            skip "ALLOWED_PROJECT_PARENTS test: ${_reject_parent} is in a config layer — can't test negative"
+        else
+            fail "ALLOWED_PROJECT_PARENTS did not reject project-dir under ${_reject_parent}" "rc=$_rc out=$_raw"
+        fi
+    fi
+else
+    skip "ALLOWED_PROJECT_PARENTS test: could not create a temp dir under /var/tmp or /dev/shm"
+fi
+
 echo ""
 
 # ── 2. Filesystem isolation ──────────────────────────────────────
@@ -397,6 +440,82 @@ test_blocked_dir() {
 test_blocked_dir "$HOME/.ssh" "~/.ssh"
 test_blocked_dir "$HOME/.aws" "~/.aws"
 test_blocked_dir "$HOME/.gnupg" "~/.gnupg"
+
+# ── Extra credential paths beyond the canonical .ssh/.aws/.gnupg ─
+# sandbox-lib.sh's _HOME_ALWAYS_BLOCKED currently lists only those
+# three, but README/SECURITY.md tacitly promise "credential hiding".
+# Modern cloud CLIs store tokens elsewhere; test whether those paths
+# are hidden too. Skip when the path is absent on the host.
+#
+# Landlock backend can't hide present-on-host paths via tmpfs, so we
+# only exercise mount-namespace backends here (same pattern as the
+# history-file tests below).
+if has_mount_ns; then
+    # .netrc is universally recognised as a credential file; we treat
+    # it as a hard requirement. The others are aspirational — warn
+    # (not fail) so the assertion flips to pass automatically when
+    # _HOME_ALWAYS_BLOCKED is later expanded.
+    _extra_creds_strict=(
+        ".netrc"                # curl/wget HTTP basic auth (FILE)
+    )
+    _extra_creds_soft=(
+        ".kube/config"          # kubectl (FILE)
+        ".docker/config.json"   # Docker Hub tokens (FILE)
+        ".config/gcloud"        # Google Cloud (DIR)
+        ".azure"                # Azure CLI (DIR)
+        ".config/op"            # 1Password CLI (DIR)
+        ".config/helm"          # Helm (DIR)
+        ".terraform.d"          # Terraform login (DIR)
+    )
+
+    _cred_present() {
+        # Present if it's a non-empty dir or an existing file.
+        local p="$1"
+        if [[ -d "$p" ]]; then
+            # Treat empty dirs as "not really there" to avoid noisy skips.
+            [[ -n "$(ls -A "$p" 2>/dev/null)" ]]
+        else
+            [[ -e "$p" ]]
+        fi
+    }
+
+    _cred_hidden_in_sandbox() {
+        # Returns 0 when the path is NOT visible inside the sandbox.
+        local p="$1"
+        if sandbox bash -c "test -e '$p' && echo VISIBLE || echo HIDDEN"; then
+            [[ "$OUTPUT" == "HIDDEN" ]]
+        else
+            # Couldn't invoke sandbox — treat as inconclusive (not hidden).
+            return 1
+        fi
+    }
+
+    for _rel in "${_extra_creds_strict[@]}"; do
+        _abs="$HOME/$_rel"
+        if _cred_present "$_abs"; then
+            if _cred_hidden_in_sandbox "$_abs"; then
+                pass "~/$_rel is hidden (credential file)"
+            else
+                fail "~/$_rel is visible (credential file must be hidden)" "$OUTPUT"
+            fi
+        else
+            skip "~/$_rel not present on host"
+        fi
+    done
+
+    for _rel in "${_extra_creds_soft[@]}"; do
+        _abs="$HOME/$_rel"
+        if _cred_present "$_abs"; then
+            if _cred_hidden_in_sandbox "$_abs"; then
+                pass "~/$_rel is hidden"
+            else
+                warn "~/$_rel is visible — docs promise credential hiding but _HOME_ALWAYS_BLOCKED doesn't cover it"
+            fi
+        else
+            skip "~/$_rel not present on host"
+        fi
+    done
+fi
 
 # Project dir writable
 TESTFILE="$PROJECT_DIR/.test-write-$$"
