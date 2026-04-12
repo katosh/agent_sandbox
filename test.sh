@@ -1612,13 +1612,104 @@ else
         pass "Sandbox directory is read-only"
     fi
 
-    if protection_sandbox bash -c "echo 'tamper' >> '$SCRIPT_DIR/sandbox-lib.sh' 2>&1"; then
-        fail "sandbox-lib.sh is writable inside sandbox"
-    else
-        pass "sandbox-lib.sh is protected from modification"
+    # Build a data-driven list of files an attacker inside the sandbox must
+    # not be able to modify.  Tampering with any of these gives persistent
+    # escape on the next sandbox invocation (pentest round-2 risk R1).
+    #
+    # Each entry is "description|path".  Paths that don't exist on this host
+    # are silently skipped (e.g. agent overlays that aren't installed).
+    _critical=(
+        "sandbox-lib.sh|$SCRIPT_DIR/sandbox-lib.sh"
+        "sandbox-exec.sh|$SCRIPT_DIR/sandbox-exec.sh"
+        "chaperon.sh|$SCRIPT_DIR/chaperon/chaperon.sh"
+        "chaperon protocol|$SCRIPT_DIR/chaperon/protocol.sh"
+        "chaperon sbatch handler|$SCRIPT_DIR/chaperon/handlers/sbatch.sh"
+        "chaperon srun handler|$SCRIPT_DIR/chaperon/handlers/srun.sh"
+        "chaperon scancel handler|$SCRIPT_DIR/chaperon/handlers/scancel.sh"
+        "bwrap backend|$SCRIPT_DIR/backends/bwrap.sh"
+        "firejail backend|$SCRIPT_DIR/backends/firejail.sh"
+        "landlock backend|$SCRIPT_DIR/backends/landlock.sh"
+        "landlock helper|$SCRIPT_DIR/backends/landlock-sandbox.py"
+        "seccomp generator|$SCRIPT_DIR/backends/generate-seccomp.py"
+        "claude overlay|$SCRIPT_DIR/agents/claude/overlay.sh"
+        "codex overlay|$SCRIPT_DIR/agents/codex/overlay.sh"
+        "aider overlay|$SCRIPT_DIR/agents/aider/overlay.sh"
+        "gemini overlay|$SCRIPT_DIR/agents/gemini/overlay.sh"
+        "opencode overlay|$SCRIPT_DIR/agents/opencode/overlay.sh"
+    )
+
+    # Admin-installed paths — only tested if /app/lib/agent-sandbox exists.
+    if [[ -d /app/lib/agent-sandbox ]]; then
+        _critical+=(
+            "admin sandbox.conf|/app/lib/agent-sandbox/sandbox.conf"
+            "admin sandbox-lib|/app/lib/agent-sandbox/sandbox-lib.sh"
+            "admin sandbox-exec|/app/lib/agent-sandbox/sandbox-exec.sh"
+            "admin chaperon.sh|/app/lib/agent-sandbox/chaperon/chaperon.sh"
+            "admin bwrap backend|/app/lib/agent-sandbox/backends/bwrap.sh"
+        )
     fi
 
-    # Cleanup handled via trap_rm_dir registration above.
+    # User config under $HOME/.config/agent-sandbox.
+    if [[ -f "$HOME/.config/agent-sandbox/sandbox.conf" ]]; then
+        _critical+=("user sandbox.conf|$HOME/.config/agent-sandbox/sandbox.conf")
+    fi
+    if [[ -f "$HOME/.config/agent-sandbox/user.conf" ]]; then
+        _critical+=("user user.conf|$HOME/.config/agent-sandbox/user.conf")
+    fi
+    # conf.d/*.conf drop-ins (user).
+    if [[ -d "$HOME/.config/agent-sandbox/conf.d" ]]; then
+        while IFS= read -r -d '' _cf; do
+            _critical+=("user conf.d/$(basename "$_cf")|$_cf")
+        done < <(find "$HOME/.config/agent-sandbox/conf.d" -maxdepth 1 -name '*.conf' -print0 2>/dev/null)
+    fi
+
+    for _entry in "${_critical[@]}"; do
+        _desc="${_entry%%|*}"
+        _path="${_entry#*|}"
+        [[ -e "$_path" ]] || continue  # absent paths aren't a risk
+
+        # Pre-check: if the file isn't writable OUTSIDE the sandbox (e.g.
+        # admin-owned and we're not root), the in-sandbox assertion is
+        # meaningless — skip to avoid a false positive.
+        if [[ ! -w "$_path" ]]; then
+            skip "$_desc not writable outside sandbox — assertion not meaningful"
+            continue
+        fi
+
+        # Try to append a marker line inside the sandbox.  The sandbox SHOULD
+        # reject the write; if it doesn't, we've detected a real escape, so
+        # clean up by stripping any TAMPER line we managed to append.
+        if protection_sandbox bash -c "echo 'TAMPER' >> '$_path' 2>&1"; then
+            fail "$_desc is writable inside sandbox (persistent-escape vector)" "$_path"
+            # Revert: remove any TAMPER line we just appended.
+            sed -i '/^TAMPER$/d' "$_path" 2>/dev/null || true
+        else
+            # Defensive cleanup in case the write partially succeeded even
+            # though the command reported failure.
+            if grep -qxF 'TAMPER' "$_path" 2>/dev/null; then
+                sed -i '/^TAMPER$/d' "$_path" 2>/dev/null || true
+            fi
+            pass "$_desc is protected from modification"
+        fi
+    done
+
+    # Admin conf.d drop-in directory: also check we can't create new files.
+    if [[ -d /app/lib/agent-sandbox/conf.d ]]; then
+        if [[ -w /app/lib/agent-sandbox/conf.d ]]; then
+            _tamper_file="/app/lib/agent-sandbox/conf.d/tamper-$$.conf"
+            if protection_sandbox bash -c "touch '$_tamper_file' 2>&1"; then
+                fail "admin conf.d directory is writable inside sandbox"
+                rm -f "$_tamper_file"
+            else
+                pass "admin conf.d directory is protected"
+            fi
+        else
+            skip "admin conf.d not writable outside sandbox — assertion not meaningful"
+        fi
+    fi
+
+    unset _critical _entry _desc _path _cf _tamper_file
+    # PROTECTION_PROJECT cleanup handled via trap_rm_dir registration above.
 fi
 
 echo ""
