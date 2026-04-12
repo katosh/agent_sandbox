@@ -96,6 +96,14 @@ backend_prepare() {
     # multi-process frameworks need shared /tmp for inter-rank communication.
     if _is_true "${PRIVATE_TMP:-true}"; then
         FIREJAIL_ARGS+=(--private-tmp)
+        # --private-tmp only mounts a tmpfs on /tmp, not /var/tmp. Without
+        # this blacklist, sandboxed processes can write to the host's
+        # /var/tmp, leaking state across sessions and breaking the
+        # isolation guarantees bwrap and landlock already provide.
+        # Hiding /var/tmp is acceptable: it's rarely needed for normal
+        # workloads, and callers that genuinely need persistent /var/tmp
+        # access can set PRIVATE_TMP=false.
+        FIREJAIL_ARGS+=(--blacklist=/var/tmp)
     fi
 
     # IPC namespace isolation: gives sandbox its own SysV IPC + /dev/shm.
