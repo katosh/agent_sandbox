@@ -1,0 +1,15 @@
+name: "Setup sandbox host"
+description: "Install bubblewrap and enable unprivileged user namespaces on the runner"
+runs:
+  using: composite
+  steps:
+    - name: Install bubblewrap
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+    - name: Enable unprivileged user namespaces
+      shell: bash
+      run: |
+        # Ubuntu 24.04 restricts via AppArmor; 22.04 uses a legacy sysctl.
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+        sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true

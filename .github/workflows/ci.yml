@@ -143,14 +143,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install bubblewrap
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
-
-      - name: Enable unprivileged user namespaces
-        run: |
-          # Ubuntu 24.04 restricts this via AppArmor
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
-          sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
+      - uses: ./.github/actions/setup-sandbox-host
 
       - name: Start an outer tmux server (for socket-isolation test)
         # Creates /tmp/tmux-$UID/, which the isolation assertion expects
@@ -268,13 +261,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install bubblewrap
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
-
-      - name: Enable unprivileged user namespaces
-        run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
-          sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
+      - uses: ./.github/actions/setup-sandbox-host
 
       - name: Set up SLURM (single-node, via ansible-slurm)
         # Pinned to commit SHA for tag v1.1.0 (reproducibility).
@@ -315,13 +302,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install bubblewrap
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
-
-      - name: Enable unprivileged user namespaces
-        run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
-          sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
+      - uses: ./.github/actions/setup-sandbox-host
 
       - name: "--version outputs version"
         run: |
@@ -374,13 +355,7 @@ jobs:
       - name: Set up Homebrew
         uses: Homebrew/actions/setup-homebrew@master
 
-      - name: Install bubblewrap (system package, not via brew)
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
-
-      - name: Enable unprivileged user namespaces (for bwrap)
-        run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
-          sudo sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
+      - uses: ./.github/actions/setup-sandbox-host
 
       - name: Build and install from local source via Homebrew
         run: |
