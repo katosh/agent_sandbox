@@ -49,7 +49,7 @@ Each agent profile directory (`agents/<name>/`) follows a file contract:
 | `agent.md` | Sandbox-awareness instructions injected into the agent's context |
 | `settings.json` | Agent-specific settings template (optional, agent-dependent) |
 
-**Permissions live in `sandbox.conf`, not in agent profiles.** `HOME_WRITABLE`, `HOME_READONLY`, `BLOCKED_FILES`, `BLOCKED_ENV_VARS`, and `ALLOWED_ENV_VARS` in `sandbox.conf` are the single source of truth for what's reachable inside the sandbox. Admin-enforced entries cannot be weakened by an agent profile.
+**Permissions live in the sandbox configuration layer.** `HOME_WRITABLE`, `HOME_READONLY`, `BLOCKED_FILES`, `BLOCKED_ENV_VARS`, and `ALLOWED_ENV_VARS` are set by the admin config (`/app/lib/agent-sandbox/sandbox.conf`), the user config (`~/.config/agent-sandbox/sandbox.conf` or `user.conf`), and per-project overrides (`conf.d/*.conf`) — each layer adds to the previous. Admin-enforced entries cannot be weakened by user config or by any agent profile.
 
 ### What this protects
 

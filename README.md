@@ -204,13 +204,15 @@ agent-sandbox -- squeue --me               # → works (Slurm accessible, if on 
 
 ## Configuration
 
-All sandbox permissions are in **one file**: `~/.config/agent-sandbox/sandbox.conf`. Edit it to match your environment:
+Your sandbox permissions live in `~/.config/agent-sandbox/sandbox.conf`. Edit it to match your environment:
 
 ```bash
 $EDITOR ~/.config/agent-sandbox/sandbox.conf
 ```
 
 Changes take effect the next time you start a sandbox — no reinstall needed.
+
+On admin-installed sites the effective policy is layered: admin baseline (`/app/lib/agent-sandbox/sandbox.conf`, if present) → your user config (`sandbox.conf` or `user.conf`) → per-project overrides (`conf.d/*.conf`). Each layer adds to the previous and users cannot weaken admin-enforced entries. See [ADMIN_INSTALL.md](ADMIN_INSTALL.md) for the full hierarchy.
 
 ### Home Access Modes
 
@@ -335,7 +337,7 @@ For the full architecture, protocol specification, and security analysis, see [C
 
 ## Agent Profiles
 
-**All permission grants — what the sandbox can read, write, and pass through as environment variables — live in one file: `sandbox.conf`.** Per-agent profiles in `agents/<name>/` cannot widen sandbox permissions; a guardrail aborts the sandbox if an overlay tries to. That keeps the sandbox auditable (one file to read) and keeps admin-enforced policy actually enforced.
+**All permission grants — what the sandbox can read, write, and pass through as environment variables — live in the sandbox configuration layer: `sandbox.conf`, plus any admin config (`/app/lib/agent-sandbox/sandbox.conf`) and per-project overrides (`conf.d/*.conf`).** The effective policy is reconstructable from those files alone; per-agent profiles in `agents/<name>/` cannot widen them and a guardrail aborts the sandbox if an overlay tries to.
 
 Each agent profile lives in `agents/<name>/` and contains:
 

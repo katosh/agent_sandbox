@@ -8,10 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.2.0] - 2026-04-11
 
 All sandbox permissions (readable/writable paths, blocked files, allowed
-env vars) now live in `sandbox.conf` — a single auditable file. Per-agent
-profiles are strictly declarative; a guardrail aborts sandbox start if an
-agent's `overlay.sh` mutates any permission global. Agent API keys are
-allowed by default so agents work out of the box.
+env vars) now live in the sandbox configuration layer — `sandbox.conf`
+plus the admin config and per-project `conf.d/*.conf` overrides.
+Per-agent profiles are strictly declarative; a guardrail aborts sandbox
+start if an agent's `overlay.sh` mutates any permission global. Agent
+API keys are allowed by default so agents work out of the box.
 
 ### Security
 

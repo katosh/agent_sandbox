@@ -993,8 +993,10 @@ generate_filtered_passwd() {
 #                 _AGENT_* staging arrays below.
 #
 # All permission grants (HOME_WRITABLE, HOME_READONLY, BLOCKED_FILES,
-# ALLOWED_ENV_VARS, etc.) live in sandbox.conf so the effective sandbox
-# policy is auditable in one place.
+# ALLOWED_ENV_VARS, etc.) live in the sandbox configuration layer
+# (sandbox.conf — user and admin — plus per-project conf.d/*.conf),
+# so the effective permissions are reconstructable from the config
+# hierarchy alone.
 
 # Environment exports collected from agent overlays (e.g. CLAUDE_CONFIG_DIR=...)
 _AGENT_ENV_EXPORTS=()
@@ -1250,7 +1252,8 @@ _compare_guarded_globals() {
         if [[ "$_before" != "$_after" ]]; then
             echo "sandbox: ERROR: agents/${_agent}/overlay.sh mutated \$${_name}" >&2
             echo "  Agent overlays are not permitted to change sandbox permissions." >&2
-            echo "  All permission grants must live in sandbox.conf (see Agent Profiles in README.md)." >&2
+            echo "  All permission grants must live in the sandbox configuration" >&2
+            echo "  (sandbox.conf, admin config, or conf.d/*.conf). See README.md." >&2
             return 1
         fi
     done
