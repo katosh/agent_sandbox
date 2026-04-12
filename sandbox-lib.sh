@@ -187,6 +187,11 @@ SANDBOX_BYPASS_TOKEN=""
 # pids.max are the primary defense; this is a supplemental safeguard.
 SANDBOX_NPROC_LIMIT=""
 
+# Silence per-agent credential/path warnings emitted at startup. List
+# agent names (matching agents/<name>/ directories) or "all" to disable
+# every agent warning. Configurable via sandbox.conf.
+SUPPRESS_AGENT_WARNINGS=()
+
 BLOCKED_ENV_VARS=(
     # Specific names NOT caught by BLOCKED_ENV_PATTERNS globs.
     # Names like GITHUB_TOKEN, OPENAI_API_KEY, AWS_SESSION_TOKEN, SSH_*, etc.
@@ -340,7 +345,7 @@ _CONFIG_ARRAYS=(
     ALLOWED_PROJECT_PARENTS READONLY_MOUNTS HOME_READONLY HOME_WRITABLE
     BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS ALLOWED_ENV_VARS
     EXTRA_BLOCKED_PATHS EXTRA_WRITABLE_PATHS DENIED_WRITABLE_PATHS
-    SANDBOX_ENV
+    SANDBOX_ENV SUPPRESS_AGENT_WARNINGS
 )
 _CONFIG_SCALARS=(
     SANDBOX_BACKEND PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD BIND_DEV_PTS
@@ -972,115 +977,290 @@ generate_filtered_passwd() {
     _FILTERED_NSSWITCH="$tmpdir/nsswitch.conf"
 }
 
-# ── Agent detection and profile system ─────────────────────────────
+# ── Agent profile system ───────────────────────────────────────────
 #
-# Scans agents/*/detect.sh to find installed agents, then merges their
-# config.conf into the global sandbox arrays.
-# Each agent's overlay.sh handles config file merging (e.g., CLAUDE.md).
+# Agent profiles live in agents/<name>/ and are always prepared — there
+# is no detection gate. Profiles are split into two halves:
 #
-# Data flow:
-#   _detect_agents()         — find which agents are installed
-#   _apply_agent_profiles()  — merge home/hide/env configs, create stub dirs
-#   prepare_agent_configs()  — run each agent's overlay.sh for config merging
+#   config.conf — DECLARATIVE metadata (env vars + paths the agent uses).
+#                 Read by _check_agent_requirements() to emit warnings
+#                 when declared needs look unreachable. MUST NOT mutate
+#                 sandbox permission globals; a guardrail in
+#                 prepare_agent_configs() aborts if it does.
+#
+#   overlay.sh  — mechanical config merge (CLAUDE.md / AGENTS.md /
+#                 settings.json) and env-var export. Writes only to the
+#                 _AGENT_* staging arrays below.
+#
+# All permission grants (HOME_WRITABLE, HOME_READONLY, BLOCKED_FILES,
+# ALLOWED_ENV_VARS, etc.) live in sandbox.conf so the effective sandbox
+# policy is auditable in one place.
 
-# Detected agent names (populated by _detect_agents)
-_DETECTED_AGENTS=()
-
-# Environment exports collected from agent overlays
+# Environment exports collected from agent overlays (e.g. CLAUDE_CONFIG_DIR=...)
 _AGENT_ENV_EXPORTS=()
 # Sandbox-config directories to bind-mount (writable) inside the sandbox
 _AGENT_SANDBOX_CONFIG_DIRS=()
 # Individual files within config dirs to protect via ro-bind
 _AGENT_PROTECTED_FILES=()
 
-# _detect_agents — scan agents/*/detect.sh, populate _DETECTED_AGENTS
-_detect_agents() {
-    _DETECTED_AGENTS=()
+# ── Helpers ────────────────────────────────────────────────────────
+
+# _agent_warnings_suppressed NAME — return 0 if warnings for this agent
+# should be silenced (SUPPRESS_AGENT_WARNINGS contains "all" or NAME).
+_agent_warnings_suppressed() {
+    local _name="$1" _entry
+    for _entry in "${SUPPRESS_AGENT_WARNINGS[@]}"; do
+        [[ "$_entry" == "all" || "$_entry" == "$_name" ]] && return 0
+    done
+    return 1
+}
+
+# _env_var_reachable VAR — return 0 if VAR would make it into the
+# sandbox: it is set in the outer env AND is not effectively blocked
+# (i.e., either in ALLOWED_ENV_VARS, or not in BLOCKED_ENV_VARS and not
+# matching any BLOCKED_ENV_PATTERNS).
+_env_var_reachable() {
+    local _var="$1"
+    # Must be set in the outer environment
+    [[ -n "${!_var:-}" ]] || return 1
+    # ALLOWED_ENV_VARS trumps everything
+    _is_allowed_env "$_var" && return 0
+    # Explicit blocklist
+    local _b
+    for _b in "${BLOCKED_ENV_VARS[@]}"; do
+        [[ "$_var" == "$_b" ]] && return 1
+    done
+    # Glob-pattern blocklist
+    _is_blocked_by_pattern "$_var" && return 1
+    return 0
+}
+
+# _path_is_writable PATH — return 0 if PATH is reachable as writable
+# inside the sandbox: either listed in HOME_WRITABLE (when under $HOME),
+# EXTRA_WRITABLE_PATHS, or is the project dir.
+_path_is_writable() {
+    local _p="$1"
+    # Normalise leading $HOME
+    local _rel=""
+    if [[ "$_p" == "$HOME/"* ]]; then
+        _rel="${_p#"$HOME"/}"
+    elif [[ "$_p" == "$HOME" ]]; then
+        _rel=""
+    fi
+    if [[ -n "$_rel" ]]; then
+        local _hw
+        for _hw in "${HOME_WRITABLE[@]}"; do
+            # Exact match or ancestor (_rel under a writable subtree)
+            [[ "$_rel" == "$_hw" || "$_rel" == "$_hw/"* ]] && return 0
+        done
+    fi
+    local _ewp
+    for _ewp in "${EXTRA_WRITABLE_PATHS[@]}"; do
+        [[ "$_p" == "$_ewp" || "$_p" == "$_ewp/"* ]] && return 0
+    done
+    return 1
+}
+
+# _path_is_readable PATH — return 0 if PATH is reachable as readable
+# inside the sandbox: writable counts as readable, plus HOME_READONLY
+# entries and READONLY_MOUNTS outside $HOME.
+_path_is_readable() {
+    local _p="$1"
+    _path_is_writable "$_p" && return 0
+    local _rel=""
+    if [[ "$_p" == "$HOME/"* ]]; then
+        _rel="${_p#"$HOME"/}"
+    elif [[ "$_p" == "$HOME" ]]; then
+        _rel=""
+    fi
+    if [[ -n "$_rel" ]]; then
+        local _hr
+        for _hr in "${HOME_READONLY[@]}"; do
+            [[ "$_rel" == "$_hr" || "$_rel" == "$_hr/"* ]] && return 0
+        done
+    fi
+    local _rom
+    for _rom in "${READONLY_MOUNTS[@]}"; do
+        [[ "$_p" == "$_rom" || "$_p" == "$_rom/"* ]] && return 0
+    done
+    return 1
+}
+
+# _ensure_writable_home_dirs — mkdir -p missing HOME_WRITABLE entries
+# that live under $HOME. Runs outside the sandbox so we can create real
+# dirs that persist across sessions; agents can then write credentials
+# during first-time in-sandbox auth and have them outlast the session.
+# Only creates directories (not files) and only under $HOME, so nothing
+# else on the filesystem is touched.
+_ensure_writable_home_dirs() {
+    local _entry _target
+    for _entry in "${HOME_WRITABLE[@]}"; do
+        # Skip entries that look like files (have a dot in the basename
+        # and no trailing slash) — e.g. ".claude.json" stays as a file.
+        # Only pre-create plain directory names.
+        local _base
+        _base="$(basename "$_entry")"
+        [[ "$_base" == *.json || "$_base" == *.yml || "$_base" == *.yaml \
+           || "$_base" == *.toml || "$_base" == *.conf ]] && continue
+        _target="$HOME/$_entry"
+        # Never overwrite: only create if missing. Ignore failures
+        # (permission, NFS, etc.) — it's a convenience, not a contract.
+        [[ -e "$_target" ]] || mkdir -p "$_target" 2>/dev/null || true
+    done
+}
+
+# ── Agent-metadata warning check ───────────────────────────────────
+
+# _check_agent_requirements — source each agents/*/config.conf in a
+# subshell (isolated so it cannot mutate globals), read the declarative
+# metadata, and warn once per agent if its credentials/paths look
+# unreachable. SUPPRESS_AGENT_WARNINGS silences per-agent or all.
+_check_agent_requirements() {
+    _is_true "${SANDBOX_QUIET:-false}" && return 0
     local agents_dir="$SANDBOX_DIR/agents"
     [[ -d "$agents_dir" ]] || return 0
 
-    for detect_script in "$agents_dir"/*/detect.sh; do
-        [[ -f "$detect_script" ]] || continue
-        local agent_name
-        agent_name="$(basename "$(dirname "$detect_script")")"
-
-        # Source detect.sh in a subshell to isolate side effects.
-        # Timeout prevents a broken/malicious detect.sh from stalling startup.
-        if timeout 2 bash -c "source '$detect_script' && agent_detect" 2>/dev/null; then
-            _DETECTED_AGENTS+=("$agent_name")
-        fi
-    done
-
-    : # agents stored in _DETECTED_AGENTS for _apply_agent_profiles
-}
-
-# _apply_agent_profiles — merge each agent's config.conf into globals
-_apply_agent_profiles() {
-    local agents_dir="$SANDBOX_DIR/agents"
-
-    for agent_name in "${_DETECTED_AGENTS[@]}"; do
-        local profile_dir="$agents_dir/$agent_name"
-        local config="$profile_dir/config.conf"
+    local agent_dir agent_name config
+    for agent_dir in "$agents_dir"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        agent_name="$(basename "$agent_dir")"
+        config="$agent_dir/config.conf"
         [[ -f "$config" ]] || continue
+        _agent_warnings_suppressed "$agent_name" && continue
 
-        # Source config.conf — declares AGENT_HOME_WRITABLE, AGENT_HOME_READONLY,
-        # AGENT_HIDE_FILES, AGENT_UNBLOCK_ENV_VARS arrays.
-        local AGENT_HOME_WRITABLE=() AGENT_HOME_READONLY=()
-        local AGENT_HIDE_FILES=() AGENT_UNBLOCK_ENV_VARS=()
-        # shellcheck disable=SC1090
-        source "$config"
+        # Source in a subshell with the arrays pre-declared to isolate
+        # side effects. The `declare` statements export the metadata
+        # back to the parent via command substitution — we read lines.
+        local _meta
+        _meta="$(
+            set +u
+            AGENT_CREDENTIAL_ENV_VARS=()
+            AGENT_AUTH_MARKERS=()
+            AGENT_REQUIRED_WRITABLE_PATHS=()
+            AGENT_REQUIRED_READABLE_PATHS=()
+            AGENT_LOGIN_HINT=""
+            # shellcheck disable=SC1090
+            source "$config" 2>/dev/null || exit 0
+            # Emit each array on a line with a tag, then the hint.
+            printf 'CRED_ENV\t%s\n' "${AGENT_CREDENTIAL_ENV_VARS[@]}"
+            printf 'AUTH_MARK\t%s\n' "${AGENT_AUTH_MARKERS[@]}"
+            printf 'WRITE\t%s\n' "${AGENT_REQUIRED_WRITABLE_PATHS[@]}"
+            printf 'READ\t%s\n' "${AGENT_REQUIRED_READABLE_PATHS[@]}"
+            printf 'HINT\t%s\n' "$AGENT_LOGIN_HINT"
+        )"
 
-        # Add writable/readonly home paths (skip duplicates)
-        local _path _dup _existing
-        for _path in "${AGENT_HOME_WRITABLE[@]}"; do
-            _dup=false
-            for _existing in "${HOME_WRITABLE[@]}"; do
-                [[ "$_existing" == "$_path" ]] && { _dup=true; break; }
+        # Parse the metadata back.
+        local -a _cred_env=() _auth_mark=() _writable=() _readable=()
+        local _hint=""
+        local _tag _val
+        while IFS=$'\t' read -r _tag _val; do
+            case "$_tag" in
+                CRED_ENV)  [[ -n "$_val" ]] && _cred_env+=("$_val") ;;
+                AUTH_MARK) [[ -n "$_val" ]] && _auth_mark+=("$_val") ;;
+                WRITE)     [[ -n "$_val" ]] && _writable+=("$_val") ;;
+                READ)      [[ -n "$_val" ]] && _readable+=("$_val") ;;
+                HINT)      _hint="$_val" ;;
+            esac
+        done <<< "$_meta"
+
+        # ─ Credential check ─
+        # Agent is authenticated if EITHER any credential env var is
+        # reachable, OR any auth marker file exists on the host.
+        local _has_cred=false _v _m
+        if [[ ${#_cred_env[@]} -gt 0 ]]; then
+            for _v in "${_cred_env[@]}"; do
+                _env_var_reachable "$_v" && { _has_cred=true; break; }
             done
-            $_dup || HOME_WRITABLE+=("$_path")
+        else
+            # No declared env vars → treat as "not requiring env cred".
+            _has_cred=true
+        fi
+        if ! $_has_cred; then
+            for _m in "${_auth_mark[@]}"; do
+                [[ -e "$_m" ]] && { _has_cred=true; break; }
+            done
+        fi
+
+        if ! $_has_cred; then
+            echo "sandbox: warning: ${agent_name}: no credentials reachable" >&2
+            if [[ ${#_cred_env[@]} -gt 0 ]]; then
+                echo "  tried env vars: ${_cred_env[*]}" >&2
+            fi
+            [[ -n "$_hint" ]] && echo "  $_hint" >&2
+            echo "  silence with: SUPPRESS_AGENT_WARNINGS+=(\"${agent_name}\") in sandbox.conf" >&2
+        fi
+
+        # ─ Path reachability check ─
+        local _path _unreachable=()
+        for _path in "${_writable[@]}"; do
+            _path_is_writable "$_path" || _unreachable+=("$_path (writable)")
         done
-        for _path in "${AGENT_HOME_READONLY[@]}"; do
-            _dup=false
-            for _existing in "${HOME_READONLY[@]}"; do
-                [[ "$_existing" == "$_path" ]] && { _dup=true; break; }
-            done
-            $_dup || HOME_READONLY+=("$_path")
+        for _path in "${_readable[@]}"; do
+            _path_is_readable "$_path" || _unreachable+=("$_path (readable)")
         done
-
-        # Add hidden files to BLOCKED_FILES (expand $HOME)
-        local _file
-        for _file in "${AGENT_HIDE_FILES[@]}"; do
-            _file="${_file/\$HOME/$HOME}"
-            _dup=false
-            for _existing in "${BLOCKED_FILES[@]}"; do
-                [[ "$_existing" == "$_file" ]] && { _dup=true; break; }
+        if [[ ${#_unreachable[@]} -gt 0 ]]; then
+            echo "sandbox: warning: ${agent_name}: paths not reachable inside sandbox:" >&2
+            for _path in "${_unreachable[@]}"; do
+                echo "  $_path" >&2
             done
-            $_dup || BLOCKED_FILES+=("$_file")
-        done
-
-        # Unblock env vars: remove from BLOCKED_ENV_VARS and add to
-        # ALLOWED_ENV_VARS (so credential-pattern globs don't re-block them).
-        if [[ ${#AGENT_UNBLOCK_ENV_VARS[@]} -gt 0 ]]; then
-            local _new_blocked=() _var _unblock _unblock_var
-            for _var in "${BLOCKED_ENV_VARS[@]}"; do
-                _unblock=false
-                for _unblock_var in "${AGENT_UNBLOCK_ENV_VARS[@]}"; do
-                    [[ "$_var" == "$_unblock_var" ]] && { _unblock=true; break; }
-                done
-                $_unblock || _new_blocked+=("$_var")
-            done
-            BLOCKED_ENV_VARS=("${_new_blocked[@]}")
-            # Add to ALLOWED_ENV_VARS so BLOCKED_ENV_PATTERNS patterns
-            # (e.g., *_API_KEY matching OPENAI_API_KEY) don't re-block them.
-            ALLOWED_ENV_VARS+=("${AGENT_UNBLOCK_ENV_VARS[@]}")
+            echo "  add the missing entries to HOME_WRITABLE / HOME_READONLY in sandbox.conf," >&2
+            echo "  or silence with: SUPPRESS_AGENT_WARNINGS+=(\"${agent_name}\")" >&2
         fi
     done
-    # NOTE: We intentionally do NOT create stub directories for first-time
-    # usage. Creating dirs like ~/.config/opencode/ would cause the agent
-    # to be "detected" on subsequent runs even if it's not installed.
 }
 
-# prepare_agent_configs PROJECT_DIR — run each agent's overlay.sh
+# ── Permission-mutation guardrail for overlays ────────────────────
+#
+# Overlays must only append to _AGENT_ENV_EXPORTS /
+# _AGENT_SANDBOX_CONFIG_DIRS / _AGENT_PROTECTED_FILES. If an overlay
+# mutates any permission-enforced global, abort immediately: a profile
+# must not be able to widen what the user and admin set in sandbox.conf.
+
+# Globals the guardrail watches. Mirrors the admin-enforced set plus
+# HOME_WRITABLE (which is admin-enforced in _enforce_admin_policy).
+_GUARDED_PERMISSION_ARRAYS=(
+    BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS ALLOWED_ENV_VARS
+    EXTRA_BLOCKED_PATHS HOME_READONLY HOME_WRITABLE
+    EXTRA_WRITABLE_PATHS READONLY_MOUNTS DENIED_WRITABLE_PATHS
+)
+
+# _snapshot_guarded_globals VARNAME — serialize each watched array into
+# the named associative array (declared by caller with `declare -A`).
+_snapshot_guarded_globals() {
+    local -n _snap=$1
+    local _name _ref
+    for _name in "${_GUARDED_PERMISSION_ARRAYS[@]}"; do
+        _ref="${_name}[@]"
+        # Join with an ASCII unit separator (\x1f) — unlikely in real values.
+        _snap["$_name"]="$(printf '%s\x1f' "${!_ref}")"
+    done
+}
+
+# _compare_guarded_globals SNAPVAR AGENT — diff current globals against
+# the snapshot. If any differ, print a sandbox-integrity error naming
+# the offending agent and return 1. Returns 0 on clean diff.
+_compare_guarded_globals() {
+    local -n _snap=$1
+    local _agent="$2"
+    local _name _ref _before _after
+    for _name in "${_GUARDED_PERMISSION_ARRAYS[@]}"; do
+        _ref="${_name}[@]"
+        _before="${_snap[$_name]}"
+        _after="$(printf '%s\x1f' "${!_ref}")"
+        if [[ "$_before" != "$_after" ]]; then
+            echo "sandbox: ERROR: agents/${_agent}/overlay.sh mutated \$${_name}" >&2
+            echo "  Agent overlays are not permitted to change sandbox permissions." >&2
+            echo "  All permission grants must live in sandbox.conf (see Agent Profiles in README.md)." >&2
+            return 1
+        fi
+    done
+    return 0
+}
+
+# prepare_agent_configs PROJECT_DIR — run every agent's overlay.sh.
+# All agents are always prepared (no detection); missing config dirs are
+# pre-created by _ensure_writable_home_dirs so first-run in-sandbox auth
+# persists. Each overlay runs with a permission-mutation guardrail.
 prepare_agent_configs() {
     local project_dir="$1"
     local agents_dir="$SANDBOX_DIR/agents"
@@ -1088,14 +1268,34 @@ prepare_agent_configs() {
     _AGENT_SANDBOX_CONFIG_DIRS=()
     _AGENT_PROTECTED_FILES=()
 
-    for agent_name in "${_DETECTED_AGENTS[@]}"; do
-        local overlay="$agents_dir/$agent_name/overlay.sh"
-        if [[ -f "$overlay" ]]; then
-            # Source overlay in current shell (needs access to globals)
-            # shellcheck disable=SC1090
-            source "$overlay"
-            agent_prepare_config "$project_dir"
+    [[ -d "$agents_dir" ]] || return 0
+
+    # Pre-create missing HOME_WRITABLE entries so overlays see the real
+    # config dirs (for symlinking) and first-time auth writes persist.
+    _ensure_writable_home_dirs
+
+    local agent_dir agent_name overlay
+    for agent_dir in "$agents_dir"/*/; do
+        [[ -d "$agent_dir" ]] || continue
+        agent_name="$(basename "$agent_dir")"
+        overlay="$agent_dir/overlay.sh"
+        [[ -f "$overlay" ]] || continue
+
+        # Snapshot permission globals, source the overlay, compare.
+        # A mismatch is a contract violation; we abort the sandbox start
+        # rather than silently letting policy drift.
+        declare -A _perm_snapshot=()
+        _snapshot_guarded_globals _perm_snapshot
+
+        # shellcheck disable=SC1090
+        source "$overlay"
+        agent_prepare_config "$project_dir"
+
+        if ! _compare_guarded_globals _perm_snapshot "$agent_name"; then
+            unset _perm_snapshot
+            exit 1
         fi
+        unset _perm_snapshot
     done
 }
 

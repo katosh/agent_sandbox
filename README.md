@@ -114,12 +114,12 @@ The installer copies everything to `~/.config/agent-sandbox/`, detects backends,
 $(PREFIX)/lib/agent-sandbox/          # or ~/.config/agent-sandbox/ with install.sh
 ├── sandbox-exec.sh       # Main entry point (auto-selects backend)
 ├── sandbox-lib.sh        # Core library (config loading, backend detection)
-├── agents/               # Agent profiles (auto-detected at sandbox start)
+├── agents/               # Agent profiles (all always prepared; declarative metadata)
 │   ├── claude/           # Claude Code — merges CLAUDE.md + settings.json
-│   ├── codex/            # OpenAI Codex CLI — merges AGENTS.md, unblocks OPENAI_API_KEY, CODEX_API_KEY
-│   ├── gemini/           # Google Gemini CLI — merges GEMINI.md, unblocks GOOGLE_API_KEY
-│   ├── aider/            # Aider — unblocks OPENAI_API_KEY, ANTHROPIC_API_KEY
-│   └── opencode/         # OpenCode — unblocks OPENAI_API_KEY, ANTHROPIC_API_KEY
+│   ├── codex/            # OpenAI Codex CLI — merges AGENTS.md
+│   ├── gemini/           # Google Gemini CLI — merges GEMINI.md
+│   ├── aider/            # Aider — injects AIDER_READ
+│   └── opencode/         # OpenCode — merges AGENTS.md
 ├── backends/
 │   ├── bwrap.sh          # Bubblewrap backend (mount namespace isolation)
 │   ├── firejail.sh       # Firejail backend (setuid sandbox, namespaces + seccomp)
@@ -190,7 +190,7 @@ agent-sandbox gemini       # Google Gemini
 agent-sandbox bash         # interactive shell
 ```
 
-The agent starts in your project directory with read access to the system but write access **only** to that directory (plus ephemeral writes anywhere in `$HOME` — see [Home Access Modes](#home-access-modes)). SSH keys, API tokens, and credentials are invisible. Agent profiles are auto-detected — if both Claude and Codex are installed, both profiles activate simultaneously (each gets its own writable paths and credential access).
+The agent starts in your project directory with read access to the system but write access **only** to that directory (plus ephemeral writes anywhere in `$HOME` — see [Home Access Modes](#home-access-modes)). SSH keys, sensitive tokens, and unrelated credentials are invisible. Every agent profile is prepared at sandbox start (no detection gate) so you can install and run any supported agent from inside the sandbox — authentication done inside (OAuth or `<agent> login`) persists across sessions.
 
 ### Verify the Sandbox
 
@@ -335,18 +335,23 @@ For the full architecture, protocol specification, and security analysis, see [C
 
 ## Agent Profiles
 
-The sandbox uses an auto-detection system to find installed agents and apply per-agent configurations. Each agent profile lives in `agents/<name>/` and contains:
+**All permission grants — what the sandbox can read, write, and pass through as environment variables — live in one file: `sandbox.conf`.** Per-agent profiles in `agents/<name>/` cannot widen sandbox permissions; a guardrail aborts the sandbox if an overlay tries to. That keeps the sandbox auditable (one file to read) and keeps admin-enforced policy actually enforced.
+
+Each agent profile lives in `agents/<name>/` and contains:
 
 | File | Purpose |
 |------|---------|
-| `detect.sh` | Returns 0 if the agent is installed/configured |
-| `overlay.sh` | Config merging (e.g., CLAUDE.md + sandbox instructions) |
+| `overlay.sh` | Mechanical config merge (e.g., CLAUDE.md + sandbox instructions) and env-var exports (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …). Writes only to staging arrays — may NOT mutate permission globals. |
 | `agent.md` | Sandbox instructions injected into the agent's instruction file |
-| `config.conf` | Home paths, hidden files, env var unblocking (all in one) |
+| `config.conf` | **Declarative metadata only** — which env vars/paths the agent uses. Read to emit startup warnings if the agent's needs look unreachable. Does NOT modify permissions. |
 
-**How it works:** At sandbox start, all `agents/*/detect.sh` are scanned. Every matching profile's `config.conf` is merged into the global sandbox config (home paths, hidden files, env var unblocks). Then each matching agent's `overlay.sh` runs to handle config file merging.
+**How it works:** At sandbox start, every `agents/*/` profile is prepared unconditionally — no detection gate. The declarative `config.conf` is read to check whether the agent has a reachable credential (env var set and allowed, OR an auth marker file on disk). If neither is present, the sandbox prints a one-time per-agent warning with a login hint. Then each `overlay.sh` runs under a permission-mutation guardrail to assemble the merged config dir and export the agent's config-dir env var.
 
-**Credentials are isolated per-agent:** The base config blocks all API keys. Each agent's `config.conf` unblocks only what it needs — Claude uses OAuth (no env vars), Codex unblocks `OPENAI_API_KEY` and `CODEX_API_KEY`, Gemini unblocks `GOOGLE_API_KEY`.
+**Agent API keys are allowed by default** — `ALLOWED_ENV_VARS` in `sandbox.conf` includes `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`, and `GOOGLE_API_KEY` so agents that use env-var auth work on first launch. Comment out any entry to block that key.
+
+**Auth persists across sessions:** `~/.claude`, `~/.codex`, `~/.gemini`, and `~/.config/opencode` are listed in `HOME_WRITABLE` so tokens written inside the sandbox (by `claude`, `codex login`, etc.) survive to the next session. Missing directories are auto-created before sandbox start so first-time in-sandbox auth works even if the agent has never been run outside.
+
+**Silencing warnings:** set `SUPPRESS_AGENT_WARNINGS=("claude")` in `sandbox.conf` to silence one agent, or `SUPPRESS_AGENT_WARNINGS=("all")` to silence every agent. Useful when you intentionally isolate an agent (e.g., remove `.claude` from `HOME_WRITABLE` to force fresh OAuth each session).
 
 Customize agent instructions via `~/.config/agent-sandbox/agents/<name>/agent.md`.
 

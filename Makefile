@@ -95,7 +95,6 @@ install-lib:
 		for f in $$agent_dir*; do \
 			[ -f "$$f" ] && $(INSTALL) -m 644 "$$f" $(DESTDIR)$(LIBDIR)/agents/$$agent/; \
 		done; \
-		chmod +x $(DESTDIR)$(LIBDIR)/agents/$$agent/detect.sh 2>/dev/null || true; \
 		chmod +x $(DESTDIR)$(LIBDIR)/agents/$$agent/overlay.sh 2>/dev/null || true; \
 	done
 	@# Top-level agent docs

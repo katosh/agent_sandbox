@@ -38,17 +38,18 @@ Symlink the entry point into a managed PATH directory so users run the admin-own
 sudo ln -s /app/lib/agent-sandbox/sandbox-exec.sh /app/bin/sandbox-exec
 ```
 
-`sandbox-lib.sh` automatically creates `~/.config/agent-sandbox/` on first run. Users customize policy by creating `user.conf` and `conf.d/*.conf` in their `~/.config/agent-sandbox/` directory. On each sandbox start, the agent detection system (`_detect_agents()`) scans `agents/*/detect.sh` to find installed agents, and `_apply_agent_profiles()` merges per-agent paths, hidden files, and env var unblocks into the global config. Each agent's `overlay.sh` handles config merging (e.g., Claude's builds `~/.claude/sandbox-config/` with merged `CLAUDE.md` and `settings.json`).
+`sandbox-lib.sh` automatically creates `~/.config/agent-sandbox/` on first run. Users customize policy by creating `user.conf` and `conf.d/*.conf` in their `~/.config/agent-sandbox/` directory. On each sandbox start, every `agents/<name>/` profile is prepared unconditionally (no detection gate). `_check_agent_requirements()` reads each profile's declarative `config.conf` and emits warnings if an agent's declared credentials/paths are unreachable. Each agent's `overlay.sh` then handles config merging (e.g., Claude's builds `~/.claude/sandbox-config/` with merged `CLAUDE.md` and `settings.json`) under a guardrail that aborts if the overlay tries to mutate permission globals — so per-agent profiles cannot bypass admin-enforced policy.
 
 Each agent profile directory (`agents/<name>/`) follows a file contract:
 
 | File | Purpose |
 |---|---|
-| `detect.sh` | Detection script — exits 0 if the agent is installed |
-| `config.conf` | Home paths, hidden files, env var unblocking (all in one file) |
-| `overlay.sh` | Config merging script — runs after backend detection (e.g., merge `CLAUDE.md`, create `settings.json`) |
+| `config.conf` | **Declarative metadata only** — env vars, auth markers, and paths the agent uses. Read for startup warnings; MUST NOT modify sandbox permissions. |
+| `overlay.sh` | Mechanical config merge (e.g., merge `CLAUDE.md`, create `settings.json`) and env-var exports. Writes only to `_AGENT_*` staging arrays — a guardrail aborts sandbox start if it mutates permission globals. |
 | `agent.md` | Sandbox-awareness instructions injected into the agent's context |
 | `settings.json` | Agent-specific settings template (optional, agent-dependent) |
+
+**Permissions live in `sandbox.conf`, not in agent profiles.** `HOME_WRITABLE`, `HOME_READONLY`, `BLOCKED_FILES`, `BLOCKED_ENV_VARS`, and `ALLOWED_ENV_VARS` in `sandbox.conf` are the single source of truth for what's reachable inside the sandbox. Admin-enforced entries cannot be weakened by an agent profile.
 
 ### What this protects
 

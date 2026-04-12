@@ -155,9 +155,10 @@ esac
 detect_backend
 _BACKEND_DETECTED=true
 
-# Detect agents and apply profiles (backend-independent)
-_detect_agents
-_apply_agent_profiles
+# Prepare agent profiles (backend-independent). All agents are always
+# prepared — there is no detection gate. The requirement check emits
+# warnings if declared credentials/paths look unreachable.
+_check_agent_requirements
 prepare_agent_configs "$PROJECT_DIR"
 
 # ── Chaperon: create FIFO directory ───────────────────────────────
