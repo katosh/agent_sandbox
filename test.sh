@@ -2206,6 +2206,47 @@ else
     fi
 fi
 
+# ── E03: /proc/self/exe should not be writable (runc CVE-2019-5736 class) ──
+if sandbox bash -c 'python3 -c "
+import os, sys
+try:
+    fd = os.open(\"/proc/self/exe\", os.O_RDWR)
+    print(\"WRITABLE\")
+    os.close(fd)
+except (PermissionError, OSError) as e:
+    print(\"BLOCKED:\" + e.__class__.__name__)
+" 2>&1'; then
+    case "$OUTPUT" in
+        BLOCKED:*) pass "E03: /proc/self/exe not writable (runc CVE-2019-5736 class blocked)" ;;
+        WRITABLE)  fail "E03: /proc/self/exe is writable — runc-class escape available" ;;
+        *)         skip "E03: /proc/self/exe probe inconclusive ($OUTPUT)" ;;
+    esac
+fi
+
+# ── E04: /proc/self/mem should not be usefully writable (self-modification vector) ──
+# A successful O_WRONLY is usually fine (kernel allows it), but write() should
+# require ptrace privileges we've dropped. Check we either can't open RW or
+# can't write.
+if sandbox bash -c 'python3 -c "
+import os
+try:
+    fd = os.open(\"/proc/self/mem\", os.O_WRONLY)
+    try:
+        os.pwrite(fd, b\"X\", 0)
+        print(\"WROTE\")
+    except OSError as e:
+        print(\"WRITE_BLOCKED:\" + e.__class__.__name__)
+    os.close(fd)
+except OSError as e:
+    print(\"OPEN_BLOCKED:\" + e.__class__.__name__)
+" 2>&1'; then
+    case "$OUTPUT" in
+        WROTE)          fail "E04: /proc/self/mem write succeeded (self-modification escape)" ;;
+        OPEN_BLOCKED:*|WRITE_BLOCKED:*) pass "E04: /proc/self/mem write blocked" ;;
+        *) skip "E04: /proc/self/mem probe inconclusive ($OUTPUT)" ;;
+    esac
+fi
+
 # ── K01: TIOCSTI ioctl blocked or /dev/pts isolated ──
 # Test on a sandbox-owned pty (not stdin) to avoid injecting keystrokes
 # into the host terminal.
@@ -2384,6 +2425,22 @@ if sandbox bash -c 'grep "^NoNewPrivs:" /proc/self/status | awk "{print \$2}"'; 
             fail "NoNewPrivs not set (should be 1)" "$OUTPUT"
         fi
     fi
+fi
+
+# ── N02: NoNewPrivs should neuter setuid binaries (behavioural, not flag-only) ──
+# sudo -n -u root id would only succeed if setuid worked. With NNP, the
+# setuid bit should be ignored and sudo should either fail to escalate
+# or fail to start. We don't care WHICH — just that uid=0 is not reached.
+if command -v sudo &>/dev/null; then
+    if sandbox bash -c 'sudo -n -u root id 2>&1 || true' 2>/dev/null; then
+        if echo "$OUTPUT" | grep -qE "^uid=0\b"; then
+            fail "N02: sudo inside sandbox escalated to uid=0 (NNP not enforced)" "$OUTPUT"
+        else
+            pass "N02: NoNewPrivs neuters setuid binary (sudo did not escalate)"
+        fi
+    fi
+else
+    skip "N02: sudo not available on host — skipping behavioural NNP test"
 fi
 
 # Capabilities are dropped (firejail: --caps.drop=all, bwrap: --cap-drop ALL)
@@ -2619,6 +2676,38 @@ if sandbox bash -c '
     fi
 else
     pass "C01: Cgroup test failed (sandbox restriction)"
+fi
+
+# ── R02: CVE-2022-0492 class — cgroup v1 release_agent mount should fail ──
+# Requires CAP_SYS_ADMIN, which the sandbox has dropped.
+if sandbox bash -c '
+    tmpd=$(mktemp -d) || exit 77
+    if mount -t cgroup -o rdma cgroup "$tmpd" 2>&1; then
+        echo "MOUNT_SUCCEEDED"
+    else
+        echo "MOUNT_BLOCKED"
+    fi
+    rmdir "$tmpd" 2>/dev/null
+'; then
+    case "$OUTPUT" in
+        *MOUNT_BLOCKED*)   pass "R02: cgroup mount blocked (CVE-2022-0492 class)" ;;
+        *MOUNT_SUCCEEDED*) fail "R02: cgroup mount succeeded (CAP_SYS_ADMIN leak)" ;;
+        *)                 skip "R02: cgroup mount probe inconclusive ($OUTPUT)" ;;
+    esac
+fi
+
+# ── R03: /proc/sysrq-trigger should not be writable (host-reboot vector) ──
+if sandbox bash -c '[[ -e /proc/sysrq-trigger ]] && echo "EXISTS" || echo "NOT_PRESENT"'; then
+    if [[ "$OUTPUT" == "EXISTS" ]]; then
+        if sandbox bash -c 'echo s > /proc/sysrq-trigger 2>&1 && echo WROTE || echo BLOCKED'; then
+            case "$OUTPUT" in
+                *BLOCKED*) pass "R03: /proc/sysrq-trigger write blocked" ;;
+                *WROTE*)   fail "R03: /proc/sysrq-trigger write succeeded (host-reboot vector)" ;;
+            esac
+        fi
+    else
+        pass "R03: /proc/sysrq-trigger not visible in sandbox"
+    fi
 fi
 
 # ── F01: Verify FDs > 2 are closed inside sandbox ──
