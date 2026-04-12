@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Gemini CLI agent overlay
 #
 # Merges GEMINI.md with sandbox instructions and sets GEMINI_CONFIG_DIR

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Claude Code agent overlay
 #
 # Merges CLAUDE.md with sandbox instructions, merges settings.json

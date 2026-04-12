@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Aider agent overlay
 #
 # Aider has no instruction file to merge, but supports loading

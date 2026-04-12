@@ -221,7 +221,7 @@ while true; do
         printf 'STDOUT %s\n' "$_stdout_b64"
         printf 'STDERR %s\n' "$_stderr_b64"
         printf 'END\n'
-    } >&"$_resp_fd" 2>/dev/null &
+    } 1>&"$_resp_fd" 2>/dev/null &
     _write_pid=$!
 
     # Wait up to 10 seconds for the write to complete

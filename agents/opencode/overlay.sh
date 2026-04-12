@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # OpenCode agent overlay
 #
 # Merges AGENTS.md with sandbox instructions in a sandbox-config

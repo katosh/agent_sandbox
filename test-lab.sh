@@ -77,7 +77,7 @@ wait_for_server() {
     local max_wait="${1:-15}"
     local i
     for i in $(seq 1 "$max_wait"); do
-        if [ -f "$RUNTIME_DIR"/jpserver-*.json ] 2>/dev/null; then
+        if compgen -G "$RUNTIME_DIR/jpserver-*.json" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Codex CLI agent overlay
 #
 # Merges AGENTS.md with sandbox instructions and sets CODEX_HOME
