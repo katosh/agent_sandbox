@@ -107,36 +107,15 @@ CURRENT_BACKEND=""
 # Run a command inside the sandbox. Returns the exit code.
 # Captures stdout+stderr in $OUTPUT, filtering known backend warnings.
 sandbox() {
-    local raw
-    raw=$(timeout 15 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- "$@" 2>&1)
+    # Capture stdout and stderr separately so sandbox/backend warnings
+    # never pollute the OUTPUT variable that tests assert against.
+    local _stderr_file
+    _stderr_file=$(mktemp)
+    OUTPUT=$(timeout 15 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- "$@" 2>"$_stderr_file")
     local rc=$?
-    # Filter backend warnings that pollute output comparisons:
-    #   - landlock_add_rule warnings (file vs directory rule mismatch)
-    #   - "Restoring stale backup" from landlock/firejail crash recovery
-    #   - firejail "Parent/Child" status lines (suppressed by --quiet, but just in case)
-    OUTPUT=$(echo "$raw" | grep -v \
-        -e '^Warning: landlock_add_rule' \
-        -e '^Warning: Restoring stale backup' \
-        -e '^WARNING: ' \
-        -e '^sandbox: WARNING: ' \
-        -e '^sandbox: [a-z]* | project: ' \
-        -e '^sandbox: [0-9]* env var.* blocked by credential' \
-        -e '^sandbox: warning: ' \
-        -e '^  tried env vars: ' \
-        -e '^  add the missing entries' \
-        -e '^  or silence with: ' \
-        -e '^  silence with: ' \
-        -e '^  run ' \
-        -e '^  export ' \
-        -e '^  These variables are ' \
-        -e '^  User enumeration' \
-        -e '^  Individual file' \
-        -e '^  Agents can bypass' \
-        -e '^  Use bwrap/firejail' \
-        -e '^  Current backend' \
-        -e '^Parent pid ' \
-        -e '^Child process initialized' \
-        -e '^Parent is shutting down')
+    [[ "${VERBOSE:-}" == true ]] && cat "$_stderr_file" >&2
+    rm -f "$_stderr_file"
     return $rc
 }
 
