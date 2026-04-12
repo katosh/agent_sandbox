@@ -99,19 +99,10 @@ Then create your config:
 make install-conf    # creates ~/.config/agent-sandbox/sandbox.conf
 ```
 
-### Install via install.sh (legacy)
-
-```bash
-git clone https://github.com/katosh/agent_sandbox.git
-bash agent_sandbox/install.sh
-```
-
-The installer copies everything to `~/.config/agent-sandbox/`, detects backends, and runs a smoke test. Your `sandbox.conf` is never overwritten.
-
 ### What Gets Installed
 
 ```
-$(PREFIX)/lib/agent-sandbox/          # or ~/.config/agent-sandbox/ with install.sh
+$(PREFIX)/lib/agent-sandbox/
 ├── sandbox-exec.sh       # Main entry point (auto-selects backend)
 ├── sandbox-lib.sh        # Core library (config loading, backend detection)
 ├── agents/               # Agent profiles (all always prepared; declarative metadata)

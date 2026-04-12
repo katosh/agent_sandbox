@@ -9,43 +9,28 @@ An admin-owned installation solves two problems:
 
 A secure admin installation has two parts: a **root-owned config** (tamper-proof policy) and **protected scripts** (the code that enforces it). A root-owned config alone is not sufficient — if the agent can modify `sandbox-lib.sh`, it can bypass any config.
 
-### Step 1: Install admin config and scripts
+### Step 1: Install scripts and config
 
 ```bash
-# Copy the sandbox to a root-owned directory
-sudo mkdir -p /app/lib/agent-sandbox
-sudo cp sandbox.conf sandbox-lib.sh sandbox-exec.sh \
-      sbatch-sandbox.sh srun-sandbox.sh sandbox-tmux.conf test.sh \
-      /app/lib/agent-sandbox/
-sudo cp -r backends/ /app/lib/agent-sandbox/backends/
-sudo cp -r agents/ /app/lib/agent-sandbox/agents/
-sudo cp -r bin/ /app/lib/agent-sandbox/bin/
-sudo cp -r chaperon/ /app/lib/agent-sandbox/chaperon/
-sudo cp -r conf.d/ /app/lib/agent-sandbox/conf.d/ 2>/dev/null || true
-sudo chown -R root:root /app/lib/agent-sandbox
-sudo chmod -R 755 /app/lib/agent-sandbox
+# Install to the default admin prefix (/app — matches _ADMIN_DIR
+# in sandbox-lib.sh). Puts agent-sandbox in /app/bin/ and runtime
+# files in /app/lib/agent-sandbox/.
+sudo make install PREFIX=/app
 
 # Edit the admin config
 sudo $EDITOR /app/lib/agent-sandbox/sandbox.conf
 ```
 
-### Step 2: Make the sandbox available system-wide
+The Makefile handles directory creation, permissions, and the `agent-sandbox` symlink. If your site uses a different prefix (e.g. `/usr/local`), change `_ADMIN_DIR` in `sandbox-lib.sh` to match, or use `PREFIX=/app` to align with the default.
 
-Symlink the entry point into a managed PATH directory so users run the admin-owned copy:
-
-```bash
-# Use whichever managed directory your site uses (/app/bin, /usr/local/bin, etc.)
-sudo ln -s /app/lib/agent-sandbox/sandbox-exec.sh /app/bin/sandbox-exec
-```
-
-`sandbox-lib.sh` automatically creates `~/.config/agent-sandbox/` on first run. Users customize policy by creating `user.conf` and `conf.d/*.conf` in their `~/.config/agent-sandbox/` directory. On each sandbox start, every `agents/<name>/` profile is prepared unconditionally (no detection gate). `_check_agent_requirements()` reads each profile's declarative `config.conf` and emits warnings if an agent's declared credentials/paths are unreachable. Each agent's `overlay.sh` then handles config merging (e.g., Claude's builds `~/.claude/sandbox-config/` with merged `CLAUDE.md` and `settings.json`) under a guardrail that aborts if the overlay tries to mutate permission globals — so per-agent profiles cannot bypass admin-enforced policy.
+`sandbox-lib.sh` automatically creates `~/.config/agent-sandbox/` on first run. Users customize policy by creating `user.conf` and `conf.d/*.conf` in their `~/.config/agent-sandbox/` directory. On each sandbox start, every `agents/<name>/` profile is prepared unconditionally (no detection gate). `_check_agent_requirements()` reads each profile's declarative `config.conf` and warns when the sandbox is actively blocking credentials the user has set. Each agent's `overlay.sh` then handles config merging (e.g., Claude's builds `~/.claude/sandbox-config/` with merged `CLAUDE.md` and `settings.json`). Overlays run in subshells with outputs marshalled via a tagged-line protocol, so mutations to permission globals are structurally impossible — per-agent profiles cannot bypass admin-enforced policy.
 
 Each agent profile directory (`agents/<name>/`) follows a file contract:
 
 | File | Purpose |
 |---|---|
 | `config.conf` | **Declarative metadata only** — env vars, auth markers, and paths the agent uses. Read for startup warnings; MUST NOT modify sandbox permissions. |
-| `overlay.sh` | Mechanical config merge (e.g., merge `CLAUDE.md`, create `settings.json`) and env-var exports. Writes only to `_AGENT_*` staging arrays — a guardrail aborts sandbox start if it mutates permission globals. |
+| `overlay.sh` | Mechanical config merge (e.g., merge `CLAUDE.md`, create `settings.json`) and env-var exports. Runs in a subshell — mutations to permission globals cannot reach the parent. |
 | `agent.md` | Sandbox-awareness instructions injected into the agent's context |
 | `settings.json` | Agent-specific settings template (optional, agent-dependent) |
 
