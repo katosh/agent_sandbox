@@ -933,24 +933,10 @@ else
     skip "Claude not installed — skipping Claude content overlay tests"
 fi
 
-# Agent API keys in the default ALLOWED_ENV_VARS pass through to all
-# agents uniformly (no per-agent gating). Probe behavior: passes through
-# is the default; blocked means the user's effective config excluded it.
-export GOOGLE_API_KEY="test-google-key"
-if sandbox bash -c 'echo ${GOOGLE_API_KEY:-UNSET}'; then
-    case "$OUTPUT" in
-        "test-google-key")
-            pass "GOOGLE_API_KEY passes through (default / effective ALLOWED_ENV_VARS)"
-            ;;
-        "UNSET")
-            skip "GOOGLE_API_KEY blocked — effective config excludes it from ALLOWED_ENV_VARS"
-            ;;
-        *)
-            fail "GOOGLE_API_KEY value mutated inside sandbox" "$OUTPUT"
-            ;;
-    esac
-fi
-unset GOOGLE_API_KEY
+# Agent API keys in the default ALLOWED_ENV_VARS pass through to all agents
+# uniformly (no per-agent gating). OPENAI_API_KEY in §3 is the canonical
+# probe — the same default-passthrough mechanism applies to GOOGLE_API_KEY
+# and other agent API keys, so a per-key test here would be redundant.
 
 # ── Agent-requirement warnings ──
 # An agent with no credentials and SUPPRESS_AGENT_WARNINGS unset should
@@ -1423,25 +1409,8 @@ if is_landlock && [[ -e /run/munge/munge.socket.2 ]]; then
     fi
 fi
 
-# 5g. Landlock D-Bus/systemd-run escape test
-if is_landlock && [[ -S "/run/user/$(id -u)/systemd/private" ]]; then
-    local _escape_marker="/tmp/_sandbox_dbus_escape_test_$$"
-    if sandbox bash -c "
-XDG_RUNTIME_DIR=/run/user/\$(id -u) systemd-run --user --wait --collect \
-    --property=Type=oneshot \
-    -- bash -c 'echo ESCAPED > $_escape_marker' 2>/dev/null
-echo \$?
-" 2>/dev/null; then
-        if [[ -f "$_escape_marker" ]]; then
-            warn "systemd-run --user ESCAPES Landlock sandbox (full bypass — mask user@.service via ADMIN_HARDENING.md §0)"
-            rm -f "$_escape_marker"
-        else
-            pass "systemd-run --user did not escape Landlock sandbox"
-        fi
-    fi
-elif is_landlock; then
-    pass "systemd user instance not running (user@.service masked — D-Bus escape blocked)"
-fi
+# 5g. Landlock D-Bus/systemd-run escape — covered by §8 general systemd-run
+# escape test (which explicitly handles Landlock via is_landlock branches).
 
 echo ""
 
@@ -2340,14 +2309,9 @@ if sandbox bash -c 'echo ${SSH_AUTH_SOCK:-UNSET}'; then
         fail "SSH_AUTH_SOCK leaked into sandbox" "$OUTPUT"
     fi
 fi
-
-if sandbox bash -c 'echo ${SSH_CONNECTION:-UNSET}'; then
-    if [[ "$OUTPUT" == "UNSET" ]]; then
-        pass "SSH_CONNECTION is blocked"
-    else
-        fail "SSH_CONNECTION leaked into sandbox" "$OUTPUT"
-    fi
-fi
+# SSH_CONNECTION/SSH_CLIENT/SSH_TTY direct probes removed — the SSH_*
+# pattern blocking is exercised once via the most security-sensitive var
+# (SSH_AUTH_SOCK above); per-variable repetition was pure pattern-coverage.
 
 unset SSH_AUTH_SOCK SSH_CONNECTION SSH_CLIENT SSH_TTY
 
@@ -2368,24 +2332,8 @@ fi
 unset GITHUB_TOKEN
 rm -f "$_aev_conf"
 
-# ALLOWED_ENV_VARS — override SSH_* pattern
-echo 'ALLOWED_ENV_VARS+=("SSH_TTY")' > "$_aev_conf"
-export SSH_TTY="/dev/pts/test-allowed"
-export SSH_CONNECTION="1.2.3.4 1234 5.6.7.8 22"
-if sandbox bash -c 'echo TTY=${SSH_TTY:-UNSET} CONN=${SSH_CONNECTION:-UNSET}'; then
-    if echo "$OUTPUT" | grep -q "TTY=/dev/pts/test-allowed"; then
-        pass "ALLOWED_ENV_VARS overrides SSH_* pattern (SSH_TTY passed through)"
-    else
-        fail "ALLOWED_ENV_VARS did not override SSH_* pattern for SSH_TTY" "$OUTPUT"
-    fi
-    if echo "$OUTPUT" | grep -q "CONN=UNSET"; then
-        pass "SSH_CONNECTION still blocked (not in ALLOWED_ENV_VARS)"
-    else
-        fail "SSH_CONNECTION leaked despite not being in ALLOWED_ENV_VARS" "$OUTPUT"
-    fi
-fi
-unset SSH_TTY SSH_CONNECTION
-rm -f "$_aev_conf"
+# ALLOWED_ENV_VARS override of SSH_* pattern covered by §3's MY_CUSTOM_TOKEN
+# override test — same mechanism (ALLOWED_ENV_VARS wins over pattern blocking).
 
 # Empty ALLOWED_ENV_VARS — blocked vars remain blocked (no regression)
 export GITHUB_TOKEN="empty-allow-test"
