@@ -2184,11 +2184,13 @@ fi
 unset _TEST_CRED_VAR
 
 # ── E01: /proc/self/environ should not contain blocked vars ──
+# Use ^VARNAME= anchoring to avoid false positives (e.g., GITHUB_PATH
+# matching the GITHUB_PAT pattern on GitHub Actions runners).
 export GITHUB_PAT="self-environ-leak-test"
 export MY_SECRET_TOKEN="pattern-environ-leak-test"
 if sandbox bash -c '
     if [[ -r /proc/self/environ ]]; then
-        if cat /proc/self/environ 2>/dev/null | tr "\0" "\n" | grep -qE "GITHUB_PAT|MY_SECRET_TOKEN"; then
+        if cat /proc/self/environ 2>/dev/null | tr "\0" "\n" | grep -qE "^GITHUB_PAT=|^MY_SECRET_TOKEN="; then
             echo "LEAKED"
         else
             echo "CLEAN"
@@ -2198,7 +2200,7 @@ if sandbox bash -c '
     fi
 '; then
     if [[ "$OUTPUT" == "LEAKED" ]]; then
-        warn "E01: Blocked vars visible in /proc/self/environ (env is scrubbed from bash but kernel retains initial environ)"
+        fail "E01: Blocked vars leaked via /proc/self/environ"
     else
         pass "E01: /proc/self/environ clean (blocked vars absent)"
     fi
@@ -2215,7 +2217,7 @@ if is_bwrap; then
     export MY_SECRET_TOKEN="pattern-proc1-leak-test"
     if sandbox bash -c '
         if [[ -r /proc/1/environ ]]; then
-            if cat /proc/1/environ 2>/dev/null | tr "\0" "\n" | grep -qE "GITHUB_PAT|MY_SECRET_TOKEN"; then
+            if cat /proc/1/environ 2>/dev/null | tr "\0" "\n" | grep -qE "^GITHUB_PAT=|^MY_SECRET_TOKEN="; then
                 echo "LEAKED"
             else
                 echo "CLEAN"
@@ -2225,7 +2227,7 @@ if is_bwrap; then
         fi
     '; then
         if [[ "$OUTPUT" == "LEAKED" ]]; then
-            warn "E02: Blocked vars visible in /proc/1/environ (bwrap PID 1 retains parent environ)"
+            fail "E02: Blocked vars leaked via /proc/1/environ (bwrap PID 1)"
         else
             pass "E02: /proc/1/environ clean — bwrap parent scrub works"
         fi
