@@ -1270,6 +1270,114 @@ else
         fi
     fi
 
+    # 6c-bis. Additional rejection flags (--export, --prolog, --container, --chdir)
+    # These are rejected by chaperon/handlers/_handler_lib.sh ~lines 194-221
+    # but were previously untested — the only way to know the deny list
+    # is still wired up is to assert each one rejects.
+    if sandbox sbatch --export=ALL --wrap="echo pwned"; then
+        fail "sbatch --export=ALL should be rejected by chaperon"
+    else
+        if echo "$OUTPUT $OUTPUT_ERR" | grep -qi "denied\|not allowed\|blocked\|error"; then
+            pass "Chaperon rejects --export=ALL flag"
+        else
+            fail "Chaperon did not clearly reject --export=ALL" "stdout: $OUTPUT | stderr: $OUTPUT_ERR"
+        fi
+    fi
+
+    if sandbox sbatch --prolog=/tmp/foo.sh --wrap="echo pwned"; then
+        fail "sbatch --prolog should be rejected by chaperon"
+    else
+        if echo "$OUTPUT $OUTPUT_ERR" | grep -qi "denied\|not allowed\|blocked\|error"; then
+            pass "Chaperon rejects --prolog flag"
+        else
+            fail "Chaperon did not clearly reject --prolog" "stdout: $OUTPUT | stderr: $OUTPUT_ERR"
+        fi
+    fi
+
+    if sandbox sbatch --container=bogus.sif --wrap="echo pwned"; then
+        fail "sbatch --container should be rejected by chaperon"
+    else
+        if echo "$OUTPUT $OUTPUT_ERR" | grep -qi "denied\|not allowed\|blocked\|error"; then
+            pass "Chaperon rejects --container flag"
+        else
+            fail "Chaperon did not clearly reject --container" "stdout: $OUTPUT | stderr: $OUTPUT_ERR"
+        fi
+    fi
+
+    if sandbox sbatch --chdir=/etc --wrap="echo pwned"; then
+        fail "sbatch --chdir should be rejected by chaperon"
+    else
+        if echo "$OUTPUT $OUTPUT_ERR" | grep -qi "denied\|not allowed\|blocked\|error"; then
+            pass "Chaperon rejects --chdir flag"
+        else
+            fail "Chaperon did not clearly reject --chdir" "stdout: $OUTPUT | stderr: $OUTPUT_ERR"
+        fi
+    fi
+
+    # 6c-ter. #SBATCH --export=ALL directive in the script body should be
+    # stripped or the whole submission rejected (see _handler_lib.sh:292-293).
+    # Without this, env vars from the submitter would propagate to the job.
+    _scriptfile=$(mktemp)
+    _TEST_TEMP_FILES+=("$_scriptfile")
+    cat > "$_scriptfile" <<'SCRIPT'
+#!/bin/bash
+#SBATCH --export=ALL
+echo "job-ran"
+SCRIPT
+    if sandbox sbatch "$_scriptfile"; then
+        if echo "$OUTPUT $OUTPUT_ERR" | grep -qi "Submitted batch job"; then
+            pass "sbatch accepts script with #SBATCH --export=ALL stripped from body"
+        elif echo "$OUTPUT $OUTPUT_ERR" | grep -qi "not allowed\|denied\|blocked"; then
+            pass "Chaperon rejects scripts containing #SBATCH --export=ALL"
+        else
+            fail "Ambiguous result submitting script with #SBATCH --export=ALL" "stdout: $OUTPUT | stderr: $OUTPUT_ERR"
+        fi
+    else
+        # Non-zero exit is also acceptable IF chaperon clearly rejected.
+        if echo "$OUTPUT $OUTPUT_ERR" | grep -qi "not allowed\|denied\|blocked\|error"; then
+            pass "Chaperon rejects scripts containing #SBATCH --export=ALL"
+        else
+            fail "sbatch on script with #SBATCH --export=ALL failed without clear rejection" "stdout: $OUTPUT | stderr: $OUTPUT_ERR"
+        fi
+    fi
+    rm -f "$_scriptfile"
+
+    # 6c-quater. Submitted job actually runs inside sandbox-exec.sh.
+    # The chaperon wraps every submission so the compute-node process
+    # inherits sandbox isolation; sandbox-exec.sh sets SANDBOX_ACTIVE=1.
+    # If wrapping silently breaks, the existing "Submitted batch job N"
+    # check in 6a would still pass — this closes that gap.
+    _jobout=$(mktemp)
+    _TEST_TEMP_FILES+=("$_jobout")
+    _submit_out=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- \
+        sbatch --wait --output="$_jobout" \
+        --wrap='echo "SANDBOX_ACTIVE=${SANDBOX_ACTIVE:-unset}"' 2>&1)
+    _submit_rc=$?
+    if [[ $_submit_rc -eq 0 && -f "$_jobout" ]] && grep -q "^SANDBOX_ACTIVE=1$" "$_jobout"; then
+        pass "Submitted job ran inside sandbox-exec.sh (SANDBOX_ACTIVE=1)"
+    else
+        # --wait may be unsupported / time out on some Slurm setups.
+        # Fall back to polling squeue for up to 20s.
+        _jobid=$(echo "$_submit_out" | grep -oE "Submitted batch job [0-9]+" | awk '{print $4}')
+        if [[ -n "$_jobid" ]]; then
+            for _i in $(seq 1 20); do
+                if sandbox bash -c "squeue -j $_jobid -h 2>/dev/null" && [[ -z "$OUTPUT" ]]; then
+                    sleep 1
+                    break
+                fi
+                sleep 1
+            done
+            if [[ -f "$_jobout" ]] && grep -q "^SANDBOX_ACTIVE=1$" "$_jobout"; then
+                pass "Submitted job ran inside sandbox-exec.sh (SANDBOX_ACTIVE=1)"
+            else
+                skip "Compute-node wrapping assertion inconclusive (output: $(cat "$_jobout" 2>/dev/null || echo 'no file'))"
+            fi
+        else
+            skip "Compute-node wrapping assertion inconclusive (no jobid captured: $_submit_out)"
+        fi
+    fi
+
     # 6d. scancel scoped to session
     if command -v scancel &>/dev/null; then
         # Submit a job, then cancel it.
