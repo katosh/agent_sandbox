@@ -33,11 +33,16 @@ backend_available() {
 
     # Quick smoke test: can bwrap actually create a user namespace?
     if ! "$BWRAP" --ro-bind / / true 2>/dev/null; then
-        # Check if AppArmor is restricting unprivileged user namespaces
-        if sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null | grep -q 1; then
-            echo "sandbox: bwrap $_ver found but blocked by AppArmor userns restriction." >&2
-            echo "  On Ubuntu 24.04+, bwrap needs an AppArmor profile to create user namespaces." >&2
-            echo "  Ask your admin to install a profile at /etc/apparmor.d/bwrap" >&2
+        # In auto mode, detect_backend silently falls through to the next
+        # backend — a noisy warning here would confuse users who end up on
+        # a working landlock/firejail backend. Only diagnose when the user
+        # explicitly requested bwrap.
+        if [[ "${SANDBOX_BACKEND:-auto}" != "auto" ]]; then
+            if sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null | grep -q 1; then
+                echo "sandbox: bwrap $_ver found but blocked by AppArmor userns restriction." >&2
+                echo "  On Ubuntu 24.04+, bwrap needs an AppArmor profile to create user namespaces." >&2
+                echo "  Ask your admin to install a profile at /etc/apparmor.d/bwrap" >&2
+            fi
         fi
         return 1
     fi
