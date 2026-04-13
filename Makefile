@@ -113,8 +113,11 @@ install-lib:
 	chmod -x $(DESTDIR)$(LIBDIR)/chaperon/handlers/_handler_lib.sh
 	for f in $(SRC_DIR)/chaperon/stubs/*; do $(INSTALL) -m 755 "$$f" $(DESTDIR)$(LIBDIR)/chaperon/stubs/; done
 	chmod -x $(DESTDIR)$(LIBDIR)/chaperon/stubs/_stub_lib.sh
-	@# Default config template (for users to copy)
+	@# Config templates: full user config + minimal admin skeleton.
+	@# sandbox.conf is auto-deployed to ~/.config/agent-sandbox/ on first run.
+	@# sandbox-admin.conf is the starting point for admin installs.
 	$(INSTALL) -m 644 $(SRC_DIR)/sandbox.conf $(DESTDIR)$(LIBDIR)/sandbox.conf
+	$(INSTALL) -m 644 $(SRC_DIR)/sandbox-admin.conf $(DESTDIR)$(LIBDIR)/sandbox-admin.conf
 	@# Example config overrides
 	$(INSTALL) -d $(DESTDIR)$(LIBDIR)/conf.d
 	for f in $(SRC_DIR)/conf.d/*.conf; do [ -f "$$f" ] && $(INSTALL) -m 644 "$$f" $(DESTDIR)$(LIBDIR)/conf.d/; done || true

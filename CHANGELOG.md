@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-04-12
+
+### Changed
+
+- Agent template files (`agent.md`, `settings.json`) are now deployed to
+  `~/.config/agent-sandbox/agents/<name>/` where users can customize them.
+  Unmodified copies are silently updated on upgrade; user edits are
+  preserved (tracked via `.origin-sha256` sidecar). Force reset with
+  `make install-conf FORCE=1`.
+- Chaperon allows `--export` in sbatch/srun. The flag was previously
+  blocked to prevent env var injection, but compute-node jobs run inside
+  `sandbox-exec.sh` which filters env vars regardless.
+- Agent credential warnings now fire only when the sandbox actively
+  blocks credentials that are present, not when credentials are simply
+  absent. Auth marker files suppress the warning.
+
+### Fixed
+
+- Firejail `HOME_ACCESS=read/write` no longer fails when agent config
+  dirs are present (`--whitelist` triggered tmpfs HOME in these modes).
+- Firejail `/dev/shm` POSIX shared memory writes no longer leak to host
+  (`--blacklist=/dev/shm` added; `--tmpfs` is silently ignored on `/dev`).
+- `--verbose` test output no longer dumps chaperon denial messages on
+  every sandbox invocation (stderr captured in `OUTPUT_ERR`, shown only
+  on failure).
+- sbatch script file tests now create scripts in `PROJECT_DIR` instead
+  of `/tmp` (invisible inside sandbox with `--private-tmp`).
+
+### Documentation
+
+- Admin install simplified: `sudo make install PREFIX=/app` replaces
+  manual cp/chown steps. Dropped `install.sh (legacy)` from README.
+- Updated overlay description to reflect subshell isolation.
+
+### CI
+
+- Credential fixture files (`.ssh`, `.aws`, `.gnupg`, `.netrc`, `.kube`,
+  `.config/gcloud`, etc.) created in CI setup, eliminating ~10 skipped
+  tests per backend.
+- Cross-user Slurm job visibility test: CI creates `slurm-testuser`
+  and verifies their jobs are invisible inside the sandbox.
+- Composite action (`setup-sandbox-host`) added to firejail and landlock
+  CI jobs (was only on bwrap).
+
 ## [0.2.0] - 2026-04-12
 
 All sandbox permissions (readable/writable paths, blocked files, allowed

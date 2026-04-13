@@ -17,13 +17,15 @@ A secure admin installation has two parts: a **root-owned config** (tamper-proof
 # files in /app/lib/agent-sandbox/.
 sudo make install PREFIX=/app
 
-# Edit the admin config
+# Start from the minimal admin skeleton (not the full user config).
+# Only set what you want to ENFORCE — users control everything else.
+sudo cp /app/lib/agent-sandbox/sandbox-admin.conf /app/lib/agent-sandbox/sandbox.conf
 sudo $EDITOR /app/lib/agent-sandbox/sandbox.conf
 ```
 
-The Makefile handles directory creation, permissions, and the `agent-sandbox` symlink. If your site uses a different prefix (e.g. `/usr/local`), change `_ADMIN_DIR` in `sandbox-lib.sh` to match, or use `PREFIX=/app` to align with the default.
+The install ships both `sandbox.conf` (full user config, auto-deployed to `~/.config/agent-sandbox/` on first run) and `sandbox-admin.conf` (minimal enforcement skeleton). Copy the admin skeleton over `sandbox.conf` in the install dir to use it as the admin baseline. The Makefile handles directory creation, permissions, and the `agent-sandbox` symlink. If your site uses a different prefix (e.g. `/usr/local`), change `_ADMIN_DIR` in `sandbox-lib.sh` to match.
 
-`sandbox-lib.sh` automatically creates `~/.config/agent-sandbox/` on first run. Users customize policy by creating `user.conf` and `conf.d/*.conf` in their `~/.config/agent-sandbox/` directory. On each sandbox start, every `agents/<name>/` profile is prepared unconditionally (no detection gate). `_check_agent_requirements()` reads each profile's declarative `config.conf` and warns when the sandbox is actively blocking credentials the user has set. Each agent's `overlay.sh` then handles config merging (e.g., Claude's builds `~/.claude/sandbox-config/` with merged `CLAUDE.md` and `settings.json`). Overlays run in subshells with outputs marshalled via a tagged-line protocol, so mutations to permission globals are structurally impossible — per-agent profiles cannot bypass admin-enforced policy.
+On first run, `sandbox-lib.sh` auto-creates `~/.config/agent-sandbox/sandbox.conf` (from the install-dir template) and deploys agent templates (`agent.md`, `settings.json`) to `~/.config/agent-sandbox/agents/`. Users customize policy via `user.conf` and `conf.d/*.conf`. Agent overlays run in subshells, so mutations to permission globals are structurally impossible — per-agent profiles cannot bypass admin-enforced policy.
 
 Each agent profile directory (`agents/<name>/`) follows a file contract:
 
@@ -106,98 +108,13 @@ WARNING: User config moved admin HOME_READONLY entry '.gnupg' to HOME_WRITABLE �
 WARNING: User config added EXTRA_WRITABLE_PATHS entry '/etc/cron.d' under denied path '/etc' — removed.
 ```
 
-## Example Admin Config
+## Admin Config Skeleton
 
-The admin `sandbox.conf` sets the security baseline. It uses the same format as the standard `sandbox.conf`:
+The `sandbox-admin.conf` shipped with the install is a minimal starting point. It contains only the enforcement-only knobs (`DENIED_WRITABLE_PATHS`, `BLOCKED_*`, `ALLOWED_PROJECT_PARENTS`, etc.) with commented-out examples. Uncomment and edit what you need.
 
-```bash
-# sandbox.conf — Admin security baseline
-# Users can ADD to these arrays via ~/.config/agent-sandbox/user.conf
-# but CANNOT remove entries set here.
+See [`sandbox-admin.conf`](sandbox-admin.conf) for the full skeleton.
 
-ALLOWED_PROJECT_PARENTS=(
-    "/fh/fast"
-    "/fh/scratch"
-    "$HOME"
-)
-
-READONLY_MOUNTS=(
-    "/usr" "/lib" "/lib64" "/bin" "/sbin" "/etc"
-    "/app"
-)
-
-# Files inside readable/writable dirs that should be hidden from the agent
-# (overlaid with /dev/null — bwrap/firejail only, no effect on Landlock).
-BLOCKED_FILES=(
-    "/app/lib/agent-sandbox/.sandbox-bypass-token"  # defense-in-depth (also hidden by eBPF)
-    "$HOME/.claude/settings.json"       # agent can't modify permission settings
-)
-
-BLOCKED_ENV_VARS=(
-    "GITHUB_PAT" "GITHUB_TOKEN" "GH_TOKEN"
-    "OPENAI_API_KEY" "ANTHROPIC_API_KEY"
-    "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_SESSION_TOKEN"
-)
-
-# Sensitive directories under READONLY_MOUNTS that should be hidden entirely
-EXTRA_BLOCKED_PATHS=(
-    "/fh/fast/mylab/clinical_restricted"
-    "/fh/fast/mylab/phi_data"
-)
-
-HOME_READONLY=(
-    ".bashrc" ".bash_profile" ".profile"
-    ".gitconfig"
-    ".linuxbrew"
-)
-
-HOME_WRITABLE=(
-    # Agent-specific paths (e.g., .claude, .codex) are added
-    # automatically by agent profiles in agents/<name>/config.conf.
-)
-
-# Paths that must NEVER be writable — user EXTRA_WRITABLE_PATHS entries
-# matching or under these are stripped with a warning.
-DENIED_WRITABLE_PATHS=(
-    "/etc"
-    "/app"
-    "$HOME/.ssh"
-    "$HOME/.gnupg"
-)
-
-PRIVATE_TMP=true
-FILTER_PASSWD=true
-
-# Home access mode: tmpwrite (default), restricted, read, write.
-# "tmpwrite" gives a writable tmpfs HOME (ephemeral — lost on exit).
-# "read"/"write" expose the real HOME (credentials still hidden).
-# Users can override: HOME_ACCESS=tmpwrite sandbox-exec ...
-HOME_ACCESS="restricted"
-
-# Slurm job scope: controls which jobs sandboxed agents can see/manage.
-#   "project"  — jobs from any sandbox session with the same project dir (default)
-#   "session"  — only jobs submitted by THIS sandbox session
-#   "user"     — all jobs of the current user (including non-sandbox jobs)
-#   "none"     — no scope restriction (full access to your own jobs)
-# Users can override at launch: SLURM_SCOPE=session sandbox-exec.sh ...
-SLURM_SCOPE="project"
-
-# ── Slurm Enforcement (optional — see slurm-enforce/README.md) ──
-#
-# These variables are also read by the Slurm token wrappers
-# (sbatch-token-wrapper.sh, srun-token-wrapper.sh), so a single config
-# file can drive both the sandbox and the Slurm enforcement layer.
-# If not set here, the wrappers use defaults derived from _ADMIN_CONF.
-
-# Bypass token file — bwrap/firejail hide this inside the sandbox.
-# Landlock needs eBPF LSM protection (token_protect.bpf.c).
-# TOKEN_FILE="/app/lib/agent-sandbox/.sandbox-bypass-token"
-# REAL_SBATCH="/usr/libexec/slurm/sbatch"
-# REAL_SRUN="/usr/libexec/slurm/srun"
-# SANDBOX_EXEC="/app/lib/agent-sandbox/sandbox-exec.sh"
-```
-
-**Environment overrides:** Users can override `SLURM_SCOPE` and `HOME_ACCESS` at launch time without editing any config file: `SLURM_SCOPE=session sandbox-exec.sh -- claude` or `HOME_ACCESS=tmpwrite sandbox-exec.sh -- bash`. The environment values are saved before config loading and restored afterward, so they take precedence over both admin and user configs.
+**Environment overrides:** Users can override `SLURM_SCOPE` and `HOME_ACCESS` at launch time without editing any config file: `SLURM_SCOPE=session agent-sandbox claude` or `HOME_ACCESS=tmpwrite agent-sandbox bash`. Environment values take precedence over both admin and user configs.
 
 ## Example User Config
 

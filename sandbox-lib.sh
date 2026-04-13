@@ -360,6 +360,14 @@ else
     _USER_CONF="$_USER_DATA_DIR/sandbox.conf"
 fi
 
+# --- Auto-init: deploy user config on first run ---
+if [[ ! -f "$_USER_CONF" && -f "$SANDBOX_DIR/sandbox.conf" ]]; then
+    mkdir -p "$(dirname "$_USER_CONF")"
+    cp "$SANDBOX_DIR/sandbox.conf" "$_USER_CONF"
+    echo "sandbox: created $(basename "$_USER_CONF") in $_USER_DATA_DIR" >&2
+    echo "  edit to customize: \$EDITOR $_USER_CONF" >&2
+fi
+
 # --- Config variable names (single source of truth) ---
 # Arrays and scalars that config files can set. Used by _load_untrusted_config
 # to serialize/deserialize state and by _enforce_admin_policy to merge.
