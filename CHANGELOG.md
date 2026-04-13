@@ -5,15 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.2.1] - 2026-04-12
+## [0.3.0] - 2026-04-12
+
+User-customizable agent files (`agent.md`, `settings.json`) now live in
+`~/.config/agent-sandbox/agents/<name>/` instead of the install directory.
+Config files auto-deploy on first run and auto-update on upgrade when
+unmodified. A minimal `sandbox-admin.conf` skeleton replaces the full
+config copy for admin installs, letting users control everything the
+admin doesn't explicitly enforce.
 
 ### Changed
 
-- Agent template files (`agent.md`, `settings.json`) are now deployed to
-  `~/.config/agent-sandbox/agents/<name>/` where users can customize them.
-  Unmodified copies are silently updated on upgrade; user edits are
-  preserved (tracked via `.origin-sha256` sidecar). Force reset with
+- **Auto-init on first run:** `sandbox.conf` and agent templates
+  (`agent.md`, `settings.json`) are automatically deployed to
+  `~/.config/agent-sandbox/` on first sandbox start. On upgrade,
+  unmodified copies are silently updated; user-edited files are
+  preserved with a message pointing to the new upstream version.
+  Tracking uses `.origin-sha256` sidecar files. Force reset with
   `make install-conf FORCE=1`.
+- **Admin config skeleton:** new `sandbox-admin.conf` contains only
+  enforcement knobs (`DENIED_WRITABLE_PATHS`, `BLOCKED_*`,
+  `ALLOWED_PROJECT_PARENTS`). Admins copy it over `sandbox.conf` in the
+  install dir. Users always get the full documented config via
+  `sandbox.conf.template`, independent of what the admin sets.
 - Chaperon allows `--export` in sbatch/srun. The flag was previously
   blocked to prevent env var injection, but compute-node jobs run inside
   `sandbox-exec.sh` which filters env vars regardless.
