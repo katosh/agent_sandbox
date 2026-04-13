@@ -137,6 +137,10 @@ EXTRA_WRITABLE_PATHS=()
 # Set these in conf.d/*.conf files, guarded by _PROJECT_DIR.
 SANDBOX_ENV=()
 
+# Lmod modules to load before backend detection (e.g., newer bwrap).
+# Set in sandbox.conf; used by _load_sandbox_modules().
+SANDBOX_MODULES=()
+
 # Admin deny-list: paths that must NEVER be writable, regardless of
 # user config. EXTRA_WRITABLE_PATHS entries matching these (or under
 # them) are stripped with a warning. Admins set this in the admin sandbox.conf.

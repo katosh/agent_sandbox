@@ -480,6 +480,18 @@ if sandbox bash -c 'echo $SANDBOX_BACKEND'; then
     fi
 fi
 
+# ── Config loading sanity ────────────────────────────────────────
+# The repo's sandbox.conf skeleton must load without triggering
+# "exited with code" warnings. Catches missing default initializations
+# for variables listed in _CONFIG_ARRAYS / _CONFIG_SCALARS.
+if sandbox bash -c 'echo ok'; then
+    if [[ "$OUTPUT_ERR" == *"exited with code"* ]]; then
+        fail "Config loading produced warnings" "$OUTPUT_ERR"
+    else
+        pass "Config loads cleanly (no warnings)"
+    fi
+fi
+
 # ── ALLOWED_PROJECT_PARENTS enforcement ──────────────────────────
 # sandbox-exec.sh must reject --project-dir paths that aren't under
 # any entry in ALLOWED_PROJECT_PARENTS (sandbox.conf:92-97). Build a
