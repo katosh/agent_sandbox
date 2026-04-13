@@ -1425,7 +1425,9 @@ prepare_agent_configs() {
 # module-provided binaries (e.g., a newer bwrap) appear on PATH.
 
 _load_sandbox_modules() {
-    [[ ${#SANDBOX_MODULES[@]} -gt 0 ]] 2>/dev/null || return 0
+    # Default to empty if not set (safe under set -u)
+    SANDBOX_MODULES=("${SANDBOX_MODULES[@]+"${SANDBOX_MODULES[@]}"}")
+    [[ ${#SANDBOX_MODULES[@]} -gt 0 ]] || return 0
 
     # Ensure the `module` shell function is available
     if ! type module &>/dev/null; then
