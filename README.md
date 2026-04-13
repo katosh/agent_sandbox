@@ -83,15 +83,11 @@ brew install agent-sandbox
 ```bash
 git clone https://github.com/katosh/agent_sandbox.git
 cd agent_sandbox
-
-# User-local (no root)
 make install                         # installs to ~/.local/
-
-# System-wide
-sudo make install PREFIX=/usr/local
 ```
 
-This puts `agent-sandbox` on your `PATH` and installs the runtime to `$(PREFIX)/lib/agent-sandbox/`.
+This puts `agent-sandbox` on your `PATH` and installs the runtime to `~/.local/lib/agent-sandbox/`.
+For system-wide (admin) installation, see [ADMIN_INSTALL.md](ADMIN_INSTALL.md).
 
 Then create your config:
 
