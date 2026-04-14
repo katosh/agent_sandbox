@@ -123,24 +123,24 @@ $(PREFIX)/lib/agent-sandbox/            # Runtime (code + defaults)
 │   ├── firejail.sh                     # Firejail (setuid sandbox, namespaces + seccomp)
 │   ├── landlock.sh                     # Landlock (LSM filesystem restrictions)
 │   ├── landlock-sandbox.py             # Landlock syscall helper (Python)
-│   └── generate-seccomp.py            # Seccomp BPF filter generator (for bwrap)
+│   └── generate-seccomp.py             # Seccomp BPF filter generator (for bwrap)
 ├── chaperon/                           # Secure Slurm proxy (see CHAPERON.md)
 │   ├── chaperon.sh, protocol.sh
 │   ├── handlers/                       # Request handlers (sbatch, srun, scancel, etc.)
 │   └── stubs/                          # PATH-shadowing stubs (all talk to chaperon)
-├── bin/                                # Fallback PATH shadows (delegate to stubs)
+└── bin/                                # Fallback PATH shadows (delegate to stubs)
 
 ~/.config/agent-sandbox/                # User config (auto-created on first run)
 ├── sandbox.conf                        # ← Your permissions config — edit this
 ├── conf.d/                             # Per-project overrides
-├── agents/                             # User-customizable agent templates
-│   ├── claude/
-│   │   ├── agent.md                    #   Sandbox instructions injected into CLAUDE.md
-│   │   └── settings.json               #   Merged into Claude's settings
-│   ├── codex/agent.md
-│   ├── gemini/agent.md
-│   ├── aider/agent.md
-│   └── opencode/agent.md
+└── agents/                             # User-customizable agent templates
+    ├── claude/
+    │   ├── agent.md                    #   Sandbox instructions injected into CLAUDE.md
+    │   └── settings.json               #   Merged into Claude's settings
+    ├── codex/agent.md
+    ├── gemini/agent.md
+    ├── aider/agent.md
+    └── opencode/agent.md
 ```
 
 Unmodified configs are silently updated on upgrade. User-edited files are preserved (tracked via `.origin-sha256` sidecars). Run `make install-conf FORCE=1` to reset all templates to defaults.
