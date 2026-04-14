@@ -98,6 +98,9 @@ make install-conf    # creates ~/.config/agent-sandbox/sandbox.conf
 ### What Gets Installed
 
 ```
+$(PREFIX)/bin/
+└── agent-sandbox                       # Wrapper script (execs sandbox-exec.sh)
+
 $(PREFIX)/lib/agent-sandbox/            # Runtime (code + defaults)
 ├── sandbox-exec.sh                     # Main entry point (auto-selects backend)
 ├── sandbox-lib.sh                      # Core library (config loading, backend detection)
