@@ -370,22 +370,7 @@ Customize agent instructions via `~/.config/agent-sandbox/agents/<name>/agent.md
 
 The outer tmux socket is blocked (escape risk), but a **nested tmux** running inside the sandbox works well: `agent-sandbox tmux new-session claude` (prefix is `Ctrl-a`). On kernels < 5.4, set `BIND_DEV_PTS=true` in `sandbox.conf` for pty allocation (see Known Limitations). Customize via `~/.config/agent-sandbox/sandbox-tmux.conf`.
 
-**Tip — long-lived Jupyter kernels for stateful experimentation:** The sandbox ships a `lab` utility (in `bin/`) that runs a project-local JupyterLab and provides CLI access to running kernels so the agent can execute code, inspect live variables, and edit notebook cells without clicking through the web UI. Two run modes:
-
-```bash
-# Mode 1: user starts lab in a tmux pane inside the sandbox
-agent-sandbox tmux new-session         # nested tmux
-lab kernel add && lab                   # foreground JupyterLab
-# agent (in another pane) attaches to the running kernel:
-lab kernel exec -n analysis.ipynb "df.describe()"
-
-# Mode 2: agent starts lab in the background
-lab kernel add && lab start             # daemonize (agent does this)
-lab notebook attach analysis.ipynb      # spawn kernel
-lab kernel exec -n analysis.ipynb "df = pd.read_csv('data.csv')"
-```
-
-On multi-user machines, pick a unique port to avoid collisions: `PORT=9012 lab start`. Variables, loaded dataframes, and model state persist between turns — load once, iterate cheaply. Both the kernel and the agent share the same sandboxed filesystem view, so the isolation guarantees hold. Run `lab help` for the full command list.
+**Tip — long-lived Jupyter kernels for stateful experimentation:** If `lab` is on PATH, it provides project-local JupyterLab management with CLI access to live kernels. The agent can execute code, inspect live variables, and edit notebook cells without a browser. Variables persist between turns. Run `lab help` for usage.
 
 ### Notifications
 

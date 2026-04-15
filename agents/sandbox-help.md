@@ -78,44 +78,8 @@ Slurm commands work inside the sandbox but are proxied through a secure chaperon
 
 ## Stateful experimentation with `lab`
 
-The sandbox ships a `lab` utility (on `$PATH`) for iterative work with
-expensive state (dataframes, trained models, large datasets). It runs a
-project-local JupyterLab and provides CLI commands to execute code in
-running kernels, inspect live variables, and edit notebook cells — all
-without clicking through the web UI.
-
-For the full workflow, selector semantics, and troubleshooting, read
-`__SANDBOX_DIR__/agents/lab.md` or run `lab help`.
-
-Quick start:
-```bash
-lab kernel add              # one-time: create .venv, register kernelspec
-lab start                   # background server (or `lab` in a tmux pane)
-lab notebook attach foo.ipynb
-lab kernel exec -n foo.ipynb "df = pd.read_csv('data.csv')"
-lab kernel exec -n foo.ipynb "df.shape"
-lab kernel inspect -n foo.ipynb
-lab notebook append -n foo.ipynb --execute "df.describe()"
-```
-
-**Port collisions.** On multi-user machines, set a unique port:
-`PORT=9012 lab start`. Default is 8888.
-
-**Remote access.** SSH-tunnel (`ssh -L 8888:localhost:8888 user@host`)
-or `IP=0.0.0.0 lab` with `JUPYTER_CERTFILE`/`JUPYTER_KEYFILE` for TLS.
-
-### Installing `uv`
-
-`lab` needs `uv` on `$PATH`. The default `curl -LsSf https://astral.sh/uv/install.sh | sh` from the upstream docs installs to `~/.local/bin`, which is in the sandbox's `HOME_READONLY` by default — so in-sandbox writes fail, and even if the user removes that entry, `HOME_ACCESS=tmpwrite` (the default) makes the install ephemeral (lost on sandbox exit).
-
-**Recommended — project-local install** (always persistent, works under any `HOME_ACCESS` mode, survives sandbox restarts because `$SANDBOX_PROJECT_DIR` is the real writable mount):
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | \
-    env UV_UNMANAGED_INSTALL="$PWD/.local/bin" sh
-export PATH="$PWD/.local/bin:$PATH"   # add to project env/activate script to persist
-```
-
-**Alternative — user installs outside the sandbox** to `~/.local/bin` via the standard `curl ... | sh` command. The sandbox mounts `~/.local/bin` read-only, so the binary becomes visible on `$PATH` inside the sandbox after the next sandbox start.
+If `lab` is on PATH, it provides project-local JupyterLab management with
+CLI access to live kernels. Run `lab help` for the full command list.
 
 ## Process isolation (PID namespace)
 

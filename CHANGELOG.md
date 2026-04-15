@@ -7,55 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
-
-- **`lab start --https`:** auto-generates a self-signed certificate under
-  `.jupyter/ssl/` when none exists, binds to `0.0.0.0` by default, and
-  warns if no password is set. Existing `JUPYTER_CERTFILE`/`JUPYTER_KEYFILE`
-  env vars are respected when present.
-- **`lab start --port N` / `--ip ADDR`:** explicit flags for port and bind
-  address, replacing the `PORT=`/`IP=` env var dance. When the requested
-  port is in use, auto-increments up to 10 consecutive ports before
-  failing.
-- **`lab url`:** prints the running server's access URL (with token if
-  applicable) for easy copy-paste or agent reporting.
-
 ### Changed
 
-- **Separate lab helper venv:** lab's runtime dependencies (psutil,
-  jupyter_client, nbformat) now live in `.jupyter/.labvenv`, not the
-  project's `.venv`. Query commands never install into or modify the
-  project venv. Only `lab kernel add` touches `.venv`.
-- **Lazy dependency initialization:** `lab status`, `lab kernel ps`,
-  `lab kernel find`, `lab kernel exec`, `lab kernel inspect`, `lab stop`,
-  and read-only notebook commands (`cells`, `show`, `attach`) no longer
-  trigger venv creation or package installation. They fail fast with a
-  helpful message if the venv isn't ready, cutting cold-status time from
-  30+ seconds to under 100ms.
-- **`lab start` prints access URL:** on background start, parses the
-  server log and prints a clean one-line URL with auth status (e.g.,
-  `lab: running at https://host:9473/lab?token=... (token auth)`).
-  Detects early server death and reports it.
-- **Notebook path resolution:** `-n NOTEBOOK` now searches running
-  kernels' jupyter_session paths first, then server root-relative, then
-  CWD-relative. Fixes cross-directory notebook references when running
-  from the nexus root.
-- **NFS performance optimizations:** lab helper venv now lives on `/tmp`
-  (symlinked from `.jupyter/.labvenv`) for 46x faster Python startup.
-  `UV_CACHE_DIR` defaults to `/tmp/uv-cache-$UID` (was `~/.cache/uv` on
-  NFS). `UV_LINK_MODE=copy` avoids cross-filesystem hardlink failures.
-  Package installs are followed by `compileall` to pre-generate `.pyc`
-  files, halving NFS round-trips on subsequent imports. Lockfiles
-  (`.jupyter/.labvenv.lock`, `.jupyter/.kernel-deps.lock`) pin exact
-  package versions on persistent NFS so ephemeral `/tmp` venvs are
-  rebuilt reproducibly.
-
-### Fixed
-
-- **SQLite3 notebook trust:** auto-generates `jupyter_server_config.py`
-  that falls back to in-memory trust DB when `_sqlite3` is unavailable,
-  suppressing "all notebooks will be untrusted" warnings on systems with
-  limited Python builds.
+- **`lab` extracted to standalone repo:** the `lab` JupyterLab management
+  CLI has been moved to [katosh/lab](https://github.com/katosh/lab).
+  Install with `brew install katosh/tools/lab`. Removed `bin/lab`,
+  `bin/_lab_kernel.py`, `agents/lab.md`, `test-lab.sh` from this repo.
+  Agent instruction files now reference the standalone package.
 
 ## [0.3.2] - 2026-04-13
 
