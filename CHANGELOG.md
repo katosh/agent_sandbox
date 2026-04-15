@@ -22,12 +22,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Separate lab helper venv:** lab's runtime dependencies (psutil,
+  jupyter_client, nbformat) now live in `.jupyter/.labvenv`, not the
+  project's `.venv`. Query commands never install into or modify the
+  project venv. Only `lab kernel add` touches `.venv`.
 - **Lazy dependency initialization:** `lab status`, `lab kernel ps`,
   `lab kernel find`, `lab kernel exec`, `lab kernel inspect`, `lab stop`,
   and read-only notebook commands (`cells`, `show`, `attach`) no longer
   trigger venv creation or package installation. They fail fast with a
   helpful message if the venv isn't ready, cutting cold-status time from
   30+ seconds to under 100ms.
+- **`lab start` prints access URL:** on background start, parses the
+  server log and prints a clean one-line URL with auth status (e.g.,
+  `lab: running at https://host:9473/lab?token=... (token auth)`).
+  Detects early server death and reports it.
+- **Notebook path resolution:** `-n NOTEBOOK` now searches running
+  kernels' jupyter_session paths first, then server root-relative, then
+  CWD-relative. Fixes cross-directory notebook references when running
+  from the nexus root.
 
 ## [0.3.2] - 2026-04-13
 

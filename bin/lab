@@ -9,7 +9,8 @@ DIR="$PWD"
 : "${JUPYTER_CONFIG_DIR:=$DIR/.jupyter}"
 : "${JUPYTER_DATA_DIR:=$DIR/.jupyter/share/jupyter}"
 KERNELS_DIR="$JUPYTER_DATA_DIR/kernels"
-VENV_DIR="$DIR/.venv"
+VENV_DIR="$DIR/.venv"                      # project venv (kernels only)
+LAB_VENV_DIR="$JUPYTER_CONFIG_DIR/.labvenv" # lab's own helper deps
 BG_PID_FILE="$JUPYTER_CONFIG_DIR/lab.bg.pid"
 BG_LOG_FILE="$JUPYTER_CONFIG_DIR/lab.bg.log"
 
@@ -154,43 +155,47 @@ ensure_venv_with_ipykernel() {
     fi
 }
 
-ensure_runtime_deps() {
-    # Ensure the venv also has the packages needed by the Python helper
-    # (_lab_kernel.py): psutil, jupyter_client, nbformat.  ipykernel brings
-    # in jupyter_client already; nbformat is a dep of jupyterlab.  Only
-    # psutil is likely missing.
-    ensure_venv_with_ipykernel
+ensure_lab_venv() {
+    # Ensure lab's own helper venv exists with psutil, jupyter_client,
+    # nbformat.  This is separate from the project .venv — lab never
+    # installs packages into the project's venv (only `lab kernel add`
+    # touches .venv).
+    require_uv
+    if [ ! -x "$LAB_VENV_DIR/bin/python" ]; then
+        echo "$PROG: creating lab helper venv at $LAB_VENV_DIR" >&2
+        uv venv "$LAB_VENV_DIR"
+    fi
     local missing=()
-    "$VENV_DIR/bin/python" -c "import psutil"        2>/dev/null || missing+=(psutil)
-    "$VENV_DIR/bin/python" -c "import jupyter_client" 2>/dev/null || missing+=(jupyter_client)
-    "$VENV_DIR/bin/python" -c "import nbformat"       2>/dev/null || missing+=(nbformat)
+    "$LAB_VENV_DIR/bin/python" -c "import psutil"         2>/dev/null || missing+=(psutil)
+    "$LAB_VENV_DIR/bin/python" -c "import jupyter_client"  2>/dev/null || missing+=(jupyter_client)
+    "$LAB_VENV_DIR/bin/python" -c "import nbformat"        2>/dev/null || missing+=(nbformat)
     if [ ${#missing[@]} -gt 0 ]; then
-        echo "$PROG: installing ${missing[*]} into $VENV_DIR" >&2
-        uv pip install --python "$VENV_DIR/bin/python" "${missing[@]}"
+        echo "$PROG: installing ${missing[*]} into lab helper venv" >&2
+        uv pip install --python "$LAB_VENV_DIR/bin/python" "${missing[@]}"
     fi
 }
 
-check_runtime_deps() {
-    # Fast check: venv and all helper deps already installed?
+check_lab_venv() {
+    # Fast check: lab helper venv and all deps already installed?
     # Returns 0 if ready, 1 if not.  Does NOT install anything.
-    [ -x "$VENV_DIR/bin/python" ] || return 1
-    "$VENV_DIR/bin/python" -c "import psutil, jupyter_client, nbformat" 2>/dev/null
+    [ -x "$LAB_VENV_DIR/bin/python" ] || return 1
+    "$LAB_VENV_DIR/bin/python" -c "import psutil, jupyter_client, nbformat" 2>/dev/null
 }
 
 run_helper() {
-    ensure_runtime_deps
+    ensure_lab_venv
     [ -f "$HELPER_PY" ] || die "cannot find helper at $HELPER_PY"
-    exec "$VENV_DIR/bin/python" "$HELPER_PY" "$@"
+    exec "$LAB_VENV_DIR/bin/python" "$HELPER_PY" "$@"
 }
 
-# Like run_helper but fails fast if deps aren't installed yet.
-# Used by read-only/query commands that shouldn't trigger installation.
+# Like run_helper but fails fast if lab helper venv isn't ready.
+# Used by read-only/query commands that should never install anything.
 run_helper_fast() {
-    if ! check_runtime_deps; then
-        die "venv or dependencies not ready. Run 'lab start' or 'lab kernel add' first."
+    if ! check_lab_venv; then
+        die "lab helper venv not ready. Run 'lab start' or 'lab kernel add' first."
     fi
     [ -f "$HELPER_PY" ] || die "cannot find helper at $HELPER_PY"
-    exec "$VENV_DIR/bin/python" "$HELPER_PY" "$@"
+    exec "$LAB_VENV_DIR/bin/python" "$HELPER_PY" "$@"
 }
 
 # Check for an already-running lab server by scanning jpserver-*.json files
@@ -218,7 +223,8 @@ cmd_kernel_add() {
     local raw_name="${1:-$(basename "$DIR")}"
     local name; name="$(sanitize_kernel_name "$raw_name")"
     [ -n "$name" ] || die "kernel add: empty name after sanitization"
-    ensure_venv_with_ipykernel
+    ensure_venv_with_ipykernel    # only place that touches project .venv
+    ensure_lab_venv               # ensure lab helper venv exists too
     mkdir -p "$JUPYTER_CONFIG_DIR"
     "$VENV_DIR/bin/python" -m ipykernel install \
         --prefix "$JUPYTER_CONFIG_DIR" \
@@ -422,17 +428,7 @@ cmd_start() {
     fi
 
     parse_server_flags "$@"
-
-    # Refresh kernel deps in an existing .venv so registered kernels keep working.
-    if [ -x "$VENV_DIR/bin/python" ]; then
-        local missing=()
-        "$VENV_DIR/bin/python" -c "import ipykernel_launcher" 2>/dev/null || missing+=(ipykernel)
-        "$VENV_DIR/bin/python" -c "import ipywidgets"        2>/dev/null || missing+=(ipywidgets)
-        if [ ${#missing[@]} -gt 0 ]; then
-            echo "$PROG: installing ${missing[*]} into $VENV_DIR" >&2
-            uv pip install --python "$VENV_DIR/bin/python" "${missing[@]}"
-        fi
-    fi
+    ensure_lab_venv
 
     uvx --python 3.12 --from jupyterlab \
         --with jupyterlmod \
@@ -450,19 +446,36 @@ cmd_start() {
         > "$BG_LOG_FILE" 2>&1 &
     local bg_pid=$!
     echo "$bg_pid" > "$BG_PID_FILE"
-    echo "$PROG: started in background (pid $bg_pid)" >&2
-    echo "$PROG: log at $BG_LOG_FILE" >&2
 
-    # Wait briefly for the token URL to appear in the log, then print it.
-    local attempt
-    for attempt in $(seq 1 20); do
-        if grep -q 'http' "$BG_LOG_FILE" 2>/dev/null; then
-            grep 'http' "$BG_LOG_FILE" | tail -1 >&2 || true
-            return 0
+    # Wait for the server URL to appear in the log, then print it cleanly.
+    local attempt url_line scheme auth_info
+    for attempt in $(seq 1 30); do
+        if grep -qE 'https?://' "$BG_LOG_FILE" 2>/dev/null; then
+            url_line="$(grep -oE 'https?://[^ ]+' "$BG_LOG_FILE" | tail -1)" || true
+            if [ -n "$url_line" ]; then
+                # Determine auth status
+                if check_password_set; then
+                    auth_info="password auth"
+                elif echo "$url_line" | grep -q 'token='; then
+                    auth_info="token auth"
+                else
+                    auth_info="no auth"
+                fi
+                echo "$PROG: running at $url_line ($auth_info)" >&2
+                echo "$PROG: log at $BG_LOG_FILE" >&2
+                return 0
+            fi
+        fi
+        # Check if the process died
+        if ! kill -0 "$bg_pid" 2>/dev/null; then
+            err "server failed to start (pid $bg_pid exited)"
+            err "check $BG_LOG_FILE for details"
+            return 1
         fi
         sleep 0.25
     done
-    echo "$PROG: server starting (check $BG_LOG_FILE for the URL)" >&2
+    echo "$PROG: started (pid $bg_pid), waiting for URL..." >&2
+    echo "$PROG: check $BG_LOG_FILE or run 'lab url' once ready" >&2
     return 0
 }
 
@@ -473,7 +486,15 @@ cmd_stop() {
 }
 
 cmd_status() {
-    run_helper_fast status "$@"
+    if ! check_lab_venv; then
+        echo "servers: (none)"
+        echo ""
+        echo "kernels: (none)"
+        echo ""
+        echo "lab helper venv not configured. Run 'lab kernel add' or 'lab start' first." >&2
+        return 0
+    fi
+    "$LAB_VENV_DIR/bin/python" "$HELPER_PY" status "$@"
 }
 
 cmd_password() {
@@ -517,18 +538,7 @@ cmd_serve() {
         echo "$PROG: starting anyway (Ctrl-C to abort)..." >&2
 
     parse_server_flags "$@"
-
-    # Refresh kernel deps in an existing .venv so registered kernels keep
-    # working after a venv rebuild. Skip silently if there's no .venv.
-    if [ -x "$VENV_DIR/bin/python" ]; then
-        local missing=()
-        "$VENV_DIR/bin/python" -c "import ipykernel_launcher" 2>/dev/null || missing+=(ipykernel)
-        "$VENV_DIR/bin/python" -c "import ipywidgets"        2>/dev/null || missing+=(ipywidgets)
-        if [ ${#missing[@]} -gt 0 ]; then
-            echo "$PROG: installing ${missing[*]} into $VENV_DIR" >&2
-            uv pip install --python "$VENV_DIR/bin/python" "${missing[@]}"
-        fi
-    fi
+    ensure_lab_venv
 
     exec uvx --python 3.12 --from jupyterlab \
         --with jupyterlmod \

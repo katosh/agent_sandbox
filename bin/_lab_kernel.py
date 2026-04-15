@@ -712,16 +712,53 @@ def cmd_kernel_inspect(args: argparse.Namespace) -> int:
 def _resolve_notebook_path(arg: str | None) -> Path:
     """Resolve the argument to an absolute notebook path.
 
-    If no arg is given, fall back to the single running-kernel notebook, or
-    error out.
+    Resolution order when arg is given:
+      1. Running kernels' jupyter_session paths (exact, basename, substring)
+      2. Server root-relative path
+      3. CWD-relative path
+      4. Absolute path (if given as such)
+
+    If no arg is given, fall back to the single running-kernel notebook.
     """
     if arg:
+        # 1. Check running kernels first — they know where their notebooks are
+        kernels = discover_kernels()
+        matches = _match_notebook(kernels, arg)
+        if len(matches) == 1 and matches[0].notebook_path is not None:
+            return matches[0].notebook_path
+        if len(matches) > 1:
+            # Multiple matches — don't guess, but let caller proceed with
+            # filesystem resolution (the kernel exec path will catch ambiguity
+            # separately if needed)
+            pass
+
+        # 2. Server root-relative
+        servers = discover_servers()
+        if servers:
+            for s in servers:
+                candidate = (s.root_dir / arg).resolve()
+                if candidate.exists():
+                    return candidate
+
+        # 3. CWD-relative
         p = Path(arg)
-        if not p.is_absolute():
-            p = (PROJECT_DIR / p).resolve()
-        else:
-            p = p.resolve()
-        return p
+        if p.is_absolute():
+            return p.resolve()
+        cwd_rel = (PROJECT_DIR / p).resolve()
+        if cwd_rel.exists():
+            return cwd_rel
+
+        # 4. Glob basename under server root or CWD
+        search_dirs = [s.root_dir for s in servers] if servers else [PROJECT_DIR]
+        for d in search_dirs:
+            hits = list(d.rglob(p.name))
+            if len(hits) == 1:
+                return hits[0].resolve()
+
+        # Fall through — return CWD-relative even if it doesn't exist yet
+        # (caller will get a clear "file not found" from nbformat/server)
+        return cwd_rel
+
     kernels = discover_kernels()
     nb_kernels = [k for k in kernels if k.notebook_path is not None]
     if len(nb_kernels) == 1:
