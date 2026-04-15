@@ -41,18 +41,41 @@ lab kernel exec -n foo.ipynb "df.describe()"
 Both modes use the same CLI underneath.
 
 **Port selection.** On multi-user machines, the default port (8888) will
-often be taken by another user. Set a different port:
+often be taken by another user. Use `--port`:
 
 ```bash
-PORT=9012 lab             # foreground
-PORT=9012 lab start       # background
+lab --port 9012           # foreground
+lab start --port 9012     # background
 ```
 
-**Remote access.** Default bind is `127.0.0.1`. For access from a laptop,
-either SSH-tunnel (`ssh -L 8888:localhost:8888 user@host`) or bind to all
-interfaces (`IP=0.0.0.0 lab`). When binding externally, enable TLS by
-setting `JUPYTER_CERTFILE` and `JUPYTER_KEYFILE`, and set a persistent
-password with `lab password` (or rely on the token from the startup log).
+If the requested port is in use, `lab` auto-increments and tries up to 10
+consecutive ports before failing.
+
+**HTTPS access.** For remote access over HTTPS with auto-generated
+self-signed certs:
+
+```bash
+lab start --https                   # binds 0.0.0.0, generates cert
+lab start --https --port 9012       # custom port
+lab --https --ip 127.0.0.1          # foreground, localhost-only HTTPS
+```
+
+`--https` generates a self-signed certificate under `.jupyter/ssl/` if
+none exists, and defaults to binding `0.0.0.0`. Set a persistent password
+with `lab password` or rely on the auto-generated token.
+
+**Getting the URL.** Use `lab url` to print the running server's full
+access URL (with token) at any time:
+
+```bash
+lab url                             # prints https://host:port/lab?token=...
+```
+
+**SSH tunneling.** For localhost-only servers, tunnel from your laptop:
+
+```bash
+ssh -L 8888:localhost:8888 user@host
+```
 
 ## Quick Reference
 
@@ -61,9 +84,10 @@ password with `lab password` (or rely on the token from the startup log).
 | Command                | What it does |
 |------------------------|-------------|
 | `lab`                  | Run JupyterLab in foreground (for tmux pane) |
-| `lab start [--port N]` | Daemonize, log to `.jupyter/lab.bg.log` |
+| `lab start [--https] [--port N] [--ip ADDR]` | Daemonize, log to `.jupyter/lab.bg.log` |
 | `lab stop`             | SIGTERM the lab server owning this project |
 | `lab status`           | Show running servers and kernels |
+| `lab url`              | Print the running server's access URL (with token) |
 
 ### Kernelspec management
 
@@ -194,4 +218,5 @@ Pass `-t SECONDS` to increase it, or `None` (default) for no limit.
 search with a longer path or use `-k PID`.
 
 **Port already in use** — another user (or your previous session) is
-using the same port. Set a different one: `PORT=9012 lab start`.
+using the same port. Use `--port N` to pick a different one, or let `lab`
+auto-increment: `lab start --port 9012`.

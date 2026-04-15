@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`lab start --https`:** auto-generates a self-signed certificate under
+  `.jupyter/ssl/` when none exists, binds to `0.0.0.0` by default, and
+  warns if no password is set. Existing `JUPYTER_CERTFILE`/`JUPYTER_KEYFILE`
+  env vars are respected when present.
+- **`lab start --port N` / `--ip ADDR`:** explicit flags for port and bind
+  address, replacing the `PORT=`/`IP=` env var dance. When the requested
+  port is in use, auto-increments up to 10 consecutive ports before
+  failing.
+- **`lab url`:** prints the running server's access URL (with token if
+  applicable) for easy copy-paste or agent reporting.
+
+### Changed
+
+- **Lazy dependency initialization:** `lab status`, `lab kernel ps`,
+  `lab kernel find`, `lab kernel exec`, `lab kernel inspect`, `lab stop`,
+  and read-only notebook commands (`cells`, `show`, `attach`) no longer
+  trigger venv creation or package installation. They fail fast with a
+  helpful message if the venv isn't ready, cutting cold-status time from
+  30+ seconds to under 100ms.
+
 ## [0.3.2] - 2026-04-13
 
 ### Added

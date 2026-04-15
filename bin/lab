@@ -21,6 +21,8 @@ HELPER_PY="$SCRIPT_DIR/_lab_kernel.py"
 
 export JUPYTER_CONFIG_DIR JUPYTER_DATA_DIR
 
+SSL_DIR="$JUPYTER_CONFIG_DIR/ssl"
+
 err() { echo "$PROG: $*" >&2; }
 die() { err "$@"; exit 1; }
 
@@ -37,10 +39,12 @@ clicking through the web UI.
 USAGE
   lab                          Start JupyterLab in the current directory
                                (foreground; typical when run in a tmux pane)
-  lab start                    Start JupyterLab in the background, log to
+  lab start [--https] [--port N] [--ip ADDR]
+                               Start JupyterLab in the background, log to
                                ./.jupyter/lab.bg.log, return immediately
   lab stop                     Stop a background JupyterLab owning this project
   lab status                   List running lab servers and kernels
+  lab url                      Print the access URL of the running server
   lab password                 Set a persistent password (stored in ./.jupyter)
   lab help                     Show this help
 
@@ -88,11 +92,18 @@ SELECTORS
 
 NETWORK & AUTH
   Default bind is 127.0.0.1 — safest on shared HPC. For laptop access,
-  prefer an SSH tunnel (`ssh -L 8888:localhost:8888 user@host`).  To bind
-  everywhere, use `IP=0.0.0.0 lab` (optionally with JUPYTER_CERTFILE and
-  JUPYTER_KEYFILE for TLS).  Jupyter prints a token URL on start — copy
-  that to authenticate a browser session, or set a persistent password
-  with `lab password`.
+  prefer an SSH tunnel (`ssh -L 8888:localhost:8888 user@host`).
+
+  For HTTPS with auto-generated self-signed certs:
+    lab start --https           # binds 0.0.0.0, generates cert in .jupyter/ssl/
+    lab --https --port 9012     # foreground, custom port, HTTPS
+
+  `--port N` picks port N (auto-increments if taken, up to 10 tries).
+  `--ip ADDR` overrides the bind address.
+
+  Jupyter prints a token URL on start — copy that to authenticate a
+  browser session, or set a persistent password with `lab password`.
+  Use `lab url` to retrieve the URL later.
 
 ENVIRONMENT VARIABLES
   PORT, IP                     Defaults for --port / --ip
@@ -159,8 +170,25 @@ ensure_runtime_deps() {
     fi
 }
 
+check_runtime_deps() {
+    # Fast check: venv and all helper deps already installed?
+    # Returns 0 if ready, 1 if not.  Does NOT install anything.
+    [ -x "$VENV_DIR/bin/python" ] || return 1
+    "$VENV_DIR/bin/python" -c "import psutil, jupyter_client, nbformat" 2>/dev/null
+}
+
 run_helper() {
     ensure_runtime_deps
+    [ -f "$HELPER_PY" ] || die "cannot find helper at $HELPER_PY"
+    exec "$VENV_DIR/bin/python" "$HELPER_PY" "$@"
+}
+
+# Like run_helper but fails fast if deps aren't installed yet.
+# Used by read-only/query commands that shouldn't trigger installation.
+run_helper_fast() {
+    if ! check_runtime_deps; then
+        die "venv or dependencies not ready. Run 'lab start' or 'lab kernel add' first."
+    fi
     [ -f "$HELPER_PY" ] || die "cannot find helper at $HELPER_PY"
     exec "$VENV_DIR/bin/python" "$HELPER_PY" "$@"
 }
@@ -232,7 +260,7 @@ cmd_kernel() {
         list|ls)     cmd_kernel_list       "$@" ;;
         remove|rm)   cmd_kernel_remove     "$@" ;;
         ps|find|exec|inspect)
-            run_helper kernel "$sub" "$@" ;;
+            run_helper_fast kernel "$sub" "$@" ;;
         ""|help|-h|--help)
             cat >&2 <<'KHELP'
 Usage:
@@ -250,7 +278,137 @@ KHELP
 }
 
 cmd_notebook() {
-    run_helper notebook "$@"
+    local sub="${1:-}"
+    case "$sub" in
+        # Read-only notebook commands: fast path
+        cells|show|attach)
+            run_helper_fast notebook "$@" ;;
+        # Mutating commands may need full deps
+        *)
+            run_helper notebook "$@" ;;
+    esac
+}
+
+ensure_ssl_cert() {
+    # Generate a self-signed cert under .jupyter/ssl/ if none exists.
+    # Returns 0 and sets JUPYTER_CERTFILE / JUPYTER_KEYFILE.
+    if [ -n "${JUPYTER_CERTFILE:-}" ] && [ -n "${JUPYTER_KEYFILE:-}" ]; then
+        [ -f "$JUPYTER_CERTFILE" ] || die "JUPYTER_CERTFILE not found: $JUPYTER_CERTFILE"
+        [ -f "$JUPYTER_KEYFILE" ]  || die "JUPYTER_KEYFILE not found: $JUPYTER_KEYFILE"
+        return 0
+    fi
+    mkdir -p "$SSL_DIR"
+    JUPYTER_CERTFILE="$SSL_DIR/lab.pem"
+    JUPYTER_KEYFILE="$SSL_DIR/lab.key"
+    if [ -f "$JUPYTER_CERTFILE" ] && [ -f "$JUPYTER_KEYFILE" ]; then
+        echo "$PROG: reusing existing cert at $SSL_DIR/" >&2
+        return 0
+    fi
+    echo "$PROG: generating self-signed certificate in $SSL_DIR/" >&2
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout "$JUPYTER_KEYFILE" -out "$JUPYTER_CERTFILE" \
+        -subj "/CN=$(hostname)/O=lab-self-signed" 2>/dev/null \
+        || die "failed to generate self-signed certificate (is openssl installed?)"
+    chmod 600 "$JUPYTER_KEYFILE"
+    export JUPYTER_CERTFILE JUPYTER_KEYFILE
+}
+
+find_available_port() {
+    # Find an available port starting from $1, trying up to 10 consecutive ports.
+    # Prints the first available port. Returns 1 if none found.
+    local port="${1:-8888}"
+    local attempts=0
+    while [ "$attempts" -lt 10 ]; do
+        if ! python3 -c "
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(('127.0.0.1', int(sys.argv[1])))
+    s.close()
+    sys.exit(0)
+except OSError:
+    s.close()
+    sys.exit(1)
+" "$port" 2>/dev/null; then
+            port=$((port + 1))
+            attempts=$((attempts + 1))
+        else
+            echo "$port"
+            return 0
+        fi
+    done
+    return 1
+}
+
+check_password_set() {
+    # Check if a Jupyter password is configured. Returns 0 if set.
+    local pw_file="$JUPYTER_CONFIG_DIR/jupyter_server_config.json"
+    [ -f "$pw_file" ] && python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+pwd = d.get('ServerApp', d.get('NotebookApp', {})).get('password', '')
+sys.exit(0 if pwd else 1)
+" "$pw_file" 2>/dev/null
+}
+
+# Parse --https, --port, and pass-through args for start/serve commands.
+# Sets: USE_HTTPS, RESOLVED_PORT, RESOLVED_IP, TLS_ARGS, PASSTHROUGH_ARGS
+parse_server_flags() {
+    USE_HTTPS=0
+    RESOLVED_PORT="${PORT:-8888}"
+    RESOLVED_IP="${IP:-127.0.0.1}"
+    TLS_ARGS=()
+    PASSTHROUGH_ARGS=()
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --https)
+                USE_HTTPS=1
+                shift ;;
+            --port)
+                [ -n "${2:-}" ] || die "start: --port requires a value"
+                RESOLVED_PORT="$2"
+                shift 2 ;;
+            --port=*)
+                RESOLVED_PORT="${1#--port=}"
+                shift ;;
+            --ip)
+                [ -n "${2:-}" ] || die "start: --ip requires a value"
+                RESOLVED_IP="$2"
+                shift 2 ;;
+            --ip=*)
+                RESOLVED_IP="${1#--ip=}"
+                shift ;;
+            *)
+                PASSTHROUGH_ARGS+=("$1")
+                shift ;;
+        esac
+    done
+
+    if [ "$USE_HTTPS" -eq 1 ]; then
+        ensure_ssl_cert
+        TLS_ARGS=(--certfile "$JUPYTER_CERTFILE" --keyfile "$JUPYTER_KEYFILE")
+        # Default to binding everywhere when HTTPS is on, unless user specified otherwise
+        if [ -z "${IP:-}" ] && [ "$RESOLVED_IP" = "127.0.0.1" ]; then
+            RESOLVED_IP="0.0.0.0"
+        fi
+        # Warn if binding externally without auth
+        if [ "$RESOLVED_IP" != "127.0.0.1" ] && ! check_password_set; then
+            echo "$PROG: WARNING: binding to $RESOLVED_IP without a password." >&2
+            echo "$PROG: a random token will be generated. Run 'lab password' to set a persistent password." >&2
+        fi
+    elif [ -n "${JUPYTER_CERTFILE:-}" ] && [ -n "${JUPYTER_KEYFILE:-}" ]; then
+        TLS_ARGS=(--certfile "$JUPYTER_CERTFILE" --keyfile "$JUPYTER_KEYFILE")
+    fi
+
+    # Auto-find available port
+    local avail
+    avail="$(find_available_port "$RESOLVED_PORT")" \
+        || die "no available port found in range $RESOLVED_PORT-$((RESOLVED_PORT + 9))"
+    if [ "$avail" != "$RESOLVED_PORT" ]; then
+        echo "$PROG: port $RESOLVED_PORT in use, using $avail" >&2
+    fi
+    RESOLVED_PORT="$avail"
 }
 
 cmd_start() {
@@ -263,7 +421,9 @@ cmd_start() {
         return 1
     fi
 
-    # Reuse the existing ensure_venv block that cmd_serve has.
+    parse_server_flags "$@"
+
+    # Refresh kernel deps in an existing .venv so registered kernels keep working.
     if [ -x "$VENV_DIR/bin/python" ]; then
         local missing=()
         "$VENV_DIR/bin/python" -c "import ipykernel_launcher" 2>/dev/null || missing+=(ipykernel)
@@ -274,11 +434,6 @@ cmd_start() {
         fi
     fi
 
-    local tls_args=()
-    if [ -n "${JUPYTER_CERTFILE:-}" ] && [ -n "${JUPYTER_KEYFILE:-}" ]; then
-        tls_args=(--certfile "$JUPYTER_CERTFILE" --keyfile "$JUPYTER_KEYFILE")
-    fi
-
     uvx --python 3.12 --from jupyterlab \
         --with jupyterlmod \
         --with jupyterlab_notify \
@@ -287,11 +442,11 @@ cmd_start() {
         --with jupyterlab-widgets \
         --with notebook-intelligence \
         jupyter-lab \
-        --port "${PORT:-8888}" \
-        --ip "${IP:-127.0.0.1}" \
+        --port "$RESOLVED_PORT" \
+        --ip "$RESOLVED_IP" \
         --no-browser \
-        ${tls_args[@]+"${tls_args[@]}"} \
-        "$@" \
+        ${TLS_ARGS[@]+"${TLS_ARGS[@]}"} \
+        ${PASSTHROUGH_ARGS[@]+"${PASSTHROUGH_ARGS[@]}"} \
         > "$BG_LOG_FILE" 2>&1 &
     local bg_pid=$!
     echo "$bg_pid" > "$BG_PID_FILE"
@@ -302,7 +457,7 @@ cmd_start() {
     local attempt
     for attempt in $(seq 1 20); do
         if grep -q 'http' "$BG_LOG_FILE" 2>/dev/null; then
-            grep 'http.*lab' "$BG_LOG_FILE" | tail -1 >&2 || true
+            grep 'http' "$BG_LOG_FILE" | tail -1 >&2 || true
             return 0
         fi
         sleep 0.25
@@ -312,19 +467,44 @@ cmd_start() {
 }
 
 cmd_stop() {
-    run_helper stop "$@"
+    run_helper_fast stop "$@"
     # Also clean up our pidfile.
     rm -f "$BG_PID_FILE" 2>/dev/null
 }
 
 cmd_status() {
-    run_helper status "$@"
+    run_helper_fast status "$@"
 }
 
 cmd_password() {
     require_uv
     mkdir -p "$JUPYTER_CONFIG_DIR"
     exec uvx --python 3.12 --from jupyterlab jupyter-lab password "$@"
+}
+
+cmd_url() {
+    # Print the access URL of the running lab server.
+    local runtime_dir="$JUPYTER_DATA_DIR/runtime"
+    [ -d "$runtime_dir" ] || die "no lab server running (no runtime dir)"
+    local jf pid url token scheme
+    for jf in "$runtime_dir"/jpserver-*.json; do
+        [ -e "$jf" ] || continue
+        pid="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('pid',''))" "$jf" 2>/dev/null)" || continue
+        [ -n "$pid" ] || continue
+        if kill -0 "$pid" 2>/dev/null; then
+            url="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('url',''))" "$jf" 2>/dev/null)" || url=""
+            token="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('token',''))" "$jf" 2>/dev/null)" || token=""
+            if [ -n "$url" ]; then
+                if [ -n "$token" ]; then
+                    echo "${url}lab?token=${token}"
+                else
+                    echo "${url}lab"
+                fi
+                return 0
+            fi
+        fi
+    done
+    die "no running lab server found"
 }
 
 cmd_serve() {
@@ -335,6 +515,8 @@ cmd_serve() {
     # be intentionally starting a second one on a different port.
     check_existing_server && \
         echo "$PROG: starting anyway (Ctrl-C to abort)..." >&2
+
+    parse_server_flags "$@"
 
     # Refresh kernel deps in an existing .venv so registered kernels keep
     # working after a venv rebuild. Skip silently if there's no .venv.
@@ -348,11 +530,6 @@ cmd_serve() {
         fi
     fi
 
-    local tls_args=()
-    if [ -n "${JUPYTER_CERTFILE:-}" ] && [ -n "${JUPYTER_KEYFILE:-}" ]; then
-        tls_args=(--certfile "$JUPYTER_CERTFILE" --keyfile "$JUPYTER_KEYFILE")
-    fi
-
     exec uvx --python 3.12 --from jupyterlab \
         --with jupyterlmod \
         --with jupyterlab_notify \
@@ -361,10 +538,10 @@ cmd_serve() {
         --with jupyterlab-widgets \
         --with notebook-intelligence \
         jupyter-lab \
-        --port "${PORT:-8888}" \
-        --ip "${IP:-127.0.0.1}" \
-        ${tls_args[@]+"${tls_args[@]}"} \
-        "$@"
+        --port "$RESOLVED_PORT" \
+        --ip "$RESOLVED_IP" \
+        ${TLS_ARGS[@]+"${TLS_ARGS[@]}"} \
+        ${PASSTHROUGH_ARGS[@]+"${PASSTHROUGH_ARGS[@]}"}
 }
 
 main() {
@@ -375,6 +552,7 @@ main() {
         start)           shift; cmd_start    "$@" ;;
         stop)            shift; cmd_stop     "$@" ;;
         status)          shift; cmd_status   "$@" ;;
+        url)             shift; cmd_url      "$@" ;;
         password)        shift; cmd_password "$@" ;;
         serve)           shift; cmd_serve    "$@" ;;
         "")              cmd_serve ;;
