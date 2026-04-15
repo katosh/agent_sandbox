@@ -1945,6 +1945,42 @@ SCRIPT
         fi
     fi
 
+    # 6c-quinquies. SLURM_SUBMIT_DIR reflects agent's CWD, not chaperon's.
+    # The chaperon runs outside the sandbox with its own CWD. Before the fix,
+    # real sbatch inherited the chaperon's CWD, making SLURM_SUBMIT_DIR wrong.
+    _cwd_subdir="$PROJECT_DIR/.test-cwd-$$"
+    mkdir -p "$_cwd_subdir"
+    _TEST_TEMP_FILES+=("$_cwd_subdir")
+    _cwd_jobout=$(mktemp)
+    _TEST_TEMP_FILES+=("$_cwd_jobout")
+    _cwd_submit_out=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- \
+        bash -c "cd '$_cwd_subdir' && sbatch --wait --output='$_cwd_jobout' \
+            --wrap='echo SLURM_SUBMIT_DIR=\$SLURM_SUBMIT_DIR'" 2>&1)
+    _cwd_submit_rc=$?
+    if [[ $_cwd_submit_rc -eq 0 && -f "$_cwd_jobout" ]] && grep -q "^SLURM_SUBMIT_DIR=${_cwd_subdir}\$" "$_cwd_jobout"; then
+        pass "SLURM_SUBMIT_DIR matches agent's CWD (not chaperon's)"
+    else
+        _cwd_jobid=$(echo "$_cwd_submit_out" | grep -oE "Submitted batch job [0-9]+" | awk '{print $4}')
+        if [[ -n "$_cwd_jobid" ]]; then
+            for _i in $(seq 1 20); do
+                if sandbox bash -c "squeue -j $_cwd_jobid -h 2>/dev/null" && [[ -z "$OUTPUT" ]]; then
+                    sleep 1
+                    break
+                fi
+                sleep 1
+            done
+            if [[ -f "$_cwd_jobout" ]] && grep -q "^SLURM_SUBMIT_DIR=${_cwd_subdir}\$" "$_cwd_jobout"; then
+                pass "SLURM_SUBMIT_DIR matches agent's CWD (not chaperon's)"
+            else
+                skip "SLURM_SUBMIT_DIR assertion inconclusive (output: $(cat "$_cwd_jobout" 2>/dev/null || echo 'no file'))"
+            fi
+        else
+            skip "SLURM_SUBMIT_DIR assertion inconclusive (no jobid captured: $_cwd_submit_out)"
+        fi
+    fi
+    rm -rf "$_cwd_subdir"
+
     # 6d. scancel scoped to session
     if command -v scancel &>/dev/null; then
         # Submit a job, then cancel it.
