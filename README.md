@@ -370,8 +370,6 @@ Customize agent instructions via `~/.config/agent-sandbox/agents/<name>/agent.md
 
 The outer tmux socket is blocked (escape risk), but a **nested tmux** running inside the sandbox works well: `agent-sandbox tmux new-session claude` (prefix is `Ctrl-a`). On kernels < 5.4, set `BIND_DEV_PTS=true` in `sandbox.conf` for pty allocation (see Known Limitations). Customize via `~/.config/agent-sandbox/sandbox-tmux.conf`.
 
-**Tip — long-lived Jupyter kernels for stateful experimentation:** If `lab` is on PATH, it provides project-local JupyterLab management with CLI access to live kernels. The agent can execute code, inspect live variables, and edit notebook cells without a browser. Variables persist between turns. Run `lab help` for usage.
-
 ### Notifications
 
 The sandbox ships `sandbox-notify` (in `bin/`, on PATH) which alerts the user via tmux when an agent needs attention or finishes a turn. It emits a single terminal BEL and lets tmux's own propagation flag both the inner and outer status bars — `monitor-bell` on + `bell-action any` (tmux defaults) means a BEL from an inner pane is forwarded to the client's pty automatically, so one emission marks both nested tmux tabs.

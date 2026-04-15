@@ -76,11 +76,6 @@ Slurm commands work inside the sandbox but are proxied through a secure chaperon
 
 **Flag whitelisting:** `sbatch` and `srun` validate flags against a whitelist. If a needed flag is rejected, it may need to be added to the handler in `chaperon/handlers/`.
 
-## Stateful experimentation with `lab`
-
-If `lab` is on PATH, it provides project-local JupyterLab management with
-CLI access to live kernels. Run `lab help` for the full command list.
-
 ## Process isolation (PID namespace)
 
 The sandbox runs in its own PID namespace. `ps`, `top`, and `/proc` only show processes inside the sandbox. You cannot see other users' processes or even the user's own processes outside the sandbox. This is expected, not a bug.

@@ -9,11 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **`lab` extracted to standalone repo:** the `lab` JupyterLab management
-  CLI has been moved to [katosh/lab](https://github.com/katosh/lab).
-  Install with `brew install katosh/tools/lab`. Removed `bin/lab`,
-  `bin/_lab_kernel.py`, `agents/lab.md`, `test-lab.sh` from this repo.
-  Agent instruction files now reference the standalone package.
+- **`lab` utility removed:** the JupyterLab management CLI (`bin/lab`,
+  `bin/_lab_kernel.py`, `agents/lab.md`, `test-lab.sh`) has been extracted
+  to its own project ([katosh/labsh](https://github.com/katosh/labsh)).
+  All lab-specific references removed from agent instructions, README,
+  and sandbox-help. The sandbox no longer ships or promotes any
+  JupyterLab tooling.
 
 ## [0.3.2] - 2026-04-13
 
