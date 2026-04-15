@@ -32,6 +32,19 @@ HOME_READONLY=(
 )
 ```
 
+## Home directory access modes (HOME_ACCESS)
+
+The sandbox startup banner shows the home directory mode. Here's what each means:
+
+| Mode | What you see in `~` | Writes to `~` | Details |
+|------|---------------------|---------------|---------|
+| `restricted` | Only dotfiles/dirs listed in `HOME_READONLY` and `HOME_WRITABLE` | Blocked (tmpfs is remounted read-only) | Default. Minimal surface area. |
+| `tmpwrite` | All listed dotfiles/dirs (typically most of `~`) via read-only bind mounts | Allowed but **ephemeral** — writes go to a tmpfs overlay and vanish on exit | Good for tools that need to write to `~/.cache`, `~/.config`, etc. without persisting changes. Existing files like `~/.linuxbrew`, `~/.local` are visible read-only. |
+| `read` | Full real home directory | Blocked (read-only bind) | Credential dirs are hidden. `HOME_WRITABLE` paths are still writable. |
+| `write` | Full real home directory | Allowed (real writes persist) | Credential dirs are hidden. Least restrictive — use with caution. |
+
+**Key point for `tmpwrite`:** Your home directory is NOT empty. Tools installed at `~/.linuxbrew`, `~/.local/bin`, etc. are all visible. You just can't permanently modify them — writes land on a tmpfs overlay that disappears when the sandbox exits.
+
 ## Unblock an environment variable
 
 Env vars matching secret patterns (`*_TOKEN`, `*_API_KEY`, `*_SECRET`, etc.) are blocked by default. To let a specific variable through, add it to `ALLOWED_ENV_VARS`:

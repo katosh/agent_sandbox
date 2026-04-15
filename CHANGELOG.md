@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **sbatch CWD mismatch:** the chaperon's `sbatch` handler now `cd`s to
+  the agent's working directory before calling real `sbatch`. Previously,
+  Slurm inherited the chaperon's CWD, causing `SLURM_SUBMIT_DIR` to
+  point to the wrong directory on compute nodes and relative
+  `--output`/`--error` paths to resolve incorrectly. The `srun` handler
+  already handled this correctly.
+
+- **Clarify `home: tmpwrite` banner label:** the startup banner now
+  expands each `HOME_ACCESS` mode into a descriptive label (e.g.,
+  `home: tmpwrite (~ visible, writes to tmpfs — not persisted)`) to
+  prevent agents from misinterpreting `tmpwrite` as an empty tmpfs.
+  Added a HOME_ACCESS modes reference table to `agents/sandbox-help.md`.
+
 ### Changed
 
 - **`lab` utility removed:** the JupyterLab management CLI (`bin/lab`,

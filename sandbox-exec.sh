@@ -249,7 +249,14 @@ fi
 
 # Startup banner (disable with SANDBOX_QUIET=true in sandbox.conf or env)
 if ! _is_true "${SANDBOX_QUIET:-false}"; then
-    echo "sandbox: $SANDBOX_BACKEND | project: $PROJECT_DIR | home: ${HOME_ACCESS:-restricted}" >&2
+    case "${HOME_ACCESS:-restricted}" in
+        restricted) _home_label="restricted (listed dotfiles only, read-only)" ;;
+        tmpwrite)   _home_label="tmpwrite (~ visible, writes to tmpfs — not persisted)" ;;
+        read)       _home_label="read (~ visible, read-only)" ;;
+        write)      _home_label="write (~ visible, read-write)" ;;
+        *)          _home_label="${HOME_ACCESS}" ;;
+    esac
+    echo "sandbox: $SANDBOX_BACKEND | project: $PROJECT_DIR | home: $_home_label" >&2
 fi
 
 backend_exec "$@"
