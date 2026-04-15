@@ -10,6 +10,7 @@ DIR="$PWD"
 : "${JUPYTER_DATA_DIR:=$DIR/.jupyter/share/jupyter}"
 KERNELS_DIR="$JUPYTER_DATA_DIR/kernels"
 VENV_DIR="$DIR/.venv"                      # project venv (kernels only)
+LAB_LOCK_FILE="$JUPYTER_CONFIG_DIR/.labvenv.lock"  # pinned deps for lab helper venv
 BG_PID_FILE="$JUPYTER_CONFIG_DIR/lab.bg.pid"
 BG_LOG_FILE="$JUPYTER_CONFIG_DIR/lab.bg.log"
 
@@ -211,6 +212,12 @@ ensure_venv_with_ipykernel() {
         echo "$PROG: pre-compiling .pyc files..." >&2
         "$VENV_DIR/bin/python" -m compileall -q \
             "$VENV_DIR/lib" 2>/dev/null || true
+        # Snapshot kernel deps so the venv can be reproduced
+        local kernel_lock="$JUPYTER_CONFIG_DIR/.kernel-deps.lock"
+        mkdir -p "$JUPYTER_CONFIG_DIR"
+        uv pip freeze --python "$VENV_DIR/bin/python" \
+            > "$kernel_lock" 2>/dev/null || true
+        echo "$PROG: pinned kernel deps to $kernel_lock" >&2
     fi
 }
 
@@ -223,11 +230,17 @@ ensure_lab_venv() {
     # The venv lives on /tmp for NFS performance (Python startup is 46x
     # faster on tmpfs).  A symlink from .jupyter/.labvenv points to the
     # tmpfs location so all paths stay stable.
+    #
+    # A lockfile (.jupyter/.labvenv.lock) on persistent NFS captures exact
+    # package versions after first install.  On rebuild (after /tmp wipe),
+    # packages are restored from the lockfile for reproducibility.
     require_uv
     LAB_VENV_DIR="$_LAB_VENV_TMP"
+    local created_fresh=0
     if [ ! -x "$LAB_VENV_DIR/bin/python" ]; then
         echo "$PROG: creating lab helper venv at $LAB_VENV_DIR (tmpfs)" >&2
         uv venv "$LAB_VENV_DIR"
+        created_fresh=1
     fi
     # Maintain the symlink from project dir
     mkdir -p "$JUPYTER_CONFIG_DIR"
@@ -240,8 +253,18 @@ ensure_lab_venv() {
     "$LAB_VENV_DIR/bin/python" -c "import jupyter_client"  2>/dev/null || missing+=(jupyter_client)
     "$LAB_VENV_DIR/bin/python" -c "import nbformat"        2>/dev/null || missing+=(nbformat)
     if [ ${#missing[@]} -gt 0 ]; then
-        echo "$PROG: installing ${missing[*]} into lab helper venv" >&2
-        uv pip install --python "$LAB_VENV_DIR/bin/python" "${missing[@]}"
+        if [ "$created_fresh" -eq 1 ] && [ -f "$LAB_LOCK_FILE" ]; then
+            # Rebuild from lockfile for reproducibility
+            echo "$PROG: restoring lab helper venv from $LAB_LOCK_FILE" >&2
+            uv pip install --python "$LAB_VENV_DIR/bin/python" \
+                -r "$LAB_LOCK_FILE"
+        else
+            echo "$PROG: installing ${missing[*]} into lab helper venv" >&2
+            uv pip install --python "$LAB_VENV_DIR/bin/python" "${missing[@]}"
+            # Freeze exact versions to lockfile on persistent storage
+            uv pip freeze --python "$LAB_VENV_DIR/bin/python" \
+                > "$LAB_LOCK_FILE" 2>/dev/null || true
+        fi
         # Pre-compile .pyc to halve NFS round-trips on subsequent imports
         "$LAB_VENV_DIR/bin/python" -m compileall -q \
             "$LAB_VENV_DIR/lib" 2>/dev/null || true

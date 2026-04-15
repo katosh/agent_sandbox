@@ -45,7 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `UV_CACHE_DIR` defaults to `/tmp/uv-cache-$UID` (was `~/.cache/uv` on
   NFS). `UV_LINK_MODE=copy` avoids cross-filesystem hardlink failures.
   Package installs are followed by `compileall` to pre-generate `.pyc`
-  files, halving NFS round-trips on subsequent imports.
+  files, halving NFS round-trips on subsequent imports. Lockfiles
+  (`.jupyter/.labvenv.lock`, `.jupyter/.kernel-deps.lock`) pin exact
+  package versions on persistent NFS so ephemeral `/tmp` venvs are
+  rebuilt reproducibly.
 
 ### Fixed
 
