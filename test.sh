@@ -1408,7 +1408,7 @@ _probe_agent_dir="$SCRIPT_DIR/agents/_gating_probe"
 mkdir -p "$_probe_agent_dir"
 trap_rm_dir "$_probe_agent_dir"
 _probe_writable_dir="$HOME/.gating-probe-$$"
-_TEST_TEMP_FILES+=("$_probe_writable_dir")
+trap_rm_dir "$_probe_writable_dir"
 cat > "$_probe_agent_dir/config.conf" <<META
 AGENT_CREDENTIAL_ENV_VARS=()
 AGENT_AUTH_MARKERS=()
@@ -1528,8 +1528,8 @@ if echo "$_optin_default_out" | grep -q '^WRITE opencode$'; then
 else
     pass "opt-in agents: ~/.config/opencode is not writable by default"
 fi
-
-rm -rf "$_probe_agent_dir" "$_probe_writable_dir"
+# Both fixture paths registered with trap_rm_dir above — cleanup
+# happens on EXIT, including on test interruption.
 
 echo ""
 
