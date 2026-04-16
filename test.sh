@@ -1292,8 +1292,18 @@ AGENT_CREDENTIAL_ENV_VARS=()
 AGENT_AUTH_MARKERS=()
 AGENT_REQUIRED_WRITABLE_PATHS=()
 AGENT_REQUIRED_READABLE_PATHS=()
+AGENT_BLOCKED_FILES=()
 AGENT_LOGIN_HINT=""
 META
+
+# The ad-hoc agent must be enabled, or its overlay never runs and the
+# isolation check would vacuously pass.
+_leak_conf="$HOME/.config/agent-sandbox/conf.d/test-leak-enable-$$.conf"
+_TEST_TEMP_FILES+=("$_leak_conf")
+mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+cat > "$_leak_conf" <<'CONF'
+ENABLED_AGENTS+=("_malicious_leak")
+CONF
 
 _leak_out=$(SANDBOX_LEAK_TOKEN=leaked timeout 15 "$SANDBOX_EXEC" \
     --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" \
@@ -1304,6 +1314,7 @@ else
     fail "Overlay subshell isolation broken — ALLOWED_ENV_VARS mutation leaked" "$_leak_out"
 fi
 rm -rf "$_malicious_dir"
+rm -f "$_leak_conf"
 
 # ── AGENT_AUTH_MARKERS suppresses the warning when a marker file exists ──
 # Create a throwaway agent profile with a credential env var that IS set
@@ -1325,14 +1336,19 @@ AGENT_CREDENTIAL_ENV_VARS=("MARKER_TEST_API_KEY")
 AGENT_AUTH_MARKERS=("$_marker_file")
 AGENT_REQUIRED_WRITABLE_PATHS=()
 AGENT_REQUIRED_READABLE_PATHS=()
+AGENT_BLOCKED_FILES=()
 AGENT_LOGIN_HINT="test marker"
 META
 
-# Block the env var via empty ALLOWED_ENV_VARS. SANDBOX_QUIET must be
-# overridden via env prefix (env takes precedence over conf.d).
+# Block the env var via empty ALLOWED_ENV_VARS, and enable the test
+# agent so _check_agent_requirements actually iterates it (otherwise
+# the marker test would vacuously pass — the warning never fires for
+# disabled agents). SANDBOX_QUIET must be overridden via env prefix
+# (env takes precedence over conf.d).
 _warn_conf="$HOME/.config/agent-sandbox/conf.d/test-agent-warn-$$.conf"
 cat > "$_warn_conf" <<'CONF'
 ALLOWED_ENV_VARS=()
+ENABLED_AGENTS+=("_marker_test")
 CONF
 
 # With marker present → warning should NOT fire (auth marker available).
@@ -1376,6 +1392,120 @@ if [[ -d "$_probe_dir" ]]; then
 else
     fail "_ensure_writable_home_dirs did not create $_probe_dir"
 fi
+
+# ── ENABLED_AGENTS gating ──
+# Only enabled agents contribute their declared paths to the sandbox
+# surface and only their overlays run. Disabled agents stay invisible
+# inside the sandbox (so e.g. ~/.pi can't be written when pi isn't
+# enabled, even if ~/.pi happens to exist on disk for unrelated reasons).
+
+# Probe agent: declares a writable path under HOME and an env-var export
+# from its overlay. Used by all four sub-tests below.
+_probe_agent_dir="$SCRIPT_DIR/agents/_gating_probe"
+mkdir -p "$_probe_agent_dir"
+trap_rm_dir "$_probe_agent_dir"
+_probe_writable_dir="$HOME/.gating-probe-$$"
+_TEST_TEMP_FILES+=("$_probe_writable_dir")
+cat > "$_probe_agent_dir/config.conf" <<META
+AGENT_CREDENTIAL_ENV_VARS=()
+AGENT_AUTH_MARKERS=()
+AGENT_REQUIRED_WRITABLE_PATHS=("$_probe_writable_dir")
+AGENT_REQUIRED_READABLE_PATHS=()
+AGENT_BLOCKED_FILES=()
+AGENT_LOGIN_HINT=""
+META
+cat > "$_probe_agent_dir/overlay.sh" <<'OVERLAY'
+agent_prepare_config() {
+    _AGENT_ENV_EXPORTS+=("GATING_PROBE_RAN=yes")
+}
+agent_get_env_exports() { :; }
+OVERLAY
+
+# (a) When NOT enabled (default ENABLED_AGENTS), the probe contributes
+# nothing — its writable path is unreachable AND its overlay env var
+# is unset.
+_gating_disabled=$(timeout 15 "$SANDBOX_EXEC" \
+    --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" \
+    -- bash -c "echo \"GATE=\${GATING_PROBE_RAN:-<unset>}\"; touch '$_probe_writable_dir/marker' 2>&1 && echo WRITABLE || echo BLOCKED" 2>&1)
+if echo "$_gating_disabled" | grep -q '^GATE=<unset>$'; then
+    pass "Disabled agent: overlay does not run (env export absent)"
+else
+    fail "Disabled agent: overlay ran anyway" "$_gating_disabled"
+fi
+if echo "$_gating_disabled" | grep -q '^BLOCKED$'; then
+    pass "Disabled agent: declared writable path is not granted"
+else
+    fail "Disabled agent: writable path was granted anyway" "$_gating_disabled"
+fi
+
+# (b) When enabled via conf.d, the probe's writable path becomes
+# reachable AND its overlay env var reaches the sandbox.
+_gating_conf="$HOME/.config/agent-sandbox/conf.d/test-gating-$$.conf"
+_TEST_TEMP_FILES+=("$_gating_conf")
+mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+cat > "$_gating_conf" <<'CONF'
+ENABLED_AGENTS+=("_gating_probe")
+CONF
+_gating_enabled=$(timeout 15 "$SANDBOX_EXEC" \
+    --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" \
+    -- bash -c "echo \"GATE=\${GATING_PROBE_RAN:-<unset>}\"; touch '$_probe_writable_dir/marker' 2>&1 && echo WRITABLE || echo BLOCKED" 2>&1)
+if echo "$_gating_enabled" | grep -q '^GATE=yes$'; then
+    pass "Enabled agent: overlay env export reaches sandbox"
+else
+    fail "Enabled agent: overlay env export did not reach sandbox" "$_gating_enabled"
+fi
+if echo "$_gating_enabled" | grep -q '^WRITABLE$'; then
+    pass "Enabled agent: declared writable path is granted"
+else
+    fail "Enabled agent: writable path was not granted" "$_gating_enabled"
+fi
+
+# (c) Empty ENABLED_AGENTS: no agent paths granted (regression guard
+# for accidentally treating empty as "all").
+_empty_conf="$HOME/.config/agent-sandbox/conf.d/test-gating-empty-$$.conf"
+_TEST_TEMP_FILES+=("$_empty_conf")
+cat > "$_empty_conf" <<'CONF'
+ENABLED_AGENTS=()
+CONF
+# Remove the conf.d that enables the probe, otherwise both apply.
+rm -f "$_gating_conf"
+_empty_out=$(timeout 15 "$SANDBOX_EXEC" \
+    --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" \
+    -- bash -c "touch '$HOME/.claude/marker' 2>&1 && echo CLAUDE_WRITABLE || echo CLAUDE_BLOCKED" 2>&1)
+if echo "$_empty_out" | grep -q '^CLAUDE_BLOCKED$'; then
+    pass "Empty ENABLED_AGENTS grants no agent paths"
+else
+    fail "Empty ENABLED_AGENTS still granted agent paths" "$_empty_out"
+fi
+rm -f "$_empty_conf"
+
+# (d) Disabled-by-default agent (pi): ships in agents/pi/ but not in
+# default ENABLED_AGENTS; ~/.pi must not be writable until enabled.
+_pi_default_out=$(timeout 15 "$SANDBOX_EXEC" \
+    --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" \
+    -- bash -c "touch '$HOME/.pi/test-$$' 2>&1 && echo PI_WRITABLE || echo PI_BLOCKED" 2>&1)
+if echo "$_pi_default_out" | grep -q '^PI_BLOCKED$'; then
+    pass "pi agent: ~/.pi is not writable when pi is not enabled"
+else
+    fail "pi agent: ~/.pi was writable without being enabled" "$_pi_default_out"
+fi
+
+# (e) opencode XDG drift fix: all four XDG dirs must be writable.
+_opencode_out=$(timeout 15 "$SANDBOX_EXEC" \
+    --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" \
+    -- bash -c '
+      for d in "$HOME/.config/opencode" "$HOME/.local/share/opencode" \
+               "$HOME/.cache/opencode" "$HOME/.local/state/opencode"; do
+          touch "$d/.probe-$$" 2>/dev/null && echo "OK $d" || echo "FAIL $d"
+      done' 2>&1)
+_opencode_fails=$(echo "$_opencode_out" | grep -c '^FAIL ' || true)
+if [[ "$_opencode_fails" -eq 0 ]]; then
+    pass "opencode: all four XDG dirs (config, data, cache, state) are writable"
+else
+    fail "opencode: ${_opencode_fails} XDG dir(s) not writable" "$_opencode_out"
+fi
+
+rm -rf "$_probe_agent_dir" "$_probe_writable_dir"
 
 echo ""
 
@@ -2174,6 +2304,7 @@ else
         "aider overlay|$SCRIPT_DIR/agents/aider/overlay.sh"
         "gemini overlay|$SCRIPT_DIR/agents/gemini/overlay.sh"
         "opencode overlay|$SCRIPT_DIR/agents/opencode/overlay.sh"
+        "pi overlay|$SCRIPT_DIR/agents/pi/overlay.sh"
     )
 
     # Admin-installed paths — only tested if /app/lib/agent-sandbox exists.

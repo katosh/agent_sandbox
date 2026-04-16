@@ -87,20 +87,31 @@ HOME_READONLY=(
     "micromamba"
     ".condarc"
     ".mambarc"
-    # Agent config files (auth tokens live under HOME_WRITABLE)
-    ".aider.conf.yml"
+    # Per-agent read-only entries (e.g. ".aider.conf.yml") are added
+    # automatically by _apply_agent_profiles() from each enabled
+    # agent's config.conf. See ENABLED_AGENTS below.
 )
 
 HOME_WRITABLE=(
     ".cache/uv"
-    # Agent state & credentials (persist across sandbox sessions).
-    # Missing entries are auto-created by _ensure_writable_home_dirs
-    # so first-run in-sandbox auth works without prior setup.
-    ".claude" ".claude.json" ".local/state/claude" ".local/share/claude"
-    ".codex"
-    ".gemini"
-    ".config/opencode"
+    # Per-agent state/credential entries (e.g. ".claude", ".codex",
+    # ".config/opencode") are added automatically by
+    # _apply_agent_profiles() from each enabled agent's config.conf.
+    # See ENABLED_AGENTS below. Missing entries are auto-created by
+    # _ensure_writable_home_dirs so first-run in-sandbox auth works
+    # without prior setup.
 )
+
+# Agent profiles in agents/<name>/ to enable. Each enabled agent
+# contributes its declared writable/readable/blocked paths (from
+# agents/<name>/config.conf) to the sandbox surface, and its
+# overlay.sh runs to merge AGENTS.md / settings into a sandbox config
+# dir. Adding a name with no matching agents/<name>/ directory is
+# silently ignored. Adding an agent expands the writable surface to
+# whatever its config.conf declares — only enable agents you actually
+# use, so e.g. ~/.pi (which could be unrelated user data) doesn't
+# become writable for users who don't use the pi agent.
+ENABLED_AGENTS=("claude" "codex" "gemini" "aider" "opencode")
 
 # Home access mode:
 #   tmpwrite   — (default) tmpfs HOME, selective mounts, writable tmpfs (ephemeral writes, lost on exit)
@@ -116,13 +127,11 @@ HOME_ACCESS="tmpwrite"
 _HOME_ALWAYS_BLOCKED=(".ssh" ".aws" ".gnupg")
 
 BLOCKED_FILES=(
-    # Hide real agent instruction files so agents see only the merged
-    # copies exported via CLAUDE_CONFIG_DIR / CODEX_HOME / GEMINI_CONFIG_DIR
-    # / OPENCODE_CONFIG_DIR. Managed by agents/<name>/overlay.sh.
-    "$HOME/.claude/CLAUDE.md"
-    "$HOME/.codex/AGENTS.md"
-    "$HOME/.gemini/GEMINI.md"
-    "$HOME/.config/opencode/AGENTS.md"
+    # Per-agent instruction files (e.g. ~/.claude/CLAUDE.md,
+    # ~/.codex/AGENTS.md) are added automatically by
+    # _apply_agent_profiles() from each enabled agent's config.conf.
+    # The matching overlay.sh exports a *_CONFIG_DIR env var so the
+    # agent reads the sandbox-merged copy instead.
 )
 
 EXTRA_BLOCKED_PATHS=()
@@ -405,7 +414,7 @@ _CONFIG_ARRAYS=(
     ALLOWED_PROJECT_PARENTS READONLY_MOUNTS HOME_READONLY HOME_WRITABLE
     BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS ALLOWED_ENV_VARS
     EXTRA_BLOCKED_PATHS EXTRA_WRITABLE_PATHS DENIED_WRITABLE_PATHS
-    SANDBOX_ENV SUPPRESS_AGENT_WARNINGS SANDBOX_MODULES
+    SANDBOX_ENV SUPPRESS_AGENT_WARNINGS SANDBOX_MODULES ENABLED_AGENTS
 )
 _CONFIG_SCALARS=(
     SANDBOX_BACKEND PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD BIND_DEV_PTS
@@ -1095,11 +1104,12 @@ _agent_file() {
 _deploy_agent_files() {
     local agents_dir="$SANDBOX_DIR/agents"
     [[ -d "$agents_dir" ]] || return 0
+    [[ ${#ENABLED_AGENTS[@]} -gt 0 ]] || return 0
 
-    local agent_dir agent_name src dest dest_dir sha_file
-    for agent_dir in "$agents_dir"/*/; do
+    local agent_name agent_dir src dest dest_dir sha_file
+    for agent_name in "${ENABLED_AGENTS[@]}"; do
+        agent_dir="$agents_dir/$agent_name/"
         [[ -d "$agent_dir" ]] || continue
-        agent_name="$(basename "$agent_dir")"
         dest_dir="$_USER_DATA_DIR/agents/$agent_name"
 
         for src in "$agent_dir"agent.md "$agent_dir"settings.json; do
@@ -1244,21 +1254,115 @@ _ensure_writable_home_dirs() {
     done
 }
 
+# ── Agent profile application ──────────────────────────────────────
+
+# _apply_agent_profiles — for each agent in ENABLED_AGENTS, source its
+# agents/<name>/config.conf in a subshell and fold the declared paths
+# into the sandbox permission arrays (HOME_WRITABLE / HOME_READONLY /
+# EXTRA_WRITABLE_PATHS / BLOCKED_FILES).
+#
+# Same isolation pattern as prepare_agent_configs: the subshell can
+# only communicate back via a tagged-line protocol on stdout. This
+# makes it structurally impossible for a config.conf to mutate
+# anything other than the recognized AGENT_* metadata fields.
+#
+# Path placement: paths under $HOME become HOME_WRITABLE / HOME_READONLY
+# entries (relative to $HOME, matching the existing convention);
+# absolute paths outside $HOME become EXTRA_WRITABLE_PATHS entries
+# (read-side only-outside-$HOME paths still need explicit READONLY_MOUNTS).
+#
+# Must run AFTER user/admin/conf.d config has been loaded (so an
+# explicit ENABLED_AGENTS in user config wins over the default), and
+# BEFORE _check_agent_requirements / prepare_agent_configs (which both
+# iterate ENABLED_AGENTS and assume the grants are in place).
+_apply_agent_profiles() {
+    local agents_dir="$SANDBOX_DIR/agents"
+    [[ -d "$agents_dir" ]] || return 0
+    [[ ${#ENABLED_AGENTS[@]} -gt 0 ]] || return 0
+
+    local agent_name config _meta _tag _val _rel
+    for agent_name in "${ENABLED_AGENTS[@]}"; do
+        config="$agents_dir/$agent_name/config.conf"
+        [[ -f "$config" ]] || continue
+
+        _meta="$(
+            set +u
+            AGENT_REQUIRED_WRITABLE_PATHS=()
+            AGENT_REQUIRED_READABLE_PATHS=()
+            AGENT_BLOCKED_FILES=()
+            # shellcheck disable=SC1090
+            source "$config" 2>/dev/null || exit 0
+            printf 'WRITE\t%s\n' "${AGENT_REQUIRED_WRITABLE_PATHS[@]}"
+            printf 'READ\t%s\n'  "${AGENT_REQUIRED_READABLE_PATHS[@]}"
+            printf 'BLOCK\t%s\n' "${AGENT_BLOCKED_FILES[@]}"
+        )"
+
+        while IFS=$'\t' read -r _tag _val; do
+            [[ -n "$_val" ]] || continue
+            case "$_tag" in
+                WRITE)
+                    if [[ "$_val" == "$HOME/"* ]]; then
+                        _rel="${_val#"$HOME"/}"
+                        _array_contains "$_rel" "${HOME_WRITABLE[@]}" \
+                            || HOME_WRITABLE+=("$_rel")
+                    elif [[ "$_val" == "$HOME" ]]; then
+                        # An entire-$HOME grant is a no-op (HOME_ACCESS handles it)
+                        :
+                    else
+                        _array_contains "$_val" "${EXTRA_WRITABLE_PATHS[@]}" \
+                            || EXTRA_WRITABLE_PATHS+=("$_val")
+                    fi
+                    ;;
+                READ)
+                    if [[ "$_val" == "$HOME/"* ]]; then
+                        _rel="${_val#"$HOME"/}"
+                        _array_contains "$_rel" "${HOME_READONLY[@]}" \
+                            || HOME_READONLY+=("$_rel")
+                    fi
+                    # Outside-$HOME read paths require explicit READONLY_MOUNTS
+                    # — deliberately not auto-added here (would expand the read
+                    # surface beyond what an agent profile should control).
+                    ;;
+                BLOCK)
+                    _array_contains "$_val" "${BLOCKED_FILES[@]}" \
+                        || BLOCKED_FILES+=("$_val")
+                    ;;
+            esac
+        done <<< "$_meta"
+    done
+}
+
+# _array_contains VALUE ARRAY... — return 0 if any element of ARRAY
+# equals VALUE. Used by _apply_agent_profiles to keep its merges
+# idempotent across multiple sandbox invocations or repeated config
+# loads. Empty array is handled correctly (returns 1).
+_array_contains() {
+    local _needle="$1"; shift
+    local _e
+    for _e in "$@"; do
+        [[ "$_e" == "$_needle" ]] && return 0
+    done
+    return 1
+}
+
 # ── Agent-metadata warning check ───────────────────────────────────
 
-# _check_agent_requirements — source each agents/*/config.conf in a
-# subshell (isolated so it cannot mutate globals), read the declarative
-# metadata, and warn once per agent if its credentials/paths look
-# unreachable. SUPPRESS_AGENT_WARNINGS silences per-agent or all.
+# _check_agent_requirements — for each agent in ENABLED_AGENTS, source
+# its config.conf in a subshell (isolated so it cannot mutate globals),
+# read the declarative metadata, and warn once per agent if its
+# credentials/paths look unreachable. SUPPRESS_AGENT_WARNINGS silences
+# per-agent or all. Disabled agents are skipped entirely (no warnings
+# for tools the user doesn't use).
 _check_agent_requirements() {
     _is_true "${SANDBOX_QUIET:-false}" && return 0
     local agents_dir="$SANDBOX_DIR/agents"
     [[ -d "$agents_dir" ]] || return 0
+    [[ ${#ENABLED_AGENTS[@]} -gt 0 ]] || return 0
 
-    local agent_dir agent_name config
-    for agent_dir in "$agents_dir"/*/; do
+    local agent_name agent_dir config
+    for agent_name in "${ENABLED_AGENTS[@]}"; do
+        agent_dir="$agents_dir/$agent_name"
         [[ -d "$agent_dir" ]] || continue
-        agent_name="$(basename "$agent_dir")"
         config="$agent_dir/config.conf"
         [[ -f "$config" ]] || continue
         _agent_warnings_suppressed "$agent_name" && continue
@@ -1375,6 +1479,7 @@ prepare_agent_configs() {
     _AGENT_PROTECTED_FILES=()
 
     [[ -d "$agents_dir" ]] || return 0
+    [[ ${#ENABLED_AGENTS[@]} -gt 0 ]] || return 0
 
     # Pre-create missing HOME_WRITABLE entries so overlays see the real
     # config dirs (for symlinking) and first-time auth writes persist.
@@ -1385,10 +1490,10 @@ prepare_agent_configs() {
     # on upgrade; preserves user edits.
     _deploy_agent_files
 
-    local agent_dir agent_name overlay
-    for agent_dir in "$agents_dir"/*/; do
+    local agent_name agent_dir overlay
+    for agent_name in "${ENABLED_AGENTS[@]}"; do
+        agent_dir="$agents_dir/$agent_name/"
         [[ -d "$agent_dir" ]] || continue
-        agent_name="$(basename "$agent_dir")"
         overlay="$agent_dir/overlay.sh"
         [[ -f "$overlay" ]] || continue
 
@@ -1572,7 +1677,6 @@ build_bwrap_args() {
         detect_backend
         _BACKEND_DETECTED=true
     fi
-    _detect_agents
     _apply_agent_profiles
     prepare_agent_configs "$1"
     backend_prepare "$1"

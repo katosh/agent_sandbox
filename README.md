@@ -2,7 +2,7 @@
 
 Kernel-enforced filesystem isolation for AI coding agents on Linux.
 
-Hides SSH keys, cloud credentials, GPG keys, and environment secrets from AI coding agents while letting them do their job. Three backends (bubblewrap, firejail, landlock), five agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode), zero containers.
+Hides SSH keys, cloud credentials, GPG keys, and environment secrets from AI coding agents while letting them do their job. Three backends (bubblewrap, firejail, landlock), six built-in agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode, pi-mono) with a one-line recipe for adding more, zero containers.
 
 ```bash
 agent-sandbox claude          # Claude Code, sandboxed
@@ -13,7 +13,7 @@ agent-sandbox bash            # interactive shell, sandboxed
 
 ## Why Sandbox?
 
-AI coding agents (Claude Code, Codex, Gemini, Aider, OpenCode, and others) are powerful — they read files, write code, and run commands on your behalf. But your user account has access to far more than any single project needs:
+AI coding agents (Claude Code, Codex, Gemini, Aider, OpenCode, pi-mono, and others) are powerful — they read files, write code, and run commands on your behalf. But your user account has access to far more than any single project needs:
 
 - **SSH keys** (`~/.ssh/`) — access to GitHub, remote servers, other machines
 - **Cloud credentials** (`~/.aws/`, API tokens) — access to S3, cloud services
@@ -117,7 +117,8 @@ $(PREFIX)/lib/agent-sandbox/            # Runtime (code + defaults)
 │   ├── codex/                          #   agent.md, settings.json deployed to user dir
 │   ├── gemini/                         #     on first run (see below)
 │   ├── aider/
-│   └── opencode/
+│   ├── opencode/
+│   └── pi/                             # pi-mono — ships disabled (opt-in via ENABLED_AGENTS)
 ├── backends/
 │   ├── bwrap.sh                        # Bubblewrap (mount namespace isolation)
 │   ├── firejail.sh                     # Firejail (setuid sandbox, namespaces + seccomp)
@@ -140,7 +141,8 @@ $(PREFIX)/lib/agent-sandbox/            # Runtime (code + defaults)
     ├── codex/agent.md
     ├── gemini/agent.md
     ├── aider/agent.md
-    └── opencode/agent.md
+    ├── opencode/agent.md
+    └── pi/agent.md
 ```
 
 Unmodified configs are silently updated on upgrade. User-edited files are preserved (tracked via `.origin-sha256` sidecars). Run `make install-conf FORCE=1` to reset all templates to defaults.
@@ -344,25 +346,68 @@ For the full architecture, protocol specification, and security analysis, see [C
 
 ## Agent Profiles
 
-**All permission grants — what the sandbox can read, write, and pass through as environment variables — live in the sandbox configuration layer: `sandbox.conf`, plus any admin config (`/app/lib/agent-sandbox/sandbox.conf`) and per-project overrides (`conf.d/*.conf`).** The effective policy is reconstructable from those files alone; per-agent profiles in `agents/<name>/` cannot widen them and a guardrail aborts the sandbox if an overlay tries to.
+The sandbox supports a growing set of AI coding agents. Each one lives in `agents/<name>/` and is enabled per-user via the `ENABLED_AGENTS` array in `sandbox.conf`. Disabled agents contribute nothing to the sandbox surface — their config dirs stay invisible, so e.g. `~/.pi` doesn't become writable for users who don't run pi.
 
-Each agent profile lives in `agents/<name>/` and contains:
+**Built-in profiles:**
+
+| Agent | Default | Auth dir | Notes |
+|-------|---------|----------|-------|
+| `claude` | enabled | `~/.claude`, `~/.claude.json`, `~/.local/{state,share}/claude` | OAuth or `ANTHROPIC_API_KEY` |
+| `codex` | enabled | `~/.codex` | OAuth (`codex login`) or `OPENAI_API_KEY` |
+| `gemini` | enabled | `~/.gemini` | Google OAuth or `GOOGLE_API_KEY` |
+| `aider` | enabled | (none — env-var only) | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` |
+| `opencode` | enabled | `~/.config/opencode` + `~/.local/{share,state}/opencode` + `~/.cache/opencode` | OAuth or provider API key |
+| `pi` | **disabled** | `~/.pi/agent` | Opt-in: `ENABLED_AGENTS+=("pi")` in sandbox.conf |
+
+**Enabling and disabling agents:** edit `ENABLED_AGENTS` in `sandbox.conf`. Adding a name folds that agent's declared writable/readable/blocked paths into the sandbox surface and runs its instruction-merging overlay; removing a name leaves the agent's paths invisible (no auth persistence, no AGENTS.md hide).
+
+```bash
+# Enable pi alongside the defaults:
+ENABLED_AGENTS+=("pi")
+
+# Or replace the whole list (e.g. solo-claude profile):
+ENABLED_AGENTS=("claude")
+```
+
+**How a profile is structured:** each `agents/<name>/` directory contains:
 
 | File | Purpose |
 |------|---------|
-| `overlay.sh` | Mechanical config merge (e.g., CLAUDE.md + sandbox instructions) and env-var exports (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …). Writes only to staging arrays — may NOT mutate permission globals. |
-| `agent.md` | Sandbox instructions injected into the agent's instruction file |
-| `config.conf` | **Declarative metadata only** — which env vars/paths the agent uses. Read to emit startup warnings if the agent's needs look unreachable. Does NOT modify permissions. |
-
-**How it works:** At sandbox start, every `agents/*/` profile is prepared unconditionally — no detection gate. The declarative `config.conf` is read to check whether the agent has a reachable credential (env var set and allowed, OR an auth marker file on disk). If neither is present, the sandbox prints a one-time per-agent warning with a login hint. Then each `overlay.sh` runs under a permission-mutation guardrail to assemble the merged config dir and export the agent's config-dir env var.
+| `config.conf` | Declarative metadata. Lists the writable/readable paths the agent needs, files to hide (real `AGENTS.md` / `CLAUDE.md` so the sandbox-merged copy wins), env vars used for auth, and auth-marker files. When the agent is enabled, these declarations are folded into `HOME_WRITABLE` / `HOME_READONLY` / `BLOCKED_FILES` automatically. |
+| `overlay.sh` | Runs at sandbox start (only for enabled agents). Merges `AGENTS.md` (or `CLAUDE.md`) with the sandbox-integrity snippet from `agent.md` into a `sandbox-config/` dir, then exports an env var like `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `OPENCODE_CONFIG_DIR` / `PI_CODING_AGENT_DIR` so the agent reads from there instead of its real config dir. Runs in a subshell with a guardrail — cannot mutate permission globals. |
+| `agent.md` | The sandbox-integrity instruction snippet. Customize per user via `~/.config/agent-sandbox/agents/<name>/agent.md`. |
 
 **Agent API keys are allowed by default** — `ALLOWED_ENV_VARS` in `sandbox.conf` includes `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`, and `GOOGLE_API_KEY` so agents that use env-var auth work on first launch. Comment out any entry to block that key.
 
-**Auth persists across sessions:** `~/.claude`, `~/.codex`, `~/.gemini`, and `~/.config/opencode` are listed in `HOME_WRITABLE` so tokens written inside the sandbox (by `claude`, `codex login`, etc.) survive to the next session. Missing directories are auto-created before sandbox start so first-time in-sandbox auth works even if the agent has never been run outside.
+**Auth persists across sessions** for enabled agents: their declared writable paths survive sandbox exit, and missing directories are auto-created before sandbox start so first-time in-sandbox auth works even if the agent has never been run outside.
 
-**Silencing warnings:** set `SUPPRESS_AGENT_WARNINGS=("claude")` in `sandbox.conf` to silence one agent, or `SUPPRESS_AGENT_WARNINGS=("all")` to silence every agent. Useful when you intentionally isolate an agent (e.g., remove `.claude` from `HOME_WRITABLE` to force fresh OAuth each session).
+**Silencing warnings:** set `SUPPRESS_AGENT_WARNINGS=("claude")` in `sandbox.conf` to silence one agent, or `SUPPRESS_AGENT_WARNINGS=("all")` to silence every agent.
 
-Customize agent instructions via `~/.config/agent-sandbox/agents/<name>/agent.md`.
+### Adding support for a new agent
+
+To add a tool not on the list above, drop a profile into `agents/<name>/` and add `"<name>"` to `ENABLED_AGENTS`. The recipe:
+
+1. **Find the agent's auth/config dir.** Most CLI agents keep credentials and history under a single dotdir (`~/.toolname` or `~/.config/toolname`). Check the tool's docs or strace the binary on first launch. Note all dirs the tool writes to — some use multiple XDG paths (config, data, cache, state).
+
+2. **Find the agent's instruction file** (if any) and an env var that overrides the agent's config dir. Most modern agents support one (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, `PI_CODING_AGENT_DIR`). The sandbox uses this to point the agent at a sandbox-merged copy of `AGENTS.md` / `CLAUDE.md` so sandbox-integrity instructions are authoritative.
+
+3. **Write `agents/<name>/config.conf`** declaring what the agent needs:
+   ```bash
+   AGENT_CREDENTIAL_ENV_VARS=("MYTOOL_API_KEY")     # for warning when blocked
+   AGENT_AUTH_MARKERS=("$HOME/.mytool/auth.json")   # exists ⇒ "authenticated"
+   AGENT_REQUIRED_WRITABLE_PATHS=("$HOME/.mytool")  # auto-folded into HOME_WRITABLE
+   AGENT_REQUIRED_READABLE_PATHS=()                 # auto-folded into HOME_READONLY
+   AGENT_BLOCKED_FILES=("$HOME/.mytool/AGENTS.md")  # auto-folded into BLOCKED_FILES
+   AGENT_LOGIN_HINT="run 'mytool login' inside the sandbox"
+   ```
+
+4. **Write `agents/<name>/overlay.sh`** modeled on an existing one (codex is the simplest example) — merge instructions into a `sandbox-config/` dir and export the agent's config-dir env var via `_AGENT_ENV_EXPORTS+=(...)`.
+
+5. **Copy `agents/<name>/agent.md`** from another agent (the wording is generic). Customize if you want different sandbox-integrity messaging for this tool.
+
+6. **Add `"<name>"` to `ENABLED_AGENTS`** in `sandbox.conf` and run the agent — first-time auth and config dirs are auto-created.
+
+The `agents/pi/` profile is a complete worked example for a single-binary CLI agent with one config dir and an env-var override; copy it as a starting point.
 
 ---
 

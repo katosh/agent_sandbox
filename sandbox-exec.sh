@@ -162,9 +162,16 @@ _load_sandbox_modules
 detect_backend
 _BACKEND_DETECTED=true
 
-# Prepare agent profiles (backend-independent). All agents are always
-# prepared — there is no detection gate. The requirement check emits
-# warnings if declared credentials/paths look unreachable.
+# Apply per-agent grants. For each name in ENABLED_AGENTS, fold its
+# declared writable/readable/blocked paths (from agents/<name>/config.conf)
+# into the sandbox permission arrays. Must run after all config has
+# been loaded so user-set ENABLED_AGENTS wins, and before the
+# requirement check / overlay execution which both iterate the list.
+_apply_agent_profiles
+
+# Prepare agent profiles (backend-independent). Only agents listed in
+# ENABLED_AGENTS are prepared. The requirement check emits warnings
+# if declared credentials/paths look unreachable.
 _check_agent_requirements
 prepare_agent_configs "$PROJECT_DIR"
 
