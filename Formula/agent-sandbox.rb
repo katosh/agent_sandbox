@@ -15,7 +15,7 @@ class AgentSandbox < Formula
   desc "Kernel-enforced filesystem isolation for AI coding agents on Linux"
   homepage "https://github.com/katosh/agent_sandbox"
   url "https://github.com/katosh/agent_sandbox/archive/refs/tags/v0.4.1.tar.gz"
-  sha256 "PLACEHOLDER_SHA256"
+  sha256 "02dce6c1011869821f5012143ef84aee274253f18535e67e91a57a5866f813b1"
   license "MIT"
 
   depends_on :linux
