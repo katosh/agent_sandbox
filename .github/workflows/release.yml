@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re-)publish notes for. Skips if release already exists."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: "Publish GitHub Release"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: ver
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.ver.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify tag matches VERSION file
+        run: |
+          file_ver=$(tr -d '[:space:]' < VERSION)
+          if [[ "$file_ver" != "${{ steps.ver.outputs.version }}" ]]; then
+            echo "::error::Tag ${{ steps.ver.outputs.tag }} does not match VERSION file ($file_ver)"
+            exit 1
+          fi
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          BODY_FILE="$RUNNER_TEMP/release-notes.md"
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { flag=1; next }
+            flag && /^## \[/ { exit }
+            flag { print }
+          ' CHANGELOG.md > "$BODY_FILE"
+          # Trim leading/trailing blank lines
+          sed -i -e '/./,$!d' -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$BODY_FILE"
+          if [[ ! -s "$BODY_FILE" ]]; then
+            echo "::warning::No CHANGELOG entry for $VERSION — falling back to auto-generated notes"
+            echo "body_file=" >> "$GITHUB_OUTPUT"
+          else
+            echo "body_file=$BODY_FILE" >> "$GITHUB_OUTPUT"
+            echo "─── Release notes ───"
+            cat "$BODY_FILE"
+            echo "─────────────────────"
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          BODY_FILE: ${{ steps.notes.outputs.body_file }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — skipping."
+            exit 0
+          fi
+          if [[ -n "$BODY_FILE" ]]; then
+            gh release create "$TAG" --title "$TAG" --notes-file "$BODY_FILE"
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi

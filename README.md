@@ -184,6 +184,19 @@ bash test.sh            # run all tests
 bash test.sh --verbose  # show details on failure
 ```
 
+### Releasing (maintainers)
+
+Releases are cut by pushing an annotated `vX.Y.Z` tag that matches the `VERSION` file and has a corresponding `## [X.Y.Z]` section in `CHANGELOG.md`:
+
+```bash
+# 1. Bump VERSION, add a ## [X.Y.Z] - YYYY-MM-DD section to CHANGELOG.md, commit.
+# 2. Tag and push.
+git tag -a v0.4.3 -m "Release v0.4.3"
+git push origin main v0.4.3
+```
+
+The [`release` workflow](.github/workflows/release.yml) fires on the tag push, verifies the tag matches `VERSION`, extracts the matching CHANGELOG section as release notes, and publishes a GitHub Release. If no CHANGELOG entry is found, it falls back to GitHub's auto-generated notes.
+
 ---
 
 ## Quick Start
