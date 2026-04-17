@@ -64,6 +64,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   are now declared in the opencode profile and granted automatically
   when opencode is enabled.
 
+- **Dead chaperon detection:** stubs now timeout the FIFO write after 5 s
+  and report a clear error ("chaperon is not responding") instead of
+  hanging indefinitely when the chaperon process has died. The response
+  FIFO open uses O_RDWR to avoid a second blocking point.
+
+- **Chaperon crash diagnostics:** stderr is redirected to
+  `chaperon.err` in the FIFO directory (instead of `/dev/null`) so
+  startup failures and `set -e` deaths leave a trace. An `ERR` trap
+  in `chaperon.sh` logs the failing line number before exit.
+
+- **Log fallback for nested sandboxes:** when the NFS log directory is
+  unreachable (e.g., `$HOME` is tmpfs inside bwrap), `chaperon_log_init`
+  falls back to writing logs in the FIFO directory. Nested chaperons
+  now produce discoverable diagnostics instead of failing silently.
 ## [0.4.0] - 2026-04-15
 
 ### Added

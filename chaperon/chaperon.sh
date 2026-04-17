@@ -38,8 +38,13 @@ if [[ -z "$FIFO_DIR" || -z "$PROJECT_DIR" || -z "$SANDBOX_EXEC" ]]; then
 fi
 
 # ── Logging ─────────────────────────────────────────────────────
-chaperon_log_init "$PROJECT_DIR"
+chaperon_log_init "$PROJECT_DIR" "$FIFO_DIR"
 chaperon_log info "starting (pid=$$, ppid=$PPID, fifo=$FIFO_DIR)"
+
+# Catch unexpected deaths from set -e. Without this, a failed command
+# kills the process silently (stderr is chaperon.err, but the bash
+# error message gives no context). Log the failing line before exit.
+trap 'chaperon_log error "unexpected exit at line $LINENO (exit=$?)"' ERR
 
 # ── Orphan prevention ────────────────────────────────────────────
 if command -v python3 &>/dev/null; then

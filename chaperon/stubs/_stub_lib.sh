@@ -72,15 +72,30 @@ chaperon_call() {
     # Write atomically: acquire flock to prevent interleaving from concurrent stubs.
     # For messages under PIPE_BUF (4096), a single write() is atomic on Linux,
     # but we always lock for safety with concurrent large+small messages.
-    (
-        flock 9
-        printf '%s\n' "$msg" > "$fifo_dir/req"
-    ) 9>"$fifo_dir/req.lock"
+    #
+    # The write (open+write+close) to the FIFO blocks if the chaperon is dead
+    # because open() on a write-only FIFO waits for a reader. Use timeout to
+    # detect this and fail fast with a diagnostic instead of hanging forever.
+    if ! timeout 5 bash -c '
+        (
+            flock 9
+            printf "%s\n" "$1" > "$2/req"
+        ) 9>"$2/req.lock"
+    ' -- "$msg" "$fifo_dir" 2>/dev/null; then
+        echo "error: chaperon is not responding (write to $fifo_dir/req timed out after 5s)" >&2
+        if [[ -f "$fifo_dir/chaperon.err" && -s "$fifo_dir/chaperon.err" ]]; then
+            echo "chaperon.err:" >&2
+            tail -5 "$fifo_dir/chaperon.err" >&2
+        fi
+        rm -rf "$_resp_dir"
+        return 127
+    fi
 
     # Read response from per-request FIFO with a timeout to prevent infinite
-    # hangs if the chaperon process dies.
+    # hangs if the chaperon dies mid-request. The open() itself blocks until
+    # a writer appears, so wrap it in a timeout too.
     local resp_fd
-    exec {resp_fd}<"$resp_fifo"
+    exec {resp_fd}<>"$resp_fifo"  # O_RDWR avoids blocking on open()
 
     if ! chaperon_read_response "$resp_fd" 30; then
         echo "error: failed to read chaperon response (timeout or error)" >&2

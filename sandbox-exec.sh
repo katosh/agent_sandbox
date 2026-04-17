@@ -205,12 +205,13 @@ if [[ "$DRY_RUN" == true ]]; then
     exit 0
 fi
 
-# Start chaperon in background (opens FIFOs on its side).
-# Redirect stdout/stderr to /dev/null so the chaperon doesn't hold
-# the parent's output pipes open — otherwise $() subshells that capture
-# sandbox output would block until the chaperon exits (5s poll delay).
-# The chaperon's own error logging goes to stderr inside dispatch_handler
-# and is captured per-request, not on the process-level stderr.
+# Start chaperon in background.
+# stdout → /dev/null so the chaperon doesn't hold the parent's output
+# pipes open (otherwise $() subshells block until the chaperon exits).
+# stderr → chaperon.err in the FIFO dir so crashes leave a trace.
+# The chaperon's own per-request logging goes to structured log files;
+# chaperon.err captures only unexpected failures (set -e, source errors,
+# unhandled signals) that kill the process before logging is initialized.
 if [[ -n "$_CHAPERON_DIR" ]]; then
     # Export config vars that chaperon handlers need (shell variables
     # are not inherited by child processes unless exported).
@@ -224,7 +225,7 @@ if [[ -n "$_CHAPERON_DIR" ]]; then
 
     "$SCRIPT_DIR/chaperon/chaperon.sh" \
         "$_CHAPERON_DIR" "$PROJECT_DIR" "$SCRIPT_DIR/sandbox-exec.sh" \
-        >/dev/null 2>/dev/null &
+        >/dev/null 2>"$_CHAPERON_DIR/chaperon.err" &
     _CHAPERON_PID=$!
 fi
 

@@ -27,12 +27,17 @@ _CHAPERON_SESSION_ID=""
 
 # ── Public API ──────────────────────────────────────────────────
 
-# chaperon_log_init <project_dir>
+# chaperon_log_init <project_dir> [fifo_dir]
 #
 # Creates the log directory, opens a per-session log file, writes a
 # session header, and prunes stale logs in the background.
+#
+# If the primary log directory (NFS) is unreachable (e.g., inside a
+# bwrap namespace where $HOME is tmpfs), falls back to logging in
+# <fifo_dir>/chaperon.log so crashes still leave a trace.
 chaperon_log_init() {
     local project_dir="${1:-}"
+    local fifo_dir="${2:-}"
     local level="${CHAPERON_LOG_LEVEL:-info}"
     local retain_days="${CHAPERON_LOG_RETAIN_DAYS:-7}"
 
@@ -49,11 +54,16 @@ chaperon_log_init() {
     # could reveal project structure or resource requests. Restrict to
     # owner-only to prevent group/other access on shared NFS.
     _CHAPERON_LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/agent-sandbox/chaperon"
-    mkdir -p "$_CHAPERON_LOG_DIR" 2>/dev/null || {
-        # Can't create log dir — disable file logging, write to stderr only
-        _CHAPERON_LOG_FILE=""
-        return 0
-    }
+    if ! mkdir -p "$_CHAPERON_LOG_DIR" 2>/dev/null; then
+        # Primary log dir unreachable (e.g., $HOME is tmpfs inside bwrap).
+        # Fall back to FIFO dir which is guaranteed to exist and be writable.
+        if [[ -n "$fifo_dir" && -d "$fifo_dir" ]]; then
+            _CHAPERON_LOG_DIR="$fifo_dir"
+        else
+            _CHAPERON_LOG_FILE=""
+            return 0
+        fi
+    fi
     chmod 700 "$_CHAPERON_LOG_DIR" 2>/dev/null || true
 
     # Session ID: compact, unique across hosts and PIDs
@@ -83,9 +93,13 @@ chaperon_log_init() {
     }
     chmod 600 "$_CHAPERON_LOG_FILE" 2>/dev/null || true
 
-    # Prune old logs (non-blocking, best-effort)
-    _chaperon_log_prune "$retain_days" &
-    disown $! 2>/dev/null || true
+    # Prune old logs (non-blocking, best-effort).
+    # Only prune the NFS log dir, not the FIFO-dir fallback.
+    local _nfs_log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/agent-sandbox/chaperon"
+    if [[ "$_CHAPERON_LOG_DIR" == "$_nfs_log_dir" ]]; then
+        _chaperon_log_prune "$retain_days" &
+        disown $! 2>/dev/null || true
+    fi
 }
 
 # chaperon_log <level> <message...>
