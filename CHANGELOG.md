@@ -78,6 +78,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   unreachable (e.g., `$HOME` is tmpfs inside bwrap), `chaperon_log_init`
   falls back to writing logs in the FIFO directory. Nested chaperons
   now produce discoverable diagnostics instead of failing silently.
+
+## [0.4.1] - 2026-04-16
+
+### Fixed
+
+- **Silent death on unavailable lmod modules:** when `SANDBOX_MODULES`
+  was set but lmod was not installed (or a specified module did not
+  exist), `_load_sandbox_modules` returned exit code 1. Under
+  `set -e`, this killed `sandbox-exec.sh` immediately with no error
+  message. Module loading is now best-effort: unavailable modules
+  emit a warning to stderr and the sandbox continues to start
+  normally.
 ## [0.4.0] - 2026-04-15
 
 ### Added

@@ -3859,6 +3859,58 @@ else
     echo ""
 fi
 
+# ── L04: SANDBOX_MODULES with no lmod doesn't abort sandbox ──
+# This test runs unconditionally.  It verifies that _load_sandbox_modules
+# returns 0 (not 1, which would kill the script under set -e) when lmod
+# is unavailable.  We unset the module function and point LMOD_CMD at a
+# nonexistent path so the init scripts can't re-source it.
+echo "13b. Lmod fallback (no lmod required)"
+
+local _nolmod_conf
+_nolmod_conf=$(mktemp)
+trap_rm_path "$_nolmod_conf"
+cat "$SCRIPT_DIR/sandbox.conf" > "$_nolmod_conf"
+cat >> "$_nolmod_conf" <<'CONF'
+SANDBOX_MODULES=("fake-module/1.0")
+CONF
+
+# Run sandbox-exec.sh in an environment where the `module` function is
+# stripped.  env -u BASH_FUNC_module%% removes the exported function;
+# LMOD_CMD=/nonexistent prevents re-sourcing lmod init scripts.
+_stderr_l04=$(mktemp)
+trap_rm_path "$_stderr_l04"
+if env -u "BASH_FUNC_module%%" LMOD_CMD="/nonexistent" LMOD_DIR="/nonexistent" \
+     SANDBOX_CONF="$_nolmod_conf" \
+     bash -c 'unset -f module 2>/dev/null; exec "$@"' _ \
+     "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+     --project-dir "$PROJECT_DIR" -- bash -c 'echo ok' \
+     >"$_stderr_l04.out" 2>"$_stderr_l04"; then
+    local _l04_out _l04_err
+    _l04_out=$(cat "$_stderr_l04.out")
+    _l04_err=$(cat "$_stderr_l04")
+    if [[ "$_l04_out" == *"ok"* ]]; then
+        if [[ "$_l04_err" == *"warning"*"module"* ]]; then
+            pass "L04: SANDBOX_MODULES with no lmod warns and continues"
+        else
+            pass "L04: SANDBOX_MODULES with no lmod doesn't abort"
+        fi
+    else
+        fail "L04: Sandbox didn't run guest when lmod unavailable" "$_l04_out $_l04_err"
+    fi
+else
+    local _l04_out _l04_err
+    _l04_out=$(cat "$_stderr_l04.out" 2>/dev/null)
+    _l04_err=$(cat "$_stderr_l04" 2>/dev/null)
+    if [[ "$_l04_out" == *"ok"* ]]; then
+        pass "L04: SANDBOX_MODULES with no lmod doesn't prevent guest execution"
+    else
+        fail "L04: SANDBOX_MODULES with no lmod prevented sandbox from starting" "$_l04_err"
+    fi
+fi
+rm -f "$_stderr_l04.out"
+
+echo ""
+
 # ── Per-backend summary ──────────────────────────────────────────
 
 TOTAL=$((PASS + FAIL + SKIP + WARN))

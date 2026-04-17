@@ -1555,13 +1555,13 @@ _load_sandbox_modules() {
     fi
 
     if ! type module &>/dev/null; then
-        echo "sandbox: warning: SANDBOX_MODULES set but 'module' command not available" >&2
-        return 1
+        echo "sandbox: warning: SANDBOX_MODULES set but 'module' command not available — skipping" >&2
+        return 0
     fi
 
     for _mod in "${SANDBOX_MODULES[@]}"; do
         if ! module load "$_mod" 2>/dev/null; then
-            echo "sandbox: warning: failed to load module '$_mod'" >&2
+            echo "sandbox: warning: module '$_mod' not available — skipping" >&2
         fi
     done
 }
