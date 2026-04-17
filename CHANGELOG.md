@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-04-16
+
+### Fixed
+
+- **Spurious "exited with code 1" warnings from every config file.**
+  The `_load_untrusted_config` subprocess ended with a single
+  `declare -p VAR1 VAR2 ... 2>/dev/null` call covering every
+  `_CONFIG_ARRAYS` / `_CONFIG_SCALARS` entry. `declare -p` returns
+  exit code 1 when any listed variable is unset (the `2>/dev/null`
+  silences the message but not the exit code), so any user or
+  project config that did not explicitly set newer entries like
+  `CHAPERON_LOG_LEVEL` / `CHAPERON_LOG_RETAIN_DAYS` triggered a
+  false "using values it set before exiting" warning on every
+  startup. The subprocess now captures the real source exit code
+  and iterates `declare -p` per variable with `|| true` so unset
+  vars no longer poison the result. Genuine config errors (`exit`
+  inside a config, syntax errors, failing commands) still surface.
+- **Missing `chaperon/logging.sh` in Homebrew install.** The
+  `install-lib` Makefile target copied `chaperon/chaperon.sh`,
+  `chaperon/protocol.sh`, and the `handlers/` / `stubs/` trees, but
+  never installed `chaperon/logging.sh` (added in 0.4.0). As a
+  result, every `brew install agent-sandbox` at 0.4.0 / 0.4.1
+  shipped a broken chaperon: `chaperon.sh` died immediately at
+  `source "$CHAPERON_DIR/logging.sh"`, and every proxied Slurm call
+  (`sbatch`, `srun`, `squeue`, `scancel`, etc.) timed out with
+  "chaperon is not responding". The Makefile now installs
+  `logging.sh` alongside `protocol.sh`.
+
+## [0.4.1] - 2026-04-16
+
 ### Added
 
 - **`ENABLED_AGENTS` array** in `sandbox.conf` (default: `claude codex
@@ -56,33 +86,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- **OpenCode XDG dir drift:** newer OpenCode releases (1.x) `mkdir`
-  four XDG directories on startup (`~/.config/opencode`,
-  `~/.local/share/opencode`, `~/.cache/opencode`,
-  `~/.local/state/opencode`) and write `auth.json` to the data dir,
-  but only the first was previously writable in the sandbox. All four
-  are now declared in the opencode profile and granted automatically
-  when opencode is enabled.
-
-- **Dead chaperon detection:** stubs now timeout the FIFO write after 5 s
-  and report a clear error ("chaperon is not responding") instead of
-  hanging indefinitely when the chaperon process has died. The response
-  FIFO open uses O_RDWR to avoid a second blocking point.
-
-- **Chaperon crash diagnostics:** stderr is redirected to
-  `chaperon.err` in the FIFO directory (instead of `/dev/null`) so
-  startup failures and `set -e` deaths leave a trace. An `ERR` trap
-  in `chaperon.sh` logs the failing line number before exit.
-
-- **Log fallback for nested sandboxes:** when the NFS log directory is
-  unreachable (e.g., `$HOME` is tmpfs inside bwrap), `chaperon_log_init`
-  falls back to writing logs in the FIFO directory. Nested chaperons
-  now produce discoverable diagnostics instead of failing silently.
-
-## [0.4.1] - 2026-04-16
-
-### Fixed
-
 - **Silent death on unavailable lmod modules:** when `SANDBOX_MODULES`
   was set but lmod was not installed (or a specified module did not
   exist), `_load_sandbox_modules` returned exit code 1. Under
@@ -90,6 +93,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   message. Module loading is now best-effort: unavailable modules
   emit a warning to stderr and the sandbox continues to start
   normally.
+- **OpenCode XDG dir drift:** newer OpenCode releases (1.x) `mkdir`
+  four XDG directories on startup (`~/.config/opencode`,
+  `~/.local/share/opencode`, `~/.cache/opencode`,
+  `~/.local/state/opencode`) and write `auth.json` to the data dir,
+  but only the first was previously writable in the sandbox. All four
+  are now declared in the opencode profile and granted automatically
+  when opencode is enabled.
+- **Dead chaperon detection:** stubs now timeout the FIFO write after 5 s
+  and report a clear error ("chaperon is not responding") instead of
+  hanging indefinitely when the chaperon process has died. The response
+  FIFO open uses O_RDWR to avoid a second blocking point.
+- **Chaperon crash diagnostics:** stderr is redirected to
+  `chaperon.err` in the FIFO directory (instead of `/dev/null`) so
+  startup failures and `set -e` deaths leave a trace. An `ERR` trap
+  in `chaperon.sh` logs the failing line number before exit.
+- **Log fallback for nested sandboxes:** when the NFS log directory is
+  unreachable (e.g., `$HOME` is tmpfs inside bwrap), `chaperon_log_init`
+  falls back to writing logs in the FIFO directory. Nested chaperons
+  now produce discoverable diagnostics instead of failing silently.
 ## [0.4.0] - 2026-04-15
 
 ### Added

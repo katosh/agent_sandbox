@@ -501,11 +501,15 @@ _load_untrusted_config() {
         eval "$1"
         # Source the untrusted config
         . "$2" 2>/dev/null
+        _src_exit=$?
         # Extract config variables.  If the config overrode declare as a
         # function, this calls the attacker'\''s code — but the parent
         # validates the output before eval'\''ing it (see below).
-        declare -p '"$_var_names"' 2>/dev/null
-    ' -- "$_parent_state" "$_conf" )" || _exit_code=$?
+        # Iterate per-variable so that unset variables (which cause
+        # declare -p to return 1) do not poison the exit code.
+        for _v in $3; do declare -p "$_v" 2>/dev/null || true; done
+        exit "$_src_exit"
+    ' -- "$_parent_state" "$_conf" "$_var_names" )" || _exit_code=$?
 
     if [[ $_exit_code -ne 0 ]]; then
         echo "WARNING: ${_label} exited with code ${_exit_code} — using values it set before exiting." >&2

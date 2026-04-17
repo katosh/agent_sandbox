@@ -120,6 +120,7 @@ install-lib:
 	$(INSTALL) -d $(DESTDIR)$(LIBDIR)/chaperon/stubs
 	$(INSTALL) -m 755 $(SRC_DIR)/chaperon/chaperon.sh $(DESTDIR)$(LIBDIR)/chaperon/
 	$(INSTALL) -m 644 $(SRC_DIR)/chaperon/protocol.sh $(DESTDIR)$(LIBDIR)/chaperon/
+	$(INSTALL) -m 644 $(SRC_DIR)/chaperon/logging.sh $(DESTDIR)$(LIBDIR)/chaperon/
 	@# Handler scripts (executable) and shared library (sourced, not executable)
 	for f in $(SRC_DIR)/chaperon/handlers/*.sh; do \
 		case "$$f" in *_handler_lib.sh) $(INSTALL) -m 644 "$$f" $(DESTDIR)$(LIBDIR)/chaperon/handlers/ ;; \

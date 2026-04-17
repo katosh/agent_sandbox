@@ -492,6 +492,27 @@ if sandbox bash -c 'echo ok'; then
     fi
 fi
 
+# ── Config loading: unset _CONFIG_SCALARS must not trigger warnings ──
+# Regression test: adding new variables to _CONFIG_SCALARS that aren't
+# set in existing user configs must not cause "exited with code 1"
+# warnings (the declare -p command must tolerate unset variables).
+_unset_test_conf=$(mktemp)
+echo 'SLURM_SCOPE="project"' > "$_unset_test_conf"
+_unset_test_err=$(
+    bash -c '
+        # Unset the new chaperon vars to simulate an old config
+        unset CHAPERON_LOG_LEVEL CHAPERON_LOG_RETAIN_DAYS 2>/dev/null
+        source "'"$SCRIPT_DIR"'/sandbox-lib.sh"
+        _load_untrusted_config "'"$_unset_test_conf"'" "Unset-var test"
+    ' 2>&1
+)
+if [[ "$_unset_test_err" == *"exited with code"* ]]; then
+    fail "Unset _CONFIG_SCALARS vars trigger spurious warning" "$_unset_test_err"
+else
+    pass "Unset _CONFIG_SCALARS vars do not trigger warnings"
+fi
+rm -f "$_unset_test_conf"
+
 # ── ALLOWED_PROJECT_PARENTS enforcement ──────────────────────────
 # sandbox-exec.sh must reject --project-dir paths that aren't under
 # any entry in ALLOWED_PROJECT_PARENTS (sandbox.conf:92-97). Build a
