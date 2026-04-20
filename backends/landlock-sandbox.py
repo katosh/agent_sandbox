@@ -108,10 +108,16 @@ AUDIT_ARCH_AARCH64 = 0xC00000B7
 #                      memory (e.g., bypass tokens from sbatch wrappers).
 #                      Blocked on Landlock; bwrap/firejail have PID ns.
 #
+# Defense-in-depth additions (already cap-denied, safe to block):
+#   bpf, mount, umount2, pivot_root, reboot, swapon, swapoff, personality,
+#   acct, quotactl, kcmp.  See backends/generate-seccomp.py for the full
+#   justification per syscall — same set, same rationale.
+#
 # memfd_create is NOT blocked (GPU compute, CUDA, JIT compilers).
 # The filesystem sandbox (Landlock rules) remains the primary isolation.
 _BLOCKED_SYSCALLS = {
     AUDIT_ARCH_X86_64: {
+        # --- Original attack-surface trio + ptrace/process_vm (no PID ns) ---
         "io_uring_setup":      425,
         "io_uring_enter":      426,
         "io_uring_register":   427,
@@ -121,8 +127,21 @@ _BLOCKED_SYSCALLS = {
         "ptrace":              101,
         "process_vm_readv":    310,
         "process_vm_writev":   311,
+        # --- Defense-in-depth (already cap-denied) ---
+        "bpf":                 321,
+        "mount":               165,
+        "umount2":             166,
+        "pivot_root":          155,
+        "reboot":              169,
+        "swapon":              167,
+        "swapoff":             168,
+        "personality":         135,
+        "acct":                163,
+        "quotactl":            179,
+        "kcmp":                312,
     },
     AUDIT_ARCH_AARCH64: {
+        # --- Original attack-surface trio + ptrace/process_vm (no PID ns) ---
         "io_uring_setup":      425,
         "io_uring_enter":      426,
         "io_uring_register":   427,
@@ -132,6 +151,18 @@ _BLOCKED_SYSCALLS = {
         "ptrace":              117,
         "process_vm_readv":    270,
         "process_vm_writev":   271,
+        # --- Defense-in-depth (already cap-denied) ---
+        "bpf":                 280,
+        "mount":                40,
+        "umount2":              39,
+        "pivot_root":           41,
+        "reboot":              142,
+        "swapon":              224,
+        "swapoff":             225,
+        "personality":          92,
+        "acct":                 89,
+        "quotactl":             60,
+        "kcmp":                272,
     },
 }
 

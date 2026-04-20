@@ -292,7 +292,13 @@ All three backends include seccomp filters that block dangerous syscalls. Fireja
 
 ### What is blocked
 
-The filters block `io_uring`, `userfaultfd`, and `kexec_load`/`kexec_file_load`. The `io_uring` block provides the main security value — it has a [large kernel attack surface](https://security.googleblog.com/2023/06/learnings-from-kctf-vrps-42-linux.html) and [Docker's default seccomp profile](https://github.com/moby/moby/pull/46762) blocks it since version 25.0.
+The filters block two groups of syscalls:
+
+1. **Core attack-surface denials** — `io_uring_{setup,enter,register}`, `userfaultfd`, `kexec_load`/`kexec_file_load`. The `io_uring` block provides the main security value; it has a [large kernel attack surface](https://security.googleblog.com/2023/06/learnings-from-kctf-vrps-42-linux.html) and [Docker's default seccomp profile](https://github.com/moby/moby/pull/46762) blocks it since version 25.0.
+
+2. **Defense-in-depth set** — `bpf`, `mount`, `umount2`, `pivot_root`, `reboot`, `swapon`/`swapoff`, `personality`, `acct`, `quotactl`, `kcmp`. Each of these is already rejected at the capability layer for an unprivileged sandboxed process; denying them at the seccomp layer too is belt-and-suspenders in case a kernel bug or misconfiguration ever leaks the gating capability. Zero observable effect on HPC/ML workloads — see [SECURITY.md §Seccomp Filter](SECURITY.md#seccomp-filter) for the per-syscall justification.
+
+The Landlock backend additionally denies `ptrace` and `process_vm_readv`/`writev` because it has no PID namespace to prevent sibling-process inspection. bwrap and firejail rely on PID namespacing for that.
 
 | Tool | Uses `io_uring` | When blocked | Impact |
 |---|---|---|---|

@@ -334,6 +334,41 @@ else
 fi
 clean_user_conf
 
+# ── T14a: Symlink bypass of DENIED_WRITABLE_PATHS via EXTRA_WRITABLE_PATHS ──
+echo "  T14a: EXTRA_WRITABLE_PATHS symlink pointing at denied /etc"
+ln -snf /etc "$HOME/denied-link" 2>/dev/null
+write_user_conf "EXTRA_WRITABLE_PATHS+=(\"$HOME/denied-link\")"
+if sandbox_raw bash -c 'touch /etc/test-symlink-bypass 2>&1 || echo BLOCKED'; then
+    if echo "$OUTPUT" | grep -q "WARNING.*resolves to.*under denied path"; then
+        pass "T14a: Symlink to /etc resolved and stripped from EXTRA_WRITABLE_PATHS"
+    elif echo "$OUTPUT" | grep -q "BLOCKED\|denied\|Read-only"; then
+        pass "T14a: /etc still unwritable despite symlinked EXTRA_WRITABLE_PATHS entry"
+    else
+        fail "T14a: /etc may be writable via symlink (DENIED_WRITABLE_PATHS bypass)" "$OUTPUT"
+    fi
+else
+    pass "T14a: Sandbox rejected / failed-safe on symlinked EXTRA_WRITABLE_PATHS entry"
+fi
+rm -f "$HOME/denied-link"
+clean_user_conf
+
+# ── T14b: Symlink bypass via HOME_WRITABLE ──
+echo "  T14b: HOME_WRITABLE symlink pointing at denied \$HOME/.ssh"
+ln -snf .ssh "$HOME/home-denied-link" 2>/dev/null
+write_user_conf 'HOME_WRITABLE+=("home-denied-link")'
+if sandbox_raw bash -c 'touch $HOME/.ssh/test-symlink-bypass 2>&1 || echo BLOCKED'; then
+    if echo "$OUTPUT" | grep -q "WARNING.*resolves to.*under denied path" \
+        || echo "$OUTPUT" | grep -q "BLOCKED\|denied\|Read-only\|No such"; then
+        pass "T14b: .ssh unwritable via symlinked HOME_WRITABLE entry"
+    else
+        fail "T14b: .ssh may be writable via HOME_WRITABLE symlink (DENIED bypass)" "$OUTPUT"
+    fi
+else
+    pass "T14b: Sandbox rejected / failed-safe on symlinked HOME_WRITABLE entry"
+fi
+rm -f "$HOME/home-denied-link"
+clean_user_conf
+
 echo ""
 
 # ══════════════════════════════════════════════════════════════════

@@ -66,13 +66,15 @@ AUDIT_ARCH_AARCH64 = 0xC00000B7
 #   aarch64: include/uapi/asm-generic/unistd.h (aarch64 uses the generic table)
 #     https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/unistd.h
 #
-# All six syscalls are also blocked by Docker's default seccomp profile
-# (default-deny, none are in the allowlist):
+# All of these syscalls are also blocked by Docker's default seccomp
+# profile (default-deny, none are in the allowlist):
 #   https://github.com/moby/profiles/blob/main/seccomp/default.json
 #
 # Bwrap already provides PID namespace isolation, so ptrace and
 # process_vm_readv/writev are not blocked here (unlike the Landlock
 # backend which lacks PID namespace).
+#
+# === Original three (large new/attack-surface) ===
 #
 # io_uring:     kernel 5.1+.  Exposes a large, rapidly-evolving kernel
 #               attack surface.  Docker 25.0+ blocks it by default
@@ -89,23 +91,88 @@ AUDIT_ARCH_AARCH64 = 0xC00000B7
 # kexec_load/kexec_file_load:  load a new kernel.  Requires
 #               CAP_SYS_BOOT (blocked by no_new_privs), but defense
 #               in depth — seccomp catches it even if caps leak.
+#
+# === Additional defense-in-depth set (cap-denied already) ===
+#
+# Each of the following is already blocked by capability checks or
+# equivalent kernel gating when invoked from an unprivileged sandbox
+# (see the reachability probe summary in pentest/round2_findings.md).
+# Adding them here is pure belt-and-suspenders: if a kernel bug or
+# configuration mistake ever leaked the gating capability, the
+# seccomp filter would still reject the call.  Zero observable effect
+# on HPC/ML workloads.
+#
+# bpf:          loads eBPF programs.  Requires CAP_BPF/CAP_SYS_ADMIN
+#               for most operations.  Only bcc/bpftrace/tracing tools
+#               use it; no HPC workload does.  Large kernel-resident
+#               verifier is a recurring CVE source.
+#
+# mount / umount2 / pivot_root:  filesystem-namespace mutation.
+#               CAP_SYS_ADMIN-gated; useless outside privileged
+#               contexts.  Defense in depth against userns + cap-leak
+#               chains.
+#
+# reboot:       halts the machine.  CAP_SYS_BOOT-gated.
+#
+# swapon / swapoff:  swap-space manipulation.  CAP_SYS_ADMIN-gated.
+#
+# personality:  sets execution-domain quirks (e.g. legacy
+#               READ_IMPLIES_EXEC).  Some values are used by the
+#               kernel exploit-mitigation bypass CVE-2022-1499 and
+#               similar.  Docker restricts to "safe" values; we deny
+#               outright since no legitimate user code calls it.
+#
+# acct:         BSD process accounting.  CAP_SYS_PACCT-gated.
+#
+# quotactl:     filesystem quota control.  CAP_SYS_ADMIN-gated.
+#
+# kcmp:         compares two processes' resources (kernel pointers,
+#               file descriptors).  Requires CAP_SYS_PTRACE on cross-
+#               UID targets; same-UID inspection can be abused for
+#               kernel-pointer leaks.
 
 _BLOCKED_SYSCALLS = {
     AUDIT_ARCH_X86_64: {
+        # --- Original attack-surface trio ---
         "io_uring_setup":    425,   # syscall_64.tbl: 425 common io_uring_setup
         "io_uring_enter":    426,   # syscall_64.tbl: 426 common io_uring_enter
         "io_uring_register": 427,   # syscall_64.tbl: 427 common io_uring_register
         "kexec_load":        246,   # syscall_64.tbl: 246 64     kexec_load
         "kexec_file_load":   320,   # syscall_64.tbl: 320 common kexec_file_load
         "userfaultfd":       323,   # syscall_64.tbl: 323 common userfaultfd
+        # --- Defense-in-depth (already cap-denied) ---
+        "bpf":               321,   # syscall_64.tbl: 321 common bpf
+        "mount":             165,   # syscall_64.tbl: 165 common mount
+        "umount2":           166,   # syscall_64.tbl: 166 common umount2
+        "pivot_root":        155,   # syscall_64.tbl: 155 common pivot_root
+        "reboot":            169,   # syscall_64.tbl: 169 common reboot
+        "swapon":            167,   # syscall_64.tbl: 167 common swapon
+        "swapoff":           168,   # syscall_64.tbl: 168 common swapoff
+        "personality":       135,   # syscall_64.tbl: 135 common personality
+        "acct":              163,   # syscall_64.tbl: 163 common acct
+        "quotactl":          179,   # syscall_64.tbl: 179 common quotactl
+        "kcmp":              312,   # syscall_64.tbl: 312 common kcmp
     },
     AUDIT_ARCH_AARCH64: {
+        # --- Original attack-surface trio ---
         "io_uring_setup":    425,   # asm-generic/unistd.h: __NR_io_uring_setup    425
         "io_uring_enter":    426,   # asm-generic/unistd.h: __NR_io_uring_enter    426
         "io_uring_register": 427,   # asm-generic/unistd.h: __NR_io_uring_register 427
         "kexec_load":        104,   # asm-generic/unistd.h: __NR_kexec_load        104
         "kexec_file_load":   294,   # asm-generic/unistd.h: __NR_kexec_file_load   294
         "userfaultfd":       282,   # asm-generic/unistd.h: __NR_userfaultfd       282
+        # --- Defense-in-depth (already cap-denied) ---
+        "bpf":               280,   # asm-generic/unistd.h: __NR_bpf               280
+        "mount":              40,   # asm-generic/unistd.h: __NR_mount              40
+        "umount2":            39,   # asm-generic/unistd.h: __NR_umount2            39
+        "pivot_root":         41,   # asm-generic/unistd.h: __NR_pivot_root         41
+        "reboot":            142,   # asm-generic/unistd.h: __NR_reboot            142
+        "swapon":            224,   # asm-generic/unistd.h: __NR_swapon            224
+        "swapoff":           225,   # asm-generic/unistd.h: __NR_swapoff           225
+        "personality":        92,   # asm-generic/unistd.h: __NR_personality        92
+        "acct":               89,   # asm-generic/unistd.h: __NR_acct               89
+        "quotactl":           60,   # asm-generic/unistd.h: __NR_quotactl           60
+        "kcmp":              272,   # asm-generic/unistd.h: __NR_kcmp              272
     },
 }
 

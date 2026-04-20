@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **Chaperon response-FIFO TOCTOU (arbitrary file truncation).** The
+  chaperon's response-write path validated `[[ -L $RESP_FIFO ]]` / `[[ -p
+  $RESP_FIFO ]]` and then opened the path with bash's `>` redirection,
+  which follows symlinks (`O_WRONLY|O_CREAT|O_TRUNC`). A same-UID
+  process inside the sandbox could win the race between the check and
+  the open by unlinking the stub-created FIFO and dropping in a
+  symlink → `~/.bashrc`, `~/.ssh/authorized_keys`, `~/.profile`, etc.
+  The chaperon (which runs outside the sandbox as the user) would
+  truncate that target and write response-frame bytes into it,
+  breaking `bash` startup / locking the user out of SSH /
+  corrupting config files — a sandbox-escape of the "damage files
+  outside the sandbox" variety. Fixed by moving the response write
+  to a python3 helper that opens with `O_WRONLY | O_NOFOLLOW` (no
+  `O_CREAT`, no `O_TRUNC`) and re-verifies via `fstat(S_ISFIFO)`,
+  so no file outside the validated FIFO can be damaged under any
+  race. The pre-open `-L`/`-p` check is kept as an early filter.
+  `chaperon/chaperon.sh`.
+
+- **scontrol show-job extra-arg scope bypass.** `scontrol show job
+  <JOBID> <JOBID2> ...` is valid Slurm syntax, but the chaperon
+  handler only scope-validated `REQ_ARGS[2]` before forwarding the
+  full argv. A sandboxed agent could list one of its own jobs as
+  the first ID and arbitrary other jobs after it, letting `scontrol`
+  return details for out-of-scope jobs (info disclosure of
+  partition/comment/node/SubmitLine for sibling projects or other
+  sessions). Fixed by rejecting any non-flag positional arg after
+  the first job ID. `chaperon/handlers/scontrol.sh`.
+
+- **Seccomp defense-in-depth denylist.** The seccomp filter now
+  also denies `bpf`, `mount`, `umount2`, `pivot_root`, `reboot`,
+  `swapon`, `swapoff`, `personality`, `acct`, `quotactl`, and
+  `kcmp` on both `x86_64` and `aarch64`. All of these were already
+  capability-denied at the kernel level inside the sandbox (no
+  `CAP_SYS_ADMIN`/`CAP_SYS_BOOT`/`CAP_SYS_PTRACE`/`CAP_SYS_RESOURCE`),
+  but adding them to the seccomp blob means they fail at syscall
+  dispatch rather than somewhere deeper in the kernel, and narrows
+  the kernel attack surface reachable from inside the sandbox.
+  New `## Seccomp Filter` section in `SECURITY.md` documents the
+  core vs. defense-in-depth split plus the remaining allowed-but-
+  risky syscalls (`ptrace`, `perf_event_open`, `process_vm_*`,
+  `keyctl`, `unshare`, `setns`) and which kernel-layer mitigation
+  still applies to each. `backends/generate-seccomp.py`,
+  `backends/landlock-sandbox.py`, `SECURITY.md`, `README.md`,
+  `ADMIN_INSTALL.md`.
+
+- **Symlink-resolving enforcement of `DENIED_WRITABLE_PATHS`.**
+  `EXTRA_WRITABLE_PATHS`, `HOME_WRITABLE`, and the project dir
+  itself are now matched against the admin deny-list in both
+  literal and `readlink -f`-resolved forms. This closes the
+  bypass where e.g. `EXTRA_WRITABLE_PATHS+=("$HOME/myhack")` with
+  `$HOME/myhack -> /etc` would slip past a
+  `DENIED_WRITABLE_PATHS=("/etc")` policy — bwrap / firejail
+  follow symlinks when bind-mounting, so the literal-string
+  match was insufficient. New `test-admin.sh` T14a / T14b
+  exercise the `EXTRA_WRITABLE_PATHS` and `HOME_WRITABLE`
+  symlink-indirection paths. `sandbox-lib.sh`.
+
+### Fixed
+
+- **`validate_project_dir` now accepts `${HOME}` and `~/` in
+  `ALLOWED_PROJECT_PARENTS`.** Previously only the literal `$HOME`
+  form was expanded, so admins who wrote `ALLOWED_PROJECT_PARENTS=(
+  "${HOME}/projects")` or `("~/projects")` in `sandbox-admin.conf`
+  got spurious "Project directory not under an allowed parent path"
+  errors. All three forms are now expanded consistently — same
+  behaviour the rest of the config loader already uses.
+  `sandbox-lib.sh`.
+
 ## [0.4.2] - 2026-04-16
 
 ### Fixed

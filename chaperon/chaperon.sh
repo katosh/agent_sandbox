@@ -191,18 +191,15 @@ while true; do
     # Reject symlinks: -p follows symlinks, so a symlink → FIFO would pass.
     # A malicious process could race to replace the FIFO with a symlink
     # pointing outside the FIFO directory to intercept the response.
+    #
+    # This is an early filter only. The load-bearing protection against
+    # the symlink-swap race is the O_NOFOLLOW + fstat(S_ISFIFO) open in
+    # the python3 writer below, because bash's `>` redirection follows
+    # symlinks at open time.
     if [[ -L "$REQ_RESP_FIFO" ]] || [[ ! -p "$REQ_RESP_FIFO" ]]; then
         chaperon_log error "RESP_FIFO is symlink or not a FIFO: $REQ_RESP_FIFO"
         continue
     fi
-
-    # Open the FIFO immediately after validation and hold the FD to prevent
-    # TOCTOU: a symlink swap between validation and write.
-    _resp_fd=""
-    exec {_resp_fd}>"$REQ_RESP_FIFO" 2>/dev/null || {
-        chaperon_log error "failed to open RESP_FIFO: $REQ_RESP_FIFO"
-        continue
-    }
 
     # Log full request details for audit trail.
     # Escape newlines/tabs so each log call produces exactly one line.
@@ -258,33 +255,48 @@ while true; do
         _exit_code=1
     fi
 
-    # Send response via the held FD (not the path) to avoid TOCTOU.
-    # Use a timeout to prevent deadlock if the stub dies without reading.
-    _write_ok=true
-    {
-        printf 'CHAPERON/1 RESULT\n'
-        printf 'EXIT %s\n' "$_exit_code"
-        printf 'STDOUT %s\n' "$_stdout_b64"
-        printf 'STDERR %s\n' "$_stderr_b64"
-        printf 'END\n'
-    } 1>&"$_resp_fd" 2>/dev/null &
-    _write_pid=$!
-
-    # Wait up to 10 seconds for the write to complete
-    _w=0
-    while (( _w < 10 )) && kill -0 "$_write_pid" 2>/dev/null; do
-        sleep 1
-        (( _w++ )) || true
-    done
-    if kill -0 "$_write_pid" 2>/dev/null; then
-        kill "$_write_pid" 2>/dev/null || true
-        wait "$_write_pid" 2>/dev/null || true
-        chaperon_log warn "response write timed out for $REQ_COMMAND"
-    else
-        wait "$_write_pid" 2>/dev/null || _write_ok=false
+    # Send response via python3 with O_NOFOLLOW + fstat(S_ISFIFO) verify.
+    #
+    # Bash's `exec {fd}>"$path"` follows symlinks at open time (O_WRONLY|
+    # O_CREAT|O_TRUNC), which lets a same-UID attacker inside the sandbox
+    # race the [[ -L ]] / [[ ! -p ]] check above: unlink the FIFO, drop
+    # a symlink → ~/.bashrc / ~/.ssh/authorized_keys, and the chaperon's
+    # open() truncates the target.
+    #
+    # python3's os.open(O_WRONLY | O_NOFOLLOW) returns ELOOP if the leaf
+    # is a symlink, and fstat+S_ISFIFO rejects a regular-file swap via
+    # any other race. No O_CREAT and no O_TRUNC: under any race, the
+    # chaperon cannot damage an unintended target. `timeout 10` protects
+    # against a dead stub that never reads.
+    _write_rc=0
+    printf 'CHAPERON/1 RESULT\nEXIT %s\nSTDOUT %s\nSTDERR %s\nEND\n' \
+        "$_exit_code" "$_stdout_b64" "$_stderr_b64" \
+        | timeout 10 python3 -c '
+import os, stat, sys
+path = sys.argv[1]
+try:
+    fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
+except OSError:
+    sys.exit(1)
+try:
+    st = os.fstat(fd)
+    if not stat.S_ISFIFO(st.st_mode):
+        sys.exit(2)
+    data = sys.stdin.buffer.read()
+    while data:
+        n = os.write(fd, data)
+        data = data[n:]
+finally:
+    os.close(fd)
+' "$REQ_RESP_FIFO" 2>/dev/null || _write_rc=$?
+    if [[ "$_write_rc" -ne 0 ]]; then
+        case "$_write_rc" in
+            1) chaperon_log warn "response open failed (ELOOP / missing) for $REQ_COMMAND: $REQ_RESP_FIFO" ;;
+            2) chaperon_log warn "response target is not a FIFO after validation (race) for $REQ_COMMAND: $REQ_RESP_FIFO" ;;
+            124) chaperon_log warn "response write timed out for $REQ_COMMAND" ;;
+            *) chaperon_log warn "response write failed (rc=$_write_rc) for $REQ_COMMAND" ;;
+        esac
     fi
-
-    exec {_resp_fd}>&-
 done
 
 exit 0
