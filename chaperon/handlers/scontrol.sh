@@ -84,7 +84,20 @@ handle_scontrol() {
                 job|jobs)
                     # Show job — scoped to chaperon-submitted jobs
                     if [[ ${#REQ_ARGS[@]} -ge 3 ]]; then
-                        # Specific job ID requested — validate scope
+                        # Specific job ID requested — validate scope.
+                        # Reject extra positional args: `scontrol show job`
+                        # accepts space-separated job IDs, and only the
+                        # first is scope-checked here. Forwarding the full
+                        # REQ_ARGS would expose other users' jobs (e.g.
+                        # `show job 12345 77777` where 12345 is in scope
+                        # but 77777 is an out-of-scope sibling).
+                        if [[ ${#REQ_ARGS[@]} -gt 3 ]]; then
+                            local _extra="${REQ_ARGS[3]}"
+                            if [[ "$_extra" != -* ]]; then
+                                _sandbox_deny "scontrol show job accepts a single job ID; extra positional arg '$_extra' would bypass scope validation."
+                                return 1
+                            fi
+                        fi
                         local job_id="${REQ_ARGS[2]}"
                         if ! _validate_job_in_scope "$job_id" "$scope" "$project_dir"; then
                             return 1
