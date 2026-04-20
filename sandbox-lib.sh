@@ -601,13 +601,41 @@ _load_untrusted_config() {
     fi
 }
 
+# --- Path-resolution helpers (used by DENIED_WRITABLE_PATHS enforcement) ---
+#
+# _resolve_path: canonicalize a path, following symlinks.  readlink -f
+# resolves even non-existent leaf components (GNU coreutils), so this is
+# safe to call on paths that may not yet exist.  Falls back to the
+# literal input if resolution fails.
+_resolve_path() {
+    local _p="$1"
+    local _r
+    _r="$(readlink -f -- "$_p" 2>/dev/null)" || _r=""
+    if [[ -n "$_r" ]]; then
+        echo "$_r"
+    else
+        echo "$_p"
+    fi
+}
+
+# _path_under: returns 0 if CHILD is identical to PARENT or is a proper
+# subdirectory of PARENT.  Trailing slashes are stripped.  The "/"
+# boundary check prevents false positives like /etc vs /etcetera.
+_path_under() {
+    local _child="${1%/}"
+    local _parent="${2%/}"
+    [[ -z "$_parent" ]] && return 1
+    [[ "$_child" == "$_parent" || "$_child" == "$_parent/"* ]]
+}
+
 # --- Enforce admin policy: compare extracted values against admin snapshot ---
 #
 # After loading untrusted config (user.conf or conf.d), this function:
 # 1. Warns about removed admin entries or overridden scalars
 # 2. Restores admin values as the base
 # 3. Merges user additions on top
-# 4. Strips DENIED_WRITABLE_PATHS violations
+# 4. Strips DENIED_WRITABLE_PATHS violations (resolves symlinks to block
+#    indirection attacks — see the DENIED_WRITABLE_PATHS section below)
 #
 # This is a pure comparison — no re-sourcing, no eval of untrusted code.
 _enforce_admin_policy() {
@@ -726,19 +754,48 @@ _enforce_admin_policy() {
     done
 
     # --- Enforce DENIED_WRITABLE_PATHS ---
+    #
+    # Resolve symlinks on both sides before matching so a writable entry
+    # cannot bypass the admin blocklist by pointing a symlink at a denied
+    # path (e.g., EXTRA_WRITABLE_PATHS+=("/home/u/x") where /home/u/x ->
+    # /etc).  bwrap/firejail follow symlinks when bind-mounting, so the
+    # literal-string check alone is not sufficient.  We check BOTH the
+    # literal and the resolved form: if either is under a denied path,
+    # the entry is rejected.
     if [[ ${#DENIED_WRITABLE_PATHS[@]} -gt 0 ]]; then
-        local _clean=() _denied _full_path
+        local _clean=() _denied _denied_resolved _full_path _full_resolved _item_resolved
+        local _denied_list=() _denied_resolved_list=()
+
+        # Precompute denied paths: literal (with $HOME expanded) + resolved form.
+        for _denied in "${DENIED_WRITABLE_PATHS[@]}"; do
+            _denied="${_denied/\$HOME/$HOME}"
+            _denied="${_denied%/}"
+            _denied_list+=("$_denied")
+            _denied_resolved="$(_resolve_path "$_denied")"
+            _denied_resolved_list+=("$_denied_resolved")
+        done
 
         # Check EXTRA_WRITABLE_PATHS
         for _item in "${EXTRA_WRITABLE_PATHS[@]}"; do
+            _item="${_item%/}"
+            _item_resolved="$(_resolve_path "$_item")"
             _found=false
-            for _denied in "${DENIED_WRITABLE_PATHS[@]}"; do
-                _denied="${_denied/\$HOME/$HOME}"
-                _denied="${_denied%/}"
-                if [[ "$_item" == "$_denied" || "$_item" == "$_denied/"* ]]; then
-                    echo "WARNING: ${_label} added EXTRA_WRITABLE_PATHS entry '${_item}' under denied path '${_denied}' — removed." >&2
+            local _i=0
+            while [[ $_i -lt ${#_denied_list[@]} ]]; do
+                _denied="${_denied_list[$_i]}"
+                _denied_resolved="${_denied_resolved_list[$_i]}"
+                if _path_under "$_item" "$_denied" \
+                    || _path_under "$_item_resolved" "$_denied" \
+                    || _path_under "$_item" "$_denied_resolved" \
+                    || _path_under "$_item_resolved" "$_denied_resolved"; then
+                    if [[ "$_item" != "$_item_resolved" ]]; then
+                        echo "WARNING: ${_label} added EXTRA_WRITABLE_PATHS entry '${_item}' (resolves to '${_item_resolved}') under denied path '${_denied}' — removed." >&2
+                    else
+                        echo "WARNING: ${_label} added EXTRA_WRITABLE_PATHS entry '${_item}' under denied path '${_denied}' — removed." >&2
+                    fi
                     _found=true; break
                 fi
+                _i=$((_i + 1))
             done
             $_found || _clean+=("$_item")
         done
@@ -747,15 +804,25 @@ _enforce_admin_policy() {
         # Check HOME_WRITABLE (entries are $HOME-relative)
         _clean=()
         for _item in "${HOME_WRITABLE[@]}"; do
-            _full_path="$HOME/$_item"
+            _full_path="$HOME/${_item%/}"
+            _full_resolved="$(_resolve_path "$_full_path")"
             _found=false
-            for _denied in "${DENIED_WRITABLE_PATHS[@]}"; do
-                _denied="${_denied/\$HOME/$HOME}"
-                _denied="${_denied%/}"
-                if [[ "$_full_path" == "$_denied" || "$_full_path" == "$_denied/"* ]]; then
-                    echo "WARNING: ${_label} added HOME_WRITABLE entry '${_item}' under denied path '${_denied}' — removed." >&2
+            local _j=0
+            while [[ $_j -lt ${#_denied_list[@]} ]]; do
+                _denied="${_denied_list[$_j]}"
+                _denied_resolved="${_denied_resolved_list[$_j]}"
+                if _path_under "$_full_path" "$_denied" \
+                    || _path_under "$_full_resolved" "$_denied" \
+                    || _path_under "$_full_path" "$_denied_resolved" \
+                    || _path_under "$_full_resolved" "$_denied_resolved"; then
+                    if [[ "$_full_path" != "$_full_resolved" ]]; then
+                        echo "WARNING: ${_label} added HOME_WRITABLE entry '${_item}' (resolves to '${_full_resolved}') under denied path '${_denied}' — removed." >&2
+                    else
+                        echo "WARNING: ${_label} added HOME_WRITABLE entry '${_item}' under denied path '${_denied}' — removed." >&2
+                    fi
                     _found=true; break
                 fi
+                _j=$((_j + 1))
             done
             $_found || _clean+=("$_item")
         done
@@ -963,6 +1030,40 @@ fi
 
 validate_project_dir() {
     local dir="$1"
+    local dir_resolved
+    dir_resolved="$(_resolve_path "$dir")"
+
+    # 1. Reject if the project dir (literal or resolved) lands under any
+    #    DENIED_WRITABLE_PATHS entry.  The project dir is bound writable;
+    #    admin deny-lists must apply to it too, not just EXTRA_WRITABLE_PATHS.
+    #    Without this, a symlink like ~/myproj -> /etc combined with an
+    #    ALLOWED_PROJECT_PARENTS entry of $HOME would let the agent write
+    #    to /etc despite DENIED_WRITABLE_PATHS=("/etc").
+    local _denied _denied_resolved
+    for _denied in "${DENIED_WRITABLE_PATHS[@]}"; do
+        _denied="${_denied//\$\{HOME\}/$HOME}"
+        _denied="${_denied/#\~\//$HOME/}"
+        _denied="${_denied/\$HOME/$HOME}"
+        _denied="${_denied%/}"
+        _denied_resolved="$(_resolve_path "$_denied")"
+        if _path_under "$dir" "$_denied" \
+            || _path_under "$dir_resolved" "$_denied" \
+            || _path_under "$dir" "$_denied_resolved" \
+            || _path_under "$dir_resolved" "$_denied_resolved"; then
+            echo "Error: Project directory lands under an admin-denied path." >&2
+            echo "  Got: $dir" >&2
+            [[ "$dir" != "$dir_resolved" ]] && echo "  Resolves to: $dir_resolved" >&2
+            echo "  Denied: $_denied" >&2
+            return 1
+        fi
+    done
+
+    # 2. Require the project dir (literal or resolved) to be under an
+    #    allowed parent.  Matching either form lets admins express the
+    #    allowlist in terms of either the canonical path or a commonly
+    #    used symlink alias — a bypass is impossible because (1) already
+    #    rejected anything that resolves into a denied path.
+    local parent parent_resolved
     for parent in "${ALLOWED_PROJECT_PARENTS[@]}"; do
         # Expand $HOME, ${HOME}, and leading ~/ consistently so config
         # authors can write any of the three forms without surprises.
@@ -970,15 +1071,20 @@ validate_project_dir() {
         parent="${parent/#\~\//$HOME/}"
         parent="${parent/\$HOME/$HOME}"
         parent="${parent%/}"  # strip trailing slash
+        parent_resolved="$(_resolve_path "$parent")"
         # Exact match or proper subdirectory (with / boundary).
         # Without the boundary check, parent=/home/alice would
         # incorrectly match dir=/home/alicebob/project.
-        if [[ "$dir" == "$parent" || "$dir" == "$parent/"* ]]; then
+        if _path_under "$dir" "$parent" \
+            || _path_under "$dir_resolved" "$parent" \
+            || _path_under "$dir" "$parent_resolved" \
+            || _path_under "$dir_resolved" "$parent_resolved"; then
             return 0
         fi
     done
     echo "Error: Project directory not under an allowed parent path." >&2
     echo "  Got: $dir" >&2
+    [[ "$dir" != "$dir_resolved" ]] && echo "  Resolves to: $dir_resolved" >&2
     echo "  Allowed prefixes: ${ALLOWED_PROJECT_PARENTS[*]}" >&2
     echo "  Edit ALLOWED_PROJECT_PARENTS in $SANDBOX_CONF to allow more." >&2
     return 1
