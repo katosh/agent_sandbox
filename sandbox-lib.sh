@@ -964,6 +964,10 @@ fi
 validate_project_dir() {
     local dir="$1"
     for parent in "${ALLOWED_PROJECT_PARENTS[@]}"; do
+        # Expand $HOME, ${HOME}, and leading ~/ consistently so config
+        # authors can write any of the three forms without surprises.
+        parent="${parent//\$\{HOME\}/$HOME}"
+        parent="${parent/#\~\//$HOME/}"
         parent="${parent/\$HOME/$HOME}"
         parent="${parent%/}"  # strip trailing slash
         # Exact match or proper subdirectory (with / boundary).
