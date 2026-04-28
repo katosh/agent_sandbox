@@ -212,9 +212,20 @@ CURRENT_BACKEND=""
 sandbox() {
     local _stderr_file
     _stderr_file=$(mktemp)
-    OUTPUT=$(timeout 15 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+    # 30s aligns with the chaperon's own response-read ceiling
+    # (chaperon/protocol.sh:158). Tighter envelopes produce
+    # "test couldn't tell us what happened" failures instead of
+    # the chaperon's own diagnostic. First-call bwrap startup +
+    # chaperon spinup + audit-log NFS append can exceed 15s on
+    # cold caches.
+    OUTPUT=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
         --project-dir "$PROJECT_DIR" -- "$@" 2>"$_stderr_file")
     local rc=$?
+    if [[ $rc == 124 ]]; then
+        # Surface the timeout explicitly — otherwise "command failed"
+        # vs. "envelope too tight" is invisible to the next agent.
+        echo "[sandbox helper: 30s timeout fired before sandbox returned]" >>"$_stderr_file"
+    fi
     OUTPUT_ERR=$(cat "$_stderr_file")
     rm -f "$_stderr_file"
     return $rc
@@ -373,26 +384,20 @@ fi
 unset GITHUB_PAT
 
 # 5. Passwd filter / user enumeration prevention
-if is_bwrap; then
-    if sandbox bash -c 'wc -l < /etc/passwd'; then
-        _host_count=$(wc -l < /etc/passwd)
-        _sandbox_count="$OUTPUT"
-        if [[ "$_sandbox_count" -le "$_host_count" ]]; then
-            pass "Passwd filter active (host: $_host_count → sandbox: $_sandbox_count)"
-        else
-            fail "Passwd not filtered (sandbox has more lines than host)" "$OUTPUT"
-        fi
-    else
-        fail "Could not read /etc/passwd in sandbox" "$OUTPUT"
-    fi
-elif is_firejail; then
+# Compare against `getent passwd` rather than `/etc/passwd` directly:
+# the host's local passwd file is small on LDAP-backed systems, but the
+# sandbox's filtered passwd is built from `getent` (LDAP-resolved on
+# the host) plus a few synthetic entries (dotto, slurm, munge, nobody).
+# A naive `wc -l < /etc/passwd` comparison would flag the sandbox as
+# "leakier than host" on every LDAP host.
+if is_bwrap || is_firejail; then
     _host_getent=$(getent passwd | wc -l)
     if sandbox bash -c 'getent passwd | wc -l'; then
         _sandbox_getent="$OUTPUT"
-        if [[ "$_sandbox_getent" -le "$_host_getent" ]]; then
+        if [[ "$_sandbox_getent" -lt "$_host_getent" ]]; then
             pass "User enum prevention (host: $_host_getent → sandbox: $_sandbox_getent)"
         else
-            fail "getent not filtered (sandbox exposes more users)" "$OUTPUT"
+            fail "Passwd not filtered — sandbox getent returns $_sandbox_getent rows, host returns $_host_getent" "$OUTPUT"
         fi
     else
         fail "Could not run getent in sandbox" "$OUTPUT"
@@ -402,6 +407,12 @@ else
 fi
 
 # 6. Chaperon proxy — squeue completes without hanging
+# Pre-warm the sandbox so first-call backend startup (cgroup setup,
+# bwrap fork, chaperon spinup) doesn't eat into the squeue timeout
+# envelope. Mirrors what the full-test path gets for free via
+# _ensure_writable_home_dirs (line ~1409); --quick exits before
+# reaching that, so we pre-warm explicitly.
+sandbox true >/dev/null 2>&1 || true
 if command -v /usr/bin/squeue &>/dev/null; then
     if sandbox bash -c 'squeue 2>&1; echo DONE'; then
         if echo "$OUTPUT" | grep -q "DONE"; then
