@@ -446,12 +446,27 @@ create_wrapped_script() {
         if _is_shell_interpreter "$interpreter"; then
             # Shell path: pipe script to `<interp> -s -- <args>` so the
             # shell reads the body from stdin and assigns positionals.
+            #
+            # Strip any standalone `--` tokens from the interpreter line —
+            # `--` ends option processing, so a shebang like
+            # `#!/bin/bash --` (or the stub's `--wrap` synthesis) would
+            # produce `bash -- -s ...` and bash would treat `-s` as a
+            # filename. We append our own `-s --` below, so a leading
+            # `--` from the user is redundant anyway.
+            local interp_clean=""
+            local _interp_tokens _it
+            # shellcheck disable=SC2206  # word-splitting on the shebang is intentional
+            _interp_tokens=($interpreter)
+            for _it in "${_interp_tokens[@]}"; do
+                [[ "$_it" == "--" ]] && continue
+                interp_clean+="${interp_clean:+ }$_it"
+            done
             local sep=""
             if (( ${#script_args[@]} > 0 )); then
                 sep=" --"
             fi
             printf 'printf '"'"'%%s\\n'"'"' "$_SCRIPT" | exec %q --project-dir %q -- %s -s%s%s\n' \
-                "$sandbox_exec" "$project_dir" "$interpreter" "$sep" "$quoted_script_args"
+                "$sandbox_exec" "$project_dir" "$interp_clean" "$sep" "$quoted_script_args"
         else
             # Non-shell path: inside the sandbox, materialise the script to
             # a private tmpfs file, chmod +x, exec it with the positionals.
