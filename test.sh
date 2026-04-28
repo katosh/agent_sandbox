@@ -1903,6 +1903,113 @@ else
     skip "Comment stripping tests — _handler_lib.sh not found"
 fi
 
+# 5o. Scope filter — _squeue_filter_scope rejects out-of-scope rows
+#     regardless of which column the user-supplied -o format puts first.
+#
+#     Pre-fix bug: the awk filter used a "first column starts with a digit"
+#     heuristic to discriminate header vs data rows.  With -o "%j %i" (job
+#     name first), data rows started with letters → assumed to be headers
+#     → passed through unfiltered.  This leaked every running job from
+#     sibling sandbox sessions of the same Linux user (cross-project /
+#     cross-session info disclosure within the user).
+_SQUEUE_HANDLER="$SCRIPT_DIR/chaperon/handlers/squeue.sh"
+if [[ -f "$_SQUEUE_HANDLER" ]]; then
+    eval "$(sed -n '/^_squeue_filter_scope()/,/^}/p' "$_SQUEUE_HANDLER")"
+
+    _SEP=$'\x1f'
+    _PAT='chaperon:.*proj=aaaaaaaaaaaa'
+    _COMMENT_IN_SCOPE='chaperon:sid=99.100,proj=aaaaaaaaaaaa:END'
+    _COMMENT_OTHER_PROJ='chaperon:sid=99.100,proj=bbbbbbbbbbbb:END'
+
+    # 5o-1: numeric-first column with -h — filter activates (regression check).
+    _input="12345     myjob${_SEP}${_COMMENT_IN_SCOPE}
+23456     leakme${_SEP}${_COMMENT_OTHER_PROJ}"
+    _out=$(printf '%s\n' "$_input" | _squeue_filter_scope "$_PAT" 1)
+    if [[ "$_out" == "12345     myjob" ]]; then
+        pass "Scope filter: numeric-first column, --noheader (in-scope row only)"
+    else
+        fail "Scope filter: %i first, --noheader" "got: $(printf %q "$_out")"
+    fi
+
+    # 5o-2: non-numeric-first column with -h — THE LEAK (must filter too).
+    _input="myjob     12345${_SEP}${_COMMENT_IN_SCOPE}
+leakme    23456${_SEP}${_COMMENT_OTHER_PROJ}"
+    _out=$(printf '%s\n' "$_input" | _squeue_filter_scope "$_PAT" 1)
+    if [[ "$_out" == "myjob     12345" ]]; then
+        pass "Scope filter: non-numeric-first column, --noheader (no leak)"
+    else
+        fail "Scope filter: %j first, --noheader (LEAK)" "got: $(printf %q "$_out")"
+    fi
+
+    # 5o-3: numeric-first column WITH header — header through, data filtered.
+    _input="             JOBID NAME${_SEP}             COMMENT
+12345     myjob${_SEP}${_COMMENT_IN_SCOPE}
+23456     leakme${_SEP}${_COMMENT_OTHER_PROJ}"
+    _out=$(printf '%s\n' "$_input" | _squeue_filter_scope "$_PAT" 0)
+    _expected="             JOBID NAME
+12345     myjob"
+    if [[ "$_out" == "$_expected" ]]; then
+        pass "Scope filter: numeric-first column, header preserved + scope applied"
+    else
+        fail "Scope filter: %i first, with header" "got: $(printf %q "$_out")"
+    fi
+
+    # 5o-4: non-numeric-first column WITH header — header through, data filtered.
+    _input="              NAME JOBID${_SEP}             COMMENT
+myjob     12345${_SEP}${_COMMENT_IN_SCOPE}
+leakme    23456${_SEP}${_COMMENT_OTHER_PROJ}"
+    _out=$(printf '%s\n' "$_input" | _squeue_filter_scope "$_PAT" 0)
+    _expected="              NAME JOBID
+myjob     12345"
+    if [[ "$_out" == "$_expected" ]]; then
+        pass "Scope filter: non-numeric-first column, header preserved + scope applied"
+    else
+        fail "Scope filter: %j first, with header" "got: $(printf %q "$_out")"
+    fi
+
+    # 5o-5: multi-row cross-project setup — only in-scope rows survive,
+    # regardless of -o ordering. Mixed jobs from three projects.
+    _project_a='chaperon:sid=99.100,proj=aaaaaaaaaaaa:END'
+    _project_b='chaperon:sid=88.200,proj=bbbbbbbbbbbb:END'
+    _project_c='chaperon:sid=77.300,proj=cccccccccccc:END'
+    _input="alpha     1${_SEP}${_project_a}
+bravo     2${_SEP}${_project_b}
+charlie   3${_SEP}${_project_c}
+delta     4${_SEP}${_project_a}
+echo      5${_SEP}${_project_b}"
+    _out=$(printf '%s\n' "$_input" | _squeue_filter_scope "$_PAT" 1)
+    _expected="alpha     1
+delta     4"
+    if [[ "$_out" == "$_expected" ]]; then
+        pass "Scope filter: cross-project mix, only project-a rows survive"
+    else
+        fail "Scope filter: cross-project mix (LEAK)" "got: $(printf %q "$_out")"
+    fi
+
+    # 5o-6: line without separator passes through unchanged
+    # (e.g. squeue diagnostics, unexpected output formats).
+    _out=$(printf 'no separator here\n' | _squeue_filter_scope "$_PAT" 1)
+    if [[ "$_out" == "no separator here" ]]; then
+        pass "Scope filter: no-separator line passes through"
+    else
+        fail "Scope filter: no-separator passthrough" "got: $(printf %q "$_out")"
+    fi
+
+    # 5o-7: empty input is fine
+    _out=$(printf '' | _squeue_filter_scope "$_PAT" 1)
+    if [[ -z "$_out" ]]; then
+        pass "Scope filter: empty input → empty output"
+    else
+        fail "Scope filter: empty input" "got: $(printf %q "$_out")"
+    fi
+
+    unset -f _squeue_filter_scope
+    unset _SEP _PAT _COMMENT_IN_SCOPE _COMMENT_OTHER_PROJ _input _out _expected \
+          _project_a _project_b _project_c
+else
+    skip "Scope filter tests — chaperon/handlers/squeue.sh not found"
+fi
+
 # 5f. Landlock AF_UNIX connect bypass verification
 # Tests that Landlock cannot block connect() to filesystem Unix sockets
 # whose paths are NOT in the Landlock allowlist. This is a known kernel

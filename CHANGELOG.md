@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Chaperon `squeue` scope-filter info leak (within-user, cross-project).**
+  The `squeue` handler injects the chaperon `--comment` tag into a
+  user's `-o` format string and post-filters by scope, but the awk
+  filter used a "first column starts with a digit" heuristic to tell
+  header rows from data rows. With user formats like `-o "%j %i"` or
+  `-o "%u %i"` (job-name or user first), every data row started with a
+  letter and was treated as a header — passing through unfiltered. The
+  result: a sandboxed agent could see jobs from sibling sandbox
+  sessions and other projects of the same Linux user (cross-user is
+  still blocked by Slurm's own auth via `--me`, but cross-project /
+  cross-session within the user was open). Fixed by replacing the
+  heuristic with an explicit header/data discriminator: `_noheader`
+  is derived from `validated_flags` and passed into awk via
+  `-v noheader=…`; when no header is expected (`-h`/`--noheader`),
+  every line is filtered as data; otherwise the first line passes
+  through as the header and the rest are filtered. The awk block was
+  factored into a `_squeue_filter_scope` helper so it can be unit-
+  tested directly. `test.sh §5o` covers numeric-first-with/without-
+  header, non-numeric-first-with/without-header, a cross-project mix
+  asserting only in-scope rows survive regardless of `-o` order, and
+  the no-separator / empty-input edge cases. `chaperon/handlers/squeue.sh`,
+  `test.sh`.
+
 - **Chaperon response-FIFO TOCTOU (arbitrary file truncation).** The
   chaperon's response-write path validated `[[ -L $RESP_FIFO ]]` / `[[ -p
   $RESP_FIFO ]]` and then opened the path with bash's `>` redirection,
