@@ -962,6 +962,86 @@ else
     done
 fi
 
+# ── HOME_SEEDED_FILES: writable per-session copies of host dotfiles ──
+# Default config seeds ~/.gitconfig into the tmpfs $HOME so tools that
+# write to it (gh auth setup-git, git config --global, IDE git plugins)
+# work without weakening isolation. Verify three guarantees:
+#   1. Seed content matches the host file at session start.
+#   2. Writes inside the sandbox succeed (bwrap) or are warned about
+#      and degrade to read-only (firejail / landlock).
+#   3. Real host file is BYTE-IDENTICAL after a sandbox session that
+#      modified the seeded copy — the tmpfs is ephemeral.
+# Skip the section if ~/.gitconfig is missing on the host (rare).
+if [[ -f "$HOME/.gitconfig" ]]; then
+    _seed_md5_before=$(md5sum "$HOME/.gitconfig" | awk '{print $1}')
+
+    # 1. Seeded content matches the host file
+    if sandbox bash -c 'md5sum "$HOME/.gitconfig" 2>/dev/null | awk "{print \$1}"'; then
+        if [[ "$OUTPUT" == "$_seed_md5_before" ]]; then
+            pass "HOME_SEEDED_FILES: seeded ~/.gitconfig content matches host"
+        else
+            fail "HOME_SEEDED_FILES: seeded ~/.gitconfig differs from host" \
+                 "host=$_seed_md5_before sandbox=$OUTPUT"
+        fi
+    fi
+
+    # 2. Writability — bwrap supports; firejail/landlock degrade.
+    if is_bwrap; then
+        if sandbox bash -c 'echo "[seed-test]" >> "$HOME/.gitconfig" && echo OK || echo FAIL'; then
+            if [[ "$OUTPUT" == "OK" ]]; then
+                pass "HOME_SEEDED_FILES: ~/.gitconfig is writable (bwrap)"
+            else
+                fail "HOME_SEEDED_FILES: ~/.gitconfig append failed inside sandbox" "$OUTPUT"
+            fi
+        fi
+        if sandbox bash -c 'cd /tmp && git config --global core.seedTestKey seedval 2>&1 && git config --global --get core.seedTestKey'; then
+            if [[ "$OUTPUT" == "seedval" ]]; then
+                pass "HOME_SEEDED_FILES: git config --global succeeds inside sandbox"
+            else
+                fail "HOME_SEEDED_FILES: git config --global failed" "$OUTPUT"
+            fi
+        fi
+    else
+        # On firejail/landlock the degradation warning fires on stderr.
+        # Existence of the file inside the sandbox is enough — writability
+        # is documented as backend-dependent.
+        if sandbox bash -c 'test -r "$HOME/.gitconfig" && echo READABLE'; then
+            if [[ "$OUTPUT" == "READABLE" ]]; then
+                pass "HOME_SEEDED_FILES: ~/.gitconfig readable on $CURRENT_BACKEND (degraded read-only — warning expected)"
+            else
+                fail "HOME_SEEDED_FILES: ~/.gitconfig not readable on $CURRENT_BACKEND" "$OUTPUT"
+            fi
+        fi
+    fi
+
+    # 3. Host file unchanged after the writes above
+    _seed_md5_after=$(md5sum "$HOME/.gitconfig" | awk '{print $1}')
+    if [[ "$_seed_md5_before" == "$_seed_md5_after" ]]; then
+        pass "HOME_SEEDED_FILES: real ~/.gitconfig unchanged after sandbox session"
+    else
+        fail "HOME_SEEDED_FILES: real ~/.gitconfig WAS MODIFIED — host leak" \
+             "before=$_seed_md5_before after=$_seed_md5_after"
+    fi
+
+    # 4. Regression: a HOME_READONLY-only file stays read-only.
+    # Pick whichever common dotfile is present and not in HOME_SEEDED_FILES.
+    _readonly_probe=""
+    for _candidate in .bashrc .profile .zshrc; do
+        [[ -f "$HOME/$_candidate" ]] && { _readonly_probe="$_candidate"; break; }
+    done
+    if [[ -n "$_readonly_probe" ]] && is_bwrap; then
+        if sandbox bash -c "echo APPENDED >> \"\$HOME/$_readonly_probe\" 2>&1 && echo WROTE || echo BLOCKED"; then
+            if [[ "$OUTPUT" == "BLOCKED"* ]] || echo "$OUTPUT" | grep -qiE "read-only|permission denied"; then
+                pass "HOME_SEEDED_FILES regression: ~/$_readonly_probe stays read-only"
+            else
+                fail "HOME_SEEDED_FILES regression: HOME_READONLY ~/$_readonly_probe is writable (should be RO)" "$OUTPUT"
+            fi
+        fi
+    fi
+else
+    skip "HOME_SEEDED_FILES tests — ~/.gitconfig not present on host"
+fi
+
 echo ""
 
 # ── 3. Environment variable blocking ────────────────────────────

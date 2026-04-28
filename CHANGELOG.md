@@ -89,6 +89,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   exercise the `EXTRA_WRITABLE_PATHS` and `HOME_WRITABLE`
   symlink-indirection paths. `sandbox-lib.sh`.
 
+### Added
+
+- **`HOME_SEEDED_FILES` config knob — writable per-session copies of
+  host dotfiles.** Until now `~/.gitconfig` lived in `HOME_READONLY`
+  and was bind-mounted read-only inside the sandbox, so anything that
+  wrote to it (`gh auth setup-git`, `git config --global`, IDE git
+  plugins) failed with `Device or resource busy`. The new
+  `HOME_SEEDED_FILES` array reads the file's content from the host
+  but seeds it into the per-session tmpfs `$HOME` as a writable copy:
+  the agent can edit it freely, writes are discarded on sandbox exit,
+  and the real host file is never modified. `bwrap` implements this
+  natively via `--file FD DEST` (full support); `firejail` and
+  `landlock` lack the primitives for a writable per-session copy and
+  degrade to read-only with a one-time stderr warning. Conflict rule:
+  an entry in `HOME_SEEDED_FILES` wins over the same entry in
+  `HOME_READONLY`. Default: `HOME_SEEDED_FILES=(".gitconfig")`.
+  `backends/bwrap.sh`, `backends/firejail.sh`, `backends/landlock.sh`,
+  `sandbox-lib.sh`, `sandbox.conf`, `test.sh`.
+
 ### Fixed
 
 - **`test.sh --quick` passwd assertion was wrong-shape on LDAP hosts.**

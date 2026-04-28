@@ -84,12 +84,43 @@ backend_prepare() {
     if [[ "${HOME_ACCESS:-restricted}" == "restricted" || "${HOME_ACCESS}" == "tmpwrite" ]]; then
         # tmpwrite note: Landlock has no tmpfs — falls back to restricted
         # (only listed paths accessible). Use bwrap/firejail for tmpwrite.
+
+        # HOME_SEEDED_FILES degrades to read-only on Landlock. Without
+        # a mount namespace there's no tmpfs HOME to seed into — granting
+        # writable access would let modifications hit the real host file.
+        # Warn once and treat each seeded entry as HOME_READONLY.
+        local _landlock_seeded_relpaths=()
+        local seedf
+        for seedf in "${HOME_SEEDED_FILES[@]}"; do
+            [[ -f "$HOME/$seedf" ]] || continue
+            _landlock_seeded_relpaths+=("$seedf")
+        done
+        if [[ ${#_landlock_seeded_relpaths[@]} -gt 0 ]] && ! _is_true "${SANDBOX_QUIET:-false}"; then
+            echo "sandbox: landlock backend does not support HOME_SEEDED_FILES — bound read-only:" >&2
+            local _r
+            for _r in "${_landlock_seeded_relpaths[@]}"; do
+                echo "  ~/$_r" >&2
+            done
+        fi
+
         # Grant individual paths only
         for subdir in "${HOME_READONLY[@]}"; do
+            # Don't double-grant when the same entry is also seeded
+            local _is_seeded=false
+            local _s
+            for _s in "${_landlock_seeded_relpaths[@]}"; do
+                [[ "$subdir" == "$_s" ]] && { _is_seeded=true; break; }
+            done
+            $_is_seeded && continue
             local full_path="$HOME/$subdir"
             if [[ -e "$full_path" ]]; then
                 LANDLOCK_ARGS+=(--ro "$full_path")
             fi
+        done
+
+        # Seeded entries — granted read-only (degradation; see warning above).
+        for subdir in "${_landlock_seeded_relpaths[@]}"; do
+            LANDLOCK_ARGS+=(--ro "$HOME/$subdir")
         done
 
         for subdir in "${HOME_WRITABLE[@]}"; do

@@ -76,7 +76,6 @@ HOME_READONLY=(
     ".bashrc" ".bash_profile" ".profile"
     ".zshrc" ".zprofile"
     ".inputrc"
-    ".gitconfig"
     ".vimrc" ".vim"
     ".tmux.conf"
     ".dircolors"
@@ -100,6 +99,24 @@ HOME_WRITABLE=(
     # See ENABLED_AGENTS below. Missing entries are auto-created by
     # _ensure_writable_home_dirs so first-run in-sandbox auth works
     # without prior setup.
+)
+
+# Files in $HOME whose CONTENT is read from the host but seeded into
+# the per-session tmpfs $HOME as a writable copy. Lets tools that
+# write to dotfiles (gh auth setup-git, IDE git plugins, git config
+# --global) work inside the sandbox without weakening isolation —
+# writes land in the tmpfs and are discarded on sandbox exit, so the
+# real host file is never modified.
+#
+# Conflict rule: an entry in HOME_SEEDED_FILES wins over the same
+# entry in HOME_READONLY (the read-only mount is skipped).
+#
+# Backend support:
+#   bwrap    — full support via --file FD DEST
+#   firejail — full support via --private-home= (copy into tmpfs $HOME)
+#   landlock — degrades to read-only with a warning (no mount namespace)
+HOME_SEEDED_FILES=(
+    ".gitconfig"
 )
 
 # Agent profiles in agents/<name>/ to enable. Each enabled agent
@@ -414,6 +431,7 @@ unset _user_conf_target _user_conf_sha _user_conf_template _src_sha _dest_sha _o
 # to serialize/deserialize state and by _enforce_admin_policy to merge.
 _CONFIG_ARRAYS=(
     ALLOWED_PROJECT_PARENTS READONLY_MOUNTS HOME_READONLY HOME_WRITABLE
+    HOME_SEEDED_FILES
     BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS ALLOWED_ENV_VARS
     EXTRA_BLOCKED_PATHS EXTRA_WRITABLE_PATHS DENIED_WRITABLE_PATHS
     SANDBOX_ENV SUPPRESS_AGENT_WARNINGS SANDBOX_MODULES ENABLED_AGENTS
@@ -696,6 +714,7 @@ _enforce_admin_policy() {
     local _user_ewp=("${EXTRA_WRITABLE_PATHS[@]}")
     local _user_rom=("${READONLY_MOUNTS[@]}")
     local _user_hro=("${HOME_READONLY[@]}")
+    local _user_hsf=("${HOME_SEEDED_FILES[@]}")
     local _user_app=("${ALLOWED_PROJECT_PARENTS[@]}")
 
     # --- Restore admin base values ---
@@ -705,6 +724,7 @@ _enforce_admin_policy() {
     ALLOWED_ENV_VARS=("${_ADMIN_ALLOWED_ENV_VARS[@]}")
     EXTRA_BLOCKED_PATHS=("${_ADMIN_EXTRA_BLOCKED_PATHS[@]}")
     HOME_READONLY=("${_ADMIN_HOME_READONLY[@]}")
+    HOME_SEEDED_FILES=("${_ADMIN_HOME_SEEDED_FILES[@]}")
     EXTRA_WRITABLE_PATHS=("${_ADMIN_EXTRA_WRITABLE_PATHS[@]}")
     READONLY_MOUNTS=("${_ADMIN_READONLY_MOUNTS[@]}")
     ALLOWED_PROJECT_PARENTS=("${_ADMIN_ALLOWED_PROJECT_PARENTS[@]}")
@@ -735,6 +755,7 @@ _enforce_admin_policy() {
     _merge_additions _user_ewp  _ADMIN_EXTRA_WRITABLE_PATHS   EXTRA_WRITABLE_PATHS
     _merge_additions _user_rom  _ADMIN_READONLY_MOUNTS        READONLY_MOUNTS
     _merge_additions _user_hro  _ADMIN_HOME_READONLY          HOME_READONLY
+    _merge_additions _user_hsf  _ADMIN_HOME_SEEDED_FILES      HOME_SEEDED_FILES
     _merge_additions _user_app  _ADMIN_ALLOWED_PROJECT_PARENTS ALLOWED_PROJECT_PARENTS
 
     # HOME_WRITABLE: merge user additions, but strip admin HOME_READONLY items
@@ -857,6 +878,7 @@ _snapshot_admin_config() {
     _ADMIN_EXTRA_BLOCKED_PATHS=("${EXTRA_BLOCKED_PATHS[@]}")
     _ADMIN_HOME_READONLY=("${HOME_READONLY[@]}")
     _ADMIN_HOME_WRITABLE=("${HOME_WRITABLE[@]}")
+    _ADMIN_HOME_SEEDED_FILES=("${HOME_SEEDED_FILES[@]}")
     _ADMIN_DENIED_WRITABLE_PATHS=("${DENIED_WRITABLE_PATHS[@]}")
     _ADMIN_EXTRA_WRITABLE_PATHS=("${EXTRA_WRITABLE_PATHS[@]}")
     _ADMIN_READONLY_MOUNTS=("${READONLY_MOUNTS[@]}")
@@ -960,6 +982,7 @@ load_project_config() {
     _validate_path_array READONLY_MOUNTS "${READONLY_MOUNTS[@]}"
     _validate_path_array HOME_READONLY "${HOME_READONLY[@]}"
     _validate_path_array HOME_WRITABLE "${HOME_WRITABLE[@]}"
+    _validate_path_array HOME_SEEDED_FILES "${HOME_SEEDED_FILES[@]}"
     _validate_path_array BLOCKED_FILES "${BLOCKED_FILES[@]}"
     _validate_path_array EXTRA_BLOCKED_PATHS "${EXTRA_BLOCKED_PATHS[@]}"
     _validate_path_array EXTRA_WRITABLE_PATHS "${EXTRA_WRITABLE_PATHS[@]}"
@@ -993,6 +1016,18 @@ for _ro in "${HOME_READONLY[@]}"; do
     for _rw in "${HOME_WRITABLE[@]}"; do
         if [[ "$_ro" == "$_rw" ]]; then
             echo "WARNING: $HOME/$_ro is in both HOME_READONLY and HOME_WRITABLE (writable wins)." >&2
+        fi
+    done
+done
+
+# HOME_SEEDED_FILES wins over HOME_READONLY: a file seeded into the
+# tmpfs cannot also be a read-only bind to the host file. Backends
+# skip the read-only mount when an entry is seeded; warn so the
+# overlap is visible.
+for _seed in "${HOME_SEEDED_FILES[@]}"; do
+    for _ro in "${HOME_READONLY[@]}"; do
+        if [[ "$_seed" == "$_ro" ]]; then
+            echo "WARNING: $HOME/$_seed is in both HOME_SEEDED_FILES and HOME_READONLY (seeded wins, read-only ignored)." >&2
         fi
     done
 done

@@ -200,13 +200,48 @@ backend_prepare() {
 
     # --- Home directory paths ---
     if [[ "${HOME_ACCESS:-restricted}" == "restricted" || "${HOME_ACCESS}" == "tmpwrite" ]]; then
+        # HOME_SEEDED_FILES degrades to read-only on firejail. Producing a
+        # writable per-session copy of a host dotfile inside firejail's
+        # tmpfs HOME requires either --bind=src,dst (root-only) or a
+        # custom entry-point wrapper — neither is in scope for an
+        # unprivileged backend. Warn once, then bind read-only via the
+        # existing --whitelist + --read-only path.
+        local _firejail_seeded_relpaths=()
+        local seedf
+        for seedf in "${HOME_SEEDED_FILES[@]}"; do
+            [[ -f "$HOME/$seedf" ]] || continue
+            _firejail_seeded_relpaths+=("$seedf")
+        done
+        if [[ ${#_firejail_seeded_relpaths[@]} -gt 0 ]] && ! _is_true "${SANDBOX_QUIET:-false}"; then
+            echo "sandbox: firejail backend does not support HOME_SEEDED_FILES — bound read-only:" >&2
+            local _r
+            for _r in "${_firejail_seeded_relpaths[@]}"; do
+                echo "  ~/$_r" >&2
+            done
+        fi
+
         # Whitelist mode: tmpfs $HOME, selectively mount listed paths
         for subdir in "${HOME_READONLY[@]}"; do
+            # Avoid double-mounting when the same entry is also seeded
+            local _is_seeded=false
+            local _s
+            for _s in "${_firejail_seeded_relpaths[@]}"; do
+                [[ "$subdir" == "$_s" ]] && { _is_seeded=true; break; }
+            done
+            $_is_seeded && continue
             local full_path="$HOME/$subdir"
             if [[ -e "$full_path" ]]; then
                 FIREJAIL_ARGS+=(--whitelist="$full_path")
                 FIREJAIL_ARGS+=(--read-only="$full_path")
             fi
+        done
+
+        # Seeded entries — same read-only handling, distinct loop so
+        # the user-visible warning above lists exactly what's degraded.
+        for subdir in "${_firejail_seeded_relpaths[@]}"; do
+            local full_path="$HOME/$subdir"
+            FIREJAIL_ARGS+=(--whitelist="$full_path")
+            FIREJAIL_ARGS+=(--read-only="$full_path")
         done
 
         for subdir in "${HOME_WRITABLE[@]}"; do
