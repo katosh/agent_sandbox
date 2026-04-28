@@ -1,9 +1,12 @@
 #! /bin/bash --
 # chaperon/handlers/sacct.sh — Handle sacct requests from sandbox
 #
-# Scoped to the current user only.  Flags that would show other users'
-# jobs (--allusers, --user=X) are denied.  The handler always injects
-# --user=$(whoami) to enforce single-user scope.
+# Scoped to the current user only.  The handler always injects
+# --user=$(whoami) to enforce single-user scope.  Self-scoped variants
+# (`--user $USER`, `--user=$USER`, `--me`, `--uid <self-uid>`) are
+# silently accepted as no-ops — they're equivalent to the auto-inject.
+# Cross-user values (and `--allusers`) are denied with an actionable
+# message that points at the simple fix (drop the flag, or use --me).
 #
 # Job-level scoping (by chaperon comment) is not applied because sacct
 # is retrospective (completed jobs) and the comment filter would be too
@@ -37,6 +40,7 @@ _SACCT_ALLOWED_FLAGS=" \
   --units \
   --noconvert \
   --duplicates \
+  --me \
 "
 
 _SACCT_VALUE_FLAGS=" \
@@ -56,6 +60,24 @@ _is_sacct_allowed() {
 
 _is_sacct_value_flag() {
     [[ "$_SACCT_VALUE_FLAGS" == *" $1 "* ]]
+}
+
+# True if value is the current user's account name.  Compares against
+# `id -un` (canonical name, robust to renamed accounts) and $USER
+# (covers shells where `whoami`/$USER may differ momentarily).
+_is_self_user() {
+    local v="$1"
+    [[ -z "$v" ]] && return 1
+    [[ "$v" == "$(id -un 2>/dev/null)" ]] && return 0
+    [[ -n "${USER:-}" && "$v" == "$USER" ]] && return 0
+    return 1
+}
+
+# True if value is the current user's numeric uid.
+_is_self_uid() {
+    local v="$1"
+    [[ "$v" =~ ^[0-9]+$ ]] || return 1
+    [[ "$v" == "$(id -u 2>/dev/null)" ]]
 }
 
 handle_sacct() {
@@ -78,13 +100,39 @@ handle_sacct() {
                 _sandbox_deny "sacct '--allusers' is not allowed — only your own jobs are shown inside the sandbox."
                 return 1
                 ;;
-            -u|--user|--user=*)
-                _sandbox_deny "sacct '--user' is not allowed — the sandbox automatically scopes to your user."
-                return 1
+            -u|--user)
+                # Self-scope: silently accept and drop — auto-inject below
+                # already enforces it, so forwarding would just duplicate.
+                if (( i + 1 < ${#REQ_ARGS[@]} )) && _is_self_user "${REQ_ARGS[$((i+1))]}"; then
+                    (( i++ )) || true
+                else
+                    _sandbox_warn "sacct '--user' is only allowed for your own user — drop the flag (or pass '--me'); the sandbox auto-scopes to you."
+                    return 1
+                fi
                 ;;
-            --uid|--uid=*)
-                _sandbox_deny "sacct '--uid' is not allowed — the sandbox automatically scopes to your user."
-                return 1
+            --user=*)
+                if _is_self_user "${arg#--user=}"; then
+                    : # accept silently — auto-inject covers it
+                else
+                    _sandbox_warn "sacct '--user' is only allowed for your own user — drop the flag (or pass '--me'); the sandbox auto-scopes to you."
+                    return 1
+                fi
+                ;;
+            --uid)
+                if (( i + 1 < ${#REQ_ARGS[@]} )) && _is_self_uid "${REQ_ARGS[$((i+1))]}"; then
+                    (( i++ )) || true
+                else
+                    _sandbox_warn "sacct '--uid' is only allowed for your own uid — drop the flag; the sandbox auto-scopes to you."
+                    return 1
+                fi
+                ;;
+            --uid=*)
+                if _is_self_uid "${arg#--uid=}"; then
+                    :
+                else
+                    _sandbox_warn "sacct '--uid' is only allowed for your own uid — drop the flag; the sandbox auto-scopes to you."
+                    return 1
+                fi
                 ;;
             -A|--accounts|--accounts=*)
                 _sandbox_deny "sacct '--accounts' is not allowed — account-level queries could enumerate other users."
