@@ -2,7 +2,7 @@
 
 Kernel-enforced filesystem isolation for AI coding agents on Linux.
 
-Hides SSH keys, cloud credentials, GPG keys, and environment secrets from AI coding agents while letting them do their job. Three backends (bubblewrap, firejail, landlock), five agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode), zero containers.
+Hides SSH keys, cloud credentials, GPG keys, and environment secrets from AI coding agents while letting them do their job. Three backends (bubblewrap, firejail, landlock), six built-in agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode, pi-mono) with a one-line recipe for adding more, zero containers.
 
 ```bash
 agent-sandbox claude          # Claude Code, sandboxed
@@ -13,7 +13,7 @@ agent-sandbox bash            # interactive shell, sandboxed
 
 ## Why Sandbox?
 
-AI coding agents (Claude Code, Codex, Gemini, Aider, OpenCode, and others) are powerful — they read files, write code, and run commands on your behalf. But your user account has access to far more than any single project needs:
+AI coding agents (Claude Code, Codex, Gemini, Aider, OpenCode, pi-mono, and others) are powerful — they read files, write code, and run commands on your behalf. But your user account has access to far more than any single project needs:
 
 - **SSH keys** (`~/.ssh/`) — access to GitHub, remote servers, other machines
 - **Cloud credentials** (`~/.aws/`, API tokens) — access to S3, cloud services
@@ -86,18 +86,27 @@ cd agent_sandbox
 make install                         # installs to ~/.local/
 ```
 
-This puts `agent-sandbox` on your `PATH` and installs the runtime to `~/.local/lib/agent-sandbox/`.
-For system-wide (admin) installation, see [ADMIN_INSTALL.md](ADMIN_INSTALL.md).
-
-Then create your config:
+This installs `agent-sandbox` to `~/.local/bin/` and the runtime to `~/.local/lib/agent-sandbox/`. Make sure `~/.local/bin` is on your PATH:
 
 ```bash
-make install-conf    # creates ~/.config/agent-sandbox/sandbox.conf
+# Add to your ~/.bashrc or ~/.zshrc if not already there
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+For system-wide (admin) installation, see [ADMIN_INSTALL.md](ADMIN_INSTALL.md).
+
+Config and agent templates are auto-deployed to `~/.config/agent-sandbox/` on first run. To deploy them manually:
+
+```bash
+make install-conf    # creates sandbox.conf + agent templates
 ```
 
 ### What Gets Installed
 
 ```
+$(PREFIX)/bin/
+└── agent-sandbox                       # Wrapper script (execs sandbox-exec.sh)
+
 $(PREFIX)/lib/agent-sandbox/            # Runtime (code + defaults)
 ├── sandbox-exec.sh                     # Main entry point (auto-selects backend)
 ├── sandbox-lib.sh                      # Core library (config loading, backend detection)
@@ -108,30 +117,32 @@ $(PREFIX)/lib/agent-sandbox/            # Runtime (code + defaults)
 │   ├── codex/                          #   agent.md, settings.json deployed to user dir
 │   ├── gemini/                         #     on first run (see below)
 │   ├── aider/
-│   └── opencode/
+│   ├── opencode/
+│   └── pi/                             # pi-mono — ships disabled (opt-in via ENABLED_AGENTS)
 ├── backends/
 │   ├── bwrap.sh                        # Bubblewrap (mount namespace isolation)
 │   ├── firejail.sh                     # Firejail (setuid sandbox, namespaces + seccomp)
 │   ├── landlock.sh                     # Landlock (LSM filesystem restrictions)
 │   ├── landlock-sandbox.py             # Landlock syscall helper (Python)
-│   └── generate-seccomp.py            # Seccomp BPF filter generator (for bwrap)
+│   └── generate-seccomp.py             # Seccomp BPF filter generator (for bwrap)
 ├── chaperon/                           # Secure Slurm proxy (see CHAPERON.md)
 │   ├── chaperon.sh, protocol.sh
 │   ├── handlers/                       # Request handlers (sbatch, srun, scancel, etc.)
 │   └── stubs/                          # PATH-shadowing stubs (all talk to chaperon)
-├── bin/                                # Fallback PATH shadows (delegate to stubs)
+└── bin/                                # Fallback PATH shadows (delegate to stubs)
 
 ~/.config/agent-sandbox/                # User config (auto-created on first run)
 ├── sandbox.conf                        # ← Your permissions config — edit this
 ├── conf.d/                             # Per-project overrides
-├── agents/                             # User-customizable agent templates
-│   ├── claude/
-│   │   ├── agent.md                    #   Sandbox instructions injected into CLAUDE.md
-│   │   └── settings.json               #   Merged into Claude's settings
-│   ├── codex/agent.md
-│   ├── gemini/agent.md
-│   ├── aider/agent.md
-│   └── opencode/agent.md
+└── agents/                             # User-customizable agent templates
+    ├── claude/
+    │   ├── agent.md                    #   Sandbox instructions injected into CLAUDE.md
+    │   └── settings.json               #   Merged into Claude's settings
+    ├── codex/agent.md
+    ├── gemini/agent.md
+    ├── aider/agent.md
+    ├── opencode/agent.md
+    └── pi/agent.md
 ```
 
 Unmodified configs are silently updated on upgrade. User-edited files are preserved (tracked via `.origin-sha256` sidecars). Run `make install-conf FORCE=1` to reset all templates to defaults.
@@ -335,48 +346,76 @@ For the full architecture, protocol specification, and security analysis, see [C
 
 ## Agent Profiles
 
-**All permission grants — what the sandbox can read, write, and pass through as environment variables — live in the sandbox configuration layer: `sandbox.conf`, plus any admin config (`/app/lib/agent-sandbox/sandbox.conf`) and per-project overrides (`conf.d/*.conf`).** The effective policy is reconstructable from those files alone; per-agent profiles in `agents/<name>/` cannot widen them and a guardrail aborts the sandbox if an overlay tries to.
+The sandbox supports a growing set of AI coding agents. Each one lives in `agents/<name>/` and is enabled per-user via the `ENABLED_AGENTS` array in `sandbox.conf`. Disabled agents contribute nothing to the sandbox surface — their config dirs stay invisible, so e.g. `~/.pi` doesn't become writable for users who don't run pi.
 
-Each agent profile lives in `agents/<name>/` and contains:
+**Built-in profiles:**
+
+| Agent | Default | Auth dir | Notes |
+|-------|---------|----------|-------|
+| `claude` | enabled | `~/.claude`, `~/.claude.json`, `~/.local/{state,share}/claude` | OAuth or `ANTHROPIC_API_KEY` |
+| `codex` | enabled | `~/.codex` | OAuth (`codex login`) or `OPENAI_API_KEY` |
+| `gemini` | enabled | `~/.gemini` | Google OAuth or `GOOGLE_API_KEY` |
+| `aider` | **disabled** | (none — env-var only) | Opt-in: `ENABLED_AGENTS+=("aider")` |
+| `opencode` | **disabled** | `~/.config/opencode` + `~/.local/{share,state}/opencode` + `~/.cache/opencode` | Opt-in: `ENABLED_AGENTS+=("opencode")` |
+| `pi` | **disabled** | `~/.pi/agent` | Opt-in: `ENABLED_AGENTS+=("pi")` |
+
+The default set is conservative on purpose — every enabled agent expands the writable surface to whatever its `config.conf` declares, so dotdir names that could plausibly belong to unrelated user data (`~/.pi`, `~/.config/opencode`, etc.) stay invisible until you opt in.
+
+**Enabling and disabling agents:** edit `ENABLED_AGENTS` in `sandbox.conf`. Adding a name folds that agent's declared writable/readable/blocked paths into the sandbox surface and runs its instruction-merging overlay; removing a name leaves the agent's paths invisible (no auth persistence, no AGENTS.md hide).
+
+```bash
+# Enable pi alongside the defaults:
+ENABLED_AGENTS+=("pi")
+
+# Or replace the whole list (e.g. solo-claude profile):
+ENABLED_AGENTS=("claude")
+```
+
+**How a profile is structured:** each `agents/<name>/` directory contains:
 
 | File | Purpose |
 |------|---------|
-| `overlay.sh` | Mechanical config merge (e.g., CLAUDE.md + sandbox instructions) and env-var exports (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …). Writes only to staging arrays — may NOT mutate permission globals. |
-| `agent.md` | Sandbox instructions injected into the agent's instruction file |
-| `config.conf` | **Declarative metadata only** — which env vars/paths the agent uses. Read to emit startup warnings if the agent's needs look unreachable. Does NOT modify permissions. |
-
-**How it works:** At sandbox start, every `agents/*/` profile is prepared unconditionally — no detection gate. The declarative `config.conf` is read to check whether the agent has a reachable credential (env var set and allowed, OR an auth marker file on disk). If neither is present, the sandbox prints a one-time per-agent warning with a login hint. Then each `overlay.sh` runs under a permission-mutation guardrail to assemble the merged config dir and export the agent's config-dir env var.
+| `config.conf` | Declarative metadata. Lists the writable/readable paths the agent needs, files to hide (real `AGENTS.md` / `CLAUDE.md` so the sandbox-merged copy wins), env vars used for auth, and auth-marker files. When the agent is enabled, these declarations are folded into `HOME_WRITABLE` / `HOME_READONLY` / `BLOCKED_FILES` automatically. |
+| `overlay.sh` | Runs at sandbox start (only for enabled agents). Merges `AGENTS.md` (or `CLAUDE.md`) with the sandbox-integrity snippet from `agent.md` into a `sandbox-config/` dir, then exports an env var like `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `OPENCODE_CONFIG_DIR` / `PI_CODING_AGENT_DIR` so the agent reads from there instead of its real config dir. Runs in a subshell with a guardrail — cannot mutate permission globals. |
+| `agent.md` | The sandbox-integrity instruction snippet. Customize per user via `~/.config/agent-sandbox/agents/<name>/agent.md`. |
 
 **Agent API keys are allowed by default** — `ALLOWED_ENV_VARS` in `sandbox.conf` includes `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`, and `GOOGLE_API_KEY` so agents that use env-var auth work on first launch. Comment out any entry to block that key.
 
-**Auth persists across sessions:** `~/.claude`, `~/.codex`, `~/.gemini`, and `~/.config/opencode` are listed in `HOME_WRITABLE` so tokens written inside the sandbox (by `claude`, `codex login`, etc.) survive to the next session. Missing directories are auto-created before sandbox start so first-time in-sandbox auth works even if the agent has never been run outside.
+**Auth persists across sessions** for enabled agents: their declared writable paths survive sandbox exit, and missing directories are auto-created before sandbox start so first-time in-sandbox auth works even if the agent has never been run outside.
 
-**Silencing warnings:** set `SUPPRESS_AGENT_WARNINGS=("claude")` in `sandbox.conf` to silence one agent, or `SUPPRESS_AGENT_WARNINGS=("all")` to silence every agent. Useful when you intentionally isolate an agent (e.g., remove `.claude` from `HOME_WRITABLE` to force fresh OAuth each session).
+**Silencing warnings:** set `SUPPRESS_AGENT_WARNINGS=("claude")` in `sandbox.conf` to silence one agent, or `SUPPRESS_AGENT_WARNINGS=("all")` to silence every agent.
 
-Customize agent instructions via `~/.config/agent-sandbox/agents/<name>/agent.md`.
+### Adding support for a new agent
+
+To add a tool not on the list above, drop a profile into `agents/<name>/` and add `"<name>"` to `ENABLED_AGENTS`. The recipe:
+
+1. **Find the agent's auth/config dir.** Most CLI agents keep credentials and history under a single dotdir (`~/.toolname` or `~/.config/toolname`). Check the tool's docs or strace the binary on first launch. Note all dirs the tool writes to — some use multiple XDG paths (config, data, cache, state).
+
+2. **Find the agent's instruction file** (if any) and an env var that overrides the agent's config dir. Most modern agents support one (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, `PI_CODING_AGENT_DIR`). The sandbox uses this to point the agent at a sandbox-merged copy of `AGENTS.md` / `CLAUDE.md` so sandbox-integrity instructions are authoritative.
+
+3. **Write `agents/<name>/config.conf`** declaring what the agent needs:
+   ```bash
+   AGENT_CREDENTIAL_ENV_VARS=("MYTOOL_API_KEY")     # for warning when blocked
+   AGENT_AUTH_MARKERS=("$HOME/.mytool/auth.json")   # exists ⇒ "authenticated"
+   AGENT_REQUIRED_WRITABLE_PATHS=("$HOME/.mytool")  # auto-folded into HOME_WRITABLE
+   AGENT_REQUIRED_READABLE_PATHS=()                 # auto-folded into HOME_READONLY
+   AGENT_BLOCKED_FILES=("$HOME/.mytool/AGENTS.md")  # auto-folded into BLOCKED_FILES
+   AGENT_LOGIN_HINT="run 'mytool login' inside the sandbox"
+   ```
+
+4. **Write `agents/<name>/overlay.sh`** modeled on an existing one (codex is the simplest example) — merge instructions into a `sandbox-config/` dir and export the agent's config-dir env var via `_AGENT_ENV_EXPORTS+=(...)`.
+
+5. **Copy `agents/<name>/agent.md`** from another agent (the wording is generic). Customize if you want different sandbox-integrity messaging for this tool.
+
+6. **Add `"<name>"` to `ENABLED_AGENTS`** in `sandbox.conf` and run the agent — first-time auth and config dirs are auto-created.
+
+The `agents/pi/` profile is a complete worked example for a single-binary CLI agent with one config dir and an env-var override; copy it as a starting point.
 
 ---
 
 ## Agent Teams / tmux
 
 The outer tmux socket is blocked (escape risk), but a **nested tmux** running inside the sandbox works well: `agent-sandbox tmux new-session claude` (prefix is `Ctrl-a`). On kernels < 5.4, set `BIND_DEV_PTS=true` in `sandbox.conf` for pty allocation (see Known Limitations). Customize via `~/.config/agent-sandbox/sandbox-tmux.conf`.
-
-**Tip — long-lived Jupyter kernels for stateful experimentation:** The sandbox ships a `lab` utility (in `bin/`) that runs a project-local JupyterLab and provides CLI access to running kernels so the agent can execute code, inspect live variables, and edit notebook cells without clicking through the web UI. Two run modes:
-
-```bash
-# Mode 1: user starts lab in a tmux pane inside the sandbox
-agent-sandbox tmux new-session         # nested tmux
-lab kernel add && lab                   # foreground JupyterLab
-# agent (in another pane) attaches to the running kernel:
-lab kernel exec -n analysis.ipynb "df.describe()"
-
-# Mode 2: agent starts lab in the background
-lab kernel add && lab start             # daemonize (agent does this)
-lab notebook attach analysis.ipynb      # spawn kernel
-lab kernel exec -n analysis.ipynb "df = pd.read_csv('data.csv')"
-```
-
-On multi-user machines, pick a unique port to avoid collisions: `PORT=9012 lab start`. Variables, loaded dataframes, and model state persist between turns — load once, iterate cheaply. Both the kernel and the agent share the same sandboxed filesystem view, so the isolation guarantees hold. Run `lab help` for the full command list.
 
 ### Notifications
 
@@ -493,7 +532,7 @@ Sorted by perceived severity (security impact first, then operational issues).
 | **bwrap/Firejail** | `/tmp` isolated by default (`PRIVATE_TMP=true`) — breaks MPI shared-memory transport and NCCL inter-GPU sockets | Set `PRIVATE_TMP=false` in `sandbox.conf` for HPC multi-process workloads |
 | **All** | Environment variable blocking uses explicit names (`BLOCKED_ENV_VARS`) and glob patterns (`BLOCKED_ENV_PATTERNS` — e.g. `*_TOKEN`, `SSH_*`, `CI_*`). Patterns catch most credential conventions automatically, but secrets with unusual names may slip through | Review your environment (`env \| grep -iE 'token\|key\|secret\|auth'`), add names to `BLOCKED_ENV_VARS` or patterns to `BLOCKED_ENV_PATTERNS`, and use `ALLOWED_ENV_VARS` to override. See [Admin Hardening](ADMIN_HARDENING.md) for an allowlist approach |
 | **All** | No resource exhaustion limits by default — a sandboxed process can consume unlimited CPU, memory, processes, and disk space in the project directory | Set `SANDBOX_NPROC_LIMIT` in `sandbox.conf` for fork bomb defense. See [Admin Hardening](ADMIN_HARDENING.md) for cgroup-based limits. Slurm-submitted jobs are limited by the scheduler |
-| **All** | No audit/logging trail — there is no persistent log of sandbox sessions, chaperon requests, or denied access attempts | The chaperon prints errors to stderr per-request but does not persist them. Consider redirecting to a log file or using `logger` for syslog integration |
+| **All** | Chaperon logs record requests with full arguments and handler denials. Logs are per-session files in `~/.local/state/agent-sandbox/chaperon/`, auto-pruned by age (`CHAPERON_LOG_RETAIN_DAYS`, default 7) and total size (50 MiB cap). Configure `CHAPERON_LOG_LEVEL` in `sandbox.conf` (`debug` for script content, `info` for requests and denials, `warn`/`error` for less). Filenames include hostname for NFS-safe uniqueness across machines | Review logs for denied access patterns. For system-level audit (file access, execve, network), see [Admin Hardening](ADMIN_HARDENING.md) §5 which requires dedicated agent accounts |
 | **All** | `srun --pty` (interactive PTY) is not supported through the chaperon protocol. Some advanced srun flags may be blocked — check the denied list in [CHAPERON.md](CHAPERON.md) if a launch fails | Use `sbatch` for interactive-like workflows, or `srun` without `--pty` for non-interactive execution |
 | **All** | Chaperon temp files (wrapper scripts, original scripts) in `$TMPDIR` persist after SIGKILL since the cleanup trap cannot fire | Stale files are named `chaperon-*` in `$TMPDIR`; periodic cleanup recommended on NFS-backed tmp |
 | **Firejail** | `FILTER_PASSWD=true` blocks NSS daemon sockets (nscd, nslcd, sssd) on LDAP/AD clusters where the current user is not in local `/etc/passwd`, breaking user/group resolution and Slurm | Set `FILTER_PASSWD=false` in `sandbox.conf` on LDAP clusters, or prefer bwrap which overlays a pre-generated `/etc/passwd` |

@@ -24,6 +24,7 @@ set -euo pipefail
 
 CHAPERON_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$CHAPERON_DIR/protocol.sh"
+source "$CHAPERON_DIR/logging.sh"
 
 # ── Arguments ────────────────────────────────────────────────────
 
@@ -35,6 +36,10 @@ if [[ -z "$FIFO_DIR" || -z "$PROJECT_DIR" || -z "$SANDBOX_EXEC" ]]; then
     echo "chaperon: usage: chaperon.sh <fifo_dir> <project_dir> <sandbox_exec_path>" >&2
     exit 1
 fi
+
+# ── Logging ─────────────────────────────────────────────────────
+chaperon_log_init "$PROJECT_DIR"
+chaperon_log info "starting (pid=$$, ppid=$PPID, fifo=$FIFO_DIR)"
 
 # ── Orphan prevention ────────────────────────────────────────────
 if command -v python3 &>/dev/null; then
@@ -51,7 +56,11 @@ fi
 
 # ── Signal handling / cleanup ────────────────────────────────────
 
+_chaperon_exiting=false
 _chaperon_cleanup() {
+    "$_chaperon_exiting" && return 0
+    _chaperon_exiting=true
+    chaperon_log info "shutting down (pid=$$)"
     exec 3<&- 2>/dev/null || true
     rm -rf "$FIFO_DIR" 2>/dev/null || true
     exit 0
@@ -78,7 +87,7 @@ dispatch_handler() {
 
     # Validate command name to prevent path traversal (e.g. "../../etc/passwd")
     if [[ ! "$command" =~ ^[a-z_][a-z0-9_]*$ ]]; then
-        echo "chaperon: rejected invalid command name: $command" >&2
+        chaperon_log error "rejected invalid command name: $command"
         return 1
     fi
 
@@ -162,7 +171,7 @@ while true; do
     # The request includes a RESP_FIFO line with the path to the
     # per-request response FIFO. The stub creates it before sending.
     if [[ -z "${REQ_RESP_FIFO:-}" ]]; then
-        echo "chaperon: request missing RESP_FIFO" >&2
+        chaperon_log warn "request missing RESP_FIFO (command=$REQ_COMMAND)"
         continue
     fi
 
@@ -170,7 +179,7 @@ while true; do
     # not a symlink. The stub creates an atomic directory (mktemp -d) with a
     # FIFO inside, so the expected structure is deterministic.
     if [[ "$REQ_RESP_FIFO" != "$FIFO_DIR/"*/fifo ]] || [[ "$REQ_RESP_FIFO" == *".."* ]]; then
-        echo "chaperon: RESP_FIFO path validation failed: $REQ_RESP_FIFO" >&2
+        chaperon_log error "RESP_FIFO path validation failed: $REQ_RESP_FIFO"
         continue
     fi
 
@@ -178,7 +187,7 @@ while true; do
     # A malicious process could race to replace the FIFO with a symlink
     # pointing outside the FIFO directory to intercept the response.
     if [[ -L "$REQ_RESP_FIFO" ]] || [[ ! -p "$REQ_RESP_FIFO" ]]; then
-        echo "chaperon: RESP_FIFO is symlink or not a FIFO: $REQ_RESP_FIFO" >&2
+        chaperon_log error "RESP_FIFO is symlink or not a FIFO: $REQ_RESP_FIFO"
         continue
     fi
 
@@ -186,9 +195,27 @@ while true; do
     # TOCTOU: a symlink swap between validation and write.
     _resp_fd=""
     exec {_resp_fd}>"$REQ_RESP_FIFO" 2>/dev/null || {
-        echo "chaperon: failed to open RESP_FIFO: $REQ_RESP_FIFO" >&2
+        chaperon_log error "failed to open RESP_FIFO: $REQ_RESP_FIFO"
         continue
     }
+
+    # Log full request details for audit trail.
+    # Escape newlines/tabs so each log call produces exactly one line.
+    _log_args="${REQ_ARGS[*]:-}"
+    _log_args="${_log_args//$'\n'/\\n}"
+    _log_args="${_log_args//$'\t'/\\t}"
+    chaperon_log info "request: $REQ_COMMAND args=[${_log_args}] cwd=${REQ_CWD:-<unset>}"
+    if [[ -n "${REQ_SCRIPT:-}" ]]; then
+        # Log size and shebang only. Script body is intentionally NOT logged
+        # because it may contain secrets (API keys, DB credentials) or
+        # PHI/PII. The args, CWD, and handler denials provide sufficient
+        # audit trail without the secret exposure risk.
+        _log_shebang=""
+        if [[ "$REQ_SCRIPT" == "#!"* ]]; then
+            _log_shebang=" shebang=${REQ_SCRIPT%%$'\n'*}"
+        fi
+        chaperon_log info "request: $REQ_COMMAND script=${#REQ_SCRIPT} bytes${_log_shebang}"
+    fi
 
     # Dispatch to handler, capturing stdout and stderr
     _ch_stdout="$(mktemp "${TMPDIR:-/tmp}/chaperon-out-XXXXXX")"
@@ -201,6 +228,20 @@ while true; do
     # We re-use READ_FD (3) for the main loop, so only close in the
     # redirection context (child processes inherit the closed FD).
     dispatch_handler "$REQ_COMMAND" 3>&- >"$_ch_stdout" 2>"$_ch_stderr" || _exit_code=$?
+
+    if [[ "$_exit_code" -ne 0 ]]; then
+        chaperon_log warn "handler $REQ_COMMAND exited $_exit_code"
+    else
+        chaperon_log debug "handler $REQ_COMMAND exited 0"
+    fi
+
+    # Log handler stderr (contains deny/warn messages from _sandbox_deny/_sandbox_warn).
+    # These are critical for security audit — they show what was blocked and why.
+    if [[ -s "$_ch_stderr" ]]; then
+        while IFS= read -r _stderr_line; do
+            chaperon_log warn "handler $REQ_COMMAND stderr: $_stderr_line"
+        done < "$_ch_stderr"
+    fi
 
     _stdout_b64="$(chaperon_b64_encode < "$_ch_stdout")"
     _stderr_b64="$(chaperon_b64_encode < "$_ch_stderr")"
@@ -233,7 +274,7 @@ while true; do
     if kill -0 "$_write_pid" 2>/dev/null; then
         kill "$_write_pid" 2>/dev/null || true
         wait "$_write_pid" 2>/dev/null || true
-        echo "chaperon: response write timed out for $REQ_COMMAND" >&2
+        chaperon_log warn "response write timed out for $REQ_COMMAND"
     else
         wait "$_write_pid" 2>/dev/null || _write_ok=false
     fi

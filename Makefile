@@ -31,7 +31,7 @@ CORE_SCRIPTS := sandbox-exec.sh sandbox-lib.sh sandbox-tmux.conf VERSION
 # Deprecated but still referenced by some setups
 COMPAT_SCRIPTS := sbatch-sandbox.sh srun-sandbox.sh
 
-TEST_SCRIPTS := test.sh test-admin.sh test-lab.sh
+TEST_SCRIPTS := test.sh test-admin.sh
 
 BACKEND_FILES := backends/bwrap.sh \
                  backends/firejail.sh \

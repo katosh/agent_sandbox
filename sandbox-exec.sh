@@ -162,9 +162,16 @@ _load_sandbox_modules
 detect_backend
 _BACKEND_DETECTED=true
 
-# Prepare agent profiles (backend-independent). All agents are always
-# prepared — there is no detection gate. The requirement check emits
-# warnings if declared credentials/paths look unreachable.
+# Apply per-agent grants. For each name in ENABLED_AGENTS, fold its
+# declared writable/readable/blocked paths (from agents/<name>/config.conf)
+# into the sandbox permission arrays. Must run after all config has
+# been loaded so user-set ENABLED_AGENTS wins, and before the
+# requirement check / overlay execution which both iterate the list.
+_apply_agent_profiles
+
+# Prepare agent profiles (backend-independent). Only agents listed in
+# ENABLED_AGENTS are prepared. The requirement check emits warnings
+# if declared credentials/paths look unreachable.
 _check_agent_requirements
 prepare_agent_configs "$PROJECT_DIR"
 
@@ -212,6 +219,8 @@ if [[ -n "$_CHAPERON_DIR" ]]; then
         SLURM_SCOPE="$_SLURM_SCOPE_ENV"
     fi
     export SLURM_SCOPE="${SLURM_SCOPE:-project}"
+    export CHAPERON_LOG_LEVEL="${CHAPERON_LOG_LEVEL:-info}"
+    export CHAPERON_LOG_RETAIN_DAYS="${CHAPERON_LOG_RETAIN_DAYS:-7}"
 
     "$SCRIPT_DIR/chaperon/chaperon.sh" \
         "$_CHAPERON_DIR" "$PROJECT_DIR" "$SCRIPT_DIR/sandbox-exec.sh" \
@@ -249,7 +258,14 @@ fi
 
 # Startup banner (disable with SANDBOX_QUIET=true in sandbox.conf or env)
 if ! _is_true "${SANDBOX_QUIET:-false}"; then
-    echo "sandbox: $SANDBOX_BACKEND | project: $PROJECT_DIR | home: ${HOME_ACCESS:-restricted}" >&2
+    case "${HOME_ACCESS:-restricted}" in
+        restricted) _home_label="restricted (listed dotfiles only, read-only)" ;;
+        tmpwrite)   _home_label="tmpwrite (~ visible, writes to tmpfs — not persisted)" ;;
+        read)       _home_label="read (~ visible, read-only)" ;;
+        write)      _home_label="write (~ visible, read-write)" ;;
+        *)          _home_label="${HOME_ACCESS}" ;;
+    esac
+    echo "sandbox: $SANDBOX_BACKEND | project: $PROJECT_DIR | home: $_home_label" >&2
 fi
 
 backend_exec "$@"

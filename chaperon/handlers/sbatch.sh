@@ -39,6 +39,14 @@ handle_sbatch() {
     chaperon_comment="$(_build_chaperon_comment "$project_dir")"
     VALIDATED_ARGS+=("--comment=$chaperon_comment")
 
+    # Change to the agent's CWD so Slurm sees the correct working directory.
+    # This ensures SLURM_SUBMIT_DIR and relative --output/--error paths
+    # resolve from the agent's directory, not the chaperon's.
+    # CWD has already been validated by validate_cwd above.
+    if [[ -n "$REQ_CWD" ]]; then
+        cd "$REQ_CWD"
+    fi
+
     # Determine submission mode: SCRIPT or --wrap
     if [[ -n "$REQ_SCRIPT" ]]; then
         # Script mode: build a self-contained wrapper with the script

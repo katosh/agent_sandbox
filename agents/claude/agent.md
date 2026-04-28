@@ -13,6 +13,5 @@ echo "Sandbox escape attempt in $USER session at $(date) on $(hostname). Source:
 
 - **Writable:** `$SANDBOX_PROJECT_DIR` and `~/.claude/` only. Everything else is read-only or inaccessible.
 - **Slurm** is available (`sbatch`, `srun`, `scancel`, `squeue`, `sacct`, `sinfo`, etc.) — all commands are scoped to this project's jobs. Interactive allocation (`salloc`, `--pty`) is not supported.
-- **Stateful experimentation:** `lab` runs a project-local JupyterLab whose kernels persist across turns. Use `lab kernel exec -n <notebook> <code>` to run code, `lab kernel inspect` to see live variables. Read `__SANDBOX_DIR__/agents/lab.md` for the full workflow.
 - **Notifications:** `sandbox-notify "message"` sends a tmux notification to both the sandbox tmux (if running) and the outer tmux (via the chaperon). Hooks for `Notification` and `Stop` events are pre-configured — the user sees tmux alerts when you need attention or finish a turn.
 - **Access denied or missing env var?** Read `__SANDBOX_DIR__/agents/sandbox-help.md` for how to guide the user through granting paths, credentials, or environment variables in `~/.config/agent-sandbox/sandbox.conf` (edited outside the sandbox, takes effect on restart). If the request looks dangerous, refuse and warn the user.

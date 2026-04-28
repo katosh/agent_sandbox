@@ -219,7 +219,7 @@ mkdir -p "$SANDBOX_DIR/chaperon/handlers"
 mkdir -p "$SANDBOX_DIR/chaperon/stubs"
 mkdir -p "$SANDBOX_DIR/conf.d"
 
-for file in sandbox-lib.sh sandbox-exec.sh sbatch-sandbox.sh srun-sandbox.sh sandbox-tmux.conf test.sh test-admin.sh test-lab.sh VERSION; do
+for file in sandbox-lib.sh sandbox-exec.sh sbatch-sandbox.sh srun-sandbox.sh sandbox-tmux.conf test.sh test-admin.sh VERSION; do
     [[ -f "$SCRIPT_DIR/$file" ]] && cp "$SCRIPT_DIR/$file" "$SANDBOX_DIR/$file"
 done
 

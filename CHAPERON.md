@@ -151,12 +151,95 @@ The communication channel uses named pipes (FIFOs) in a per-session temporary di
 ## Chaperon Lifecycle
 
 1. **Creation**: `sandbox-exec.sh` creates a FIFO directory via `mktemp -d` and a request pipe via `mkfifo`, launches `chaperon.sh` as a background process, and exports `_CHAPERON_FIFO_DIR` for the sandbox.
-2. **Orphan prevention**: The chaperon sets `PR_SET_PDEATHSIG` via Python/ctypes so it receives SIGTERM if its parent (sandbox-exec.sh) dies. This prevents orphaned chaperon processes.
-3. **Signal handling**: SIGTERM and SIGINT are trapped for clean shutdown (FD cleanup).
-4. **Main loop**: Reads requests inline with timeouts (30-second body timeout to prevent stalls from malformed requests), dispatches to the appropriate handler with FD 3 closed (`3>&-`) to prevent child processes from inheriting the request FIFO, captures stdout/stderr, and writes the response via the held response FD with a 10-second write timeout.
-5. **Exit**: On read error, parent death (liveness polling), or signal, the chaperon removes the FIFO directory and exits 0.
+2. **Logging**: The chaperon initializes structured logging via `logging.sh` (see [Logging](#logging) below). The log file is created before the main loop starts.
+3. **Orphan prevention**: The chaperon sets `PR_SET_PDEATHSIG` via Python/ctypes so it receives SIGTERM if its parent (sandbox-exec.sh) dies. This prevents orphaned chaperon processes.
+4. **Signal handling**: SIGTERM and SIGINT are trapped for clean shutdown (FD cleanup, shutdown log entry).
+5. **Main loop**: Reads requests inline with timeouts (30-second body timeout to prevent stalls from malformed requests), dispatches to the appropriate handler with FD 3 closed (`3>&-`) to prevent child processes from inheriting the request FIFO, captures stdout/stderr, and writes the response via the held response FD with a 10-second write timeout. Each request is logged with its full arguments, and handler stderr (including `_sandbox_deny` / `_sandbox_warn` messages) is captured in the log.
+6. **Exit**: On read error, parent death (liveness polling), or signal, the chaperon logs shutdown, removes the FIFO directory, and exits 0.
 
 Note: `protocol.sh` provides a `chaperon_read_request()` helper, but the main loop in `chaperon.sh` performs its own inline parsing to support read timeouts and liveness checks that the helper does not provide.
+
+## Logging
+
+The chaperon writes structured, timestamped logs to per-session files for debugging and security auditing.
+
+### Log Location
+
+```
+${XDG_STATE_HOME:-~/.local/state}/agent-sandbox/chaperon/<hostname>_<PID>_<timestamp>.log
+```
+
+Filenames include the hostname so that multiple sandboxes across machines sharing an NFS home directory produce distinct, non-conflicting log files. Each chaperon instance gets its own file.
+
+### Log Format
+
+Each log file starts with a metadata header (host, PID, PPID, project dir, slurm scope, log level), followed by timestamped structured lines:
+
+```
+2026-04-15T20:34:49Z [INFO] starting (pid=12345, ppid=12340, fifo=/tmp/chaperon-abc123)
+2026-04-15T20:34:50Z [INFO] request: sbatch args=[--partition=campus-new --mem=4G] cwd=/fh/fast/lab/project
+2026-04-15T20:34:50Z [INFO] request: sbatch script=247 bytes
+2026-04-15T20:34:50Z [DEBUG] handler sbatch exited 0
+2026-04-15T20:34:52Z [INFO] request: salloc args=[--partition=campus] cwd=/fh/fast/lab/project
+2026-04-15T20:34:52Z [WARN] handler salloc exited 1
+2026-04-15T20:34:52Z [WARN] handler salloc stderr: sandbox: 'salloc' is not allowed inside the sandbox.
+2026-04-15T20:34:52Z [WARN] handler salloc stderr:   ⚠ This action was blocked for security. [...]
+2026-04-15T20:35:00Z [INFO] shutting down (pid=12345)
+```
+
+### What is Logged
+
+| Level | Content |
+|-------|---------|
+| **ERROR** | Security rejections (RESP_FIFO validation failures, symlink attacks, invalid command names) |
+| **WARN** | Handler non-zero exits, handler stderr output (`_sandbox_deny` / `_sandbox_warn` messages), response write timeouts, missing RESP_FIFO |
+| **INFO** | Startup/shutdown, each request with full arguments and CWD, script size and shebang |
+| **DEBUG** | Handler success exit codes |
+
+Handler stderr is particularly important for security audit: it captures every `_sandbox_deny` (bypass attempts, scope violations) and `_sandbox_warn` (unrecognized flags, usage errors) with the full denial message.
+
+**Script body content is intentionally not logged** at any level. Scripts may contain embedded secrets (API keys, database credentials), PHI/PII, or paths to restricted data. The command arguments, CWD, script size, shebang, and handler denial messages provide a sufficient audit trail without the secret exposure risk. Log files are restricted to owner-only access (`chmod 700` on the directory, `chmod 600` on each file) as defense-in-depth.
+
+### Configuration
+
+Two settings in `sandbox.conf` (or per-project `conf.d/*.conf`):
+
+```bash
+# Log level: debug, info (default), warn, error
+CHAPERON_LOG_LEVEL="info"
+
+# Days to retain log files (pruned at each chaperon startup)
+CHAPERON_LOG_RETAIN_DAYS=7
+```
+
+### Retention
+
+At startup, the chaperon prunes old logs in the background (non-blocking):
+
+1. **Age-based**: Log files older than `CHAPERON_LOG_RETAIN_DAYS` are deleted.
+2. **Size-based**: If total log size exceeds 50 MiB, the oldest files are removed first (the current session's log is never deleted).
+
+This prevents unbounded accumulation on shared NFS home directories even with many concurrent sandboxes across machines.
+
+### Debugging a Dead Chaperon
+
+When a chaperon dies unexpectedly, the log file persists (it is not in the ephemeral FIFO directory). To investigate:
+
+```bash
+# Find recent chaperon logs
+ls -lt ~/.local/state/agent-sandbox/chaperon/
+
+# Check the last entries of a specific session
+tail -20 ~/.local/state/agent-sandbox/chaperon/<hostname>_<pid>_<timestamp>.log
+
+# Find all security denials across sessions
+grep '\[WARN\].*stderr:.*sandbox:' ~/.local/state/agent-sandbox/chaperon/*.log
+
+# Find all denied commands
+grep '\[WARN\].*stderr:.*⚠' ~/.local/state/agent-sandbox/chaperon/*.log
+```
+
+For deeper tracing, set `CHAPERON_LOG_LEVEL=debug` to capture handler success exit codes and submitted script content.
 
 ## Handler Dispatch
 

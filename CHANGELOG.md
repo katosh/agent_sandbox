@@ -5,6 +5,116 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`ENABLED_AGENTS` array** in `sandbox.conf` (default: `claude codex
+  gemini`). Each enabled agent contributes its declared
+  writable/readable/blocked paths to the sandbox surface from
+  `agents/<name>/config.conf`, and only its `overlay.sh` runs.
+  Disabled agents leave their config dirs invisible — so e.g. `~/.pi`
+  or `~/.config/opencode` don't become writable for users who don't
+  run those agents. Adding support for a new agent is now: drop in
+  `agents/<name>/`, append the name to `ENABLED_AGENTS`. See "Adding
+  support for a new agent" in the README.
+- **`AGENT_BLOCKED_FILES` field** in agent `config.conf`. Each enabled
+  agent's blocked files (typically the real `AGENTS.md` / `CLAUDE.md`
+  so the sandbox-merged copy wins) are folded into `BLOCKED_FILES`
+  automatically.
+- **pi-mono agent profile** (`agents/pi/`) for the
+  [pi coding agent](https://github.com/badlogic/pi-mono). Ships
+  disabled by default; enable with `ENABLED_AGENTS+=("pi")` in
+  `sandbox.conf`. Sets `PI_CODING_AGENT_DIR` so pi reads from the
+  sandbox-merged config dir.
+
+### Changed
+
+- **Default `ENABLED_AGENTS` is now conservative:** only `claude`,
+  `codex`, and `gemini` are enabled by default. `aider`, `opencode`,
+  and `pi` ship as opt-in (uncomment the corresponding
+  `ENABLED_AGENTS+=("name")` in sandbox.conf). Rationale: every
+  enabled agent expands the sandbox writable surface, and dotdir
+  names that could plausibly belong to unrelated user data should
+  stay invisible until the user opts in. **Migration:** existing
+  users with explicit `HOME_WRITABLE` entries for these agents (the
+  pre-refactor `sandbox.conf` style) keep working unchanged. Users
+  who relied on the implicit defaults need to add the relevant
+  agents to `ENABLED_AGENTS` in their sandbox.conf to restore
+  behavior.
+- Per-agent entries (`.claude`, `.codex`, `.gemini`,
+  `.config/opencode`, `.aider.conf.yml`, agent `AGENTS.md` blocks)
+  no longer hardcoded in `sandbox.conf` defaults. They now come from
+  each enabled agent's `config.conf` via the new `_apply_agent_profiles`
+  loader. Existing user `sandbox.conf` files continue to work
+  unchanged — explicit entries are merged, not replaced, by the
+  agent-derived ones (idempotency check prevents duplicates).
+- `AGENT_REQUIRED_WRITABLE_PATHS` / `AGENT_REQUIRED_READABLE_PATHS`
+  in agent `config.conf` are now load-bearing (previously
+  warning-only). When an agent is enabled, its declared paths are
+  granted automatically.
+
+### Fixed
+
+- **OpenCode XDG dir drift:** newer OpenCode releases (1.x) `mkdir`
+  four XDG directories on startup (`~/.config/opencode`,
+  `~/.local/share/opencode`, `~/.cache/opencode`,
+  `~/.local/state/opencode`) and write `auth.json` to the data dir,
+  but only the first was previously writable in the sandbox. All four
+  are now declared in the opencode profile and granted automatically
+  when opencode is enabled.
+
+## [0.4.0] - 2026-04-15
+
+### Added
+
+- **Chaperon audit logging:** every proxied Slurm request is now logged to
+  a per-session file at `~/.local/state/agent-sandbox/chaperon/`. Each log
+  entry records the command, full arguments, working directory, and script
+  size with shebang. Handler denials (`_sandbox_deny` / `_sandbox_warn`)
+  are captured at WARN level, providing a persistent security audit trail.
+  Configurable via `CHAPERON_LOG_LEVEL` (debug/info/warn/error, default
+  info) and `CHAPERON_LOG_RETAIN_DAYS` (default 7) in `sandbox.conf`.
+  Filenames include hostname for NFS-safe uniqueness across concurrent
+  sandboxes on multiple machines. Logs are auto-pruned by age and a
+  50 MiB total size cap. Script body content is intentionally not logged
+  to prevent secret/credential exposure. Log files and directory are
+  restricted to owner-only access (700/600).
+
+## [0.3.3] - 2026-04-15
+
+### Fixed
+
+- **sbatch shebang ignored:** the chaperon wrapper always ran user scripts
+  via `sh -c`, ignoring the script's `#!` line. Bash features (`source`,
+  arrays, `[[ ]]`) failed silently and non-shell shebangs
+  (`#!/usr/bin/env python3`) were completely ignored. The wrapper now
+  extracts the interpreter from the shebang and pipes the script to it
+  via stdin. Falls back to `/bin/sh` when no shebang is present,
+  matching Slurm's default behavior.
+
+- **sbatch CWD mismatch:** the chaperon's `sbatch` handler now `cd`s to
+  the agent's working directory before calling real `sbatch`. Previously,
+  Slurm inherited the chaperon's CWD, causing `SLURM_SUBMIT_DIR` to
+  point to the wrong directory on compute nodes and relative
+  `--output`/`--error` paths to resolve incorrectly. The `srun` handler
+  already handled this correctly.
+
+- **Clarify `home: tmpwrite` banner label:** the startup banner now
+  expands each `HOME_ACCESS` mode into a descriptive label (e.g.,
+  `home: tmpwrite (~ visible, writes to tmpfs — not persisted)`) to
+  prevent agents from misinterpreting `tmpwrite` as an empty tmpfs.
+  Added a HOME_ACCESS modes reference table to `agents/sandbox-help.md`.
+
+### Changed
+
+- **`lab` utility removed:** the JupyterLab management CLI (`bin/lab`,
+  `bin/_lab_kernel.py`, `agents/lab.md`, `test-lab.sh`) has been extracted
+  to its own project ([katosh/labsh](https://github.com/katosh/labsh)).
+  All lab-specific references removed from agent instructions, README,
+  and sandbox-help. The sandbox no longer ships or promotes any
+  JupyterLab tooling.
+
 ## [0.3.2] - 2026-04-13
 
 ### Added

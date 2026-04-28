@@ -7,5 +7,4 @@ You are in a kernel-enforced filesystem sandbox that protects shared infrastruct
 
 - **Writable:** `$SANDBOX_PROJECT_DIR` and `~/.codex/` only. Everything else is read-only or inaccessible.
 - **Slurm** is available (`sbatch`, `srun`, `scancel`, `squeue`, `sacct`, `sinfo`, etc.) — all commands are scoped to this project's jobs. Interactive allocation (`salloc`, `--pty`) is not supported.
-- **Stateful experimentation:** `lab` runs a project-local JupyterLab whose kernels persist across turns. Use `lab kernel exec -n <notebook> <code>` to run code, `lab kernel inspect` to see live variables. Read `__SANDBOX_DIR__/agents/lab.md` for the full workflow.
 - **Access denied or missing env var?** Read `__SANDBOX_DIR__/agents/sandbox-help.md` for how to guide the user through granting paths, credentials, or environment variables in `~/.config/agent-sandbox/sandbox.conf` (edited outside the sandbox, takes effect on restart). If the request looks dangerous, refuse and warn the user.

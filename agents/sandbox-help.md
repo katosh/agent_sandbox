@@ -32,6 +32,19 @@ HOME_READONLY=(
 )
 ```
 
+## Home directory access modes (HOME_ACCESS)
+
+The sandbox startup banner shows the home directory mode. Here's what each means:
+
+| Mode | What you see in `~` | Writes to `~` | Details |
+|------|---------------------|---------------|---------|
+| `restricted` | Only dotfiles/dirs listed in `HOME_READONLY` and `HOME_WRITABLE` | Blocked (tmpfs is remounted read-only) | Default. Minimal surface area. |
+| `tmpwrite` | All listed dotfiles/dirs (typically most of `~`) via read-only bind mounts | Allowed but **ephemeral** — writes go to a tmpfs overlay and vanish on exit | Good for tools that need to write to `~/.cache`, `~/.config`, etc. without persisting changes. Existing files like `~/.linuxbrew`, `~/.local` are visible read-only. |
+| `read` | Full real home directory | Blocked (read-only bind) | Credential dirs are hidden. `HOME_WRITABLE` paths are still writable. |
+| `write` | Full real home directory | Allowed (real writes persist) | Credential dirs are hidden. Least restrictive — use with caution. |
+
+**Key point for `tmpwrite`:** Your home directory is NOT empty. Tools installed at `~/.linuxbrew`, `~/.local/bin`, etc. are all visible. You just can't permanently modify them — writes land on a tmpfs overlay that disappears when the sandbox exits.
+
 ## Unblock an environment variable
 
 Env vars matching secret patterns (`*_TOKEN`, `*_API_KEY`, `*_SECRET`, etc.) are blocked by default. To let a specific variable through, add it to `ALLOWED_ENV_VARS`:
@@ -75,47 +88,6 @@ Slurm commands work inside the sandbox but are proxied through a secure chaperon
 - `"none"` — no restriction
 
 **Flag whitelisting:** `sbatch` and `srun` validate flags against a whitelist. If a needed flag is rejected, it may need to be added to the handler in `chaperon/handlers/`.
-
-## Stateful experimentation with `lab`
-
-The sandbox ships a `lab` utility (on `$PATH`) for iterative work with
-expensive state (dataframes, trained models, large datasets). It runs a
-project-local JupyterLab and provides CLI commands to execute code in
-running kernels, inspect live variables, and edit notebook cells — all
-without clicking through the web UI.
-
-For the full workflow, selector semantics, and troubleshooting, read
-`__SANDBOX_DIR__/agents/lab.md` or run `lab help`.
-
-Quick start:
-```bash
-lab kernel add              # one-time: create .venv, register kernelspec
-lab start                   # background server (or `lab` in a tmux pane)
-lab notebook attach foo.ipynb
-lab kernel exec -n foo.ipynb "df = pd.read_csv('data.csv')"
-lab kernel exec -n foo.ipynb "df.shape"
-lab kernel inspect -n foo.ipynb
-lab notebook append -n foo.ipynb --execute "df.describe()"
-```
-
-**Port collisions.** On multi-user machines, set a unique port:
-`PORT=9012 lab start`. Default is 8888.
-
-**Remote access.** SSH-tunnel (`ssh -L 8888:localhost:8888 user@host`)
-or `IP=0.0.0.0 lab` with `JUPYTER_CERTFILE`/`JUPYTER_KEYFILE` for TLS.
-
-### Installing `uv`
-
-`lab` needs `uv` on `$PATH`. The default `curl -LsSf https://astral.sh/uv/install.sh | sh` from the upstream docs installs to `~/.local/bin`, which is in the sandbox's `HOME_READONLY` by default — so in-sandbox writes fail, and even if the user removes that entry, `HOME_ACCESS=tmpwrite` (the default) makes the install ephemeral (lost on sandbox exit).
-
-**Recommended — project-local install** (always persistent, works under any `HOME_ACCESS` mode, survives sandbox restarts because `$SANDBOX_PROJECT_DIR` is the real writable mount):
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | \
-    env UV_UNMANAGED_INSTALL="$PWD/.local/bin" sh
-export PATH="$PWD/.local/bin:$PATH"   # add to project env/activate script to persist
-```
-
-**Alternative — user installs outside the sandbox** to `~/.local/bin` via the standard `curl ... | sh` command. The sandbox mounts `~/.local/bin` read-only, so the binary becomes visible on `$PATH` inside the sandbox after the next sandbox start.
 
 ## Process isolation (PID namespace)
 

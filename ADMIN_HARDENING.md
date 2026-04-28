@@ -278,6 +278,10 @@ All three options use a **default-allow** policy for general web access (researc
 
 **What it solves:** Visibility into what the agent did — which files it accessed, which jobs it submitted, and what commands it ran. Useful for compliance, forensics, and debugging.
 
+**Built-in chaperon logging:** The chaperon already logs every proxied Slurm request with full arguments, working directory, script size, and all security denials (`_sandbox_deny` / `_sandbox_warn`). Logs are per-session files in `~/.local/state/agent-sandbox/chaperon/`, auto-pruned by age and total size. Configure `CHAPERON_LOG_LEVEL` and `CHAPERON_LOG_RETAIN_DAYS` in `sandbox.conf`. This covers Slurm-level audit without any admin setup. See [CHAPERON.md](CHAPERON.md#logging) for details.
+
+**For system-level audit** (file access, process execution, network connections), dedicated accounts and auditd are needed:
+
 **Effort:** Low-medium (auditd rules + Slurm accounting config). **Category:** Admin-enforced. **Requires:** Dedicated `${USER}_ai` accounts (Section 3) — auditd filters on UID, so without a separate agent UID there is no way to distinguish agent activity from human activity in the audit log.
 
 ### File Access Auditing with auditd

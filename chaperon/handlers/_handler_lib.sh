@@ -325,6 +325,20 @@ create_wrapped_script() {
     local script_body
     script_body="$(printf '%s\n' "$script_content" | grep -vE '^[[:space:]]*#SBATCH' || true)"
 
+    # Extract the interpreter from the shebang (default: sh, matching Slurm).
+    # The wrapper pipes the script to the interpreter via stdin instead of
+    # using `sh -c`, so the user's shebang is honored.  The #! line is a
+    # comment in all common interpreters (sh, bash, python, perl, R, ruby),
+    # so leaving it in the script content is harmless.
+    local first_line interpreter
+    first_line="$(head -1 <<< "$script_body")"
+    if [[ "$first_line" == "#!"* ]]; then
+        interpreter="${first_line#\#!}"
+        interpreter="${interpreter# }"  # strip optional leading space
+    else
+        interpreter="/bin/sh"
+    fi
+
     # Generate a unique EOF marker and verify it doesn't collide with
     # the script content.  This lets us inline the entire script via
     # heredoc — no temp files, no NFS issues, no cleanup needed.
@@ -336,20 +350,26 @@ create_wrapped_script() {
 
     # Build a self-contained wrapper:
     #   1. #SBATCH directives (validated)
-    #   2. Inline script extracted via heredoc
-    #   3. sandbox-exec.sh runs the inlined script via sh -c
+    #   2. Inline script via heredoc
+    #   3. Pipe script to the correct interpreter inside sandbox-exec.sh
+    #
+    # Why pipe via stdin instead of `sh -c "$_SCRIPT"`?  The user's shebang
+    # must be honored — #!/bin/bash means bash, #!/usr/bin/env python3 means
+    # python.  All interpreters read from stdin when given no file argument,
+    # and the #! line is just a comment to them.  No temp files needed, no
+    # filesystem path visibility issues across the sandbox boundary.
     {
         printf '#!/bin/bash --\n'
         if [[ -n "$safe_directives" ]]; then
             printf '%s' "$safe_directives"
         fi
-        printf '\n# --- Chaperon wrapper (auto-generated, no temp files) ---\n'
+        printf '\n# --- Chaperon wrapper (auto-generated) ---\n'
         printf '_SCRIPT=$(cat <<'"'"'%s'"'"'\n' "$eof_marker"
         printf '%s\n' "$script_body"
         printf '%s\n' "$eof_marker"
         printf ')\n'
-        printf 'exec %q --project-dir %q -- sh -c "$_SCRIPT"\n' \
-            "$sandbox_exec" "$project_dir"
+        printf 'printf '"'"'%%s\\n'"'"' "$_SCRIPT" | exec %q --project-dir %q -- %s\n' \
+            "$sandbox_exec" "$project_dir" "$interpreter"
     } > "$output_file"
     chmod +x "$output_file"
 }
