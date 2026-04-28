@@ -91,6 +91,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`test.sh --quick` passwd assertion was wrong-shape on LDAP hosts.**
+  The bwrap branch compared `wc -l < /etc/passwd` host-vs-sandbox, but
+  the sandbox's filtered passwd is built from `getent` (LDAP-resolved
+  on the host) plus synthetic entries for `dotto`/`slurm`/`munge`/
+  `nobody`, so it is naturally larger than the host's tiny local
+  `/etc/passwd` on every LDAP-backed system — the comparison made the
+  test fail unconditionally on Fred Hutch login nodes. Both bwrap and
+  firejail branches now use `getent passwd | wc -l` on both sides and
+  assert strict-less-than (`-lt`) so an equal-row outcome correctly
+  flags as "no filtering happened" instead of silently passing.
+  `test.sh`.
+
+- **`test.sh` `sandbox()` helper timeout 15s → 30s + pre-warm.** The
+  helper's `timeout 15` envelope was tighter than the chaperon's own
+  30s response-read ceiling (`chaperon/protocol.sh:158`), so first-
+  call cold paths (bwrap startup + chaperon spinup + audit-log NFS
+  append) could trip the test's timer before the chaperon's own
+  diagnostic fired — failure mode "test couldn't tell us what
+  happened" instead of a clean error. Bumped to 30s, added a `rc=124`
+  branch that surfaces "[sandbox helper: 30s timeout fired]" to
+  stderr so future agents don't burn time on "command failed vs.
+  envelope too tight", and pre-warmed the sandbox before the squeue
+  check in `--quick` (the full path already gets warm-up for free via
+  `_ensure_writable_home_dirs`). `test.sh`.
+
 - **`validate_project_dir` now accepts `${HOME}` and `~/` in
   `ALLOWED_PROJECT_PARENTS`.** Previously only the literal `$HOME`
   form was expanded, so admins who wrote `ALLOWED_PROJECT_PARENTS=(
