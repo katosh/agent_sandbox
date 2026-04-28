@@ -14,6 +14,10 @@ source "$_STUB_DIR/../protocol.sh"
 # Usage: chaperon_call <command> [args...]
 #
 # If _CHAPERON_SCRIPT is set, it's sent as the SCRIPT field.
+# If the global array _CHAPERON_SCRIPT_ARGS is set (non-empty), each
+# element is sent as a SCRIPT_ARG field (positional args for the
+# script). The array name is intentional — bash arrays cannot be
+# exported, so callers in this same shell set the array directly.
 # stdout/stderr from the remote command are printed locally.
 # Returns the remote exit code.
 chaperon_call() {
@@ -63,6 +67,14 @@ chaperon_call() {
     # Send script content if available
     if "$has_script"; then
         msg+="$(printf '\nSCRIPT %s' "$(printf '%s' "$_CHAPERON_SCRIPT" | chaperon_b64_encode)")"
+    fi
+
+    # Send script positional args (one SCRIPT_ARG line each)
+    if [[ "${_CHAPERON_SCRIPT_ARGS+set}" == set ]]; then
+        local _sa
+        for _sa in "${_CHAPERON_SCRIPT_ARGS[@]}"; do
+            msg+="$(printf '\nSCRIPT_ARG %s' "$(printf '%s' "$_sa" | chaperon_b64_encode)")"
+        done
     fi
 
     # Tell chaperon where to send the response

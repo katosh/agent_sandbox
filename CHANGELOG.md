@@ -116,6 +116,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   check in `--quick` (the full path already gets warm-up for free via
   `_ensure_writable_home_dirs`). `test.sh`.
 
+- **`sbatch script.sh arg1 arg2` now forwards script positionals.**
+  The chaperon stub captured `SCRIPT_ARGS` (anything after the script
+  file) but never forwarded them through the wire protocol, and the
+  handler piped the script body to the interpreter via stdin — which
+  gives the interpreter no `argv`. The result was that `$1`, `$@`,
+  and `$#` were always empty inside a wrapped script, breaking
+  parameter-driven workflows. Fixed end-to-end:
+  - New `SCRIPT_ARG <b64>` line type in the wire protocol; decoded
+    into `REQ_SCRIPT_ARGS`.
+  - The stub serialises each captured `SCRIPT_ARGS` element as a
+    `SCRIPT_ARG` line (`chaperon/stubs/_stub_lib.sh::chaperon_call`
+    reads from `_CHAPERON_SCRIPT_ARGS`).
+  - `handle_sbatch` passes `REQ_SCRIPT_ARGS` to
+    `create_wrapped_script`, which now emits two wrapper shapes:
+    shells (bash/sh/zsh/dash/ksh/ash, plain or via `/usr/bin/env`)
+    use `interp -s -- arg1 arg2 …` to keep the existing pipe-via-
+    stdin form; non-shells (python, perl, R, …) materialise the
+    script body to a per-invocation tmpfs file inside the sandbox
+    and exec it directly so `argv[0]` is the path and `argv[1:]`
+    are the user's positionals.
+  - New `test.sh` cases (6c-sexies) cover bash-shebang, python-
+    shebang, no-args, and tricky args (spaces, `$dollar`, quotes).
+  `chaperon/stubs/sbatch`, `chaperon/stubs/_stub_lib.sh`,
+  `chaperon/protocol.sh`, `chaperon/handlers/sbatch.sh`,
+  `chaperon/handlers/_handler_lib.sh`, `test.sh`.
+
 - **`validate_project_dir` now accepts `${HOME}` and `~/` in
   `ALLOWED_PROJECT_PARENTS`.** Previously only the literal `$HOME`
   form was expanded, so admins who wrote `ALLOWED_PROJECT_PARENTS=(
