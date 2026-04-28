@@ -125,6 +125,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   behaviour the rest of the config loader already uses.
   `sandbox-lib.sh`.
 
+- **sacct: accept self-scoped `--user` / `--me` / `--uid` instead
+  of bouncing them.** The chaperon already auto-injects
+  `--user=$(whoami)`, so passing `--user $USER`, `--user=$USER`,
+  `--me`, or `--uid $(id -u)` is semantically a no-op — but the old
+  flat deny phrased as "not allowed for security" caused agents to
+  abandon valid `sacct` calls instead of just dropping the
+  redundant flag. Now self-scoped values are silently accepted and
+  dropped from the forwarded argv (no duplicate `--user` reaches
+  real sacct); only cross-user values are denied, and the new
+  message leads with the actionable fix ("drop the flag, or pass
+  `--me`") rather than the security framing. `--me` is also
+  added to the allow-list. `chaperon/handlers/sacct.sh`,
+  `test.sh` (5i/5o), `CHAPERON.md`, `README.md`.
+
 ## [0.4.2] - 2026-04-16
 
 ### Fixed

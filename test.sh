@@ -1759,8 +1759,9 @@ else
     skip "scontrol not installed — skipping shutdown denial test"
 fi
 
-# 5i. sacct scoped (--allusers denied)
+# 5i. sacct scoped (--allusers denied; self-scope accepted)
 if command -v sacct &>/dev/null; then
+    # 5i-1: --allusers denied (regression)
     if sandbox bash -c 'sacct --allusers 2>&1'; then
         fail "sacct --allusers should be denied"
     else
@@ -1768,6 +1769,63 @@ if command -v sacct &>/dev/null; then
             pass "sacct --allusers correctly denied by chaperon"
         else
             fail "sacct --allusers error unexpected" "$OUTPUT"
+        fi
+    fi
+
+    # 5i-2: --user $USER accepted (no "not allowed" / no "drop" in stderr).
+    # We don't care about exit code (no jobs in CI is fine), only that the
+    # chaperon didn't reject the call.
+    sandbox bash -c 'sacct --user "$USER" --noheader 2>&1' || true
+    if echo "$OUTPUT $OUTPUT_ERR" | grep -qiE "not allowed|drop the flag"; then
+        fail "sacct --user \$USER should be silently accepted" "$OUTPUT $OUTPUT_ERR"
+    else
+        pass "sacct --user \$USER silently accepted (self-scope)"
+    fi
+
+    # 5i-3: --user=$USER (equals form) accepted
+    sandbox bash -c 'sacct --user="$USER" --noheader 2>&1' || true
+    if echo "$OUTPUT $OUTPUT_ERR" | grep -qiE "not allowed|drop the flag"; then
+        fail "sacct --user=\$USER should be silently accepted" "$OUTPUT $OUTPUT_ERR"
+    else
+        pass "sacct --user=\$USER silently accepted (self-scope)"
+    fi
+
+    # 5i-4: --me accepted (allow-listed; portable across sacct versions)
+    sandbox bash -c 'sacct --me --noheader 2>&1' || true
+    if echo "$OUTPUT $OUTPUT_ERR" | grep -qiE "not allowed|drop the flag|not recognized"; then
+        fail "sacct --me should be silently accepted" "$OUTPUT $OUTPUT_ERR"
+    else
+        pass "sacct --me silently accepted"
+    fi
+
+    # 5i-5: --uid <self> accepted
+    sandbox bash -c 'sacct --uid "$(id -u)" --noheader 2>&1' || true
+    if echo "$OUTPUT $OUTPUT_ERR" | grep -qiE "not allowed|drop the flag"; then
+        fail "sacct --uid \$(id -u) should be silently accepted" "$OUTPUT $OUTPUT_ERR"
+    else
+        pass "sacct --uid \$(id -u) silently accepted (self-scope)"
+    fi
+
+    # 5i-6: cross-user denied with new actionable message (mentions
+    # "drop" or "--me", not just "not allowed for security").
+    if sandbox bash -c 'sacct --user nobody-but-me 2>&1'; then
+        fail "sacct --user <other> should be denied"
+    else
+        if echo "$OUTPUT $OUTPUT_ERR" | grep -qE "drop the flag|--me"; then
+            pass "sacct --user <other> denied with actionable message"
+        else
+            fail "sacct --user <other> deny message missing actionable hint" "$OUTPUT $OUTPUT_ERR"
+        fi
+    fi
+
+    # 5i-7: cross-uid denied
+    if sandbox bash -c 'sacct --uid 0 2>&1'; then
+        fail "sacct --uid 0 should be denied"
+    else
+        if echo "$OUTPUT $OUTPUT_ERR" | grep -qE "drop the flag"; then
+            pass "sacct --uid <other> denied with actionable message"
+        else
+            fail "sacct --uid <other> deny message missing actionable hint" "$OUTPUT $OUTPUT_ERR"
         fi
     fi
 else
@@ -2019,6 +2077,111 @@ delta     4"
           _project_a _project_b _project_c
 else
     skip "Scope filter tests — chaperon/handlers/squeue.sh not found"
+fi
+
+# 5p. sacct self-scope unit tests: verify _is_self_user / _is_self_uid
+#     and that handle_sacct does not duplicate --user when the caller
+#     passes a self-scoped value. No real Slurm needed — REAL_SACCT is
+#     stubbed to a script that records its argv.
+_SACCT_HANDLER="$SCRIPT_DIR/chaperon/handlers/sacct.sh"
+if [[ -f "$_SACCT_HANDLER" ]]; then
+    # Run the test in a subshell so sourcing the handler can't leak
+    # vars/functions back into the suite.
+    _sacct_unit_out="$(
+        set +e
+        # shellcheck disable=SC1090
+        source "$_SACCT_HANDLER" || exit 99
+
+        _self_name="$(id -un)"
+        _self_uid="$(id -u)"
+
+        # Helper assertions
+        if _is_self_user "$_self_name"; then echo "PASS:_is_self_user/name"; else echo "FAIL:_is_self_user/name"; fi
+        if _is_self_user "${USER:-$_self_name}"; then echo "PASS:_is_self_user/USER"; else echo "FAIL:_is_self_user/USER"; fi
+        if _is_self_user "definitely-not-a-real-user-9999"; then echo "FAIL:_is_self_user/other"; else echo "PASS:_is_self_user/other"; fi
+        if _is_self_user ""; then echo "FAIL:_is_self_user/empty"; else echo "PASS:_is_self_user/empty"; fi
+        if _is_self_uid "$_self_uid"; then echo "PASS:_is_self_uid/self"; else echo "FAIL:_is_self_uid/self"; fi
+        if _is_self_uid 999999; then echo "FAIL:_is_self_uid/other"; else echo "PASS:_is_self_uid/other"; fi
+        if _is_self_uid "abc"; then echo "FAIL:_is_self_uid/nonnum"; else echo "PASS:_is_self_uid/nonnum"; fi
+
+        # Stub real sacct: print argv (one per line, prefixed) and exit 0.
+        _stub="$(mktemp)"
+        cat >"$_stub" <<'STUB'
+#!/bin/bash
+for a in "$@"; do printf 'ARG:%s\n' "$a"; done
+exit 0
+STUB
+        chmod +x "$_stub"
+        export REAL_SACCT="$_stub"
+
+        # Case A: --user $USER → exactly one --user= reaches real sacct,
+        # and it carries the current user.
+        REQ_ARGS=("--user" "$_self_name" "--noheader")
+        out_a="$(handle_sacct /tmp /tmp 2>&1)"
+        n_user_a="$(printf '%s\n' "$out_a" | grep -c '^ARG:--user=')"
+        if [[ "$n_user_a" == "1" ]] && printf '%s' "$out_a" | grep -qF "ARG:--user=$_self_name"; then
+            echo "PASS:no-dup/--user self"
+        else
+            echo "FAIL:no-dup/--user self|count=$n_user_a|out=$out_a"
+        fi
+
+        # Case B: --user=$USER (equals form)
+        REQ_ARGS=("--user=$_self_name")
+        out_b="$(handle_sacct /tmp /tmp 2>&1)"
+        n_user_b="$(printf '%s\n' "$out_b" | grep -c '^ARG:--user=')"
+        if [[ "$n_user_b" == "1" ]]; then
+            echo "PASS:no-dup/--user=self"
+        else
+            echo "FAIL:no-dup/--user=self|count=$n_user_b|out=$out_b"
+        fi
+
+        # Case C: --me → forwarded as-is, plus auto-injected --user
+        REQ_ARGS=("--me")
+        out_c="$(handle_sacct /tmp /tmp 2>&1)"
+        if printf '%s\n' "$out_c" | grep -qF 'ARG:--me' \
+           && printf '%s\n' "$out_c" | grep -qF "ARG:--user=$_self_name"; then
+            echo "PASS:--me forwarded"
+        else
+            echo "FAIL:--me forwarded|out=$out_c"
+        fi
+
+        # Case D: --uid <self> accepted, no duplicate
+        REQ_ARGS=("--uid" "$_self_uid")
+        out_d="$(handle_sacct /tmp /tmp 2>&1)"
+        n_user_d="$(printf '%s\n' "$out_d" | grep -c '^ARG:--user=')"
+        if [[ "$n_user_d" == "1" ]]; then
+            echo "PASS:--uid self accepted"
+        else
+            echo "FAIL:--uid self accepted|count=$n_user_d|out=$out_d"
+        fi
+
+        # Case E: --user other → handler returns nonzero, real sacct not called
+        REQ_ARGS=("--user" "definitely-not-me-99999")
+        out_e="$(handle_sacct /tmp /tmp 2>&1)"
+        rc_e=$?
+        if (( rc_e != 0 )) && ! printf '%s\n' "$out_e" | grep -q '^ARG:'; then
+            echo "PASS:cross-user denied"
+        else
+            echo "FAIL:cross-user denied|rc=$rc_e|out=$out_e"
+        fi
+
+        # Case F: cross-user deny message contains actionable hint
+        if printf '%s\n' "$out_e" | grep -qE "drop the flag|--me"; then
+            echo "PASS:deny message actionable"
+        else
+            echo "FAIL:deny message actionable|out=$out_e"
+        fi
+
+        rm -f "$_stub"
+    )"
+    while IFS= read -r _line; do
+        case "$_line" in
+            PASS:*) pass "sacct unit: ${_line#PASS:}" ;;
+            FAIL:*) fail "sacct unit: ${_line#FAIL:}" "" ;;
+        esac
+    done <<< "$_sacct_unit_out"
+else
+    skip "sacct self-scope unit tests — sacct.sh not found"
 fi
 
 # 5f. Landlock AF_UNIX connect bypass verification

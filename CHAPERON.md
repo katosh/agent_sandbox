@@ -385,7 +385,8 @@ Denied update keys: `UserId`, `GroupId`, `WorkDir`, `AdminComment`, and all keys
 The sacct handler (`handlers/sacct.sh`) enforces user-level scoping:
 
 - Always injects `--user=$(whoami)` — only the current user's jobs are shown
-- `--allusers`, `--user`, `--uid`, `--accounts` are denied
+- `--allusers` and `--accounts` are denied
+- `--user` / `--uid` / `--me`: self-scoped values (`--user $USER`, `--user=$USER`, `--me`, `--uid $(id -u)`) are silently accepted — they're equivalent to the auto-inject. Cross-user values are denied with an actionable message ("drop the flag, or pass `--me`")
 - Job-level scoping (by chaperon comment) is intentionally not applied — sacct is retrospective and the full job history is useful for debugging
 
 ### sacctmgr Handler
