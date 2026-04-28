@@ -57,6 +57,11 @@ backend_prepare() {
     local project_dir="$1"
     _resolve_bwrap
     BWRAP_ARGS=()
+    # HOME_SEEDED_FILES staging — always initialised so backend_exec /
+    # backend_dry_run can iterate the array unconditionally even when
+    # the seeded-files path isn't taken (e.g. HOME_ACCESS=read/write).
+    _SEED_TMPFILES=()
+    _SEED_DESTS=()
 
     # --- Kernel filesystems ---
     BWRAP_ARGS+=(--proc /proc)
@@ -113,7 +118,40 @@ backend_prepare() {
         # Blank home with tmpfs, selectively re-mount listed paths
         BWRAP_ARGS+=(--tmpfs "$HOME")
 
+        # HOME_SEEDED_FILES: copy host file CONTENT into the tmpfs as a
+        # writable file. The agent can edit it (gh auth setup-git, IDE
+        # plugins, git config --global) without affecting the host file.
+        # bwrap's --file FD DEST reads the data off an FD and writes a
+        # regular file at DEST inside the new mount namespace, so the
+        # result lives in the tmpfs and is discarded on sandbox exit.
+        # The FDs are opened in backend_exec(), after sandbox-exec.sh's
+        # FD-cleanup pass; here we stash temp files and emit placeholder
+        # markers in BWRAP_ARGS that backend_exec() rewrites.
+        local _seed_idx=0
+        local seedf
+        for seedf in "${HOME_SEEDED_FILES[@]}"; do
+            local _src="$HOME/$seedf"
+            local _dst="$HOME/$seedf"
+            [[ -f "$_src" ]] || continue
+            local _staged
+            _staged="$(mktemp "${TMPDIR:-/tmp}/bwrap-seed.XXXXXX")"
+            cp -- "$_src" "$_staged"
+            chmod 600 "$_staged"
+            _SEED_TMPFILES+=("$_staged")
+            _SEED_DESTS+=("$_dst")
+            BWRAP_ARGS+=(--file "__SEED_FD_${_seed_idx}__" "$_dst")
+            _seed_idx=$((_seed_idx + 1))
+        done
+
         for subdir in "${HOME_READONLY[@]}"; do
+            # Skip entries that are also seeded — the seed wins, and a
+            # following --ro-bind would clobber the writable copy.
+            local _is_seeded=false
+            local _s
+            for _s in "${HOME_SEEDED_FILES[@]}"; do
+                [[ "$subdir" == "$_s" ]] && { _is_seeded=true; break; }
+            done
+            $_is_seeded && continue
             local full_path="$HOME/$subdir"
             if [[ -e "$full_path" ]]; then
                 BWRAP_ARGS+=(--ro-bind "$full_path" "$full_path")
@@ -374,6 +412,20 @@ backend_exec() {
         BWRAP_ARGS=("${BWRAP_ARGS[@]/__SECCOMP_FD__/$_seccomp_fd}")
     fi
 
+    # Open HOME_SEEDED_FILES FDs (also after FD cleanup). bwrap reads
+    # the bytes off each FD and creates a regular file at DEST inside
+    # the sandbox's tmpfs HOME. We rm the staged temp file as soon as
+    # the FD is open — the inode persists for the FD's lifetime, and
+    # bwrap inherits the FD across exec.
+    if [[ ${#_SEED_TMPFILES[@]} -gt 0 ]]; then
+        local _i _seed_fd
+        for ((_i=0; _i<${#_SEED_TMPFILES[@]}; _i++)); do
+            exec {_seed_fd}<"${_SEED_TMPFILES[$_i]}"
+            rm -f "${_SEED_TMPFILES[$_i]}"
+            BWRAP_ARGS=("${BWRAP_ARGS[@]/__SEED_FD_${_i}__/$_seed_fd}")
+        done
+    fi
+
     # Fork bomb defense-in-depth: set per-UID RLIMIT_NPROC before exec.
     # Inherited by bwrap and all child processes inside the sandbox.
     if [[ -n "${SANDBOX_NPROC_LIMIT:-}" ]]; then
@@ -393,4 +445,11 @@ backend_dry_run() {
     printf '  -- %s\n' "$*"
     # Clean up seccomp temp file (dry-run doesn't exec)
     [[ -n "${_SECCOMP_TMPFILE:-}" ]] && rm -f "$_SECCOMP_TMPFILE" 2>/dev/null || true
+    # Clean up HOME_SEEDED_FILES staged temp files (dry-run doesn't exec)
+    if [[ ${#_SEED_TMPFILES[@]} -gt 0 ]]; then
+        local _f
+        for _f in "${_SEED_TMPFILES[@]}"; do
+            rm -f "$_f" 2>/dev/null || true
+        done
+    fi
 }
