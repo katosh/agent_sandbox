@@ -2321,12 +2321,12 @@ BASH_ARGSCRIPT
             && grep -qF 'argv[3]=[with$dollar]' "$_argout"
     }
     if [[ $_arg_rc -eq 0 ]] && _arg_check; then
-        pass "sbatch script.sh forwards positional args to bash shebang ($#/$@)"
+        pass "sbatch script.sh forwards positional args to bash shebang (\$#/\$@)"
     else
         _arg_jid=$(echo "$_arg_out" | grep -oE 'Submitted batch job [0-9]+' | awk '{print $4}')
         if [[ -n "$_arg_jid" ]] && _await_jobout "$_arg_jid" "$_argout"; then
             if _arg_check; then
-                pass "sbatch script.sh forwards positional args to bash shebang ($#/$@)"
+                pass "sbatch script.sh forwards positional args to bash shebang (\$#/\$@)"
             else
                 fail "sbatch script positional args not forwarded (bash shebang)" \
                     "got: $(cat "$_argout" 2>/dev/null || echo 'no file')"
