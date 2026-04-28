@@ -268,6 +268,29 @@ is_landlock() { [[ "$CURRENT_BACKEND" == "landlock" ]]; }
 # Mount-namespace backends (bwrap and firejail) hide files with ENOENT
 has_mount_ns() { is_bwrap || is_firejail; }
 
+# Returns 0 if $1 (e.g. ".ssh") is intentionally exposed by the loaded
+# test config — listed in HOME_READONLY or HOME_WRITABLE in the file
+# pointed to by $SANDBOX_CONF. Used by the credential-block tests to
+# distinguish "default-deny isolation" from "config-driven opt-in"
+# (e.g. a user who deliberately exposes ~/.ssh so they can git-push
+# from inside the sandbox).
+#
+# Config-aware against the loaded config only — external wrappers that
+# mutate HOME_READONLY+=("…") before invoking sandbox-exec.sh are not
+# visible to test.sh and won't be detected here.
+_home_dir_intentional() {
+    local _name="$1"
+    bash -c '
+        set +u
+        # shellcheck disable=SC1090
+        source "$1" 2>/dev/null || exit 1
+        for _e in "${HOME_READONLY[@]}" "${HOME_WRITABLE[@]}"; do
+            [[ "$_e" == "$2" ]] && exit 0
+        done
+        exit 1
+    ' _ "$SANDBOX_CONF" "$_name"
+}
+
 # ── Pre-flight ────────────────────────────────────────────────────
 
 echo "╔═══════════════════════════════════════════════╗"
@@ -350,18 +373,35 @@ else
     return
 fi
 
-# 2. Filesystem isolation — ~/.ssh should be blocked
-if [[ -d "$HOME/.ssh" ]]; then
-    if sandbox bash -c 'ls "$HOME/.ssh" >/dev/null 2>&1 && echo VISIBLE || echo BLOCKED'; then
-        if [[ "$OUTPUT" == "BLOCKED" ]]; then
-            pass "Filesystem isolation (~/.ssh blocked)"
+# 2. Filesystem isolation — credential dirs (~/.ssh, ~/.aws, ~/.gnupg)
+# Default-deny: BLOCKED unless the loaded config explicitly lists the
+# dir in HOME_READONLY / HOME_WRITABLE — in which case we assert it's
+# VISIBLE (config opt-in took effect, e.g. so a user can git-push or
+# push to ECR from inside the sandbox). This validates BOTH default
+# isolation AND the sandbox config plumbing for opt-ins.
+for _dir in .ssh .aws .gnupg; do
+    if [[ ! -d "$HOME/$_dir" ]]; then
+        skip "~/$_dir not present on host"
+        continue
+    fi
+    _intentional=false
+    _home_dir_intentional "$_dir" && _intentional=true
+    if sandbox bash -c "ls \"\$HOME/$_dir\" >/dev/null 2>&1 && echo VISIBLE || echo BLOCKED"; then
+        if $_intentional; then
+            if [[ "$OUTPUT" == "VISIBLE" ]]; then
+                pass "~/$_dir visible by config opt-in"
+            else
+                fail "~/$_dir in HOME_READONLY/HOME_WRITABLE but blocked by sandbox" "$OUTPUT"
+            fi
         else
-            fail "~/.ssh accessible inside sandbox (isolation broken)"
+            if [[ "$OUTPUT" == "BLOCKED" ]]; then
+                pass "Filesystem isolation (~/$_dir blocked)"
+            else
+                fail "~/$_dir accessible inside sandbox (isolation broken)" "$OUTPUT"
+            fi
         fi
     fi
-else
-    skip "~/.ssh not present on host"
-fi
+done
 
 # 3. Project directory is writable
 _tf="$PROJECT_DIR/.test-write-$$"
@@ -569,44 +609,67 @@ echo ""
 
 echo "2. Filesystem isolation"
 
-# Helper: test that a sensitive directory is blocked (ENOENT for bwrap, EACCES for landlock)
-test_blocked_dir() {
-    local dir="$1"
-    local name="$2"
-    local _hint=""
-    # Check if the dir is in HOME_READONLY in an admin config — that's why it would be visible
-    if [[ -f /app/lib/agent-sandbox/sandbox.conf ]]; then
-        local _basename="${dir##*/}"
-        _basename="${_basename#.}"  # strip leading dot for matching
-        if grep -q "\"\.${_basename}\"" /app/lib/agent-sandbox/sandbox.conf 2>/dev/null; then
-            _hint=" — admin config has it in HOME_READONLY (remove to hide)"
-        fi
+# Helper: assert a credential directory has the right visibility inside
+# the sandbox. Default-deny: HIDDEN (bwrap/firejail) or BLOCKED with
+# EACCES (landlock). Exception: if the loaded config explicitly lists
+# the dir in HOME_READONLY / HOME_WRITABLE, we instead assert it's
+# VISIBLE — that means the config-driven opt-in took effect (e.g. a
+# user who exposes ~/.ssh so they can git-push from the sandbox).
+#
+# This validates both the isolation default and the config plumbing.
+test_credential_dir() {
+    local _name="$1"               # e.g. ".ssh"
+    local _label="~/$_name"
+    local _abs="$HOME/$_name"
+
+    if [[ ! -d "$_abs" ]]; then
+        skip "$_label not present on host"
+        return
     fi
 
+    local _intentional=false
+    _home_dir_intentional "$_name" && _intentional=true
+
     if has_mount_ns; then
-        if sandbox test -d "$dir"; then
-            fail "$name is visible (should be hidden)${_hint}"
+        if sandbox test -d "$_abs"; then
+            if $_intentional; then
+                pass "$_label visible by config opt-in"
+            else
+                fail "$_label is visible (should be hidden)"
+            fi
         else
-            pass "$name is hidden"
+            if $_intentional; then
+                fail "$_label in HOME_READONLY/HOME_WRITABLE but hidden by sandbox"
+            else
+                pass "$_label is hidden"
+            fi
         fi
     else
-        # Landlock: directory may exist but access is denied
-        if sandbox bash -c "ls '$dir' 2>&1"; then
-            fail "$name is accessible (should be blocked)${_hint}"
-        else
-            if echo "$OUTPUT" | grep -qi "permission denied\|cannot open\|cannot access"; then
-                pass "$name is blocked (EACCES)"
+        # Landlock: directory may exist on host but access is gated by ABI
+        if sandbox bash -c "ls '$_abs' 2>&1"; then
+            if $_intentional; then
+                pass "$_label accessible by config opt-in"
             else
-                # Could also be ENOENT if the dir doesn't exist on the host
-                pass "$name is blocked"
+                fail "$_label is accessible (should be blocked)"
+            fi
+        else
+            if $_intentional; then
+                fail "$_label in HOME_READONLY/HOME_WRITABLE but blocked by sandbox" "$OUTPUT"
+            else
+                if echo "$OUTPUT" | grep -qi "permission denied\|cannot open\|cannot access"; then
+                    pass "$_label is blocked (EACCES)"
+                else
+                    # Could also be ENOENT if the dir doesn't exist on the host
+                    pass "$_label is blocked"
+                fi
             fi
         fi
     fi
 }
 
-test_blocked_dir "$HOME/.ssh" "~/.ssh"
-test_blocked_dir "$HOME/.aws" "~/.aws"
-test_blocked_dir "$HOME/.gnupg" "~/.gnupg"
+test_credential_dir ".ssh"
+test_credential_dir ".aws"
+test_credential_dir ".gnupg"
 
 # ── Extra credential paths beyond the canonical .ssh/.aws/.gnupg ─
 # sandbox-lib.sh's _HOME_ALWAYS_BLOCKED currently lists only those
