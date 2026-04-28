@@ -230,6 +230,17 @@ handle_squeue() {
         local _sep=$'\x1f'
         local _modified_flags=("${validated_flags[@]}")
 
+        # Detect -h/--noheader so the awk filter knows whether the first
+        # output line is a header (pass-through) or already a data row
+        # (must be scope-filtered).  Pre-fix, awk used a "first column
+        # starts with a digit" heuristic which leaked every data row when
+        # the user-supplied -o format put a non-numeric column first
+        # (e.g. -o "%j %i" — job name first).
+        local _noheader=0
+        for _f in "${validated_flags[@]}"; do
+            [[ "$_f" == "-h" || "$_f" == "--noheader" ]] && _noheader=1
+        done
+
         case "$_fmt_type" in
             default)
                 # Replace default with an explicit format + comment.
@@ -262,31 +273,9 @@ handle_squeue() {
                 ;;
         esac
 
-        # Single squeue call → awk scope filter → strip chaperon tags.
-        #
-        # Awk logic:
-        #   • Split each line on \x1f.  Left half = display, right = comment.
-        #   • If the first non-space token of display is numeric → data line:
-        #     keep only if comment matches the scope pattern.
-        #   • Otherwise (column header, -l timestamp, etc.) → pass through.
-        #   • Lines without a separator (shouldn't happen) → pass through.
+        # Single squeue call → scope filter → strip chaperon tags.
         "$real_squeue" --me "${_modified_flags[@]}" \
-            | awk -v pat="$scope_pattern" -v sep="$_sep" '
-                {
-                    p = index($0, sep)
-                    if (p == 0) { print; next }
-                    display = substr($0, 1, p - 1)
-                    comment = substr($0, p + 1)
-                    # Trim leading whitespace to inspect first token
-                    test_str = display
-                    gsub(/^[[:space:]]+/, "", test_str)
-                    if (test_str ~ /^[0-9]/) {
-                        if (comment ~ pat) print display
-                    } else {
-                        print display
-                    }
-                }
-            ' \
+            | _squeue_filter_scope "$scope_pattern" "$_noheader" \
             | _strip_chaperon_tags || rc=$?
 
     else
@@ -302,6 +291,36 @@ handle_squeue() {
     fi
 
     return "$rc"
+}
+
+# Filter chaperon-tagged squeue tabular output by scope pattern.
+#
+# The handler injects the chaperon comment field after a \x1f Unit-Separator
+# byte at the end of every line, then this filter splits on it: left side is
+# what the user sees, right side is the comment we match against. Pre-fix,
+# this used a "first column starts with a digit" heuristic to discriminate
+# header lines from data rows — which leaked every data row when the user-
+# supplied -o format put a non-numeric column first (e.g. "%j %i").
+#
+# stdin:  squeue output with \x1f-separated comment field
+# stdout: lines with comment trimmed; data rows filtered by scope pattern
+#         (header line, if expected, passes through unfiltered)
+# Args:   $1 = scope pattern (awk regex)
+#         $2 = noheader flag — "1" if -h/--noheader, else "0"
+_squeue_filter_scope() {
+    local pat="$1" noheader="$2"
+    local sep=$'\x1f'
+    awk -v pat="$pat" -v sep="$sep" -v noheader="$noheader" '
+        BEGIN { skip_header = (noheader == "0") ? 1 : 0 }
+        {
+            p = index($0, sep)
+            if (p == 0) { print; next }
+            display = substr($0, 1, p - 1)
+            comment = substr($0, p + 1)
+            if (skip_header) { print display; skip_header = 0; next }
+            if (comment ~ pat) print display
+        }
+    '
 }
 
 # Run squeue with -j in batches to stay within ARG_MAX.
