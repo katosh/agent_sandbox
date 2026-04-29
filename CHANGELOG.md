@@ -184,6 +184,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   added to the allow-list. `chaperon/handlers/sacct.sh`,
   `test.sh` (5i/5o), `CHAPERON.md`, `README.md`.
 
+- **`test.sh` credential-block tests are now config-aware.** The
+  `~/.ssh` quick-mode block and the full-mode `test_blocked_dir`
+  helper used to assert BLOCKED/HIDDEN unconditionally, which
+  false-failed for users who intentionally expose `~/.ssh`,
+  `~/.aws`, or `~/.gnupg` in their sandbox config (legitimate
+  use cases — e.g. git-push or `aws ecr login` from inside the
+  sandbox). The tests now consult `HOME_READONLY` / `HOME_WRITABLE`
+  in the loaded config (`$SANDBOX_CONF`) and assert VISIBLE for
+  opt-in entries, BLOCKED otherwise — validating both the
+  default-deny posture and the config-driven exposure plumbing.
+  Quick-mode also now loops over all three credential dirs
+  instead of just `~/.ssh`. `test.sh`.
+
 ## [0.4.2] - 2026-04-16
 
 ### Fixed
