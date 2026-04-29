@@ -212,6 +212,28 @@ FILTER_PASSWD=true
 # to inject keystrokes into unsandboxed terminals. See sandbox.conf.
 BIND_DEV_PTS=false
 
+# GPU passthrough — make NVIDIA driver libraries discoverable by bare
+# name (libcuda.so.1, libnvidia-ml.so.1) inside the sandbox.
+#
+# Why this exists: a non-system dynamic linker (e.g. Homebrew/Linuxbrew
+# Python's bundled glibc ld.so) reads its own ld.so.cache and ignores
+# /etc/ld.so.cache, so dlopen("libcuda.so.1") fails even when the file
+# is present at /usr/lib/x86_64-linux-gnu/. Symptom: torch.cuda.is_available()
+# returns False on a node that does have NVIDIA devices and the system
+# linker resolves libcuda fine.
+#
+# What this does: when enabled, the sandbox materializes a private
+# directory of symlinks to host NVIDIA driver libs (libcuda.so*,
+# libnvidia-*.so*, libcudadebugger.so*) and prepends it to LD_LIBRARY_PATH
+# inside the sandbox. Driver libs only — never libstdc++/libc/etc.,
+# which would shadow brewed-toolchain libs and segfault torch.
+#
+# Values:
+#   auto  (default) — enable when /dev/nvidia* exists on the host
+#   true            — always enable (also when no /dev/nvidia0)
+#   false           — disable (use the bare LD_PRELOAD workaround manually)
+GPU_PASSTHROUGH=auto
+
 # Suppress the startup banner. Set to true to hide the one-line message
 # showing backend, project dir, and home access mode.
 SANDBOX_QUIET=false
@@ -438,6 +460,7 @@ _CONFIG_ARRAYS=(
 )
 _CONFIG_SCALARS=(
     SANDBOX_BACKEND PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD BIND_DEV_PTS
+    GPU_PASSTHROUGH
     SLURM_SCOPE HOME_ACCESS SANDBOX_QUIET SANDBOX_NPROC_LIMIT
     CHAPERON_LOG_LEVEL CHAPERON_LOG_RETAIN_DAYS
 )
@@ -1196,6 +1219,73 @@ generate_filtered_passwd() {
     _FILTERED_PASSWD="$tmpdir/passwd"
     _FILTERED_GROUP="$tmpdir/group"
     _FILTERED_NSSWITCH="$tmpdir/nsswitch.conf"
+}
+
+# ── NVIDIA driver libraries (GPU passthrough) ──────────────────────
+#
+# Sets _NVIDIA_LIBS_DIR to a host-side directory of symlinks to the
+# active NVIDIA driver libs. Backends bind/grant that path read-only
+# and prepend it to LD_LIBRARY_PATH inside the sandbox so bare-name
+# dlopen("libcuda.so.1") works for non-system dynamic linkers (the
+# Homebrew/Linuxbrew Python interpreter bundles its own glibc ld.so
+# whose ld.so.cache is at $BREW/etc/ld.so.cache and does not list
+# /usr/lib/x86_64-linux-gnu — see GPU_PASSTHROUGH above).
+#
+# Empty when disabled or no driver lib found.
+_NVIDIA_LIBS_DIR=""
+
+setup_nvidia_libs_dir() {
+    _NVIDIA_LIBS_DIR=""
+
+    case "${GPU_PASSTHROUGH:-auto}" in
+        false|no|0|off|"") return 0 ;;
+        true|yes|1|on)     ;;  # always enable
+        auto|*)
+            # auto: enable only when an NVIDIA device is exposed on the host
+            compgen -G '/dev/nvidia*' >/dev/null 2>&1 || return 0
+            ;;
+    esac
+
+    # Locate the host's libcuda.so.1: ldconfig first, then well-known paths.
+    local _libcuda=""
+    if command -v ldconfig &>/dev/null; then
+        _libcuda="$(ldconfig -p 2>/dev/null \
+            | awk '/[[:space:]]libcuda\.so\.1[[:space:]]/ {print $NF; exit}')"
+    fi
+    if [[ -z "$_libcuda" || ! -e "$_libcuda" ]]; then
+        local _p
+        for _p in /usr/lib/x86_64-linux-gnu/libcuda.so.1 \
+                  /lib/x86_64-linux-gnu/libcuda.so.1 \
+                  /usr/lib64/libcuda.so.1; do
+            [[ -e "$_p" ]] && { _libcuda="$_p"; break; }
+        done
+    fi
+    if [[ -z "$_libcuda" || ! -e "$_libcuda" ]]; then
+        # No driver lib — silently skip. nvidia-smi (setuid binary)
+        # may still work; user can opt in via GPU_PASSTHROUGH=true on
+        # an unusual install path, then we fall through here as well.
+        return 0
+    fi
+
+    local _libdir
+    _libdir="$(dirname "$_libcuda")"
+
+    # Materialize the symlink dir under user data, repopulated each
+    # sandbox start so driver upgrades take effect without the user
+    # touching anything. Driver libs only — never libstdc++/libc/etc.,
+    # which would shadow brewed-toolchain libs and break torch.
+    local _dir="$_USER_DATA_DIR/.nvidia-libs"
+    mkdir -p "$_dir"
+    find "$_dir" -maxdepth 1 -type l -delete 2>/dev/null || true
+
+    local _f
+    for _f in "$_libdir"/libcuda.so* \
+              "$_libdir"/libnvidia-*.so* \
+              "$_libdir"/libcudadebugger.so*; do
+        [[ -e "$_f" ]] && ln -sf "$_f" "$_dir/$(basename "$_f")"
+    done
+
+    _NVIDIA_LIBS_DIR="$_dir"
 }
 
 # ── Agent profile system ───────────────────────────────────────────

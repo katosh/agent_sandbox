@@ -4,6 +4,7 @@
 .sbatch-overlay
 .srun-overlay
 .passwd-filter/
+.nvidia-libs/
 
 # Slurm job output from testing
 slurm-*.out
