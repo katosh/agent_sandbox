@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`GPU_PASSTHROUGH=auto` — discoverable NVIDIA driver libraries
+  inside the sandbox.** When enabled (default `auto`: triggered by
+  `/dev/nvidia*` on the host), the sandbox materializes a private
+  directory of symlinks to host `libcuda.so*`, `libnvidia-*.so*` and
+  `libcudadebugger.so*`, binds it read-only into the sandbox, and
+  prepends it to `LD_LIBRARY_PATH`. Driver libs only — `libstdc++`
+  and `libc` are deliberately not shadowed.
+
+  Fixes silent CPU fall-through for non-system dynamic linkers (most
+  notably Homebrew/Linuxbrew Python, whose bundled `ld.so` reads its
+  own `ld.so.cache` and ignores `/etc/ld.so.cache`). Symptom was
+  `torch.cuda.is_available() == False` on a node that does have GPUs
+  and where the system Python's `dlopen("libcuda.so.1")` works fine.
+
+  Wired into all three filesystem backends (`bwrap` via `--ro-bind
+  + --setenv`, `landlock` via `--ro + export`, `firejail` via
+  `--whitelist + export`). Set `GPU_PASSTHROUGH=false` to disable
+  and fall back to the manual workaround
+  (`LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libcuda.so.1`).
+
+  `sandbox-lib.sh`, `sandbox.conf`, `backends/{bwrap,landlock,firejail}.sh`.
+
 ### Fixed
 
 - **`test.sh` S02 symlink-bypass test is now config-aware.** The S02

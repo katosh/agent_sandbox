@@ -383,6 +383,16 @@ backend_prepare() {
     # Prepend chaperon stubs to PATH (before bin/ for sbatch/srun override)
     export PATH="$SANDBOX_DIR/chaperon/stubs:$SANDBOX_DIR/bin:${PATH}"
 
+    # GPU passthrough — expose the NVIDIA driver lib symlink dir and
+    # prepend it to LD_LIBRARY_PATH so non-system dynamic linkers
+    # (e.g. brewed Python's bundled ld.so) can find libcuda.so.1 by
+    # name. Driver libs only; libstdc++/libc are not shadowed.
+    setup_nvidia_libs_dir
+    if [[ -n "${_NVIDIA_LIBS_DIR:-}" ]]; then
+        FIREJAIL_ARGS+=(--whitelist="$_NVIDIA_LIBS_DIR")
+        export LD_LIBRARY_PATH="$_NVIDIA_LIBS_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    fi
+
     # Pass chaperon FIFO directory into the sandbox.
     # When --private-tmp is active, /tmp is replaced with a clean tmpfs,
     # so we must whitelist the FIFO dir to make it visible inside.
