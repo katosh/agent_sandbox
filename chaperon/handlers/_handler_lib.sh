@@ -281,11 +281,67 @@ validate_cwd() {
 
 # ── Job wrapping ────────────────────────────────────────────────
 
+# Detect whether an interpreter line is a POSIX-ish shell that supports
+# `-s --` (read script from stdin, treat following args as positionals).
+# Handles plain `/bin/bash`, `/bin/bash -e -u`, and `/usr/bin/env bash`.
+# Returns 0 for shell, 1 for non-shell or unrecognized.
+_is_shell_interpreter() {
+    local line="$1"
+    # shellcheck disable=SC2206  # word-splitting on the shebang is intentional
+    local tokens=($line)
+    local first="${tokens[0]:-}"
+    [[ -z "$first" ]] && return 1
+    local first_base
+    first_base="$(basename -- "$first")"
+    case "$first_base" in
+        bash|sh|zsh|dash|ksh|ash) return 0 ;;
+        env)
+            # Walk past env's own flags / VAR=val assignments to find the
+            # real interpreter token. Conservative: any flag we don't
+            # explicitly recognize as boolean is treated as taking a value.
+            local i=1
+            while (( i < ${#tokens[@]} )); do
+                local t="${tokens[$i]}"
+                case "$t" in
+                    --) (( i++ )); break ;;
+                    -i|--ignore-environment|-0|--null|-v|--debug|-S*|--split-string=*)
+                        (( i++ )) ;;
+                    -u|--unset|-C|--chdir)
+                        (( i += 2 )) ;;
+                    -*)
+                        (( i += 2 )) ;;
+                    *=*)
+                        (( i++ )) ;;
+                    *)
+                        break ;;
+                esac
+            done
+            local env_target="${tokens[$i]:-}"
+            [[ -z "$env_target" ]] && return 1
+            local env_base
+            env_base="$(basename -- "$env_target")"
+            case "$env_base" in
+                bash|sh|zsh|dash|ksh|ash) return 0 ;;
+            esac
+            return 1
+            ;;
+    esac
+    return 1
+}
+
 # Create a wrapped sbatch script that runs the user's command inside
 # the sandbox on the compute node.
-# Usage: create_wrapped_script <sandbox_exec> <project_dir> <script_content> <output_file>
+# Usage: create_wrapped_script <sandbox_exec> <project_dir> <script_content> <output_file> [script_arg ...]
+#
+# The trailing positional script_args are forwarded so that $1/$@/$# work
+# inside the user's wrapped script. For shell shebangs the script is piped
+# via stdin and `-s -- arg1 arg2 ...` carries the positionals; for other
+# interpreters (python, perl, R, …) the script is materialised to a tmpfile
+# inside the sandbox at runtime and exec'd directly so its argv is correct.
 create_wrapped_script() {
     local sandbox_exec="$1" project_dir="$2" script_content="$3" output_file="$4"
+    shift 4
+    local script_args=("$@")
 
     # Filter #SBATCH directives: keep safe ones, strip dangerous ones.
     # This prevents bypassing the flag whitelist (e.g. #SBATCH --uid=0,
@@ -351,13 +407,31 @@ create_wrapped_script() {
     # Build a self-contained wrapper:
     #   1. #SBATCH directives (validated)
     #   2. Inline script via heredoc
-    #   3. Pipe script to the correct interpreter inside sandbox-exec.sh
+    #   3. Either pipe to an interpreter (shells) or materialise to a
+    #      tmpfile inside the sandbox and exec it (non-shells) so the
+    #      user's shebang is honored AND $1/$@/$# survive.
     #
-    # Why pipe via stdin instead of `sh -c "$_SCRIPT"`?  The user's shebang
-    # must be honored — #!/bin/bash means bash, #!/usr/bin/env python3 means
-    # python.  All interpreters read from stdin when given no file argument,
-    # and the #! line is just a comment to them.  No temp files needed, no
-    # filesystem path visibility issues across the sandbox boundary.
+    # Why two paths? Shells support `-s --` (read script from stdin, treat
+    # following tokens as positional args), so for #!/bin/bash etc. we keep
+    # the original pipe-through-stdin form and append `-s -- arg1 arg2 …`.
+    # Non-shell interpreters (python, perl, R, …) either don't read stdin
+    # the same way or set argv[0] to '-' / '-c' when they do, breaking
+    # `sys.argv` for the user's script. For those we write the script to
+    # a private tmpfs file inside the sandbox at runtime and exec it
+    # directly with the positionals — argv ends up exactly as if the
+    # script had been launched as a normal file.
+    #
+    # Pre-quote the script positional args once: bash printf %q produces
+    # safe shell-quoted tokens that survive embedding in either generated
+    # wrapper form below.
+    local quoted_script_args=""
+    if (( ${#script_args[@]} > 0 )); then
+        local _sa
+        for _sa in "${script_args[@]}"; do
+            quoted_script_args+=" $(printf '%q' "$_sa")"
+        done
+    fi
+
     {
         printf '#!/bin/bash --\n'
         if [[ -n "$safe_directives" ]]; then
@@ -368,8 +442,56 @@ create_wrapped_script() {
         printf '%s\n' "$script_body"
         printf '%s\n' "$eof_marker"
         printf ')\n'
-        printf 'printf '"'"'%%s\\n'"'"' "$_SCRIPT" | exec %q --project-dir %q -- %s\n' \
-            "$sandbox_exec" "$project_dir" "$interpreter"
+
+        if _is_shell_interpreter "$interpreter"; then
+            # Shell path: pipe script to `<interp> -s -- <args>` so the
+            # shell reads the body from stdin and assigns positionals.
+            #
+            # Strip any standalone `--` tokens from the interpreter line —
+            # `--` ends option processing, so a shebang like
+            # `#!/bin/bash --` (or the stub's `--wrap` synthesis) would
+            # produce `bash -- -s ...` and bash would treat `-s` as a
+            # filename. We append our own `-s --` below, so a leading
+            # `--` from the user is redundant anyway.
+            local interp_clean=""
+            local _interp_tokens _it
+            # shellcheck disable=SC2206  # word-splitting on the shebang is intentional
+            _interp_tokens=($interpreter)
+            for _it in "${_interp_tokens[@]}"; do
+                [[ "$_it" == "--" ]] && continue
+                interp_clean+="${interp_clean:+ }$_it"
+            done
+            local sep=""
+            if (( ${#script_args[@]} > 0 )); then
+                sep=" --"
+            fi
+            printf 'printf '"'"'%%s\\n'"'"' "$_SCRIPT" | exec %q --project-dir %q -- %s -s%s%s\n' \
+                "$sandbox_exec" "$project_dir" "$interp_clean" "$sep" "$quoted_script_args"
+        else
+            # Non-shell path: inside the sandbox, materialise the script to
+            # a private tmpfs file, chmod +x, exec it with the positionals.
+            # The sandbox's /tmp is per-invocation private (bwrap/firejail)
+            # or at minimum user-owned (landlock) — the file is gone the
+            # moment the sandbox tears down, and the rm -f is
+            # belt-and-suspenders for landlock's shared-tmp case.
+            #
+            # The runner-script body uses double-quoted single-quotes-by-
+            # concatenation so we don't have to fight nested quoting:
+            # everything between '...' is literal except for double-quote
+            # boundaries we open to embed a literal single quote ('"'"').
+            local runner='set -e
+_t=$(mktemp /tmp/.chaperon-script-XXXXXX) || exit 1
+trap '"'"'rm -f "$_t"'"'"' EXIT
+printf '"'"'%s\n'"'"' "$1" > "$_t"
+chmod +x "$_t"
+shift
+"$_t" "$@"'
+            # Wrap the runner in single quotes for the bash -c argument
+            # by escaping any embedded single quotes ('\'').
+            local runner_q="${runner//\'/\'\\\'\'}"
+            printf 'exec %q --project-dir %q -- bash -c '"'"'%s'"'"' _chaperon_runner "$_SCRIPT"%s\n' \
+                "$sandbox_exec" "$project_dir" "$runner_q" "$quoted_script_args"
+        fi
     } > "$output_file"
     chmod +x "$output_file"
 }

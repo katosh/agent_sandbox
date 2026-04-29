@@ -10,6 +10,7 @@
 #   ARG <base64>
 #   CWD <base64>
 #   SCRIPT <base64>
+#   SCRIPT_ARG <base64>     (zero or more; positional args for the script)
 #   END
 #
 # Response format:
@@ -88,7 +89,8 @@ chaperon_send_response() {
 # ── Request reading (used by chaperon) ───────────────────────────
 
 # Read a complete request from the chaperon FD.
-# Sets global variables: REQ_COMMAND, REQ_ARGS (array), REQ_CWD, REQ_SCRIPT
+# Sets global variables: REQ_COMMAND, REQ_ARGS (array), REQ_CWD, REQ_SCRIPT,
+#                        REQ_SCRIPT_ARGS (array)
 # Returns 0 on success, 1 on EOF/error.
 chaperon_read_request() {
     local fd="$1"
@@ -97,6 +99,7 @@ chaperon_read_request() {
     REQ_ARGS=()
     REQ_CWD=""
     REQ_SCRIPT=""
+    REQ_SCRIPT_ARGS=()
     REQ_RESP_FIFO=""
 
     # Read header line
@@ -124,6 +127,10 @@ chaperon_read_request() {
             SCRIPT\ *)
                 local encoded="${line#SCRIPT }"
                 REQ_SCRIPT="$(printf '%s' "$encoded" | chaperon_b64_decode)"
+                ;;
+            SCRIPT_ARG\ *)
+                local encoded="${line#SCRIPT_ARG }"
+                REQ_SCRIPT_ARGS+=("$(printf '%s' "$encoded" | chaperon_b64_decode)")
                 ;;
             RESP_FIFO\ *)
                 REQ_RESP_FIFO="${line#RESP_FIFO }"

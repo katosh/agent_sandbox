@@ -2517,6 +2517,150 @@ SCRIPT
     fi
     rm -rf "$_cwd_subdir"
 
+    # 6c-sexies. sbatch script positional args reach $1/$@/$#.
+    # Before the fix, the chaperon dropped `sbatch script.sh arg1 arg2`
+    # positionals: the stub captured SCRIPT_ARGS but never forwarded them
+    # through the protocol, and the wrapper piped the script body to bash
+    # via stdin which provides no argv. These tests assert that the user's
+    # positionals survive — for a bash shebang (the `-s --` path) and for
+    # a python shebang (the in-sandbox tmpfile path).
+    _await_jobout() {
+        # Args: <jobid> <jobout> [timeout-seconds]
+        local _jid="$1" _jo="$2" _tmo="${3:-25}"
+        for _i in $(seq 1 "$_tmo"); do
+            if sandbox bash -c "squeue -j $_jid -h 2>/dev/null" && [[ -z "$OUTPUT" ]]; then
+                sleep 1
+                break
+            fi
+            sleep 1
+        done
+        [[ -s "$_jo" ]]
+    }
+
+    # Bash shebang — assert $#, $@, and individual positionals.
+    _argscript="$PROJECT_DIR/.sbatch-args-bash-$$.sh"
+    _argout=$(mktemp)
+    _TEST_TEMP_FILES+=("$_argscript" "$_argout")
+    cat > "$_argscript" <<'BASH_ARGSCRIPT'
+#!/bin/bash
+echo "argc=$#"
+i=1
+for a in "$@"; do
+    echo "argv[$i]=[$a]"
+    i=$((i + 1))
+done
+BASH_ARGSCRIPT
+    chmod +x "$_argscript"
+    _arg_out=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- \
+        sbatch --wait --output="$_argout" \
+        "$_argscript" "first" "with space" 'with$dollar' 2>&1)
+    _arg_rc=$?
+    _arg_check() {
+        [[ -s "$_argout" ]] \
+            && grep -q '^argc=3$' "$_argout" \
+            && grep -qF 'argv[1]=[first]' "$_argout" \
+            && grep -qF 'argv[2]=[with space]' "$_argout" \
+            && grep -qF 'argv[3]=[with$dollar]' "$_argout"
+    }
+    if [[ $_arg_rc -eq 0 ]] && _arg_check; then
+        pass "sbatch script.sh forwards positional args to bash shebang (\$#/\$@)"
+    else
+        _arg_jid=$(echo "$_arg_out" | grep -oE 'Submitted batch job [0-9]+' | awk '{print $4}')
+        if [[ -n "$_arg_jid" ]] && _await_jobout "$_arg_jid" "$_argout"; then
+            if _arg_check; then
+                pass "sbatch script.sh forwards positional args to bash shebang (\$#/\$@)"
+            else
+                fail "sbatch script positional args not forwarded (bash shebang)" \
+                    "got: $(cat "$_argout" 2>/dev/null || echo 'no file')"
+            fi
+        else
+            skip "sbatch positional-args (bash) inconclusive: $_arg_out"
+        fi
+    fi
+    rm -f "$_argscript"
+
+    # Python shebang — argv[0] should be the script path, argv[1:] the user args.
+    if command -v python3 &>/dev/null; then
+        _pyscript="$PROJECT_DIR/.sbatch-args-py-$$.py"
+        _pyout=$(mktemp)
+        _TEST_TEMP_FILES+=("$_pyscript" "$_pyout")
+        cat > "$_pyscript" <<'PY_ARGSCRIPT'
+#!/usr/bin/env python3
+import sys
+print(f"argc={len(sys.argv) - 1}")
+for i, a in enumerate(sys.argv[1:], start=1):
+    print(f"argv[{i}]=[{a}]")
+PY_ARGSCRIPT
+        chmod +x "$_pyscript"
+        _py_out=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+            --project-dir "$PROJECT_DIR" -- \
+            sbatch --wait --output="$_pyout" \
+            "$_pyscript" "alpha" "beta gamma" "with'quote" 2>&1)
+        _py_rc=$?
+        _py_check() {
+            [[ -s "$_pyout" ]] \
+                && grep -q '^argc=3$' "$_pyout" \
+                && grep -qF 'argv[1]=[alpha]' "$_pyout" \
+                && grep -qF 'argv[2]=[beta gamma]' "$_pyout" \
+                && grep -qF "argv[3]=[with'quote]" "$_pyout"
+        }
+        if [[ $_py_rc -eq 0 ]] && _py_check; then
+            pass "sbatch script.py forwards positional args to python shebang (sys.argv)"
+        else
+            _py_jid=$(echo "$_py_out" | grep -oE 'Submitted batch job [0-9]+' | awk '{print $4}')
+            if [[ -n "$_py_jid" ]] && _await_jobout "$_py_jid" "$_pyout"; then
+                if _py_check; then
+                    pass "sbatch script.py forwards positional args to python shebang (sys.argv)"
+                else
+                    fail "sbatch script positional args not forwarded (python shebang)" \
+                        "got: $(cat "$_pyout" 2>/dev/null || echo 'no file')"
+                fi
+            else
+                skip "sbatch positional-args (python) inconclusive: $_py_out"
+            fi
+        fi
+        rm -f "$_pyscript"
+    else
+        skip "python3 not available — skipping python-shebang positional-args test"
+    fi
+
+    # No args — script still runs (no `--` after `-s`, $#=0).
+    _noargscript="$PROJECT_DIR/.sbatch-noargs-$$.sh"
+    _noargout=$(mktemp)
+    _TEST_TEMP_FILES+=("$_noargscript" "$_noargout")
+    cat > "$_noargscript" <<'NOARGSCRIPT'
+#!/bin/bash
+echo "argc=$#"
+echo "ran=ok"
+NOARGSCRIPT
+    chmod +x "$_noargscript"
+    _noarg_out=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- \
+        sbatch --wait --output="$_noargout" "$_noargscript" 2>&1)
+    _noarg_rc=$?
+    _noarg_check() {
+        [[ -s "$_noargout" ]] \
+            && grep -q '^argc=0$' "$_noargout" \
+            && grep -q '^ran=ok$' "$_noargout"
+    }
+    if [[ $_noarg_rc -eq 0 ]] && _noarg_check; then
+        pass "sbatch script.sh with no positional args still runs ($#=0)"
+    else
+        _noarg_jid=$(echo "$_noarg_out" | grep -oE 'Submitted batch job [0-9]+' | awk '{print $4}')
+        if [[ -n "$_noarg_jid" ]] && _await_jobout "$_noarg_jid" "$_noargout"; then
+            if _noarg_check; then
+                pass "sbatch script.sh with no positional args still runs ($#=0)"
+            else
+                fail "sbatch script with no positional args misbehaved" \
+                    "got: $(cat "$_noargout" 2>/dev/null || echo 'no file')"
+            fi
+        else
+            skip "sbatch no-args inconclusive: $_noarg_out"
+        fi
+    fi
+    rm -f "$_noargscript"
+
     # 6d. scancel scoped to session
     if command -v scancel &>/dev/null; then
         # Submit a job, then cancel it.

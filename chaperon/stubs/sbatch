@@ -146,9 +146,12 @@ for (( i=0; i < ${#FORWARD_ARGS[@]}; i++ )); do
 done
 
 if [[ -n "$SCRIPT_FILE" ]]; then
-    # Read the script file and send as SCRIPT
+    # Read the script file and send as SCRIPT.
+    # Forward any positional args after the script file as SCRIPT_ARGs so
+    # they reach $1/$@/$# inside the user's wrapped script on the compute node.
     _CHAPERON_SCRIPT="$(cat "$SCRIPT_FILE")"
     export _CHAPERON_SCRIPT
+    _CHAPERON_SCRIPT_ARGS=("${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}")
     chaperon_call sbatch "${FINAL_ARGS[@]}"
     exit $?
 fi

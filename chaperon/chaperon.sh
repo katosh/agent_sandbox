@@ -140,6 +140,7 @@ while true; do
     REQ_ARGS=()
     REQ_CWD=""
     REQ_SCRIPT=""
+    REQ_SCRIPT_ARGS=()
     REQ_RESP_FIFO=""
 
     # Read body lines with a timeout to prevent a malicious sender from
@@ -159,6 +160,10 @@ while true; do
             SCRIPT\ *)
                 _encoded="${_line#SCRIPT }"
                 REQ_SCRIPT="$(printf '%s' "$_encoded" | chaperon_b64_decode)"
+                ;;
+            SCRIPT_ARG\ *)
+                _encoded="${_line#SCRIPT_ARG }"
+                REQ_SCRIPT_ARGS+=("$(printf '%s' "$_encoded" | chaperon_b64_decode)")
                 ;;
             RESP_FIFO\ *)
                 REQ_RESP_FIFO="${_line#RESP_FIFO }"

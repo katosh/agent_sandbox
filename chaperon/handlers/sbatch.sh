@@ -9,7 +9,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/_handler_lib.sh"
 
 # handle_sbatch — Process an sbatch request.
 #
-# Globals read: REQ_ARGS, REQ_CWD, REQ_SCRIPT (set by chaperon_read_request)
+# Globals read: REQ_ARGS, REQ_CWD, REQ_SCRIPT, REQ_SCRIPT_ARGS
+#               (set by chaperon_read_request)
 # Arguments: $1 = project_dir, $2 = sandbox_exec_path
 # Outputs:   stdout/stderr captured by chaperon main loop
 # Returns:   exit code from real sbatch (or 1 on validation failure)
@@ -54,7 +55,8 @@ handle_sbatch() {
         local wrapper
         wrapper="$(mktemp "${TMPDIR:-/tmp}/chaperon-wrapper-XXXXXX.sh")"
 
-        create_wrapped_script "$sandbox_exec" "$project_dir" "$REQ_SCRIPT" "$wrapper"
+        create_wrapped_script "$sandbox_exec" "$project_dir" "$REQ_SCRIPT" "$wrapper" \
+            "${REQ_SCRIPT_ARGS[@]+"${REQ_SCRIPT_ARGS[@]}"}"
 
         # Submit and clean up the local wrapper (only needed on login node).
         local rc=0
