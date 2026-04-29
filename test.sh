@@ -3064,23 +3064,39 @@ else
 fi
 
 # ── S02: Symlink to ~/.ssh from project dir ──
+# Default-deny: a symlink in PROJECT_DIR pointing into ~/.ssh must
+# NOT expose contents — the sandbox's deny-list resolves symlinks
+# before applying. Exception: if the loaded config lists .ssh in
+# HOME_READONLY / HOME_WRITABLE, the symlink correctly reflects the
+# opt-in (e.g. a user who exposes ~/.ssh so they can git-push from
+# the sandbox) and we assert VISIBLE.
 local _ssh_link="$PROJECT_DIR/.test-ssh-link-$$"
 ln -snf "$HOME/.ssh" "$_ssh_link" 2>/dev/null
 if [[ -L "$_ssh_link" ]]; then
+    local _ssh_intentional=false
+    _home_dir_intentional ".ssh" && _ssh_intentional=true
     if sandbox bash -c "ls '$_ssh_link/' 2>&1; echo EXIT=\$?"; then
         if echo "$OUTPUT" | grep -qE "Permission denied|No such file|EXIT=[1-9]|cannot access"; then
-            pass "S02: Cannot list ~/.ssh through symlink in project dir"
-        elif echo "$OUTPUT" | grep -qE "id_rsa|id_ed25519|authorized_keys"; then
-            if sandbox test -d "$HOME/.ssh" 2>/dev/null; then
-                fail "S02: ~/.ssh contents visible — .ssh is in HOME_READONLY (admin config issue, not symlink bypass)" "$OUTPUT"
+            if $_ssh_intentional; then
+                fail "S02: ~/.ssh in HOME_READONLY/HOME_WRITABLE but symlink blocked" "$OUTPUT"
             else
-                fail "S02: ~/.ssh contents visible ONLY through symlink — symlink bypasses sandbox" "$OUTPUT"
+                pass "S02: Cannot list ~/.ssh through symlink in project dir"
+            fi
+        elif echo "$OUTPUT" | grep -qE "id_rsa|id_ed25519|authorized_keys"; then
+            if $_ssh_intentional; then
+                pass "S02: ~/.ssh symlink follows HOME_READONLY/HOME_WRITABLE opt-in"
+            else
+                fail "S02: ~/.ssh contents visible through symlink — symlink bypasses sandbox" "$OUTPUT"
             fi
         else
             pass "S02: ~/.ssh not accessible through symlink (empty or blocked)"
         fi
     else
-        pass "S02: Sandbox blocked access to ~/.ssh via symlink"
+        if $_ssh_intentional; then
+            fail "S02: ~/.ssh in HOME_READONLY/HOME_WRITABLE but sandbox command failed" "$OUTPUT"
+        else
+            pass "S02: Sandbox blocked access to ~/.ssh via symlink"
+        fi
     fi
     rm -f "$_ssh_link"
 else

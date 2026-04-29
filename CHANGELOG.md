@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`test.sh` S02 symlink-bypass test is now config-aware.** The S02
+  case (symlink in `PROJECT_DIR` pointing at `~/.ssh`) used to assert
+  BLOCKED unconditionally, false-failing for users who intentionally
+  expose `~/.ssh` via `HOME_READONLY` / `HOME_WRITABLE` — the same
+  config-blind shape that PR #8 fixed for the credential-block tests.
+  S02 now consults `_home_dir_intentional ".ssh"`: default-deny still
+  asserts BLOCKED (real symlink bypass would leak `id_rsa`), but
+  opt-in users now assert VISIBLE — the symlink correctly reflects
+  the exposure, which is the desired behaviour for that config.
+  `test.sh`.
+
 ## [0.5.0] - 2026-04-29
 
 ### Security
