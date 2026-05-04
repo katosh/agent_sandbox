@@ -4,6 +4,7 @@
 .sbatch-overlay
 .srun-overlay
 .passwd-filter/
+.host-libs/
 
 # Slurm job output from testing
 slurm-*.out
