@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-04
+
 ### Added
 
 - **`DEVICES` — targeted /dev passthrough with NVIDIA defaults +
@@ -31,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   notice; the admin blacklist still applies. See
   [DEVICE_PASSTHROUGH.md](DEVICE_PASSTHROUGH.md) for the full
   design and [sandbox.conf](sandbox.conf) for the user template.
+  PR #14.
 
 - **`HOST_LIBS_PASSTHROUGH` — discoverable host driver/runtime
   libraries inside the sandbox.** A new array config var that lets
@@ -61,7 +64,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `--whitelist + export`).
 
   `sandbox-lib.sh`, `sandbox.conf`, `backends/{bwrap,landlock,firejail}.sh`.
-  Closes #11.
+  Closes #11. PR #15.
+
+- **Rust + common dev-tool cache dirs in `HOME_READONLY` defaults.**
+  The shipped `sandbox.conf` template now includes `.cargo`, `.rustup`,
+  `.npm`, and `go` as active read-only entries — a fresh install
+  gives the agent visibility of pre-installed Rust toolchains and
+  cached deps without hand-editing. Commented opt-in entries cover
+  `.gem`, `.gradle`, `.m2`, `.julia`, `.tox`, `.pyenv`, `.bun`,
+  `.yarn`, `.pnpm-store`. Read-only by design (matches the existing
+  `.linuxbrew`/`micromamba` convention); writable promotion or a
+  separate `~/.cache/<tool>` writable subdir documented in the
+  config comments. Library defaults in `sandbox-lib.sh` left
+  unchanged so existing users with no `sandbox.conf` see no
+  behaviour change. `sandbox.conf`. PR #13.
 
 ### Deprecated
 
@@ -73,6 +89,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `GPU_PASSTHROUGH` see no warning. The deprecated scalar will be
   removed in a future release; migrate by replacing the scalar with
   the matching `HOST_LIBS_PASSTHROUGH` entry.
+
+- **`BIND_DEV_PTS=true`** scalar is deprecated in favour of
+  `DEVICES+=(/dev/pts)`. A back-compat shim rewrites the legacy
+  value to the `DEVICES` array entry at config-load time with a
+  stderr warning; the admin `DEVICES_BLACKLIST` still applies on
+  locked-down installs (so `BIND_DEV_PTS=true` becomes a logged
+  no-op there, which is a strict security improvement over the old
+  bypass behaviour). Migration table in the v0.6.0 PR #14 body and
+  in [DEVICE_PASSTHROUGH.md](DEVICE_PASSTHROUGH.md).
 
 ### Fixed
 
