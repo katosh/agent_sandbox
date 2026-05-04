@@ -4446,8 +4446,105 @@ else
     skip "DEV07: backend warning not observed (landlock unavailable here?)"
 fi
 
+# ── DEV08: BIND_DEV_PTS=true is a no-op on kernel >= 5.4 ──
+# The kernel-aware shim should NOT append /dev/pts to DEVICES on a
+# >= 5.4 host (binding host /dev/pts shadows bwrap's auto-mounted
+# user-ns devpts and breaks tmux pty allocation). It should instead
+# log a "no-op, drop the line" notice. Skip on < 5.4 hosts where the
+# shim still appends.
+_dev08_kver_maj="$(uname -r 2>/dev/null | cut -d. -f1)"
+_dev08_kver_min="$(uname -r 2>/dev/null | cut -d. -f2 | tr -dc 0-9)"
+if [[ "$_dev08_kver_maj" =~ ^[0-9]+$ && "$_dev08_kver_min" =~ ^[0-9]+$ ]] \
+   && (( _dev08_kver_maj > 5 || (_dev08_kver_maj == 5 && _dev08_kver_min >= 4) )); then
+    _dev08_conf=$(_dev_test_conf <<'CONF'
+BIND_DEV_PTS=true
+CONF
+)
+    _dev08_err=$(mktemp); trap_rm_path "$_dev08_err"
+    SANDBOX_CONF="$_dev08_conf" "$SANDBOX_EXEC" --backend bwrap --project-dir "$PROJECT_DIR" -- \
+        bash -c '[[ -e /dev/pts/ptmx ]] && echo PRESENT || echo ABSENT' \
+        >"$_dev08_err.out" 2>"$_dev08_err" || true
+    _dev08_out=$(cat "$_dev08_err.out")
+    _dev08_stderr=$(cat "$_dev08_err")
+    # (a) shim must announce no-op on kernel >= 5.4
+    # (b) DEVICES must NOT have /dev/pts appended — verify by absence of the
+    #     blacklist-skip line (DEV04 fires that line whenever /dev/pts lands
+    #     in the resolved set; here it must not).
+    if [[ "$_dev08_stderr" == *"no-op on kernel >= 5.4"* ]] \
+       && [[ "$_dev08_stderr" != *"/dev/pts"*"blacklisted, skipping"* ]]; then
+        pass "DEV08: BIND_DEV_PTS=true is kernel-aware (no-op on >= 5.4, /dev/pts not appended)"
+    else
+        fail "DEV08: kernel-aware shim missing or DEVICES appended" \
+             "stderr=$_dev08_stderr"
+    fi
 else
-    skip "DEV01-DEV07: device passthrough is bwrap-only"
+    skip "DEV08: kernel < 5.4 (or unparseable) — shim's no-op branch not exercisable here"
+fi
+
+# ── DEV09: _kernel_at_least helper unit test ──
+# Inverse of DEV08: directly call the helper from a subshell sourcing
+# sandbox-lib.sh. This documents the mock-friendly contract for
+# downstream packagers and proves the helper handles the "old kernel"
+# branch without needing an actual < 5.4 host.
+(
+    set +e  # the helper uses bash arithmetic that returns nonzero
+    # shellcheck source=sandbox-lib.sh
+    SANDBOX_QUIET=true source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    # _kernel_at_least 0 0 must succeed on every host (any kernel >= 0.0)
+    _kernel_at_least 0 0 || exit 11
+    # _kernel_at_least 99 99 must fail on every host (no kernel >= 99.99 yet)
+    _kernel_at_least 99 99 && exit 12
+    # Mock uname to return a known < 5.4 string and confirm helper rejects 5.4
+    uname() { case "$1" in -r) echo "5.3.0-fake";; *) command uname "$@";; esac; }
+    _kernel_at_least 5 4 && exit 13
+    # Mock uname to return a known >= 5.4 string and confirm helper accepts
+    uname() { case "$1" in -r) echo "5.4.0-fake";; *) command uname "$@";; esac; }
+    _kernel_at_least 5 4 || exit 14
+    # And one well above the boundary
+    uname() { case "$1" in -r) echo "6.8.0-fake";; *) command uname "$@";; esac; }
+    _kernel_at_least 5 4 || exit 15
+    exit 0
+)
+_dev09_rc=$?
+if [[ "$_dev09_rc" -eq 0 ]]; then
+    pass "DEV09: _kernel_at_least handles boundary, low, and high kernel versions"
+else
+    fail "DEV09: _kernel_at_least helper failed unit test (rc=$_dev09_rc)" \
+         "11=non-zero-base 12=above-99.99 13=mock-5.3-passes-5.4 14=mock-5.4-fails-5.4 15=mock-6.8-fails-5.4"
+fi
+
+# ── DEV10: explicit DEVICES+=(/dev/pts) on kernel >= 5.4 emits the shadow warning ──
+# Mirrors DEV04 (blacklist-filtering) but checks the new kernel-aware
+# warning. The warning fires on user intent (pre-blacklist), so it is
+# observable even when the blacklist drops the entry — that is the
+# intended behaviour, since the user wrote down "I want pty visible"
+# and deserves to be told why their kernel will silently break it.
+_dev10_kver_maj="$(uname -r 2>/dev/null | cut -d. -f1)"
+_dev10_kver_min="$(uname -r 2>/dev/null | cut -d. -f2 | tr -dc 0-9)"
+if [[ "$_dev10_kver_maj" =~ ^[0-9]+$ && "$_dev10_kver_min" =~ ^[0-9]+$ ]] \
+   && (( _dev10_kver_maj > 5 || (_dev10_kver_maj == 5 && _dev10_kver_min >= 4) )); then
+    _dev10_conf=$(_dev_test_conf <<'CONF'
+DEVICES+=(/dev/pts)
+CONF
+)
+    _dev10_err=$(mktemp); trap_rm_path "$_dev10_err"
+    SANDBOX_CONF="$_dev10_conf" "$SANDBOX_EXEC" --backend bwrap --project-dir "$PROJECT_DIR" -- \
+        bash -c 'echo ok' >"$_dev10_err.out" 2>"$_dev10_err" || true
+    _dev10_out=$(cat "$_dev10_err.out")
+    _dev10_stderr=$(cat "$_dev10_err")
+    if [[ "$_dev10_out" == *"ok"* ]] \
+       && [[ "$_dev10_stderr" == *"DEVICES contains /dev/pts on kernel >= 5.4"* ]]; then
+        pass "DEV10: explicit /dev/pts on >= 5.4 emits the devpts-shadow warning"
+    else
+        fail "DEV10: shadow warning missing or sandbox aborted" \
+             "out=$_dev10_out err=$_dev10_stderr"
+    fi
+else
+    skip "DEV10: kernel < 5.4 (or unparseable) — shadow warning not applicable"
+fi
+
+else
+    skip "DEV01-DEV10: device passthrough is bwrap-only"
 fi
 
 echo ""

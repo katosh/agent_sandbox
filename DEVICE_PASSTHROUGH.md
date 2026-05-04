@@ -149,20 +149,46 @@ done
 
 ## `BIND_DEV_PTS` — deprecated alias
 
-Existing configs that say `BIND_DEV_PTS=true` get a shim:
+Existing configs that say `BIND_DEV_PTS=true` get a kernel-aware shim:
 
 ```bash
 if _is_true "${BIND_DEV_PTS:-false}"; then
-    echo "agent-sandbox: BIND_DEV_PTS is deprecated; use DEVICES+=(/dev/pts) instead." >&2
-    DEVICES+=(/dev/pts)
+    if _kernel_at_least 5 4; then
+        echo "agent-sandbox: BIND_DEV_PTS=true is a no-op on kernel >= 5.4 ..." >&2
+    else
+        echo "agent-sandbox: BIND_DEV_PTS is deprecated; use DEVICES+=(/dev/pts) instead." >&2
+        DEVICES+=(/dev/pts)
+    fi
 fi
 ```
 
-Setting `BIND_DEV_PTS=true` therefore now grants exactly the original
-intent (host `/dev/pts` for tmux pty allocation on kernel < 5.4) and
-nothing more. The blacklist still applies — admins who want to refuse pty
-exposure cluster-wide add `/dev/pts` to `DEVICES_BLACKLIST` and the legacy
-toggle becomes a no-op with a deprecation warning.
+The shim splits on the kernel because the right answer differs:
+
+* **Kernel < 5.4** — bwrap's user-namespace devpts ships with
+  `ptmxmode=000` (the unprivileged-userns mount honours the host
+  devpts default), so tmux/script/expect cannot allocate a pty inside
+  the sandbox. The historical workaround was to bind the host
+  `/dev/pts`, which has `ptmxmode=666`. The shim preserves that on
+  pre-5.4 kernels by appending `/dev/pts` to `DEVICES`.
+* **Kernel >= 5.4** — bwrap auto-mounts a working user-ns devpts.
+  Binding the host `/dev/pts` on top shadows the working mount with
+  the host's `ptmxmode=000` and silently breaks pty allocation
+  (tmux exits with "create session failed"; `script(1)` with
+  "failed to create pseudo-terminal: Permission denied"). On these
+  kernels the shim emits a "no-op, drop the line" notice and
+  declines to append `/dev/pts`.
+
+Explicit `DEVICES+=(/dev/pts)` is also flagged on kernel >= 5.4 with
+a stderr warning at every spawn. The entry is preserved (we do not
+override explicit user intent), but the user is told why their tmux
+is broken. The default `DEVICES_BLACKLIST` masks this for fresh
+installs; the trap fires only when both `BIND_DEV_PTS=true` migration
+configs **and** a user-overridden `DEVICES_BLACKLIST` are in play.
+
+The blacklist still applies in either branch — admins who want to
+refuse pty exposure cluster-wide add `/dev/pts` to
+`DEVICES_BLACKLIST` and the legacy toggle becomes a logged no-op
+regardless of kernel version.
 
 This is a **behavior change** for users who relied on `BIND_DEV_PTS=true`
 to expose more than pty (e.g. `/dev/snd`, `/dev/nvidia*`). The migration

@@ -207,10 +207,13 @@ PRIVATE_IPC=true
 FILTER_PASSWD=true
 
 # Bind host /dev into the sandbox instead of bwrap's minimal devtmpfs.
-# DEPRECATED: kept as a one-line shim that appends /dev/pts to DEVICES.
-# Use DEVICES (below) for targeted device passthrough — that mechanism
-# is admin-blacklist-aware whereas BIND_DEV_PTS=true used to bypass any
-# such check. See DEVICE_PASSTHROUGH.md for the migration.
+# DEPRECATED: kept as a kernel-aware shim. On kernel < 5.4 it appends
+# /dev/pts to DEVICES (the historical pty workaround); on kernel >= 5.4
+# it is a logged no-op (binding host /dev/pts on those kernels shadows
+# bwrap's auto-mounted user-ns devpts and silently breaks tmux/script
+# pty allocation). Use DEVICES (below) for targeted passthrough — that
+# mechanism is admin-blacklist-aware whereas BIND_DEV_PTS=true used to
+# bypass any such check. See DEVICE_PASSTHROUGH.md for the migration.
 BIND_DEV_PTS=false
 
 # Device nodes to expose inside the sandbox (bwrap only).
@@ -246,10 +249,16 @@ DEVICES=(
 #
 # Rationale per entry:
 #   /dev/mem, /dev/kmem, /dev/port — direct kernel-memory access
-#   /dev/pts                       — TIOCSTI keystroke injection on
-#                                    kernel < 6.2 (Fred Hutch gizmo:
+#   /dev/pts                       — two reasons to keep it out:
+#                                    (a) TIOCSTI keystroke injection
+#                                    on kernel < 6.2 (Fred Hutch gizmo:
 #                                    5.4, the practical risk this list
-#                                    closes)
+#                                    closes); (b) on kernel >= 5.4
+#                                    binding host /dev/pts shadows
+#                                    bwrap's auto-mounted devpts with
+#                                    ptmxmode=000 and breaks tmux pty
+#                                    allocation. Both reasons argue for
+#                                    blacklisting by default.
 #   /dev/sd*, /dev/nvme*, /dev/loop* — raw block devices: filesystem
 #                                      bypass, host-data exfiltration
 DEVICES_BLACKLIST=(
@@ -408,6 +417,27 @@ _is_true() {
         true|yes|1) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# ── Helper: kernel version comparison ──────────────────────────
+# _kernel_at_least MAJOR MINOR — returns 0 iff `uname -r` >= MAJOR.MINOR.
+# Treats unparseable kernel strings as "older" (return 1) so callers default
+# to the legacy code path on weird embedded/container hosts.
+_kernel_at_least() {
+    local _want_maj="$1" _want_min="$2"
+    local _kver _kmaj _kmin
+    _kver="$(uname -r 2>/dev/null)" || return 1
+    _kmaj="${_kver%%.*}"
+    _kmin="${_kver#*.}"
+    _kmin="${_kmin%%[!0-9]*}"
+    [[ "$_kmaj" =~ ^[0-9]+$ && "$_kmin" =~ ^[0-9]+$ ]] || return 1
+    if (( _kmaj > _want_maj )); then
+        return 0
+    fi
+    if (( _kmaj == _want_maj && _kmin >= _want_min )); then
+        return 0
+    fi
+    return 1
 }
 
 # ── Multi-level config loading ──────────────────────────────────
@@ -1140,14 +1170,52 @@ if [[ "${SANDBOX_BACKEND:-auto}" != "bwrap" && "${SANDBOX_BACKEND:-auto}" != "au
 fi
 
 # BIND_DEV_PTS deprecation shim. Old configs that say `BIND_DEV_PTS=true`
-# get exactly the original intent (host /dev/pts visible — for tmux pty
-# allocation on kernel < 5.4) and nothing more, by appending /dev/pts to
-# DEVICES. The blacklist still applies, so an admin who wants to refuse
-# pty exposure cluster-wide adds /dev/pts to DEVICES_BLACKLIST and the
-# legacy toggle becomes a logged no-op.
+# used to bind the host /dev into the sandbox to give tmux a working pty.
+# On kernel < 5.4 that was the only way: bwrap's user-namespace devpts
+# was broken (ptmxmode=000) so tmux/script/expect could not allocate a
+# pty inside the sandbox without binding the host /dev/pts on top.
+#
+# On kernel >= 5.4 bwrap auto-mounts a working user-ns devpts. Binding
+# the host /dev/pts on top of that shadows the working mount with one
+# whose ptmxmode=000 (the host devpts is configured for the privileged
+# default) and silently breaks pty allocation — tmux exits with
+# "create session failed", script(1) with "failed to create
+# pseudo-terminal: Permission denied". The default DEVICES_BLACKLIST
+# masks this for fresh installs (it lists /dev/pts), but a user who
+# overrides DEVICES_BLACKLIST without copying the upstream defaults
+# re-exposes the trap.
+#
+# So gate the shim on the kernel: on >= 5.4 the legacy toggle becomes
+# a logged no-op (with a clear "drop the line" message); on < 5.4 we
+# preserve the historical behaviour. The blacklist still applies on
+# < 5.4 so an admin can refuse pty exposure cluster-wide.
 if _is_true "${BIND_DEV_PTS:-false}"; then
-    echo "agent-sandbox: BIND_DEV_PTS is deprecated; use DEVICES+=(/dev/pts) instead. See DEVICE_PASSTHROUGH.md." >&2
-    DEVICES+=(/dev/pts)
+    if _kernel_at_least 5 4; then
+        echo "agent-sandbox: BIND_DEV_PTS=true is a no-op on kernel >= 5.4 (bwrap auto-mounts a working devpts; binding host /dev/pts would shadow it with ptmxmode=000 and break pty allocation). Drop the line from your sandbox.conf." >&2
+    else
+        echo "agent-sandbox: BIND_DEV_PTS is deprecated; use DEVICES+=(/dev/pts) instead. See DEVICE_PASSTHROUGH.md." >&2
+        DEVICES+=(/dev/pts)
+    fi
+fi
+
+# Belt-and-suspenders for explicit /dev/pts in DEVICES on kernel >= 5.4.
+# Users who wrote `DEVICES+=(/dev/pts)` directly (because the v0.6.0
+# migration comment told them that was the path on < 5.4) hit the same
+# devpts-shadow trap on >= 5.4. We do not silently drop the entry
+# (that overrides explicit user intent), but we surface the warning at
+# every spawn so the trap is at most "your tmux is broken AND you have
+# a stderr line telling you why" instead of "your tmux is broken with
+# no log explaining it". The DEVICES_BLACKLIST default already lists
+# /dev/pts, so this branch only fires when the user has overridden the
+# blacklist as well.
+if _kernel_at_least 5 4 && [[ ${#DEVICES[@]} -gt 0 ]]; then
+    for _dev_entry in "${DEVICES[@]}"; do
+        if [[ "$_dev_entry" == "/dev/pts" ]]; then
+            echo "agent-sandbox: DEVICES contains /dev/pts on kernel >= 5.4 — bwrap's auto-mounted user-ns devpts will be shadowed with ptmxmode=000 and pty allocation (tmux/script/expect) will fail with 'Permission denied'. Drop /dev/pts from DEVICES; the bind was only needed on kernel < 5.4." >&2
+            break
+        fi
+    done
+    unset _dev_entry
 fi
 
 # Auto-discover bypass token path.

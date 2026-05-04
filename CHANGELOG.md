@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`BIND_DEV_PTS=true` is now a kernel-aware no-op on kernel >= 5.4.**
+  v0.6.0 shipped the deprecation shim as an unconditional
+  `DEVICES+=(/dev/pts)`. On kernel >= 5.4 bwrap auto-mounts a working
+  user-namespace devpts, and binding the host `/dev/pts` on top
+  shadows it with `ptmxmode=000` — pty allocation silently breaks
+  (`tmux` exits "create session failed"; `script(1)` reports
+  "Permission denied"). The default `DEVICES_BLACKLIST` masks this
+  for fresh installs, but the trap fires on migration paths from
+  v0.4.x configs that set `BIND_DEV_PTS=true` AND override
+  `DEVICES_BLACKLIST` without copying the upstream defaults. The
+  shim now splits on `uname -r`: kernel >= 5.4 logs a "no-op, drop
+  the line" notice and declines to append; kernel < 5.4 keeps the
+  historical behaviour.
+
+  An explicit `DEVICES+=(/dev/pts)` on kernel >= 5.4 also now emits
+  a stderr warning at every spawn explaining the same shadowing
+  trap. The entry is preserved (we do not override explicit user
+  intent), but the user is told why their tmux is broken instead of
+  silently puzzling over "Permission denied". New `_kernel_at_least`
+  helper in `sandbox-lib.sh` for downstream use. Tests `DEV08` /
+  `DEV09` / `DEV10` cover the no-op branch, the helper itself, and
+  the shadow warning. See [DEVICE_PASSTHROUGH.md](DEVICE_PASSTHROUGH.md).
+
 ## [0.6.0] - 2026-05-04
 
 ### Added
