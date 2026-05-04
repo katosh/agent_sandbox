@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`HOST_LIBS_PASSTHROUGH` — discoverable host driver/runtime
+  libraries inside the sandbox.** A new array config var that lets
+  the sandbox materialize a private dir of symlinks to host driver
+  libraries (NVIDIA CUDA today; future RDMA/AMD/Lustre/MPI presets
+  are pure data additions) and prepends it to `LD_LIBRARY_PATH`
+  inside the sandbox. Driver libs only — `libstdc++`/`libc`/etc. are
+  deliberately NOT shadowed (they would break brewed-toolchain torch).
+
+  Fixes silent CPU fall-through for non-system dynamic linkers (most
+  notably Homebrew/Linuxbrew Python, whose bundled `ld.so` reads its
+  own `ld.so.cache` and ignores `/etc/ld.so.cache`). Symptom was
+  `torch.cuda.is_available() == False` on a node that does have GPUs
+  and where the system Python's `dlopen("libcuda.so.1")` works fine.
+  Same root cause for any process whose ELF interpreter is not
+  `/lib64/ld-linux-x86-64.so.2`.
+
+  Each entry is one of `preset:NAME`, `preset:auto-NAME` (only fires
+  when the trigger device exists), or `PATH:LIB_GLOB ...`. Built-in
+  presets: `nvidia` (trigger `/dev/nvidia*`, globs `libcuda.so*
+  libnvidia-*.so* libcudadebugger.so*`).  Default:
+  `HOST_LIBS_PASSTHROUGH=("preset:auto-nvidia")`. Set to `()` to
+  disable; CPU-only hosts get a silent no-op. Same scope as
+  `nvidia-container-toolkit`'s `libnvidia-container`.
+
+  Wired into all three filesystem backends (`bwrap` via `--ro-bind +
+  --setenv`, `landlock` via `--ro + export`, `firejail` via
+  `--whitelist + export`).
+
+  `sandbox-lib.sh`, `sandbox.conf`, `backends/{bwrap,landlock,firejail}.sh`.
+  Closes #11.
+
+### Deprecated
+
+- **`GPU_PASSTHROUGH=auto|true|false`** scalar is deprecated in
+  favour of `HOST_LIBS_PASSTHROUGH`. A back-compat shim translates
+  legacy values at sandbox bring-up (`auto` → `+=("preset:auto-nvidia")`,
+  `true` → `+=("preset:nvidia")`, `false` → strip the NVIDIA preset)
+  and emits a one-line stderr warning. Configs that never set
+  `GPU_PASSTHROUGH` see no warning. The deprecated scalar will be
+  removed in a future release; migrate by replacing the scalar with
+  the matching `HOST_LIBS_PASSTHROUGH` entry.
+
 ### Fixed
 
 - **`test.sh` S02 symlink-bypass test is now config-aware.** The S02

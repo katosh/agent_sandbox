@@ -383,6 +383,14 @@ backend_prepare() {
     # Prepend chaperon stubs to PATH (before bin/ for sbatch/srun override)
     export PATH="$SANDBOX_DIR/chaperon/stubs:$SANDBOX_DIR/bin:${PATH}"
 
+    # Host driver/runtime library passthrough — see HOST_LIBS_PASSTHROUGH
+    # in sandbox.conf. Driver libs only; libstdc++/libc are not shadowed.
+    setup_host_libs_dir
+    if [[ -n "${_HOST_LIBS_DIR:-}" ]]; then
+        FIREJAIL_ARGS+=(--whitelist="$_HOST_LIBS_DIR")
+        export LD_LIBRARY_PATH="$_HOST_LIBS_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    fi
+
     # Pass chaperon FIFO directory into the sandbox.
     # When --private-tmp is active, /tmp is replaced with a clean tmpfs,
     # so we must whitelist the FIFO dir to make it visible inside.
