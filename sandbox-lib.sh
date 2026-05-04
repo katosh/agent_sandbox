@@ -207,10 +207,60 @@ PRIVATE_IPC=true
 FILTER_PASSWD=true
 
 # Bind host /dev into the sandbox instead of bwrap's minimal devtmpfs.
-# Required for tmux (pty allocation) on kernels < 5.4. Exposes host
-# /dev/pts — on kernels < 6.2 a same-user process could use TIOCSTI
-# to inject keystrokes into unsandboxed terminals. See sandbox.conf.
+# DEPRECATED: kept as a one-line shim that appends /dev/pts to DEVICES.
+# Use DEVICES (below) for targeted device passthrough — that mechanism
+# is admin-blacklist-aware whereas BIND_DEV_PTS=true used to bypass any
+# such check. See DEVICE_PASSTHROUGH.md for the migration.
 BIND_DEV_PTS=false
+
+# Device nodes to expose inside the sandbox (bwrap only).
+#
+# Each entry is bind-mounted via `bwrap --dev-bind PATH PATH` after
+# `bwrap --dev /dev` has set up the minimal devtmpfs. Glob patterns are
+# expanded against the host /dev at sandbox spawn time — entries that
+# match nothing are silently dropped, so the NVIDIA defaults are a safe
+# no-op on CPU-only nodes.
+#
+# DEVICES_BLACKLIST is enforced after expansion: any resolved path
+# matching a blacklist glob is dropped with a stderr notice. Admins set
+# the blacklist in the admin sandbox.conf; users cannot remove
+# admin-set entries (same model as BLOCKED_FILES).
+#
+# To customize: edit DEVICES in ~/.config/agent-sandbox/sandbox.conf, or
+# add `DEVICES+=(/dev/something)` from a conf.d/ overlay.
+#
+# Defaults expose only NVIDIA driver nodes (the recurring HPC use case).
+# Extend for AMD/Intel/sound/DRI as needed.
+DEVICES=(
+    /dev/nvidia*
+    /dev/nvidia-uvm
+    /dev/nvidia-uvm-tools
+    /dev/nvidia-modeset
+    /dev/nvidiactl
+)
+
+# Devices that may NEVER be bind-mounted, even when listed in DEVICES.
+# Admin-enforceable: when an admin sandbox.conf is present, its
+# DEVICES_BLACKLIST is locked in (users add but cannot remove). Without
+# an admin install these defaults are the safety baseline.
+#
+# Rationale per entry:
+#   /dev/mem, /dev/kmem, /dev/port — direct kernel-memory access
+#   /dev/pts                       — TIOCSTI keystroke injection on
+#                                    kernel < 6.2 (Fred Hutch gizmo:
+#                                    5.4, the practical risk this list
+#                                    closes)
+#   /dev/sd*, /dev/nvme*, /dev/loop* — raw block devices: filesystem
+#                                      bypass, host-data exfiltration
+DEVICES_BLACKLIST=(
+    /dev/mem
+    /dev/kmem
+    /dev/port
+    /dev/pts
+    /dev/sd*
+    /dev/nvme*
+    /dev/loop*
+)
 
 # Host driver/runtime libraries to expose inside the sandbox so a
 # non-system dynamic linker (e.g. brewed Python's bundled glibc ld.so)
@@ -453,6 +503,7 @@ _CONFIG_ARRAYS=(
     HOME_SEEDED_FILES
     BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS ALLOWED_ENV_VARS
     EXTRA_BLOCKED_PATHS EXTRA_WRITABLE_PATHS DENIED_WRITABLE_PATHS
+    DEVICES DEVICES_BLACKLIST
     SANDBOX_ENV SUPPRESS_AGENT_WARNINGS SANDBOX_MODULES ENABLED_AGENTS
     HOST_LIBS_PASSTHROUGH
 )
@@ -463,7 +514,7 @@ _CONFIG_SCALARS=(
     CHAPERON_LOG_LEVEL CHAPERON_LOG_RETAIN_DAYS
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
-_ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS EXTRA_BLOCKED_PATHS)
+_ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS EXTRA_BLOCKED_PATHS DEVICES_BLACKLIST)
 # Token paths are admin-only — set in the admin config (sourced directly),
 # never extracted from user configs.  Keeping them out of _CONFIG_SCALARS
 # prevents users from overriding them and avoids declare -p failures when
@@ -704,6 +755,11 @@ _enforce_admin_policy() {
         for _item in "${EXTRA_BLOCKED_PATHS[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
         $_found || echo "WARNING: ${_label} removed admin-enforced EXTRA_BLOCKED_PATHS entry '${_a}' — restored." >&2
     done
+    for _a in "${_ADMIN_DEVICES_BLACKLIST[@]}"; do
+        _found=false
+        for _item in "${DEVICES_BLACKLIST[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
+        $_found || echo "WARNING: ${_label} removed admin-enforced DEVICES_BLACKLIST entry '${_a}' — restored." >&2
+    done
 
     # HOME_READONLY → HOME_WRITABLE escalation
     for _aro in "${_ADMIN_HOME_READONLY[@]}"; do
@@ -737,6 +793,7 @@ _enforce_admin_policy() {
     local _user_hro=("${HOME_READONLY[@]}")
     local _user_hsf=("${HOME_SEEDED_FILES[@]}")
     local _user_app=("${ALLOWED_PROJECT_PARENTS[@]}")
+    local _user_dbl=("${DEVICES_BLACKLIST[@]}")
 
     # --- Restore admin base values ---
     BLOCKED_FILES=("${_ADMIN_BLOCKED_FILES[@]}")
@@ -751,6 +808,7 @@ _enforce_admin_policy() {
     ALLOWED_PROJECT_PARENTS=("${_ADMIN_ALLOWED_PROJECT_PARENTS[@]}")
     HOME_WRITABLE=("${_ADMIN_HOME_WRITABLE[@]}")
     DENIED_WRITABLE_PATHS=("${_ADMIN_DENIED_WRITABLE_PATHS[@]}")
+    DEVICES_BLACKLIST=("${_ADMIN_DEVICES_BLACKLIST[@]}")
     SANDBOX_BYPASS_TOKEN="$_ADMIN_SANDBOX_BYPASS_TOKEN"
     TOKEN_FILE="$_ADMIN_TOKEN_FILE"
 
@@ -778,6 +836,7 @@ _enforce_admin_policy() {
     _merge_additions _user_hro  _ADMIN_HOME_READONLY          HOME_READONLY
     _merge_additions _user_hsf  _ADMIN_HOME_SEEDED_FILES      HOME_SEEDED_FILES
     _merge_additions _user_app  _ADMIN_ALLOWED_PROJECT_PARENTS ALLOWED_PROJECT_PARENTS
+    _merge_additions _user_dbl  _ADMIN_DEVICES_BLACKLIST       DEVICES_BLACKLIST
 
     # HOME_WRITABLE: merge user additions, but strip admin HOME_READONLY items
     for _item in "${_user_hw[@]}"; do
@@ -904,6 +963,7 @@ _snapshot_admin_config() {
     _ADMIN_EXTRA_WRITABLE_PATHS=("${EXTRA_WRITABLE_PATHS[@]}")
     _ADMIN_READONLY_MOUNTS=("${READONLY_MOUNTS[@]}")
     _ADMIN_ALLOWED_PROJECT_PARENTS=("${ALLOWED_PROJECT_PARENTS[@]}")
+    _ADMIN_DEVICES_BLACKLIST=("${DEVICES_BLACKLIST[@]}")
     _ADMIN_SANDBOX_BYPASS_TOKEN="${SANDBOX_BYPASS_TOKEN:-}"
     _ADMIN_TOKEN_FILE="${TOKEN_FILE:-}"
 
@@ -1073,6 +1133,21 @@ if [[ "${SANDBOX_BACKEND:-auto}" != "bwrap" && "${SANDBOX_BACKEND:-auto}" != "au
     if _is_true "${BIND_DEV_PTS:-false}"; then
         echo "WARNING: BIND_DEV_PTS only applies to the bwrap backend." >&2
     fi
+    if [[ ${#DEVICES[@]} -gt 0 ]]; then
+        echo "WARNING: DEVICES only applies to the bwrap backend." >&2
+        echo "  /dev passthrough requires a mount namespace; firejail's --private-dev is coarser, landlock has no FS isolation." >&2
+    fi
+fi
+
+# BIND_DEV_PTS deprecation shim. Old configs that say `BIND_DEV_PTS=true`
+# get exactly the original intent (host /dev/pts visible — for tmux pty
+# allocation on kernel < 5.4) and nothing more, by appending /dev/pts to
+# DEVICES. The blacklist still applies, so an admin who wants to refuse
+# pty exposure cluster-wide adds /dev/pts to DEVICES_BLACKLIST and the
+# legacy toggle becomes a logged no-op.
+if _is_true "${BIND_DEV_PTS:-false}"; then
+    echo "agent-sandbox: BIND_DEV_PTS is deprecated; use DEVICES+=(/dev/pts) instead. See DEVICE_PASSTHROUGH.md." >&2
+    DEVICES+=(/dev/pts)
 fi
 
 # Auto-discover bypass token path.
@@ -1360,6 +1435,86 @@ setup_host_libs_dir() {
         _HOST_LIBS_DIR="$_dir"
     fi
     return 0
+}
+
+# ── Device passthrough resolution ──────────────────────────────────
+#
+# Expand the DEVICES array against the host /dev, drop entries that match
+# any DEVICES_BLACKLIST glob, and store the surviving paths in
+# DEVICES_RESOLVED. Backends that support per-device binding (currently
+# bwrap only) iterate DEVICES_RESOLVED and emit one --dev-bind per entry.
+#
+# Globs in DEVICES are expanded via `shopt -s nullglob` so patterns that
+# match nothing (e.g. /dev/nvidia* on a CPU-only node) simply drop. Each
+# resolved path is then case-globbed against every DEVICES_BLACKLIST
+# entry — the same idiom _is_blocked_by_pattern uses for env-var globs,
+# so admins can blacklist a family with one entry (`/dev/sd*` blocks
+# /dev/sda, /dev/sda1, /dev/sdb, ...).
+#
+# Blacklist hits are logged once each to stderr so users see what was
+# filtered (e.g. `BIND_DEV_PTS=true → DEVICES+=(/dev/pts)` paired with an
+# admin blacklist that includes /dev/pts surfaces a clear "blacklisted,
+# skipping" line).
+DEVICES_RESOLVED=()
+
+_resolve_devices() {
+    DEVICES_RESOLVED=()
+
+    [[ ${#DEVICES[@]} -eq 0 ]] && return 0
+
+    # Snapshot + flip globbing state so DEVICES patterns expand against
+    # the host /dev, even though the surrounding script runs without
+    # nullglob/globstar set. `shopt -p OPT` returns non-zero when the
+    # option is off, so capture exit-tolerantly under `set -e`.
+    local _saved_nullglob
+    _saved_nullglob="$(shopt -p nullglob 2>/dev/null || true)"
+    shopt -s nullglob
+
+    local _entry _path _bad _blacklisted _logged
+    local -A _seen=()
+    for _entry in "${DEVICES[@]}"; do
+        # Expand glob (or pass through literal). `eval echo` would
+        # be unsafe; use `compgen -G` which honours the nullglob flag
+        # for patterns and falls back to literal-existence-check for
+        # plain paths.
+        local _matches=()
+        if [[ "$_entry" == *[*?[]* ]]; then
+            # Pattern entry — array-expand via globbing.
+            local _expanded=( $_entry )
+            _matches=( "${_expanded[@]}" )
+        else
+            # Literal path — keep it if the node exists. Symlinks count
+            # (NVIDIA driver bundles sometimes ship /dev/nvidia0 as a
+            # symlink to /dev/dri/card0 on hybrid setups).
+            [[ -e "$_entry" || -L "$_entry" ]] && _matches=( "$_entry" )
+        fi
+
+        for _path in "${_matches[@]}"; do
+            # Dedup — a user adding /dev/nvidia0 explicitly + the
+            # /dev/nvidia* glob default would otherwise emit two
+            # --dev-bind args for the same node.
+            [[ -n "${_seen[$_path]:-}" ]] && continue
+
+            _blacklisted=false
+            for _bad in "${DEVICES_BLACKLIST[@]}"; do
+                # shellcheck disable=SC2254
+                case "$_path" in $_bad) _blacklisted=true; break ;; esac
+            done
+
+            if $_blacklisted; then
+                # Log once per resolved path, not once per matching glob.
+                _logged="$_path"
+                echo "agent-sandbox: device $_logged is blacklisted, skipping" >&2
+                _seen[$_path]=1
+                continue
+            fi
+
+            _seen[$_path]=1
+            DEVICES_RESOLVED+=("$_path")
+        done
+    done
+
+    eval "$_saved_nullglob"
 }
 
 # ── Agent profile system ───────────────────────────────────────────

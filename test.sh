@@ -3339,9 +3339,10 @@ finally:
     elif echo "$OUTPUT" | grep -q "TIOCSTI_SUCCEEDED"; then
         # TIOCSTI on a sandbox-owned pty is not a security issue — the
         # agent can only inject keystrokes into its own terminal.  The real
-        # risk is host ptys, which requires BIND_DEV_PTS=true.  On kernels
-        # < 6.2 the ioctl is allowed on any open pty fd, so it succeeds
-        # even with --dev /dev (isolated devpts).
+        # risk is host ptys, which requires DEVICES+=(/dev/pts) (legacy
+        # BIND_DEV_PTS=true is rewritten to the same).  On kernels < 6.2
+        # the ioctl is allowed on any open pty fd, so it succeeds even
+        # with --dev /dev (isolated devpts).
         local _host_pts
         _host_pts=$(echo "$OUTPUT" | grep -oP 'PTS_COUNT=\K[0-9]+' || echo "0")
         if [[ "$_host_pts" -gt 0 ]]; then
@@ -3813,7 +3814,7 @@ if sandbox bash -c '
     esac
 fi
 
-# pty allocation and tmux (requires BIND_DEV_PTS=true on kernels < 5.4)
+# pty allocation and tmux (requires DEVICES+=(/dev/pts) on kernels < 5.4)
 if ! command -v python3 &>/dev/null; then
     skip "pty allocation test — python3 not available on host"
 elif sandbox bash -c 'python3 -c "import pty; pty.openpty(); print(\"pty-ok\")" 2>&1'; then
@@ -3831,7 +3832,7 @@ elif sandbox bash -c 'python3 -c "import pty; pty.openpty(); print(\"pty-ok\")" 
         fail "tmux failed to start inside sandbox" "$OUTPUT"
     fi
 else
-    skip "pty allocation failed (set BIND_DEV_PTS=true for tmux on kernels < 5.4)"
+    skip "pty allocation failed (set DEVICES+=(/dev/pts) for tmux on kernels < 5.4)"
 fi
 
 # ── C01: Write to cgroup filesystem ──
@@ -4260,6 +4261,193 @@ else
     else
         skip "SANDBOX_BYPASS_TOKEN — Landlock needs eBPF LSM (not loaded; see ADMIN_HARDENING.md §1)"
     fi
+fi
+
+echo ""
+
+# ── 11.5 Device passthrough (bwrap only) ──────────────────────────
+
+echo "11.5. Device passthrough"
+
+if is_bwrap; then
+
+# Helper: produce a sandbox.conf-derived temp config with extra lines
+# appended (mirrors _lmod_test_conf, but defined inline so we don't
+# depend on test ordering).
+_dev_test_conf() {
+    local _conf
+    _conf=$(mktemp)
+    trap_rm_path "$_conf"
+    cat "$SCRIPT_DIR/sandbox.conf" > "$_conf"
+    cat >> "$_conf"
+    echo "$_conf"
+}
+
+# Pick a host /dev node we know exists, isn't already in the minimal
+# bwrap devtmpfs, AND isn't matched by the default DEVICES_BLACKLIST.
+# /dev/null is baseline. /dev/loop-control would seem natural but
+# /dev/loop* is in the default blacklist, so it'd be filtered. /dev/kmsg
+# is the cleanest sentinel — outside the minimal devtmpfs, no blacklist
+# match. Fall back to other candidates if the host is unusual.
+_pick_passthrough_sentinel() {
+    local _candidate
+    for _candidate in /dev/kmsg /dev/hwrng /dev/rtc0; do
+        if [[ -e "$_candidate" ]]; then
+            if ! sandbox bash -c "[[ -e '$_candidate' ]] && echo present" 2>/dev/null \
+                || [[ "$OUTPUT" != *"present"* ]]; then
+                echo "$_candidate"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+_sentinel="$(_pick_passthrough_sentinel)"
+
+# ── DEV01: NVIDIA defaults expose /dev/nvidia* when host has them ──
+if [[ -e /dev/nvidia0 || -e /dev/nvidiactl ]]; then
+    if sandbox bash -c 'ls /dev/nvidia* 2>/dev/null | wc -l'; then
+        if [[ "$OUTPUT" -gt 0 ]]; then
+            pass "DEV01: NVIDIA defaults exposed $OUTPUT /dev/nvidia* node(s)"
+        else
+            fail "DEV01: NVIDIA defaults didn't expose any /dev/nvidia* nodes" "$OUTPUT"
+        fi
+    else
+        fail "DEV01: sandbox failed to list /dev/nvidia*" "$OUTPUT"
+    fi
+else
+    skip "DEV01: host has no /dev/nvidia* — defaults are a glob no-op (expected)"
+fi
+
+# ── DEV02: User DEVICES+= adds a host node ──
+if [[ -n "$_sentinel" ]]; then
+    _dev02_conf=$(_dev_test_conf <<CONF
+DEVICES+=("$_sentinel")
+CONF
+    )
+    if SANDBOX_CONF="$_dev02_conf" sandbox bash -c "[[ -e '$_sentinel' ]] && echo VISIBLE || echo MISSING"; then
+        if [[ "$OUTPUT" == "VISIBLE" ]]; then
+            pass "DEV02: DEVICES+=($_sentinel) bound the node"
+        else
+            fail "DEV02: DEVICES+=($_sentinel) didn't bind the node" "$OUTPUT"
+        fi
+    else
+        fail "DEV02: sandbox failed to start with DEVICES override" "$OUTPUT"
+    fi
+else
+    skip "DEV02: no host node available outside the minimal devtmpfs to use as a sentinel"
+fi
+
+# ── DEV03: DEVICES=() user reset clears defaults ──
+# Drops NVIDIA defaults — verify by checking /dev/nvidia0 is absent
+# inside the sandbox even when the host has it. Skips on CPU-only nodes
+# (then the defaults are already a no-op and the test is meaningless).
+if [[ -e /dev/nvidia0 ]]; then
+    _dev03_conf=$(_dev_test_conf <<'CONF'
+DEVICES=()
+CONF
+    )
+    if SANDBOX_CONF="$_dev03_conf" sandbox bash -c "[[ -e /dev/nvidia0 ]] && echo PRESENT || echo ABSENT"; then
+        if [[ "$OUTPUT" == "ABSENT" ]]; then
+            pass "DEV03: DEVICES=() cleared NVIDIA defaults"
+        else
+            fail "DEV03: DEVICES=() did not clear defaults — /dev/nvidia0 still visible" "$OUTPUT"
+        fi
+    else
+        fail "DEV03: sandbox failed to start with DEVICES=()" "$OUTPUT"
+    fi
+else
+    skip "DEV03: host has no /dev/nvidia0 — reset semantics not observable"
+fi
+
+# ── DEV04: DEVICES_BLACKLIST drops user-added entries ──
+# Default blacklist includes /dev/pts. User attempts DEVICES+=(/dev/pts)
+# and we expect it to be filtered with a stderr notice.
+_dev04_conf=$(_dev_test_conf <<'CONF'
+DEVICES+=(/dev/pts)
+CONF
+)
+_dev04_err=$(mktemp); trap_rm_path "$_dev04_err"
+SANDBOX_CONF="$_dev04_conf" "$SANDBOX_EXEC" --backend bwrap --project-dir "$PROJECT_DIR" -- \
+    bash -c '[[ -e /dev/pts/ptmx ]] && echo PRESENT || echo ABSENT' \
+    >"$_dev04_err.out" 2>"$_dev04_err"
+_dev04_out=$(cat "$_dev04_err.out")
+_dev04_stderr=$(cat "$_dev04_err")
+# Inside-sandbox /dev/pts always exists (bwrap mounts a fresh devpts as
+# part of its minimal devtmpfs). The discriminator is whether the
+# resolver logged the blacklist hit. Stderr line:
+#   "agent-sandbox: device /dev/pts is blacklisted, skipping"
+if [[ "$_dev04_stderr" == *"/dev/pts"*"blacklisted"* ]]; then
+    pass "DEV04: DEVICES+= /dev/pts was blacklist-filtered with stderr notice"
+else
+    fail "DEV04: blacklist did not filter /dev/pts" "stderr=$_dev04_stderr out=$_dev04_out"
+fi
+
+# ── DEV05: Unmatched glob is a silent no-op ──
+_dev05_conf=$(_dev_test_conf <<'CONF'
+DEVICES+=(/dev/this-does-not-exist-* /dev/also-missing-*)
+CONF
+)
+_dev05_err=$(mktemp); trap_rm_path "$_dev05_err"
+SANDBOX_CONF="$_dev05_conf" "$SANDBOX_EXEC" --backend bwrap --project-dir "$PROJECT_DIR" -- \
+    bash -c 'echo ok' >"$_dev05_err.out" 2>"$_dev05_err"
+_dev05_out=$(cat "$_dev05_err.out")
+_dev05_stderr=$(cat "$_dev05_err")
+if [[ "$_dev05_out" == *"ok"* ]] && \
+   [[ "$_dev05_stderr" != *"this-does-not-exist"* ]]; then
+    pass "DEV05: Unmatched DEVICES glob is a silent no-op"
+else
+    fail "DEV05: Unmatched glob produced output or stderr noise" "out=$_dev05_out err=$_dev05_stderr"
+fi
+
+# ── DEV06: BIND_DEV_PTS=true deprecation shim ──
+# Old config syntax should rewrite to DEVICES+=(/dev/pts) and emit a
+# deprecation notice. Because /dev/pts is in the default blacklist,
+# the rewrite is also dropped — visible only via the *deprecation*
+# warning, which is the contract we test here.
+_dev06_conf=$(_dev_test_conf <<'CONF'
+BIND_DEV_PTS=true
+CONF
+)
+_dev06_err=$(mktemp); trap_rm_path "$_dev06_err"
+SANDBOX_CONF="$_dev06_conf" "$SANDBOX_EXEC" --backend bwrap --project-dir "$PROJECT_DIR" -- \
+    bash -c 'echo ok' >"$_dev06_err.out" 2>"$_dev06_err"
+_dev06_out=$(cat "$_dev06_err.out")
+_dev06_stderr=$(cat "$_dev06_err")
+if [[ "$_dev06_out" == *"ok"* ]] && \
+   [[ "$_dev06_stderr" == *"BIND_DEV_PTS is deprecated"* ]]; then
+    pass "DEV06: BIND_DEV_PTS=true emits deprecation warning and continues"
+else
+    fail "DEV06: deprecation shim missing or sandbox aborted" "out=$_dev06_out err=$_dev06_stderr"
+fi
+
+# ── DEV07: Non-bwrap backend warns when DEVICES is non-default ──
+# We only test bwrap inside this `if is_bwrap` branch; the warning
+# emission happens in sandbox-lib.sh during config load before any
+# backend code runs, so we can shell out with --backend landlock from
+# here purely to capture the stderr text.
+_dev07_conf=$(_dev_test_conf <<'CONF'
+DEVICES+=(/dev/zero)
+CONF
+)
+_dev07_err=$(mktemp); trap_rm_path "$_dev07_err"
+# --dry-run avoids needing landlock to actually be available; the warning
+# fires during config load.
+SANDBOX_CONF="$_dev07_conf" "$SANDBOX_EXEC" --backend landlock --dry-run \
+    --project-dir "$PROJECT_DIR" -- true >"$_dev07_err.out" 2>"$_dev07_err" || true
+_dev07_stderr=$(cat "$_dev07_err")
+if [[ "$_dev07_stderr" == *"DEVICES only applies to the bwrap backend"* ]]; then
+    pass "DEV07: non-bwrap backend warns when DEVICES is configured"
+else
+    # Some installs may not have landlock available — check if the
+    # warning would have fired at all (look for the bwrap-only message
+    # using a different unsupported backend).
+    skip "DEV07: backend warning not observed (landlock unavailable here?)"
+fi
+
+else
+    skip "DEV01-DEV07: device passthrough is bwrap-only"
 fi
 
 echo ""

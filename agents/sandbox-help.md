@@ -71,6 +71,22 @@ HOME_WRITABLE=(
 
 For project-specific settings (different mounts for different directories), create files in `~/.config/agent-sandbox/conf.d/*.conf`. See `conf.d/example.conf` in the sandbox installation.
 
+## Expose extra device nodes (GPU, audio, pty)
+
+The bwrap backend bind-mounts only the device nodes listed in `DEVICES`. Defaults expose NVIDIA driver nodes (`/dev/nvidia*`) — a no-op on CPU-only hosts.
+
+To add nodes (audio, DRI render nodes, pty for tmux on kernel < 5.4):
+```bash
+DEVICES+=(/dev/snd /dev/dri/* /dev/pts)
+```
+
+To replace the defaults entirely (uncommon):
+```bash
+DEVICES=(/dev/something-specific)
+```
+
+The `DEVICES_BLACKLIST` (admin-enforced when an admin install is in place) vetoes individual entries with a stderr notice. Defaults block `/dev/mem`, `/dev/kmem`, `/dev/port`, `/dev/pts` (TIOCSTI on kernel < 6.2), `/dev/sd*`, `/dev/nvme*`, `/dev/loop*`. The legacy `BIND_DEV_PTS=true` knob is rewritten to `DEVICES+=(/dev/pts)` for backward compatibility.
+
 ## Slurm (chaperon proxy)
 
 Slurm commands work inside the sandbox but are proxied through a secure chaperon process running outside. This is because munge authentication is intentionally blocked inside the sandbox.

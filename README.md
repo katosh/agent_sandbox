@@ -428,7 +428,7 @@ The `agents/pi/` profile is a complete worked example for a single-binary CLI ag
 
 ## Agent Teams / tmux
 
-The outer tmux socket is blocked (escape risk), but a **nested tmux** running inside the sandbox works well: `agent-sandbox tmux new-session claude` (prefix is `Ctrl-a`). On kernels < 5.4, set `BIND_DEV_PTS=true` in `sandbox.conf` for pty allocation (see Known Limitations). Customize via `~/.config/agent-sandbox/sandbox-tmux.conf`.
+The outer tmux socket is blocked (escape risk), but a **nested tmux** running inside the sandbox works well: `agent-sandbox tmux new-session claude` (prefix is `Ctrl-a`). On kernels < 5.4, add `DEVICES+=(/dev/pts)` to `sandbox.conf` for pty allocation (see Known Limitations). Customize via `~/.config/agent-sandbox/sandbox-tmux.conf`.
 
 ### Notifications
 
@@ -440,6 +440,22 @@ Emission is best-effort and tries two paths:
 2. **`tmux new-window -d -n '•bell' 'printf "\a"'`** — IPC fallback for agent subprocesses (Claude Code's Bash tool, for example) that have no controlling terminal. The ephemeral window's BEL rides the same tmux bell-action chain. No chaperon relay needed.
 
 For Claude Code, hooks are auto-configured via the settings.json overlay: the `Notification` event (agent needs attention) and `Stop` event (agent finished a turn) both trigger `sandbox-notify`, so the user sees tmux tab alerts without any manual setup. Other agents can call `sandbox-notify "message"` directly.
+
+---
+
+## Device Passthrough
+
+By default the bwrap backend mounts a minimal `/dev` (no GPU, no pty) and bind-mounts only the device nodes in `DEVICES`. Defaults expose NVIDIA driver nodes — a no-op on CPU-only hardware (the globs match nothing) and a working CUDA setup on GPU nodes.
+
+```bash
+# ~/.config/agent-sandbox/sandbox.conf
+DEVICES+=(/dev/snd /dev/dri/*)   # add audio + DRI render nodes
+DEVICES+=(/dev/pts)              # opt in to pty (tmux on kernel < 5.4)
+```
+
+`DEVICES_BLACKLIST` is admin-enforceable: users can extend it but cannot remove admin-set entries. The shipped defaults block `/dev/mem`, `/dev/kmem`, `/dev/port`, `/dev/pts` (TIOCSTI on kernel < 6.2), `/dev/sd*`, `/dev/nvme*`, `/dev/loop*`. Blacklist hits log to stderr at sandbox spawn.
+
+The legacy `BIND_DEV_PTS=true` knob is rewritten to `DEVICES+=(/dev/pts)` for backward compatibility (with a deprecation notice). Full details + design rationale: [DEVICE_PASSTHROUGH.md](DEVICE_PASSTHROUGH.md).
 
 ---
 
@@ -534,7 +550,7 @@ Sorted by perceived severity (security impact first, then operational issues).
 | **bwrap** | Supplementary groups display as `nogroup` (65534) inside the sandbox. Unprivileged bwrap always creates a user namespace (required to obtain mount/PID namespaces without root), and that namespace can only map the caller's own UID/GID. All other GIDs appear unmapped. **File permissions still work correctly** — the kernel uses host credentials for filesystem access, so group-owned directories remain fully accessible. Only display tools (`id`, `ls -l`) are affected | Cosmetic only — no functional impact. A privileged bwrap installation (setuid or `CAP_SYS_ADMIN`) could avoid the user namespace entirely, preserving group display |
 | **bwrap** | Seccomp filter generated at runtime (`generate-seccomp.py`) rather than built-in — see [Seccomp for bwrap](ADMIN_INSTALL.md#seccomp-for-bwrap) | Verify the filter loads (no "seccomp" warnings on stderr at startup) |
 | **All** | `memfd_create` not blocked by any backend (HPC compatibility). `process_vm_readv/writev` blocked only on Landlock (no PID namespace to mitigate). Docker's default seccomp profile makes similar trade-offs | Accepted trade-off. `memfd_create` needed by CUDA, PyTorch, JAX. `process_vm_readv/writev` needed by MPI (mitigated by PID namespace in bwrap/firejail, blocked by seccomp on Landlock). See [Admin Hardening](ADMIN_HARDENING.md) |
-| **bwrap** (`BIND_DEV_PTS=true`) | Host `/dev` exposure — required for tmux on kernels < 5.4. On kernels < 6.2, `TIOCSTI` ioctl allows keystroke injection into same-user terminals outside the sandbox | Default `false` (safe). Upgrade to kernel ≥ 5.4 to avoid the need, or ≥ 6.2 to disable TIOCSTI entirely |
+| **bwrap** (`DEVICES+=(/dev/pts)`) | `/dev/pts` exposure — required for tmux on kernels < 5.4. On kernels < 6.2, `TIOCSTI` ioctl allows keystroke injection into same-user terminals outside the sandbox. Admin enforces with `DEVICES_BLACKLIST+=(/dev/pts)` to refuse the opt-in cluster-wide | Defaults expose only NVIDIA driver nodes — pty is opt-in. Upgrade to kernel ≥ 5.4 to avoid the need, or ≥ 6.2 to disable TIOCSTI entirely. The legacy `BIND_DEV_PTS=true` knob is rewritten to this form for compatibility — see [DEVICE_PASSTHROUGH.md](DEVICE_PASSTHROUGH.md) |
 | **Landlock** | Host `/dev/pts/*` always visible (no mount namespace). On kernels < 6.2, `TIOCSTI` ioctl allows keystroke injection into same-user terminals — unlike bwrap, this is not opt-in | Kernel ≥ 6.2 disables TIOCSTI system-wide. Use bwrap or firejail for private `/dev` |
 | **All** | Agent config directories (e.g., `~/.claude/`, `~/.codex/`) are writable (required for agents to function). An agent in one project can read session data from other projects | Inherent requirement — agents need write access to their config directories. Cross-project data access could be mitigated by per-project config copies |
 | **Landlock** | `/dev/shm` is writable and shared (no IPC namespace) — could be used for covert cross-sandbox communication or to read/corrupt shared memory of same-UID processes | Use bwrap or firejail (both isolate IPC via `PRIVATE_IPC=true`, the default) |
