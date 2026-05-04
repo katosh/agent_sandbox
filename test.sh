@@ -3339,9 +3339,10 @@ finally:
     elif echo "$OUTPUT" | grep -q "TIOCSTI_SUCCEEDED"; then
         # TIOCSTI on a sandbox-owned pty is not a security issue — the
         # agent can only inject keystrokes into its own terminal.  The real
-        # risk is host ptys, which requires BIND_DEV_PTS=true.  On kernels
-        # < 6.2 the ioctl is allowed on any open pty fd, so it succeeds
-        # even with --dev /dev (isolated devpts).
+        # risk is host ptys, which requires DEVICES+=(/dev/pts) (legacy
+        # BIND_DEV_PTS=true is rewritten to the same).  On kernels < 6.2
+        # the ioctl is allowed on any open pty fd, so it succeeds even
+        # with --dev /dev (isolated devpts).
         local _host_pts
         _host_pts=$(echo "$OUTPUT" | grep -oP 'PTS_COUNT=\K[0-9]+' || echo "0")
         if [[ "$_host_pts" -gt 0 ]]; then
@@ -3813,7 +3814,7 @@ if sandbox bash -c '
     esac
 fi
 
-# pty allocation and tmux (requires BIND_DEV_PTS=true on kernels < 5.4)
+# pty allocation and tmux (requires DEVICES+=(/dev/pts) on kernels < 5.4)
 if ! command -v python3 &>/dev/null; then
     skip "pty allocation test — python3 not available on host"
 elif sandbox bash -c 'python3 -c "import pty; pty.openpty(); print(\"pty-ok\")" 2>&1'; then
@@ -3831,7 +3832,7 @@ elif sandbox bash -c 'python3 -c "import pty; pty.openpty(); print(\"pty-ok\")" 
         fail "tmux failed to start inside sandbox" "$OUTPUT"
     fi
 else
-    skip "pty allocation failed (set BIND_DEV_PTS=true for tmux on kernels < 5.4)"
+    skip "pty allocation failed (set DEVICES+=(/dev/pts) for tmux on kernels < 5.4)"
 fi
 
 # ── C01: Write to cgroup filesystem ──
