@@ -66,16 +66,18 @@ backend_prepare() {
     # --- Kernel filesystems ---
     BWRAP_ARGS+=(--proc /proc)
 
-    # BIND_DEV_PTS: use host /dev instead of bwrap's minimal devtmpfs.
-    # Required for tmux on kernels < 5.4 (bwrap's devpts gets
-    # ptmxmode=000). Exposes host /dev/pts — on kernels < 6.2 this
-    # allows TIOCSTI keystroke injection into same-user terminals.
-    # See sandbox.conf for details.
-    if _is_true "${BIND_DEV_PTS:-false}"; then
-        BWRAP_ARGS+=(--dev-bind /dev /dev)
-    else
-        BWRAP_ARGS+=(--dev /dev)
-    fi
+    # Start with bwrap's minimal devtmpfs, then bind in only the device
+    # nodes the user (and admin DEVICES_BLACKLIST) approve.
+    # _resolve_devices populates DEVICES_RESOLVED — see
+    # sandbox-lib.sh::_resolve_devices and DEVICE_PASSTHROUGH.md.
+    # The legacy BIND_DEV_PTS=true toggle is rewritten to
+    # DEVICES+=(/dev/pts) earlier in sandbox-lib.sh.
+    BWRAP_ARGS+=(--dev /dev)
+    _resolve_devices
+    local _devnode
+    for _devnode in "${DEVICES_RESOLVED[@]}"; do
+        BWRAP_ARGS+=(--dev-bind "$_devnode" "$_devnode")
+    done
 
     # /tmp isolation: default is private tmpfs. Set PRIVATE_TMP=false in
     # sandbox.conf for MPI/NCCL workloads that need shared /tmp.

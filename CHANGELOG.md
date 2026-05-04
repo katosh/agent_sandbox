@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`DEVICES` — targeted /dev passthrough with NVIDIA defaults +
+  admin-enforceable `DEVICES_BLACKLIST`.** Replaces the binary
+  `BIND_DEV_PTS` toggle. The bwrap backend now starts with the
+  minimal devtmpfs (`bwrap --dev /dev`) and bind-mounts only the
+  nodes listed in `DEVICES`. Globs in `DEVICES` expand against the
+  host `/dev` at sandbox spawn — `/dev/nvidia*` defaults are a
+  no-op on CPU-only hosts. `DEVICES_BLACKLIST` is in
+  `_ENFORCED_ARRAYS`: users add but never remove admin-set entries.
+  Defaults block `/dev/mem`, `/dev/kmem`, `/dev/port`, `/dev/pts`
+  (TIOCSTI on kernel < 6.2), `/dev/sd*`, `/dev/nvme*`, `/dev/loop*`.
+
+  Closes the GPU-vs-TIOCSTI dilemma: pre-this-change, exposing
+  `/dev/nvidia*` required `BIND_DEV_PTS=true`, which also exposed
+  `/dev/pts` and on kernel < 6.2 left the sandbox usable for
+  TIOCSTI keystroke injection into the user's other terminals.
+  Now NVIDIA passthrough works without any pty exposure.
+
+  Migration: `BIND_DEV_PTS=true` is rewritten to
+  `DEVICES+=(/dev/pts)` at config-load time with a deprecation
+  notice; the admin blacklist still applies. See
+  [DEVICE_PASSTHROUGH.md](DEVICE_PASSTHROUGH.md) for the full
+  design and [sandbox.conf](sandbox.conf) for the user template.
+
 - **`HOST_LIBS_PASSTHROUGH` — discoverable host driver/runtime
   libraries inside the sandbox.** A new array config var that lets
   the sandbox materialize a private dir of symlinks to host driver
