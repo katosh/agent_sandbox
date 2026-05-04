@@ -4282,18 +4282,15 @@ _dev_test_conf() {
     echo "$_conf"
 }
 
-# Pick a host /dev node we know exists everywhere as a sentinel for
-# "passthrough actually bound a device". /dev/null is in the minimal
-# devtmpfs already, so we can't use it. /dev/full is also baseline.
-# /dev/loop-control (root-only on most distros) is a stable choice for
-# testing the bind-mount path without needing GPU hardware. Fall back
-# to /dev/zero-like checks when the host is unusual.
+# Pick a host /dev node we know exists, isn't already in the minimal
+# bwrap devtmpfs, AND isn't matched by the default DEVICES_BLACKLIST.
+# /dev/null is baseline. /dev/loop-control would seem natural but
+# /dev/loop* is in the default blacklist, so it'd be filtered. /dev/kmsg
+# is the cleanest sentinel — outside the minimal devtmpfs, no blacklist
+# match. Fall back to other candidates if the host is unusual.
 _pick_passthrough_sentinel() {
     local _candidate
-    for _candidate in /dev/loop-control /dev/kmsg /dev/random /dev/urandom; do
-        # Probe the bare bwrap behaviour first: if the sentinel is
-        # *already* in the minimal devtmpfs, it's not a useful
-        # discriminator. Run a no-config sandbox and check.
+    for _candidate in /dev/kmsg /dev/hwrng /dev/rtc0; do
         if [[ -e "$_candidate" ]]; then
             if ! sandbox bash -c "[[ -e '$_candidate' ]] && echo present" 2>/dev/null \
                 || [[ "$OUTPUT" != *"present"* ]]; then
@@ -4378,8 +4375,9 @@ _dev04_out=$(cat "$_dev04_err.out")
 _dev04_stderr=$(cat "$_dev04_err")
 # Inside-sandbox /dev/pts always exists (bwrap mounts a fresh devpts as
 # part of its minimal devtmpfs). The discriminator is whether the
-# resolver logged the blacklist hit.
-if [[ "$_dev04_stderr" == *"blacklisted"*"/dev/pts"* ]]; then
+# resolver logged the blacklist hit. Stderr line:
+#   "agent-sandbox: device /dev/pts is blacklisted, skipping"
+if [[ "$_dev04_stderr" == *"/dev/pts"*"blacklisted"* ]]; then
     pass "DEV04: DEVICES+= /dev/pts was blacklist-filtered with stderr notice"
 else
     fail "DEV04: blacklist did not filter /dev/pts" "stderr=$_dev04_stderr out=$_dev04_out"
