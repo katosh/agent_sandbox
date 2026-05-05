@@ -29,7 +29,7 @@ If you are unsure whether something qualifies, report it anyway. We would rather
 
 ## Supported Versions
 
-Only the latest commit on `main` is supported. There are no versioned releases; please test against the current `main` branch.
+Only the [latest release](https://github.com/katosh/agent_sandbox/releases) is supported. Please verify against the current tag (or `main`) before reporting; reports against earlier versions are accepted only if reproducible on the current release.
 
 ## Reporting a Vulnerability
 
