@@ -1,5 +1,0 @@
-#!/bin/bash --
-# Sandbox sshare — shadows /usr/bin/sshare inside the sandbox.
-# Delegates to chaperon stub which scopes to the current user.
-_BIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-exec "$_BIN_DIR/../chaperon/stubs/sshare" "$@"

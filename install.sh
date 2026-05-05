@@ -42,7 +42,7 @@ Files installed:
   ~/.config/agent-sandbox/agents/            Agent profiles (auto-detected)
   ~/.config/agent-sandbox/chaperon/          Slurm proxy (14 handlers, 19 stubs)
   ~/.config/agent-sandbox/backends/          bwrap, firejail, landlock backends
-  ~/.config/agent-sandbox/bin/               PATH-shadowing fallback scripts
+  ~/.config/agent-sandbox/bin/               In-sandbox utilities (sandbox-notify, tmux)
 
 Updating:
   Re-run install.sh to update scripts. Your sandbox.conf is preserved.

@@ -100,7 +100,7 @@ install-lib:
 	$(INSTALL) -m 644 $(addprefix $(SRC_DIR)/,$(BACKEND_FILES)) $(DESTDIR)$(LIBDIR)/backends/
 	chmod +x $(DESTDIR)$(LIBDIR)/backends/landlock-sandbox.py
 	chmod +x $(DESTDIR)$(LIBDIR)/backends/generate-seccomp.py
-	@# bin/ (PATH-shadowing stubs + utilities)
+	@# bin/ (in-sandbox utilities — sandbox-notify, tmux config wrapper)
 	$(INSTALL) -d $(DESTDIR)$(LIBDIR)/bin
 	for f in $(SRC_DIR)/bin/*; do $(INSTALL) -m 755 "$$f" $(DESTDIR)$(LIBDIR)/bin/; done
 	@# Agents
