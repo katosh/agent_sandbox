@@ -10,29 +10,31 @@
       
       
       
-        <link rel="canonical" href="https://katosh.github.io/agent_sandbox/">
+        <link rel="canonical" href="https://katosh.github.io/agent_sandbox/reference/architecture/">
       
       
+        <link rel="prev" href="../../configure/">
       
-        <link rel="next" href="configure/">
+      
+        <link rel="next" href="../agents/">
       
       
         
       
       
-      <link rel="icon" href="assets/images/favicon.png">
+      <link rel="icon" href="../../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>agent-sandbox</title>
+        <title>Architecture - agent-sandbox</title>
       
     
     
-      <link rel="stylesheet" href="assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
       
         
-        <link rel="stylesheet" href="assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -51,7 +53,7 @@
       
     
     
-    <script>__md_scope=new URL(".",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -76,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#agent-sandbox" class="md-skip">
+        <a href="#architecture" class="md-skip">
           Skip to content
         </a>
       
@@ -90,7 +92,7 @@
 
 <header class="md-header" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="." title="agent-sandbox" class="md-header__button md-logo" aria-label="agent-sandbox" data-md-component="logo">
+    <a href="../.." title="agent-sandbox" class="md-header__button md-logo" aria-label="agent-sandbox" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -110,7 +112,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Home
+              Architecture
             
           </span>
         </div>
@@ -226,11 +228,9 @@
   
   
   
-    
   
-  
-    <li class="md-tabs__item md-tabs__item--active">
-      <a href="." class="md-tabs__link">
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
         
   
   
@@ -249,7 +249,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="configure/" class="md-tabs__link">
+      <a href="../../configure/" class="md-tabs__link">
         
   
   
@@ -266,11 +266,13 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="reference/architecture/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
           
   
   
@@ -290,7 +292,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="admin/install/" class="md-tabs__link">
+        <a href="../../admin/install/" class="md-tabs__link">
           
   
   
@@ -308,7 +310,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="troubleshooting/" class="md-tabs__link">
+      <a href="../../troubleshooting/" class="md-tabs__link">
         
   
   
@@ -343,7 +345,7 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="." title="agent-sandbox" class="md-nav__button md-logo" aria-label="agent-sandbox" data-md-component="logo">
+    <a href="../.." title="agent-sandbox" class="md-nav__button md-logo" aria-label="agent-sandbox" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -370,6 +372,117 @@
       
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../configure/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
     
   
   
@@ -389,7 +502,7 @@
   <span class="md-ellipsis">
     
   
-    Home
+    Architecture
   
 
     
@@ -400,14 +513,14 @@
           <span class="md-nav__icon md-icon"></span>
         </label>
       
-      <a href="." class="md-nav__link md-nav__link--active">
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
   <span class="md-ellipsis">
     
   
-    Home
+    Architecture
   
 
     
@@ -433,10 +546,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#quick-start" class="md-nav__link">
+  <a href="#isolation-by-resource" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Quick start
+        Isolation by Resource
       
     </span>
   </a>
@@ -444,13 +557,30 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#where-to-go-from-here" class="md-nav__link">
+  <a href="#hpc-slurm-integration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Where to go from here
+        HPC &amp; Slurm Integration
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="HPC &amp; Slurm Integration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#chaperon-secure-slurm-proxy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chaperon: Secure Slurm Proxy
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -461,112 +591,6 @@
     </li>
   
 
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="configure/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Configure
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-      
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
-        
-          
-          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Reference
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_3">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Reference
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="reference/architecture/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Architecture
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
               
             
               
@@ -576,7 +600,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/agents/" class="md-nav__link">
+      <a href="../agents/" class="md-nav__link">
         
   
   
@@ -604,7 +628,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/chaperon/" class="md-nav__link">
+      <a href="../chaperon/" class="md-nav__link">
         
   
   
@@ -632,7 +656,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/device-passthrough/" class="md-nav__link">
+      <a href="../device-passthrough/" class="md-nav__link">
         
   
   
@@ -660,7 +684,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/apptainer-comparison/" class="md-nav__link">
+      <a href="../apptainer-comparison/" class="md-nav__link">
         
   
   
@@ -688,7 +712,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/security/" class="md-nav__link">
+      <a href="../security/" class="md-nav__link">
         
   
   
@@ -775,7 +799,7 @@
   
   
     <li class="md-nav__item">
-      <a href="admin/install/" class="md-nav__link">
+      <a href="../../admin/install/" class="md-nav__link">
         
   
   
@@ -803,7 +827,7 @@
   
   
     <li class="md-nav__item">
-      <a href="admin/hardening/" class="md-nav__link">
+      <a href="../../admin/hardening/" class="md-nav__link">
         
   
   
@@ -831,7 +855,7 @@
   
   
     <li class="md-nav__item">
-      <a href="admin/sandbox-help/" class="md-nav__link">
+      <a href="../../admin/sandbox-help/" class="md-nav__link">
         
   
   
@@ -866,7 +890,7 @@
   
   
     <li class="md-nav__item">
-      <a href="troubleshooting/" class="md-nav__link">
+      <a href="../../troubleshooting/" class="md-nav__link">
         
   
   
@@ -913,10 +937,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#quick-start" class="md-nav__link">
+  <a href="#isolation-by-resource" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Quick start
+        Isolation by Resource
       
     </span>
   </a>
@@ -924,13 +948,30 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#where-to-go-from-here" class="md-nav__link">
+  <a href="#hpc-slurm-integration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Where to go from here
+        HPC &amp; Slurm Integration
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="HPC &amp; Slurm Integration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#chaperon-secure-slurm-proxy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chaperon: Secure Slurm Proxy
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -951,7 +992,7 @@
 
 
   
-    <a href="https://github.com/katosh/agent_sandbox/edit/main/docs/index.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/katosh/agent_sandbox/edit/main/docs/reference/architecture.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -959,28 +1000,126 @@
   
 
 
-<h1 id="agent-sandbox">agent-sandbox<a class="headerlink" href="#agent-sandbox" title="Permanent link">&para;</a></h1>
-<p><strong>Kernel-enforced filesystem isolation for AI coding agents on Linux.</strong></p>
-<p>Hides SSH keys, cloud credentials, GPG keys, and environment secrets from AI coding agents while letting them do their job. Three backends (bubblewrap, firejail, Landlock), six built-in agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode, pi-mono) with a one-line recipe for adding more, zero containers.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>agent-sandbox<span class="w"> </span>claude<span class="w">          </span><span class="c1"># Claude Code, sandboxed</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>agent-sandbox<span class="w"> </span>bash<span class="w">            </span><span class="c1"># interactive shell, sandboxed</span>
-</span></code></pre></div>
-<div class="admonition warning">
-<p class="admonition-title">Disclaimer</p>
-<p>This sandbox is a best-effort, user-space isolation layer. It is <strong>not</strong> a security product and comes with <strong>no guarantees</strong>. It reduces the attack surface of AI coding agents on shared systems, but it cannot prevent all possible bypasses — see the <a href="reference/security/">Security model</a> and <a href="admin/hardening/">Admin hardening</a> for known limitations. Use at your own risk.</p>
-</div>
-<h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>brew<span class="w"> </span>tap<span class="w"> </span>katosh/tools
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>brew<span class="w"> </span>install<span class="w"> </span>agent-sandbox
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>agent-sandbox<span class="w"> </span>claude
-</span></code></pre></div>
-<p>For other install paths (Make, system-wide, no-Homebrew), see <a href="admin/install/">Installation</a>.</p>
-<h2 id="where-to-go-from-here">Where to go from here<a class="headerlink" href="#where-to-go-from-here" title="Permanent link">&para;</a></h2>
+<h1 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h1>
+<p>How agent-sandbox achieves kernel-enforced filesystem isolation, per resource and per backend.</p>
+<h2 id="isolation-by-resource">Isolation by Resource<a class="headerlink" href="#isolation-by-resource" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Resource</th>
+<th>bwrap</th>
+<th>firejail</th>
+<th>landlock</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Filesystem (read)</strong></td>
+<td>Hidden (ENOENT)</td>
+<td>Hidden (ENOENT)</td>
+<td>Blocked (EACCES)</td>
+</tr>
+<tr>
+<td><strong>Filesystem (write)</strong></td>
+<td>Project dir only</td>
+<td>Project dir only</td>
+<td>Project dir only</td>
+</tr>
+<tr>
+<td><strong>Environment variables</strong></td>
+<td>Blocked</td>
+<td>Blocked</td>
+<td>Blocked</td>
+</tr>
+<tr>
+<td><strong>PID namespace</strong></td>
+<td>Isolated</td>
+<td>Isolated</td>
+<td>Host PIDs visible</td>
+</tr>
+<tr>
+<td><strong>Network</strong></td>
+<td>Not isolated</td>
+<td>Not isolated</td>
+<td>Not isolated</td>
+</tr>
+<tr>
+<td><strong><code>/run</code> (system sockets)</strong></td>
+<td>tmpfs + selective bind (munge, nscd, resolved)</td>
+<td>Blacklist (dbus, systemd, containerd)</td>
+<td>Full access</td>
+</tr>
+<tr>
+<td><strong>Abstract Unix sockets</strong></td>
+<td>Accessible</td>
+<td>Accessible</td>
+<td>Accessible</td>
+</tr>
+<tr>
+<td><strong>IPC / <code>/dev/shm</code></strong></td>
+<td>Isolated</td>
+<td>Isolated</td>
+<td>Shared</td>
+</tr>
+<tr>
+<td><strong>Syscalls (seccomp)</strong></td>
+<td>io_uring + userfaultfd + kexec + defense-in-depth set (bpf, mount, umount2, pivot_root, reboot, swapon/off, personality, acct, quotactl, kcmp) blocked via generated BPF filter</td>
+<td>Built-in + io_uring + userfaultfd + kexec + defense-in-depth set blocked</td>
+<td>io_uring + userfaultfd + kexec + ptrace + process_vm_readv/writev + defense-in-depth set (kernel ≥ 5.13 only)</td>
+</tr>
+<tr>
+<td><strong>User enumeration</strong></td>
+<td>Filtered (<code>FILTER_PASSWD</code>)</td>
+<td>Filtered (<code>FILTER_PASSWD</code>)</td>
+<td>Not filtered</td>
+</tr>
+<tr>
+<td><strong>Slurm (chaperon)</strong></td>
+<td>Munge + binaries + config blocked; chaperon proxy</td>
+<td>Munge + binaries + config blocked; chaperon proxy</td>
+<td>Munge not granted; chaperon proxy</td>
+</tr>
+<tr>
+<td><strong>Sandbox self-protection</strong></td>
+<td>Read-only mount</td>
+<td>Read-only mount</td>
+<td>Not protected</td>
+</tr>
+<tr>
+<td><strong>tmux</strong></td>
+<td>Outer blocked, nested works</td>
+<td>Outer blocked, nested works</td>
+<td>Outer blocked, nested works</td>
+</tr>
+<tr>
+<td><strong>Notifications</strong></td>
+<td><code>sandbox-notify</code> emits one BEL; tmux's <code>bell-action any</code> propagates to both inner and outer status bars (<code>tmux new-window</code> IPC fallback when <code>/dev/tty</code> is unavailable)</td>
+<td>Same</td>
+<td>Same</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Network</strong> is not isolated on any backend — Claude Code requires network access to communicate with the Anthropic API, and many HPC tools (Slurm, LDAP/NSS, NFS) depend on network connectivity. See <a href="../../admin/hardening/">Admin Hardening</a> for network restriction options.</p>
+<p><strong>Abstract Unix sockets</strong> (<code>@/org/...</code>) bypass filesystem isolation because they live in the network namespace, not on the filesystem. Isolating them requires a separate network namespace (<code>--unshare-net</code> / <code>--net=none</code>), which would break Claude Code's API access and Slurm connectivity. On systems with <code>systemd --user</code>, an abstract D-Bus socket could be used for sandbox escape — see <a href="../../admin/hardening/">Admin Hardening</a>.</p>
+<p><strong>IPC / <code>/dev/shm</code></strong> is isolated on bwrap (<code>--unshare-ipc</code> + private <code>/dev/shm</code> tmpfs) and firejail (<code>--ipc-namespace</code>). Each sandbox gets its own <code>/dev/shm</code> and SysV IPC namespace, preventing the agent from reading or corrupting shared memory of processes outside the sandbox. This is safe for HPC workloads: <code>sbatch</code> jobs run entirely within a single sandbox, so all MPI ranks, NCCL collectives, and CUDA IPC within a job share the same IPC namespace. Landlock cannot isolate IPC (no namespace support). Configurable via <code>PRIVATE_IPC</code> in <code>sandbox.conf</code> (default: <code>true</code>). When set by an admin config, users cannot weaken it to <code>false</code>.</p>
+<p><strong>Environment variables:</strong> The sandbox inherits your shell environment, blocks specific names via <code>BLOCKED_ENV_VARS</code>, and blocks credential-pattern globs via <code>BLOCKED_ENV_PATTERNS</code> (<code>*_TOKEN</code>, <code>SSH_*</code>, <code>CI_*</code>, etc.). To grant access, add the variable to <code>ALLOWED_ENV_VARS</code>.</p>
+<h2 id="hpc-slurm-integration">HPC &amp; Slurm Integration<a class="headerlink" href="#hpc-slurm-integration" title="Permanent link">&para;</a></h2>
+<p>On shared HPC systems, the risks are amplified: LDAP/AD directories expose every user on the cluster (<code>getent passwd</code>, <code>finger</code>), other people's lab data is accessible via shared filesystems, and Slurm job submission can escape filesystem restrictions entirely — an agent just submits a job that reads <code>~/.ssh</code> on the compute node.</p>
+<h3 id="chaperon-secure-slurm-proxy">Chaperon: Secure Slurm Proxy<a class="headerlink" href="#chaperon-secure-slurm-proxy" title="Permanent link">&para;</a></h3>
+<p>Inside the sandbox, all Slurm authentication and binaries are <strong>blocked</strong> — munge socket hidden, <code>/usr/bin/sbatch</code> etc. blacklisted, <code>/etc/slurm</code> removed. Job submission goes through the <strong>chaperon</strong>, a proxy process running outside the sandbox that communicates via named pipes in a per-session temp directory.</p>
+<p><strong>From the agent's perspective, Slurm looks unperturbed.</strong> Running <code>sbatch</code>, <code>srun</code>, <code>squeue</code>, <code>scancel</code>, <code>scontrol</code>, <code>sacct</code>, and friends from inside the sandbox behaves as if you were calling them from outside the sandbox — the stubs are invoked on PATH exactly like the real binaries, return the same exit codes, and print stdout/stderr that matches what the real tools would produce. Under the hood every call is funneled through the chaperon and heavily filtered (argument whitelisting, CWD validation, scope-filtered output, denied subcommands), but the surface presented to the agent is the unmodified Slurm CLI. The filtering is intentionally transparent: allowed commands pass through untouched, denied ones fail with an explanatory error, and scoped output is rewritten so chaperon internals never leak.</p>
 <ul>
-<li><strong><a href="reference/chaperon/">Reference</a></strong> — chaperon (Slurm proxy), device passthrough, sandbox-vs-Apptainer, security model.</li>
-<li><strong><a href="admin/install/">Admin</a></strong> — installation, hardening, the runtime config guide that the in-sandbox agents themselves read.</li>
-<li><strong><a href="https://github.com/katosh/agent_sandbox">GitHub</a></strong> — source, issues, releases.</li>
+<li><strong>Stub sbatch:</strong> Parses <code>--wrap</code> and script arguments, sends them over the <code>CHAPERON/1</code> protocol to the chaperon, prints the response. The agent calls <code>sbatch</code> as normal.</li>
+<li><strong>Stub srun:</strong> Proxied through the chaperon like sbatch. Two modes: <strong>allocation mode</strong> (login node) — validates flags, wraps the command in <code>sandbox-exec.sh</code> so compute-node processes are sandboxed, then calls real srun. <strong>Step mode</strong> (inside an sbatch job, <code>SLURM_JOB_ID</code> set) — validates flags against a step-only whitelist and execs real srun directly for MPI/multi-process step launching. <code>--pty</code> is denied (no PTY passthrough). The chaperon runs outside the sandbox and has munge access — munge is never exposed inside the sandbox.</li>
+<li><strong>Stub scancel:</strong> Sends cancel requests to the chaperon, which filters job IDs by scope (session, project, or user). By default, jobs submitted by any sandbox session with the same project directory can be cancelled. Configurable via <code>SLURM_SCOPE</code> in <code>sandbox.conf</code>, or as an environment variable override: <code>SLURM_SCOPE=session agent-sandbox claude</code>.</li>
+<li><strong>Stub squeue:</strong> Proxied through the chaperon. Output is filtered to only show jobs within scope. The agent sees only its own sandbox-submitted jobs, not other users' jobs or unrelated jobs.</li>
+<li><strong>Stub scontrol:</strong> Proxied through the chaperon. Read-only commands (<code>show node</code>, <code>show partition</code>, <code>show config</code>) pass through. Job operations (<code>show job</code>, <code>hold</code>, <code>release</code>, <code>requeue</code>, <code>update job</code>) are scoped to chaperon-submitted jobs. Dangerous subcommands (<code>shutdown</code>, <code>reconfigure</code>, etc.) and user-enumerating targets (<code>show assoc_mgr</code>) are denied.</li>
+<li><strong>Stub sacct:</strong> Proxied through the chaperon. Always scoped to the current user (<code>--user=$(whoami)</code> injected). <code>--allusers</code> and <code>--accounts</code> are denied to prevent viewing other users' job history. Self-scoped variants (<code>--user $USER</code>, <code>--user=$USER</code>, <code>--me</code>, <code>--uid $(id -u)</code>) are silently accepted as no-ops; cross-user values are denied with an actionable hint pointing at the simple fix.</li>
+<li><strong>Stub sacctmgr:</strong> Proxied through the chaperon. Only read-only queries for cluster, QOS, TRES, and config are allowed. User/account enumeration (<code>show user</code>, <code>show account</code>, <code>show association</code>) and all write operations are denied.</li>
+<li><strong>Chaperon proxy:</strong> Validates arguments against a whitelist of ~40 safe sbatch flags (rejects <code>--uid</code>, <code>--get-user-env</code>, <code>--prolog</code>, etc.), validates CWD is under the project directory, wraps the job in <code>sandbox-exec.sh</code>, and submits via the real sbatch.</li>
+<li><strong>Security:</strong> Named pipes with per-session temp directories, the chaperon dies with its parent (PR_SET_PDEATHSIG + liveness polling), and all user data is base64-encoded in the protocol (injection-proof).</li>
 </ul>
+<p>For the full architecture, protocol specification, and security analysis, see <a href="../chaperon/">Chaperon</a>.</p>
 
 
 
@@ -1017,15 +1156,31 @@
       
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
+          
+          <a href="../../configure/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Configure">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Configure
+              </div>
+            </div>
+          </a>
+        
         
           
-          <a href="configure/" class="md-footer__link md-footer__link--next" aria-label="Next: Configure">
+          <a href="../agents/" class="md-footer__link md-footer__link--next" aria-label="Next: Agents">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Configure
+                Agents
               </div>
             </div>
             <div class="md-footer__button md-icon">
@@ -1073,10 +1228,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.footer", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.action.edit", "content.tabs.link"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.footer", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.action.edit", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
       
     
   </body>
