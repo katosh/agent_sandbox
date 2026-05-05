@@ -1536,7 +1536,7 @@
 <tr>
 <td>Slurm job bypasses sandbox</td>
 <td>Chaperon proxy: munge socket blocked (bwrap/firejail), Slurm binaries blocked (bwrap/firejail), argument whitelisting, all jobs wrapped in sandbox-exec.sh. <strong>Landlock: chaperon fully bypassable</strong> — munge socket reachable and Slurm binaries callable</td>
-<td><strong>Hard</strong> (bwrap/firejail) / <strong>None</strong> (Landlock — see <a href="../../admin/hardening/">Admin Hardening §1</a> for SPANK plugin enforcement)</td>
+<td><strong>Hard</strong> (bwrap/firejail) / <strong>None</strong> (Landlock — use bwrap or firejail)</td>
 </tr>
 <tr>
 <td>Agent tampers with sandbox scripts</td>
@@ -1550,7 +1550,7 @@
 </tr>
 </tbody>
 </table>
-<p><strong>Bottom line:</strong> Filesystem isolation is kernel-enforced with all three backends. Bwrap/firejail add mount + PID namespace isolation. Landlock works without admin privileges but provides filesystem-only isolation. Slurm job submission is enforced by the chaperon proxy on bwrap/firejail — munge auth is blocked inside the sandbox, so there is no way to submit jobs without going through the validated, wrapped path. <strong>On Landlock, the chaperon is fully bypassable</strong> — Landlock cannot block <code>AF_UNIX connect()</code>, so the munge socket is reachable and <code>/usr/bin/sbatch</code> is directly callable. Landlock deployments with Slurm require <a href="../../admin/hardening/">Admin Hardening §1</a> (SPANK plugin) for server-side enforcement. For comparison with Apptainer, see <a href="../apptainer-comparison/">Sandbox vs. Apptainer</a>.</p>
+<p><strong>Bottom line:</strong> Filesystem isolation is kernel-enforced with all three backends. Bwrap/firejail add mount + PID namespace isolation. Landlock works without admin privileges but provides filesystem-only isolation. Slurm job submission is enforced by the chaperon proxy on bwrap/firejail — munge auth is blocked inside the sandbox, so there is no way to submit jobs without going through the validated, wrapped path. <strong>On Landlock, the chaperon is fully bypassable</strong> — Landlock cannot block <code>AF_UNIX connect()</code>, so the munge socket is reachable and <code>/usr/bin/sbatch</code> is directly callable. Use bwrap or firejail for any deployment that needs a hard Slurm boundary. For comparison with Apptainer, see <a href="../apptainer-comparison/">Sandbox vs. Apptainer</a>.</p>
 <p><strong>Accepted risks (all backends):</strong> Fileless execution via <code>memfd_create</code> (needed by CUDA/PyTorch/JAX). <code>/proc/net</code> information disclosure (needed for network stack). Abstract Unix sockets accessible (shared network namespace required for DNS/NSS). See <code>pentest/</code> in the repository for detailed pentest findings.</p>
 <h2 id="backend-comparison">Backend Comparison<a class="headerlink" href="#backend-comparison" title="Permanent link">&para;</a></h2>
 <table>
@@ -1629,8 +1629,8 @@
 </tr>
 <tr>
 <td><strong>Landlock</strong></td>
-<td>No PID namespace — host processes visible via <code>/proc</code>. Agent could read <code>/proc/PID/environ</code> of same-UID processes (e.g. sbatch wrapper injecting bypass token)</td>
-<td>Use bwrap or firejail for PID isolation; token exposure window is microseconds. A SPANK plugin would eliminate it entirely</td>
+<td>No PID namespace — host processes visible via <code>/proc</code>. Agent could read <code>/proc/PID/environ</code> of same-UID processes</td>
+<td>Use bwrap or firejail for PID isolation</td>
 </tr>
 <tr>
 <td><strong>bwrap</strong></td>
@@ -1685,7 +1685,7 @@
 <tr>
 <td><strong>Landlock</strong></td>
 <td><strong>Chaperon fully bypassable</strong> — Landlock cannot block <code>AF_UNIX connect()</code>, so the munge socket (<code>/run/munge/munge.socket.2</code>) is reachable despite not being in the Landlock allowlist. Combined with directly callable Slurm binaries (<code>/usr/bin/sbatch</code>), agents can forge munge credentials and submit arbitrary unwrapped jobs, completely bypassing the chaperon</td>
-<td><strong>Use bwrap or firejail.</strong> If Landlock is the only option, <a href="../../admin/hardening/">Admin Hardening §1</a> (SPANK plugin) is <strong>mandatory</strong> for Slurm environments</td>
+<td><strong>Use bwrap or firejail</strong> for any deployment that needs a hard Slurm boundary</td>
 </tr>
 <tr>
 <td><strong>bwrap/Firejail</strong></td>

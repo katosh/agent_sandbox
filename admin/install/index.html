@@ -1044,17 +1044,6 @@
   
 </li>
       
-        <li class="md-nav__item">
-  <a href="#complementary-hardening" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Complementary Hardening
-      
-    </span>
-  </a>
-  
-</li>
-      
     </ul>
   
 </nav>
@@ -1452,17 +1441,6 @@
   
 </li>
       
-        <li class="md-nav__item">
-  <a href="#complementary-hardening" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Complementary Hardening
-      
-    </span>
-  </a>
-  
-</li>
-      
     </ul>
   
 </nav>
@@ -1587,7 +1565,7 @@
 </tr>
 </tbody>
 </table>
-<p>The admin path is set in <code>_ADMIN_DIR</code> in <code>sandbox-lib.sh</code> (not configurable via environment variable). To use a different path, change this single line. The Slurm enforcement scripts (<code>slurm-enforce/</code>) have their own <code>_ADMIN_CONF</code> variable at the top of each script for the same reason.</p>
+<p>The admin path is set in <code>_ADMIN_DIR</code> in <code>sandbox-lib.sh</code> (not configurable via environment variable). To use a different path, change this single line.</p>
 <h2 id="config-hierarchy">Config Hierarchy<a class="headerlink" href="#config-hierarchy" title="Permanent link">&para;</a></h2>
 <p>The sandbox loads config in layers, each adding to the previous:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>1. Defaults           (built into sandbox-lib.sh)
@@ -1654,11 +1632,6 @@
 <tr>
 <td><code>EXTRA_BLOCKED_PATHS</code></td>
 <td>Yes — block more paths</td>
-<td><strong>No — restored with warning</strong></td>
-</tr>
-<tr>
-<td><code>TOKEN_FILE</code> / <code>SANDBOX_BYPASS_TOKEN</code></td>
-<td>No — would overwrite</td>
 <td><strong>No — restored with warning</strong></td>
 </tr>
 <tr>
@@ -1753,7 +1726,7 @@
 <h2 id="chaperon-slurm-proxy">Chaperon: Slurm Proxy<a class="headerlink" href="#chaperon-slurm-proxy" title="Permanent link">&para;</a></h2>
 <p>The chaperon is a zero-trust Slurm proxy that sits between the sandboxed agent and the real Slurm commands. Inside the sandbox, Slurm binaries (<code>sbatch</code>, <code>srun</code>, <code>scancel</code>, <code>squeue</code>, etc.) are replaced with stubs that communicate with a chaperon process running outside the sandbox via FIFO IPC. The chaperon validates every request against a flag whitelist, wraps submitted jobs to re-enter the sandbox on compute nodes, and scopes <code>squeue</code>/<code>scancel</code> to the agent's own jobs.</p>
 <p><strong>Key security properties:</strong>
-- Real Slurm binaries are blocked inside the sandbox (bind-mounted to <code>/dev/null</code> on bwrap, blacklisted on firejail). Munge socket is blocked on bwrap/firejail. <strong>Landlock: neither Slurm binaries nor munge socket are blocked</strong> — chaperon is fully bypassable (see <a href="../hardening/">Admin Hardening</a> §1)
+- Real Slurm binaries are blocked inside the sandbox (bind-mounted to <code>/dev/null</code> on bwrap, blacklisted on firejail). Munge socket is blocked on bwrap/firejail. <strong>Landlock: neither Slurm binaries nor munge socket are blocked</strong> — chaperon is fully bypassable; use bwrap or firejail for any deployment that needs a hard Slurm boundary
 - Dangerous flags (<code>--uid</code>, <code>--prolog</code>, <code>--bcast</code>, <code>--container</code>, <code>--get-user-env</code>) are rejected
 - Job wrapping: sbatch scripts are inlined via heredoc into a wrapper that calls <code>sandbox-exec.sh</code> on the compute node — no temp files on NFS
 - Job scoping via <code>--comment</code> tags: <code>squeue</code>/<code>scancel</code> only see jobs submitted by this sandbox session/project (configurable via <code>SLURM_SCOPE</code>)
@@ -2075,12 +2048,6 @@
 </span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="nv">KillUserProcesses</span><span class="o">=</span>yes
 </span></code></pre></div>
 <p>Option A prevents the user systemd instance from starting at all. Verify with <code>systemd-run --user -- id</code> (should fail with "Failed to connect to bus").</p>
-<hr />
-<h2 id="complementary-hardening">Complementary Hardening<a class="headerlink" href="#complementary-hardening" title="Permanent link">&para;</a></h2>
-<p>An admin-owned installation pairs with:</p>
-<ul>
-<li><strong><a href="https://github.com/katosh/agent_sandbox/tree/main/slurm-enforce">Slurm job enforcement</a></strong> — ensures agent-submitted Slurm jobs inherit the sandbox. All Slurm enforcement variables (<code>TOKEN_FILE</code>, <code>REAL_SBATCH</code>, <code>REAL_SRUN</code>, <code>SANDBOX_EXEC</code>) can be added directly to <code>/app/lib/agent-sandbox/sandbox.conf</code> — one config file for both systems. See the <a href="#example-admin-config">example admin config</a> for the Slurm variables.</li>
-</ul>
 
 
 
