@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-05
+
 ### Removed
 
 - **`HOST_LIBS_PASSTHROUGH` and `GPU_PASSTHROUGH` removed.** Per the
