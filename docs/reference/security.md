@@ -2,7 +2,7 @@
 
 ## Important Disclaimer
 
-This sandbox is a best-effort, user-space isolation layer. It is **not** a security product and comes with **no guarantees**. It reduces the attack surface of AI coding agents on shared HPC systems but cannot prevent all possible bypasses. See the [Security Summary](README.md#security-summary) and [Known Limitations](README.md#known-limitations) for documented boundaries.
+This sandbox is a best-effort, user-space isolation layer. It is **not** a security product and comes with **no guarantees**. It reduces the attack surface of AI coding agents on shared HPC systems but cannot prevent all possible bypasses. See the [Security Summary](https://github.com/katosh/agent_sandbox#security-summary) and [Known Limitations](https://github.com/katosh/agent_sandbox#known-limitations) for documented boundaries.
 
 ## Scope
 
@@ -23,7 +23,7 @@ The following are **not** in scope (they are documented known limitations):
 - Abstract Unix socket access in bwrap/firejail (shared network namespace)
 - Landlock's inability to block `AF_UNIX connect()`, PID namespace, or mount namespace features
 - `memfd_create` / fileless execution (intentionally allowed for CUDA/PyTorch/JAX)
-- Anything already listed in the [Known Limitations](README.md#known-limitations) table, unless you have found a way to escalate its impact beyond what is described
+- Anything already listed in the [Known Limitations](https://github.com/katosh/agent_sandbox#known-limitations) table, unless you have found a way to escalate its impact beyond what is described
 
 If you are unsure whether something qualifies, report it anyway. We would rather triage a non-issue than miss a real one.
 
@@ -56,12 +56,12 @@ We will coordinate disclosure timing with the reporter. If we cannot fix the iss
 
 This project maintains extensive security documentation:
 
-- [Security Summary](README.md#security-summary) — threat model with protection strength ratings
-- [Known Limitations](README.md#known-limitations) — per-backend limitations sorted by severity, with mitigations
-- [Admin Hardening](ADMIN_HARDENING.md) — options to close remaining gaps (admin-enforced installation, network restrictions, cgroups)
-- [Apptainer Comparison](APPTAINER_COMPARISON.md) — detailed comparison with HPC container runtimes
+- [Security Summary](https://github.com/katosh/agent_sandbox#security-summary) — threat model with protection strength ratings
+- [Known Limitations](https://github.com/katosh/agent_sandbox#known-limitations) — per-backend limitations sorted by severity, with mitigations
+- [Admin Hardening](../admin/hardening.md) — options to close remaining gaps (admin-enforced installation, network restrictions, cgroups)
+- [Apptainer Comparison](apptainer-comparison.md) — detailed comparison with HPC container runtimes
 - [Pentest Reports](pentest/) — findings from structured security audits of all three backends
-- [Chaperon](CHAPERON.md) — Slurm proxy design and security properties
+- [Chaperon](chaperon.md) — Slurm proxy design and security properties
 
 ## Accepted Trade-offs
 

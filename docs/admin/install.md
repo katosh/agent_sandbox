@@ -120,7 +120,7 @@ WARNING: User config added EXTRA_WRITABLE_PATHS entry '/etc/cron.d' under denied
 
 The `sandbox-admin.conf` shipped with the install is a minimal starting point. It contains only the enforcement-only knobs (`DENIED_WRITABLE_PATHS`, `BLOCKED_*`, `ALLOWED_PROJECT_PARENTS`, etc.) with commented-out examples. Uncomment and edit what you need.
 
-See [`sandbox-admin.conf`](sandbox-admin.conf) for the full skeleton.
+See [`sandbox-admin.conf`](https://github.com/katosh/agent_sandbox/blob/main/sandbox-admin.conf) for the full skeleton.
 
 **Environment overrides:** Users can override `SLURM_SCOPE` and `HOME_ACCESS` at launch time without editing any config file: `SLURM_SCOPE=session agent-sandbox claude` or `HOME_ACCESS=tmpwrite agent-sandbox bash`. Environment values take precedence over both admin and user configs.
 
@@ -176,14 +176,14 @@ These configs also run in isolated subprocesses and go through admin enforcement
 The chaperon is a zero-trust Slurm proxy that sits between the sandboxed agent and the real Slurm commands. Inside the sandbox, Slurm binaries (`sbatch`, `srun`, `scancel`, `squeue`, etc.) are replaced with stubs that communicate with a chaperon process running outside the sandbox via FIFO IPC. The chaperon validates every request against a flag whitelist, wraps submitted jobs to re-enter the sandbox on compute nodes, and scopes `squeue`/`scancel` to the agent's own jobs.
 
 **Key security properties:**
-- Real Slurm binaries are blocked inside the sandbox (bind-mounted to `/dev/null` on bwrap, blacklisted on firejail). Munge socket is blocked on bwrap/firejail. **Landlock: neither Slurm binaries nor munge socket are blocked** — chaperon is fully bypassable (see [Admin Hardening](ADMIN_HARDENING.md) §1)
+- Real Slurm binaries are blocked inside the sandbox (bind-mounted to `/dev/null` on bwrap, blacklisted on firejail). Munge socket is blocked on bwrap/firejail. **Landlock: neither Slurm binaries nor munge socket are blocked** — chaperon is fully bypassable (see [Admin Hardening](hardening.md) §1)
 - Dangerous flags (`--uid`, `--prolog`, `--bcast`, `--container`, `--get-user-env`) are rejected
 - Job wrapping: sbatch scripts are inlined via heredoc into a wrapper that calls `sandbox-exec.sh` on the compute node — no temp files on NFS
 - Job scoping via `--comment` tags: `squeue`/`scancel` only see jobs submitted by this sandbox session/project (configurable via `SLURM_SCOPE`)
 - Scope-widening flags (`squeue --me`, `scancel --all`, `scancel -u <user>`) are silently mapped to "all jobs in your scope" — transparent to the user
 - All denials include prompt-injection recovery messages that re-anchor the agent to its instructions
 
-See [CHAPERON.md](CHAPERON.md) for the full protocol, supported commands, and flag whitelists.
+See [Chaperon](../reference/chaperon.md) for the full protocol, supported commands, and flag whitelists.
 
 ## Testing
 
@@ -211,7 +211,7 @@ On Ubuntu 24.04+, AppArmor blocks unprivileged user namespaces, so bwrap doesn't
 | **Install firejail** | Low | Strong — setuid binary bypasses AppArmor; mount namespace, PID namespace, seccomp |
 | **Do nothing** | None | Sandbox falls back to Landlock (weakest — see [Landlock fallback](#landlock-fallback) below) |
 
-**Recommendation:** Enable bwrap. It provides the strongest isolation, is fully unprivileged (no setuid binary on the system), and has a significantly better security track record (4 CVEs with zero root exploits vs firejail's 18 CVEs with 12 root exploits). Firejail is a fallback if bwrap's AppArmor profile is not desired, but installing it adds a setuid-root binary to every node. See the [full CVE comparison](APPTAINER_COMPARISON.md#security-track-record) for details.
+**Recommendation:** Enable bwrap. It provides the strongest isolation, is fully unprivileged (no setuid binary on the system), and has a significantly better security track record (4 CVEs with zero root exploits vs firejail's 18 CVEs with 12 root exploits). Firejail is a fallback if bwrap's AppArmor profile is not desired, but installing it adds a setuid-root binary to every node. See the [full CVE comparison](../reference/apptainer-comparison.md#security-track-record) for details.
 
 ### Enabling bwrap via AppArmor profile
 
@@ -280,7 +280,7 @@ The sandbox uses `--allusers` to disable firejail's built-in `/etc/passwd` filte
 | Seccomp | Generated BPF filter (`generate-seccomp.py`) — [see below](#seccomp-for-bwrap) | Built-in (`--seccomp` + `--caps.drop=all`) |
 | Internal state exposure | None | `/run/firejail/mnt/seccomp/` readable (reveals BPF filter) |
 | Attack surface | Minimal, no setuid | Setuid root binary on every node |
-| CVE history | [4 CVEs](https://www.opencve.io/cve?search=bubblewrap), 0 root exploits, none since 2020 | [18 CVEs](https://www.cvedetails.com/vulnerability-list/vendor_id-16191/Firejail.html), 12 local root exploits ([details](APPTAINER_COMPARISON.md#firejail-18-cves-12-are-local-root)) |
+| CVE history | [4 CVEs](https://www.opencve.io/cve?search=bubblewrap), 0 root exploits, none since 2020 | [18 CVEs](https://www.cvedetails.com/vulnerability-list/vendor_id-16191/Firejail.html), 12 local root exploits ([details](../reference/apptainer-comparison.md#firejail-18-cves-12-are-local-root)) |
 | Supplementary groups | Display as `nogroup` (user namespace limitation — file perms unaffected) | Correct display (setuid avoids user namespace) |
 | AppArmor on Ubuntu 24.04+ | Requires admin AppArmor profile | Works without admin action |
 
@@ -296,7 +296,7 @@ The filters block two groups of syscalls:
 
 1. **Core attack-surface denials** — `io_uring_{setup,enter,register}`, `userfaultfd`, `kexec_load`/`kexec_file_load`. The `io_uring` block provides the main security value; it has a [large kernel attack surface](https://security.googleblog.com/2023/06/learnings-from-kctf-vrps-42-linux.html) and [Docker's default seccomp profile](https://github.com/moby/moby/pull/46762) blocks it since version 25.0.
 
-2. **Defense-in-depth set** — `bpf`, `mount`, `umount2`, `pivot_root`, `reboot`, `swapon`/`swapoff`, `personality`, `acct`, `quotactl`, `kcmp`. Each of these is already rejected at the capability layer for an unprivileged sandboxed process; denying them at the seccomp layer too is belt-and-suspenders in case a kernel bug or misconfiguration ever leaks the gating capability. Zero observable effect on HPC/ML workloads — see [SECURITY.md §Seccomp Filter](SECURITY.md#seccomp-filter) for the per-syscall justification.
+2. **Defense-in-depth set** — `bpf`, `mount`, `umount2`, `pivot_root`, `reboot`, `swapon`/`swapoff`, `personality`, `acct`, `quotactl`, `kcmp`. Each of these is already rejected at the capability layer for an unprivileged sandboxed process; denying them at the seccomp layer too is belt-and-suspenders in case a kernel bug or misconfiguration ever leaks the gating capability. Zero observable effect on HPC/ML workloads — see [SECURITY.md §Seccomp Filter](../reference/security.md#seccomp-filter) for the per-syscall justification.
 
 The Landlock backend additionally denies `ptrace` and `process_vm_readv`/`writev` because it has no PID namespace to prevent sibling-process inspection. bwrap and firejail rely on PID namespacing for that.
 
@@ -373,4 +373,4 @@ Option A prevents the user systemd instance from starting at all. Verify with `s
 
 An admin-owned installation pairs with:
 
-- **[Slurm job enforcement](slurm-enforce/README.md)** — ensures agent-submitted Slurm jobs inherit the sandbox. All Slurm enforcement variables (`TOKEN_FILE`, `REAL_SBATCH`, `REAL_SRUN`, `SANDBOX_EXEC`) can be added directly to `/app/lib/agent-sandbox/sandbox.conf` — one config file for both systems. See the [example admin config](#example-admin-config) for the Slurm variables.
+- **[Slurm job enforcement](https://github.com/katosh/agent_sandbox/tree/main/slurm-enforce)** — ensures agent-submitted Slurm jobs inherit the sandbox. All Slurm enforcement variables (`TOKEN_FILE`, `REAL_SBATCH`, `REAL_SRUN`, `SANDBOX_EXEC`) can be added directly to `/app/lib/agent-sandbox/sandbox.conf` — one config file for both systems. See the [example admin config](#example-admin-config) for the Slurm variables.

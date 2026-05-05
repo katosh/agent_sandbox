@@ -2,7 +2,7 @@
 
 > **Disclaimer:** This document reflects personal analysis and has not been formally reviewed by a security professional. The hardening suggestions are best-effort recommendations based on publicly available documentation and testing on a limited set of systems. The environment may differ. Review all changes with your security team before deploying to production.
 
-The [sandbox](README.md) is fully user-space, requiring no root or admin involvement. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents. Slurm access is mediated by the [chaperon](CHAPERON.md) — a zero-trust proxy that blocks Slurm authentication assets inside the sandbox (bwrap/firejail) and validates every job submission.
+The [sandbox](../index.md) is fully user-space, requiring no root or admin involvement. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents. Slurm access is mediated by the [chaperon](../reference/chaperon.md) — a zero-trust proxy that blocks Slurm authentication assets inside the sandbox (bwrap/firejail) and validates every job submission.
 
 > **⚠ Landlock is not a full sandbox.** Landlock cannot block `AF_UNIX connect()` (not available in any Landlock ABI version as of kernel 6.11). This means: (1) the munge socket is reachable, so the **chaperon is fully bypassable** — agents can submit arbitrary unwrapped Slurm jobs; (2) if `user@.service` is running, agents can call `systemd-run --user` to **escape the sandbox entirely** — reading SSH keys, AWS credentials, and writing arbitrary files with no Landlock restrictions. **If Landlock is the only available backend, §0 (disable user@.service) and §1 (SPANK plugin) are mandatory, not optional.** Prefer bwrap or firejail whenever possible.
 
@@ -10,7 +10,7 @@ The [sandbox](README.md) is fully user-space, requiring no root or admin involve
 
 This document describes **improvements** that could close remaining gaps. Sections 1, 2, and 4 are independent and can be deployed individually. Sections 3 and 5 build on each other (5 requires 3; 4 has options that benefit from 3 but does not require it). They are ordered roughly from least to most effort.
 
-> **Update:** The [chaperon](CHAPERON.md) now provides a hard Slurm boundary by default (no admin setup needed). Section 1 below is still useful as a server-side complement, but the chaperon has closed the main gap that motivated it. My current priority is **Section 2** (admin-owned installation for policy enforcement).
+> **Update:** The [chaperon](../reference/chaperon.md) now provides a hard Slurm boundary by default (no admin setup needed). Section 1 below is still useful as a server-side complement, but the chaperon has closed the main gap that motivated it. My current priority is **Section 2** (admin-owned installation for policy enforcement).
 
 ### Self-serve vs. admin-enforced
 
@@ -45,7 +45,7 @@ systemctl status user@501.service   # should show "masked"
 
 ## 1. Enforce Sandbox on Agent-Submitted Slurm Jobs
 
-> **Largely superseded by the chaperon (bwrap/firejail only).** The [chaperon](CHAPERON.md) — a zero-trust Slurm proxy — provides a stronger default boundary than the token-based approach described here. On bwrap/firejail, the chaperon blocks all Slurm authentication assets (munge socket, Slurm binaries, Slurm config) inside the sandbox. **On Landlock, the chaperon is fully bypassable** — Landlock cannot block `AF_UNIX connect()`, so the munge socket is reachable and `/usr/bin/sbatch` is directly callable. **This SPANK plugin section is mandatory for Landlock deployments with Slurm.**
+> **Largely superseded by the chaperon (bwrap/firejail only).** The [chaperon](../reference/chaperon.md) — a zero-trust Slurm proxy — provides a stronger default boundary than the token-based approach described here. On bwrap/firejail, the chaperon blocks all Slurm authentication assets (munge socket, Slurm binaries, Slurm config) inside the sandbox. **On Landlock, the chaperon is fully bypassable** — Landlock cannot block `AF_UNIX connect()`, so the munge socket is reachable and `/usr/bin/sbatch` is directly callable. **This SPANK plugin section is mandatory for Landlock deployments with Slurm.**
 
 **What it solves:** Server-side enforcement of sandbox wrapping on Slurm jobs, using a job submit plugin and an eBPF LSM-protected bypass token. Complements the chaperon by adding a second enforcement layer at the Slurm controller. Users who do not use the sandbox are unaffected — their workflow does not change.
 
@@ -58,7 +58,7 @@ systemctl status user@501.service   # should show "masked"
 | User outside sandbox | Reads token → passes to sbatch → **unsandboxed** |
 | `curl` to `slurmrestd` | Works if exposed (see §4 for network isolation) |
 
-Design, setup instructions, components, and verification steps are in [`slurm-enforce/README.md`](slurm-enforce/README.md). If also deploying Section 2, the Slurm enforcement variables can go directly in `/app/lib/agent-sandbox/sandbox.conf` — one config file for both systems.
+Design, setup instructions, components, and verification steps are in [`slurm-enforce/`](https://github.com/katosh/agent_sandbox/tree/main/slurm-enforce). If also deploying Section 2, the Slurm enforcement variables can go directly in `/app/lib/agent-sandbox/sandbox.conf` — one config file for both systems.
 
 ---
 
@@ -70,10 +70,10 @@ Design, setup instructions, components, and verification steps are in [`slurm-en
 
 Key features:
 - **Multi-level config** — admin `sandbox.conf` (set via `_ADMIN_DIR` in `sandbox-lib.sh`, defaults to `/app/lib/agent-sandbox/`) sets the baseline; user config (`user.conf`) and per-project configs (`conf.d/*.conf`) can only add to it. The path is a script variable (not an env var) to prevent agent redirection. User configs run in isolated subprocesses — only known config variables are extracted. Admin values are enforced via comparison+merge after each config layer.
-- **Backend selection** — on Ubuntu 24.04+, AppArmor blocks unprivileged user namespaces. An admin AppArmor profile (low effort) enables the recommended bwrap backend. Firejail (setuid) is an alternative. Without either, the sandbox falls back to Landlock with [significant gaps](ADMIN_INSTALL.md#landlock-fallback).
-- **Seccomp trade-offs** — all three backends block `io_uring`, `userfaultfd`, and `kexec` via seccomp. See [HPC compatibility analysis](ADMIN_INSTALL.md#seccomp-filter--hpc-compatibility).
+- **Backend selection** — on Ubuntu 24.04+, AppArmor blocks unprivileged user namespaces. An admin AppArmor profile (low effort) enables the recommended bwrap backend. Firejail (setuid) is an alternative. Without either, the sandbox falls back to Landlock with [significant gaps](install.md#landlock-fallback).
+- **Seccomp trade-offs** — all three backends block `io_uring`, `userfaultfd`, and `kexec` via seccomp. See [HPC compatibility analysis](install.md#seccomp-filter--hpc-compatibility).
 
-For full setup instructions, config hierarchy, backend comparison, and seccomp details, see **[ADMIN_INSTALL.md](ADMIN_INSTALL.md)**. After installation, run `bash test.sh` (backend isolation) and `bash test-admin.sh` (config enforcement) to verify the deployment.
+For full setup instructions, config hierarchy, backend comparison, and seccomp details, see **[Admin Install](install.md)**. After installation, run `bash test.sh` (backend isolation) and `bash test-admin.sh` (config enforcement) to verify the deployment.
 
 ---
 
@@ -146,7 +146,7 @@ OS user separation handles credential isolation — the agent physically cannot 
 
 ## 4. Network Controls
 
-**What it solves:** The current sandbox shares the host network stack. The [chaperon](CHAPERON.md) removed the dependency on in-sandbox network access for Slurm on bwrap/firejail (munge socket is blocked, all Slurm communication goes through FIFOs). On Landlock, the munge socket remains accessible — see §1. However, the agent still has unrestricted outbound network — it can reach any host the user can, using the same institutional IP.
+**What it solves:** The current sandbox shares the host network stack. The [chaperon](../reference/chaperon.md) removed the dependency on in-sandbox network access for Slurm on bwrap/firejail (munge socket is blocked, all Slurm communication goes through FIFOs). On Landlock, the munge socket remains accessible — see §1. However, the agent still has unrestricted outbound network — it can reach any host the user can, using the same institutional IP.
 
 Agents legitimately need general web access: reading documentation, downloading papers (often through institutional proxy/IP for paywall access), installing packages, cloning repos. The goal is not to cut off network access, but to **route agent traffic through a controllable path** where agent-specific policies can be applied — blocking certain services, logging traffic, or rate-limiting — without breaking research workflows.
 
@@ -278,7 +278,7 @@ All three options use a **default-allow** policy for general web access (researc
 
 **What it solves:** Visibility into what the agent did — which files it accessed, which jobs it submitted, and what commands it ran. Useful for compliance, forensics, and debugging.
 
-**Built-in chaperon logging:** The chaperon already logs every proxied Slurm request with full arguments, working directory, script size, and all security denials (`_sandbox_deny` / `_sandbox_warn`). Logs are per-session files in `~/.local/state/agent-sandbox/chaperon/`, auto-pruned by age and total size. Configure `CHAPERON_LOG_LEVEL` and `CHAPERON_LOG_RETAIN_DAYS` in `sandbox.conf`. This covers Slurm-level audit without any admin setup. See [CHAPERON.md](CHAPERON.md#logging) for details.
+**Built-in chaperon logging:** The chaperon already logs every proxied Slurm request with full arguments, working directory, script size, and all security denials (`_sandbox_deny` / `_sandbox_warn`). Logs are per-session files in `~/.local/state/agent-sandbox/chaperon/`, auto-pruned by age and total size. Configure `CHAPERON_LOG_LEVEL` and `CHAPERON_LOG_RETAIN_DAYS` in `sandbox.conf`. This covers Slurm-level audit without any admin setup. See [Chaperon](../reference/chaperon.md#logging) for details.
 
 **For system-level audit** (file access, process execution, network connections), dedicated accounts and auditd are needed:
 
@@ -334,16 +334,16 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 
 | # | Improvement | Effort | Category | What It Closes |
 |---|---|---|---|---|
-| 1 | [Enforce sandbox on Slurm jobs](#1-enforce-sandbox-on-agent-submitted-slurm-jobs) *(largely superseded by [chaperon](CHAPERON.md))* | Medium | Admin-enforced | Server-side complement to the chaperon — job submit plugin sandboxes all jobs unless caller provides bypass token (eBPF LSM protects token from `no_new_privs` processes). Optional if the chaperon meets your needs |
-| 2 | [Admin-owned sandbox installation](#2-admin-owned-sandbox-installation) ([details](ADMIN_INSTALL.md)) | Low-medium | Admin-enforced | Users weakening config; sandbox self-protection; multi-level config with post-merge validation; [backend selection](ADMIN_INSTALL.md#choosing-a-backend-on-ubuntu-2404) (bwrap via AppArmor recommended, firejail alternative); [seccomp trade-offs](ADMIN_INSTALL.md#seccomp-filter--hpc-compatibility); [Landlock fallback gaps](ADMIN_INSTALL.md#landlock-fallback) |
+| 1 | [Enforce sandbox on Slurm jobs](#1-enforce-sandbox-on-agent-submitted-slurm-jobs) *(largely superseded by [chaperon](../reference/chaperon.md))* | Medium | Admin-enforced | Server-side complement to the chaperon — job submit plugin sandboxes all jobs unless caller provides bypass token (eBPF LSM protects token from `no_new_privs` processes). Optional if the chaperon meets your needs |
+| 2 | [Admin-owned sandbox installation](#2-admin-owned-sandbox-installation) ([details](install.md)) | Low-medium | Admin-enforced | Users weakening config; sandbox self-protection; multi-level config with post-merge validation; [backend selection](install.md#choosing-a-backend-on-ubuntu-2404) (bwrap via AppArmor recommended, firejail alternative); [seccomp trade-offs](install.md#seccomp-filter--hpc-compatibility); [Landlock fallback gaps](install.md#landlock-fallback) |
 | 3 | [Dedicated `${USER}_ai` accounts](#3-dedicated-user_ai-accounts) | High | Admin-enforced | Same-UID credential access; OS-level separation |
 | 4 | [Network controls](#4-network-controls) | Medium | Admin-enforced or self-serve | Agent-specific network policy (block SSH escape, internal services, metadata endpoint) while preserving web access for research — three options: UID iptables (requires #3), cgroup nftables (no #3), or netns + policy proxy (no admin) |
 | 5 | [Audit logging](#5-audit-logging) | Low-medium | Admin-enforced (requires #3) | Visibility, compliance, forensics |
 
-Sections 1, 2, and 4 are independent and can be deployed individually. Section 1 is optional if the [chaperon](CHAPERON.md) meets your Slurm enforcement needs — it adds server-side defense-in-depth. Section 2 includes backend selection for Ubuntu 24.04+ — an AppArmor profile for bwrap (recommended) or firejail avoids falling back to Landlock. Section 4 applies agent-specific network policy (default-allow for research, targeted blocks on SSH/internal services) with three options — Option C (netns + proxy) requires no admin or dedicated accounts. Section 5 requires Section 3 (dedicated accounts).
+Sections 1, 2, and 4 are independent and can be deployed individually. Section 1 is optional if the [chaperon](../reference/chaperon.md) meets your Slurm enforcement needs — it adds server-side defense-in-depth. Section 2 includes backend selection for Ubuntu 24.04+ — an AppArmor profile for bwrap (recommended) or firejail avoids falling back to Landlock. Section 4 applies agent-specific network policy (default-allow for research, targeted blocks on SSH/internal services) with three options — Option C (netns + proxy) requires no admin or dedicated accounts. Section 5 requires Section 3 (dedicated accounts).
 
 ---
 
 ## Sandbox vs. Apptainer Containers
 
-For a detailed security comparison with Apptainer (the standard HPC container runtime), including default isolation tables, CVE history, architectural weaknesses, and shared gaps, see **[Apptainer Comparison](APPTAINER_COMPARISON.md)**.
+For a detailed security comparison with Apptainer (the standard HPC container runtime), including default isolation tables, CVE history, architectural weaknesses, and shared gaps, see **[Apptainer Comparison](../reference/apptainer-comparison.md)**.

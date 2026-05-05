@@ -174,7 +174,7 @@ SANDBOX_MODULES=()
 # them) are stripped with a warning. Admins set this in the admin sandbox.conf.
 DENIED_WRITABLE_PATHS=()
 
-# Path to the Slurm sandbox bypass token (see ADMIN_HARDENING.md §1).
+# Path to the Slurm sandbox bypass token (see docs/admin/hardening.md §1).
 # When set, the bwrap backend automatically hides this file from the sandbox
 # (overlays it with /dev/null). For the Landlock backend, use the eBPF LSM
 # program instead (see slurm-enforce/token_protect.bpf.c).
@@ -213,7 +213,7 @@ FILTER_PASSWD=true
 # bwrap's auto-mounted user-ns devpts and silently breaks tmux/script
 # pty allocation). Use DEVICES (below) for targeted passthrough — that
 # mechanism is admin-blacklist-aware whereas BIND_DEV_PTS=true used to
-# bypass any such check. See DEVICE_PASSTHROUGH.md for the migration.
+# bypass any such check. See docs/reference/device-passthrough.md for the migration.
 BIND_DEV_PTS=false
 
 # Device nodes to expose inside the sandbox (bwrap only).
@@ -438,7 +438,7 @@ _kernel_at_least() {
 # prevent an agent from redirecting it to a controlled directory.
 #
 # Without an admin config, $_USER_DATA_DIR/sandbox.conf is the only config.
-# See ADMIN_INSTALL.md for setup instructions.
+# See docs/admin/install.md for setup instructions.
 
 # Preserve any SANDBOX_BACKEND set via environment or --backend flag
 # so config files cannot override an explicit backend selection.
@@ -1135,7 +1135,7 @@ if [[ "${SANDBOX_BACKEND:-auto}" == "landlock" ]]; then
     if [[ -e /run/munge/munge.socket.2 ]]; then
         echo "WARNING: Landlock cannot block AF_UNIX connect() — the munge socket is reachable." >&2
         echo "  Agents can bypass the chaperon and submit arbitrary Slurm jobs." >&2
-        echo "  Use bwrap/firejail, or deploy the SPANK plugin (ADMIN_HARDENING.md §1)." >&2
+        echo "  Use bwrap/firejail, or deploy the SPANK plugin (docs/admin/hardening.md §1)." >&2
     fi
 fi
 if [[ "${SANDBOX_BACKEND:-auto}" != "bwrap" && "${SANDBOX_BACKEND:-auto}" != "auto" ]]; then
@@ -1172,7 +1172,7 @@ if _is_true "${BIND_DEV_PTS:-false}"; then
     if _kernel_at_least 5 4; then
         echo "agent-sandbox: BIND_DEV_PTS=true is a no-op on kernel >= 5.4 (bwrap auto-mounts a working devpts; binding host /dev/pts would shadow it with ptmxmode=000 and break pty allocation). Drop the line from your sandbox.conf." >&2
     else
-        echo "agent-sandbox: BIND_DEV_PTS is deprecated; use DEVICES+=(/dev/pts) instead. See DEVICE_PASSTHROUGH.md." >&2
+        echo "agent-sandbox: BIND_DEV_PTS is deprecated; use DEVICES+=(/dev/pts) instead. See docs/reference/device-passthrough.md." >&2
         DEVICES+=(/dev/pts)
     fi
 fi

@@ -69,7 +69,7 @@ backend_prepare() {
     # Start with bwrap's minimal devtmpfs, then bind in only the device
     # nodes the user (and admin DEVICES_BLACKLIST) approve.
     # _resolve_devices populates DEVICES_RESOLVED — see
-    # sandbox-lib.sh::_resolve_devices and DEVICE_PASSTHROUGH.md.
+    # sandbox-lib.sh::_resolve_devices and docs/reference/device-passthrough.md.
     # The legacy BIND_DEV_PTS=true toggle is rewritten to
     # DEVICES+=(/dev/pts) earlier in sandbox-lib.sh.
     BWRAP_ARGS+=(--dev /dev)
@@ -232,7 +232,7 @@ backend_prepare() {
         fi
     done
 
-    # Hide the sandbox bypass token if configured (see ADMIN_HARDENING.md §1)
+    # Hide the sandbox bypass token if configured (see docs/admin/hardening.md §1)
     if [[ -n "${SANDBOX_BYPASS_TOKEN:-}" && -e "$SANDBOX_BYPASS_TOKEN" ]]; then
         BWRAP_ARGS+=(--ro-bind /dev/null "$(readlink -f "$SANDBOX_BYPASS_TOKEN")")
     fi

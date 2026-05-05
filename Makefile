@@ -39,8 +39,9 @@ BACKEND_FILES := backends/bwrap.sh \
                  backends/landlock-sandbox.py \
                  backends/generate-seccomp.py
 
-DOCS := README.md CHANGELOG.md CHAPERON.md ADMIN_HARDENING.md \
-        ADMIN_INSTALL.md APPTAINER_COMPARISON.md SECURITY.md LICENSE
+DOCS := README.md CHANGELOG.md docs/reference/chaperon.md \
+        docs/admin/hardening.md docs/admin/install.md \
+        docs/reference/apptainer-comparison.md docs/reference/security.md LICENSE
 
 # Agents, chaperon, bin, conf.d are copied as directory trees
 # (dynamic contents, easier to handle with cp -r)

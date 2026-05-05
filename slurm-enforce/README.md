@@ -1,7 +1,7 @@
 # Admin Hardening: Enforce Sandbox on Agent-Submitted Slurm Jobs
 
 This directory contains the components for Section 1 of
-[ADMIN_HARDENING.md](../ADMIN_HARDENING.md) — system-wide Slurm wrappers
+[Admin Hardening](../docs/admin/hardening.md) — system-wide Slurm wrappers
 that ensure agent-submitted Slurm jobs stay sandboxed, a job submit plugin for server-side
 enforcement, and an eBPF LSM program that protects the bypass token from
 sandboxed processes.
@@ -27,7 +27,7 @@ Config search order (same across all components):
 1. `sandbox-wrapper.conf` next to the script (development/testing)
 2. `_ADMIN_CONF` path (admin sandbox config)
 
-**If you also deploy [Section 2](../ADMIN_INSTALL.md) (admin-owned sandbox installation),** add the Slurm enforcement variables directly to your admin `sandbox.conf` — one config file drives both the sandbox and the Slurm enforcement layer. See the [example admin config](../ADMIN_INSTALL.md#example-admin-config) for the Slurm variables.
+**If you also deploy [Section 2](../docs/admin/install.md) (admin-owned sandbox installation),** add the Slurm enforcement variables directly to your admin `sandbox.conf` — one config file drives both the sandbox and the Slurm enforcement layer. See the [example admin config](../docs/admin/install.md#example-admin-config) for the Slurm variables.
 
 **If you only deploy Section 1,** place `sandbox-wrapper.conf` next to the deployed wrapper scripts or set `_ADMIN_CONF` to point to it.
 
