@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-05
+
+### Added
+
+- Documentation site at https://katosh.github.io/agent_sandbox/.
+  Built with mkdocs-material and auto-deployed to GitHub Pages on
+  every push to `main`. The README is now a tight front page with a
+  prominent disclaimer; the full configuration reference, security
+  model, HPC integration guide, troubleshooting, and admin install
+  paths live on the site.
+
+### Fixed
+
+- `install.sh` step-list text was inconsistent between the header
+  comment and the `--help` output (the header had a duplicated step,
+  `--help` skipped step 5 entirely). Both blocks now agree on six
+  steps and both name the Pi agent profile and the `conf.d/`
+  directory.
+
 ### Removed
 
 - Removed the eBPF/SPANK admin-hardening construct (the `slurm-enforce/`
