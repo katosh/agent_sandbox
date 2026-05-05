@@ -104,7 +104,7 @@ Neither approach provides complete isolation. Both share these weaknesses:
 | **`memfd_create`** | Not blocked (needed by CUDA, PyTorch, JAX). Docker's default seccomp profile also allows it. `userfaultfd` and `io_uring` are blocked by all three backends via seccomp. | Not blocked (no seccomp by default). |
 | **Slurm wrapping** | Munge socket blocked (bwrap/firejail). Slurm binaries blocked (bwrap/firejail). **Landlock: neither munge nor Slurm binaries are blocked** — `AF_UNIX connect()` bypasses Landlock, so the chaperon is fully bypassable. See [Admin Hardening §1](../admin/hardening.md#1-enforce-sandbox-on-agent-submitted-slurm-jobs) (mandatory for Landlock) | No wrapping at all. Slurm fully accessible. |
 
-The sandbox has additional backend-specific gaps documented in the [README's Known Limitations](README.md#known-limitations):
+The sandbox has additional backend-specific gaps documented in the [README's Known Limitations](https://github.com/katosh/agent_sandbox#known-limitations):
 
 - **Landlock** cannot block Unix socket `connect()` (D-Bus/systemd escape), has no PID namespace, no mount namespace (BLOCKED_FILES and PRIVATE_TMP ineffective), and no LDAP user enumeration filtering.
 - **bwrap** seccomp filter is generated at runtime (`generate-seccomp.py`) — verify it loads (no "seccomp" warnings on stderr).

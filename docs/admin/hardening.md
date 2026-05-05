@@ -2,7 +2,7 @@
 
 > **Disclaimer:** This document reflects personal analysis and has not been formally reviewed by a security professional. The hardening suggestions are best-effort recommendations based on publicly available documentation and testing on a limited set of systems. The environment may differ. Review all changes with your security team before deploying to production.
 
-The [sandbox](../../README.md) is fully user-space, requiring no root or admin involvement. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents. Slurm access is mediated by the [chaperon](../reference/chaperon.md) — a zero-trust proxy that blocks Slurm authentication assets inside the sandbox (bwrap/firejail) and validates every job submission.
+The [sandbox](../index.md) is fully user-space, requiring no root or admin involvement. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents. Slurm access is mediated by the [chaperon](../reference/chaperon.md) — a zero-trust proxy that blocks Slurm authentication assets inside the sandbox (bwrap/firejail) and validates every job submission.
 
 > **⚠ Landlock is not a full sandbox.** Landlock cannot block `AF_UNIX connect()` (not available in any Landlock ABI version as of kernel 6.11). This means: (1) the munge socket is reachable, so the **chaperon is fully bypassable** — agents can submit arbitrary unwrapped Slurm jobs; (2) if `user@.service` is running, agents can call `systemd-run --user` to **escape the sandbox entirely** — reading SSH keys, AWS credentials, and writing arbitrary files with no Landlock restrictions. **If Landlock is the only available backend, §0 (disable user@.service) and §1 (SPANK plugin) are mandatory, not optional.** Prefer bwrap or firejail whenever possible.
 
@@ -58,7 +58,7 @@ systemctl status user@501.service   # should show "masked"
 | User outside sandbox | Reads token → passes to sbatch → **unsandboxed** |
 | `curl` to `slurmrestd` | Works if exposed (see §4 for network isolation) |
 
-Design, setup instructions, components, and verification steps are in [`slurm-enforce/README.md`](slurm-enforce/README.md). If also deploying Section 2, the Slurm enforcement variables can go directly in `/app/lib/agent-sandbox/sandbox.conf` — one config file for both systems.
+Design, setup instructions, components, and verification steps are in [`slurm-enforce/`](https://github.com/katosh/agent_sandbox/tree/main/slurm-enforce). If also deploying Section 2, the Slurm enforcement variables can go directly in `/app/lib/agent-sandbox/sandbox.conf` — one config file for both systems.
 
 ---
 

@@ -120,7 +120,7 @@ WARNING: User config added EXTRA_WRITABLE_PATHS entry '/etc/cron.d' under denied
 
 The `sandbox-admin.conf` shipped with the install is a minimal starting point. It contains only the enforcement-only knobs (`DENIED_WRITABLE_PATHS`, `BLOCKED_*`, `ALLOWED_PROJECT_PARENTS`, etc.) with commented-out examples. Uncomment and edit what you need.
 
-See [`sandbox-admin.conf`](sandbox-admin.conf) for the full skeleton.
+See [`sandbox-admin.conf`](https://github.com/katosh/agent_sandbox/blob/main/sandbox-admin.conf) for the full skeleton.
 
 **Environment overrides:** Users can override `SLURM_SCOPE` and `HOME_ACCESS` at launch time without editing any config file: `SLURM_SCOPE=session agent-sandbox claude` or `HOME_ACCESS=tmpwrite agent-sandbox bash`. Environment values take precedence over both admin and user configs.
 
@@ -373,4 +373,4 @@ Option A prevents the user systemd instance from starting at all. Verify with `s
 
 An admin-owned installation pairs with:
 
-- **[Slurm job enforcement](slurm-enforce/README.md)** — ensures agent-submitted Slurm jobs inherit the sandbox. All Slurm enforcement variables (`TOKEN_FILE`, `REAL_SBATCH`, `REAL_SRUN`, `SANDBOX_EXEC`) can be added directly to `/app/lib/agent-sandbox/sandbox.conf` — one config file for both systems. See the [example admin config](#example-admin-config) for the Slurm variables.
+- **[Slurm job enforcement](https://github.com/katosh/agent_sandbox/tree/main/slurm-enforce)** — ensures agent-submitted Slurm jobs inherit the sandbox. All Slurm enforcement variables (`TOKEN_FILE`, `REAL_SBATCH`, `REAL_SRUN`, `SANDBOX_EXEC`) can be added directly to `/app/lib/agent-sandbox/sandbox.conf` — one config file for both systems. See the [example admin config](#example-admin-config) for the Slurm variables.
