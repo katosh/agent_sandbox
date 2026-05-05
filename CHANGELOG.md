@@ -32,7 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   longer materializes a private symlink dir of host driver libraries
   or prepends one to `LD_LIBRARY_PATH`. Stale entries in user configs
   are silently ignored with the existing unknown-variable warning.
-  `DEVICES=("preset:auto-nvidia")` remains the device-node default.
+  The literal NVIDIA device-node default
+  `DEVICES=(/dev/nvidia* /dev/nvidia-uvm /dev/nvidia-uvm-tools
+  /dev/nvidia-modeset /dev/nvidiactl)` is unchanged.
 
 ## [0.6.1] - 2026-05-05
 
