@@ -4401,25 +4401,41 @@ else
     fail "DEV05: Unmatched glob produced output or stderr noise" "out=$_dev05_out err=$_dev05_stderr"
 fi
 
-# ── DEV06: BIND_DEV_PTS=true deprecation shim ──
-# Old config syntax should rewrite to DEVICES+=(/dev/pts) and emit a
-# deprecation notice. Because /dev/pts is in the default blacklist,
-# the rewrite is also dropped — visible only via the *deprecation*
-# warning, which is the contract we test here.
+# ── DEV06: BIND_DEV_PTS=true legacy deprecation shim (kernel < 5.4 branch) ──
+# On kernel < 5.4 the shim still rewrites `BIND_DEV_PTS=true` to
+# `DEVICES+=(/dev/pts)` and emits the legacy "is deprecated" warning;
+# /dev/pts is in the default blacklist so the rewrite is dropped, leaving
+# only the warning as the observable contract.
+#
+# GitHub-hosted runners are kernel 6.x, so we force the legacy branch by
+# shimming `uname -r` via a wrapper on PATH that reports "5.3.0-fake".
+# DEV08 covers the kernel-aware no-op branch that fires unshimmed.
+_dev06_bin=$(mktemp -d); trap_rm_dir "$_dev06_bin"
+cat >"$_dev06_bin/uname" <<'UNAME_SHIM'
+#!/bin/sh
+if [ "$#" -eq 1 ] && [ "$1" = "-r" ]; then
+    printf '5.3.0-fake\n'
+    exit 0
+fi
+# Strip the shim dir (always leftmost) and re-resolve uname for any other args.
+PATH="${PATH#*:}" exec uname "$@"
+UNAME_SHIM
+chmod +x "$_dev06_bin/uname"
 _dev06_conf=$(_dev_test_conf <<'CONF'
 BIND_DEV_PTS=true
 CONF
 )
 _dev06_err=$(mktemp); trap_rm_path "$_dev06_err"
-SANDBOX_CONF="$_dev06_conf" "$SANDBOX_EXEC" --backend bwrap --project-dir "$PROJECT_DIR" -- \
+PATH="$_dev06_bin:$PATH" SANDBOX_CONF="$_dev06_conf" \
+    "$SANDBOX_EXEC" --backend bwrap --project-dir "$PROJECT_DIR" -- \
     bash -c 'echo ok' >"$_dev06_err.out" 2>"$_dev06_err"
 _dev06_out=$(cat "$_dev06_err.out")
 _dev06_stderr=$(cat "$_dev06_err")
 if [[ "$_dev06_out" == *"ok"* ]] && \
    [[ "$_dev06_stderr" == *"BIND_DEV_PTS is deprecated"* ]]; then
-    pass "DEV06: BIND_DEV_PTS=true emits deprecation warning and continues"
+    pass "DEV06: BIND_DEV_PTS=true emits legacy deprecation warning on kernel < 5.4 (uname-shimmed)"
 else
-    fail "DEV06: deprecation shim missing or sandbox aborted" "out=$_dev06_out err=$_dev06_stderr"
+    fail "DEV06: legacy deprecation shim missing or sandbox aborted" "out=$_dev06_out err=$_dev06_stderr"
 fi
 
 # ── DEV07: Non-bwrap backend warns when DEVICES is non-default ──
