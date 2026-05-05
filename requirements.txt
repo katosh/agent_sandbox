@@ -1,0 +1,5 @@
+# Pinned dependencies for the docs site build (.github/workflows/docs.yml).
+# Update by re-running `pip install --upgrade mkdocs-material` locally,
+# verifying `mkdocs build --strict` still passes, and pinning the new
+# version range here.
+mkdocs-material>=9.5,<10

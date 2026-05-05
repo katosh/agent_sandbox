@@ -1,0 +1,1712 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Kernel-enforced filesystem isolation for AI coding agents on Linux.">
+      
+      
+      
+        <link rel="canonical" href="https://katosh.github.io/agent_sandbox/admin/hardening/">
+      
+      
+        <link rel="prev" href="../install/">
+      
+      
+        <link rel="next" href="../sandbox-help/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Hardening - agent-sandbox</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#admin-hardening-options" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="agent-sandbox" class="md-header__button md-logo" aria-label="agent-sandbox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            agent-sandbox
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Hardening
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/katosh/agent_sandbox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    katosh/agent_sandbox
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../reference/chaperon/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../install/" class="md-tabs__link">
+          
+  
+  
+  Admin
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="agent-sandbox" class="md-nav__button md-logo" aria-label="agent-sandbox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    agent-sandbox
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/katosh/agent_sandbox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    katosh/agent_sandbox
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/chaperon/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chaperon (Slurm proxy)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/device-passthrough/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Device passthrough
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/apptainer-comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox vs. Apptainer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Admin
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Admin
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hardening
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hardening
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#self-serve-vs-admin-enforced" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Self-serve vs. admin-enforced
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#0-disable-systemd-user-instances-landlock-escape-prevention" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0. Disable systemd User Instances (Landlock Escape Prevention)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-enforce-sandbox-on-agent-submitted-slurm-jobs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Enforce Sandbox on Agent-Submitted Slurm Jobs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-admin-owned-sandbox-installation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Admin-Owned Sandbox Installation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-dedicated-user_ai-accounts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Dedicated ${USER}_ai Accounts
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Dedicated ${USER}_ai Accounts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#account-and-group-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Account and Group Structure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#slurm-association" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Slurm Association
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#file-permissions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Permissions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#role-of-the-sandbox-with-dedicated-accounts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Role of the Sandbox with Dedicated Accounts
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-network-controls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Network Controls
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Network Controls">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#option-a-per-uid-iptablesnftables-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Option A: Per-UID iptables/nftables Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#option-b-cgroup-nftables-matching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Option B: cgroup + nftables Matching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#option-c-network-namespace-policy-proxy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Option C: Network Namespace + Policy Proxy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Comparison
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-audit-logging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Audit Logging
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Audit Logging">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#file-access-auditing-with-auditd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Access Auditing with auditd
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#slurm-job-accounting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Slurm Job Accounting
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sandbox-vs-apptainer-containers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sandbox vs. Apptainer Containers
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-help/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox config guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#self-serve-vs-admin-enforced" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Self-serve vs. admin-enforced
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#0-disable-systemd-user-instances-landlock-escape-prevention" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0. Disable systemd User Instances (Landlock Escape Prevention)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-enforce-sandbox-on-agent-submitted-slurm-jobs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Enforce Sandbox on Agent-Submitted Slurm Jobs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-admin-owned-sandbox-installation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Admin-Owned Sandbox Installation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-dedicated-user_ai-accounts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Dedicated ${USER}_ai Accounts
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Dedicated ${USER}_ai Accounts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#account-and-group-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Account and Group Structure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#slurm-association" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Slurm Association
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#file-permissions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Permissions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#role-of-the-sandbox-with-dedicated-accounts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Role of the Sandbox with Dedicated Accounts
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-network-controls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Network Controls
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Network Controls">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#option-a-per-uid-iptablesnftables-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Option A: Per-UID iptables/nftables Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#option-b-cgroup-nftables-matching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Option B: cgroup + nftables Matching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#option-c-network-namespace-policy-proxy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Option C: Network Namespace + Policy Proxy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Comparison
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-audit-logging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Audit Logging
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Audit Logging">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#file-access-auditing-with-auditd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Access Auditing with auditd
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#slurm-job-accounting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Slurm Job Accounting
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sandbox-vs-apptainer-containers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sandbox vs. Apptainer Containers
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/katosh/agent_sandbox/edit/main/docs/admin/hardening.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="admin-hardening-options">Admin Hardening Options<a class="headerlink" href="#admin-hardening-options" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p><strong>Disclaimer:</strong> This document reflects personal analysis and has not been formally reviewed by a security professional. The hardening suggestions are best-effort recommendations based on publicly available documentation and testing on a limited set of systems. The environment may differ. Review all changes with your security team before deploying to production.</p>
+</blockquote>
+<p>The <a href="../../">sandbox</a> is fully user-space, requiring no root or admin involvement. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents. Slurm access is mediated by the <a href="../../reference/chaperon/">chaperon</a> — a zero-trust proxy that blocks Slurm authentication assets inside the sandbox (bwrap/firejail) and validates every job submission.</p>
+<blockquote>
+<p><strong>⚠ Landlock is not a full sandbox.</strong> Landlock cannot block <code>AF_UNIX connect()</code> (not available in any Landlock ABI version as of kernel 6.11). This means: (1) the munge socket is reachable, so the <strong>chaperon is fully bypassable</strong> — agents can submit arbitrary unwrapped Slurm jobs; (2) if <code>user@.service</code> is running, agents can call <code>systemd-run --user</code> to <strong>escape the sandbox entirely</strong> — reading SSH keys, AWS credentials, and writing arbitrary files with no Landlock restrictions. <strong>If Landlock is the only available backend, §0 (disable user@.service) and §1 (SPANK plugin) are mandatory, not optional.</strong> Prefer bwrap or firejail whenever possible.</p>
+<p><strong>Ubuntu 24.04 consideration:</strong> Ubuntu 24.04 enables AppArmor's restriction on unprivileged user namespaces (<code>kernel.apparmor_restrict_unprivileged_userns=1</code>), which prevents bubblewrap from working. Without admin intervention, the sandbox falls back to the <strong>Landlock</strong> backend, which has significant limitations (no mount namespace, no <code>/tmp</code> isolation, no sandbox self-protection, <code>systemd-run</code> escape; see the comparison table under §2). <strong>Recommended:</strong> Create an AppArmor profile to allow bwrap (see §2 below). This is low effort and gives users the strongest backend. Alternatively, installing firejail (setuid) also bypasses the restriction.</p>
+</blockquote>
+<p>This document describes <strong>improvements</strong> that could close remaining gaps. Sections 1, 2, and 4 are independent and can be deployed individually. Sections 3 and 5 build on each other (5 requires 3; 4 has options that benefit from 3 but does not require it). They are ordered roughly from least to most effort.</p>
+<blockquote>
+<p><strong>Update:</strong> The <a href="../../reference/chaperon/">chaperon</a> now provides a hard Slurm boundary by default (no admin setup needed). Section 1 below is still useful as a server-side complement, but the chaperon has closed the main gap that motivated it. My current priority is <strong>Section 2</strong> (admin-owned installation for policy enforcement).</p>
+</blockquote>
+<h3 id="self-serve-vs-admin-enforced">Self-serve vs. admin-enforced<a class="headerlink" href="#self-serve-vs-admin-enforced" title="Permanent link">&para;</a></h3>
+<p>Each improvement falls into one of two categories:</p>
+<ul>
+<li><strong>Self-serve</strong> — makes it easier for users to sandbox their agents correctly. Works when users follow the setup. Does not prevent a user (or their agent) from bypassing the protection if they try.</li>
+<li><strong>Admin-enforced</strong> — the admin controls the enforcement mechanism. Users and agents cannot bypass it, even deliberately.</li>
+</ul>
+<p>The current user-space sandbox is entirely self-serve: it protects against accidental exposure and autonomous agent misbehavior, but a user who instructs their agent to bypass it can do so. The improvements below range from making the self-serve path smoother to adding hard admin-enforced boundaries.</p>
+<hr />
+<h2 id="0-disable-systemd-user-instances-landlock-escape-prevention">0. Disable systemd User Instances (Landlock Escape Prevention)<a class="headerlink" href="#0-disable-systemd-user-instances-landlock-escape-prevention" title="Permanent link">&para;</a></h2>
+<p><strong>What it solves:</strong> Landlock cannot block <code>AF_UNIX connect()</code>. If <code>user@.service</code> is running, a sandboxed process can call <code>systemd-run --user</code> to execute commands <strong>completely outside the sandbox</strong> — reading <code>~/.ssh</code>, <code>~/.aws</code>, writing arbitrary files, and submitting unwrapped Slurm jobs. This is a <strong>full sandbox escape</strong>, not a partial bypass.</p>
+<p><strong>Effort:</strong> Minimal (one command). <strong>Category:</strong> Admin-enforced. <strong>Mandatory for Landlock deployments.</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Mask user@.service — prevents systemd user instances from starting</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>sudo<span class="w"> </span>systemctl<span class="w"> </span>mask<span class="w"> </span>user@.service
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># Verify</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>systemctl<span class="w"> </span>status<span class="w"> </span>user@501.service<span class="w">   </span><span class="c1"># should show &quot;masked&quot;</span>
+</span></code></pre></div>
+<p><strong>What is affected by disabling:</strong> <code>gpg-agent</code> socket activation (users doing GPG signing would need to start <code>gpg-agent --daemon</code> manually), <code>systemctl --user</code> commands, and any user-level systemd services. On HPC login nodes this is rarely an issue — most user workflows don't depend on systemd user instances.</p>
+<p><strong>Note:</strong> bwrap and firejail are <strong>not affected</strong> — they replace <code>/run</code> with a tmpfs (bwrap) or blacklist the socket (firejail), so the D-Bus socket is unreachable regardless.</p>
+<hr />
+<h2 id="1-enforce-sandbox-on-agent-submitted-slurm-jobs">1. Enforce Sandbox on Agent-Submitted Slurm Jobs<a class="headerlink" href="#1-enforce-sandbox-on-agent-submitted-slurm-jobs" title="Permanent link">&para;</a></h2>
+<blockquote>
+<p><strong>Largely superseded by the chaperon (bwrap/firejail only).</strong> The <a href="../../reference/chaperon/">chaperon</a> — a zero-trust Slurm proxy — provides a stronger default boundary than the token-based approach described here. On bwrap/firejail, the chaperon blocks all Slurm authentication assets (munge socket, Slurm binaries, Slurm config) inside the sandbox. <strong>On Landlock, the chaperon is fully bypassable</strong> — Landlock cannot block <code>AF_UNIX connect()</code>, so the munge socket is reachable and <code>/usr/bin/sbatch</code> is directly callable. <strong>This SPANK plugin section is mandatory for Landlock deployments with Slurm.</strong></p>
+</blockquote>
+<p><strong>What it solves:</strong> Server-side enforcement of sandbox wrapping on Slurm jobs, using a job submit plugin and an eBPF LSM-protected bypass token. Complements the chaperon by adding a second enforcement layer at the Slurm controller. Users who do not use the sandbox are unaffected — their workflow does not change.</p>
+<p><strong>Effort:</strong> Medium. <strong>Category:</strong> Admin-enforced.</p>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>What happens</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Agent calls <code>sbatch</code> (any method)</td>
+<td>No bypass token → plugin wraps job in <code>sandbox-exec.sh</code> → <strong>sandboxed</strong></td>
+</tr>
+<tr>
+<td>Agent tries to read token file</td>
+<td>eBPF LSM checks <code>no_new_privs</code> → <strong>EACCES</strong></td>
+</tr>
+<tr>
+<td>User outside sandbox</td>
+<td>Reads token → passes to sbatch → <strong>unsandboxed</strong></td>
+</tr>
+<tr>
+<td><code>curl</code> to <code>slurmrestd</code></td>
+<td>Works if exposed (see §4 for network isolation)</td>
+</tr>
+</tbody>
+</table>
+<p>Design, setup instructions, components, and verification steps are in <a href="https://github.com/katosh/agent_sandbox/tree/main/slurm-enforce"><code>slurm-enforce/</code></a>. If also deploying Section 2, the Slurm enforcement variables can go directly in <code>/app/lib/agent-sandbox/sandbox.conf</code> — one config file for both systems.</p>
+<hr />
+<h2 id="2-admin-owned-sandbox-installation">2. Admin-Owned Sandbox Installation<a class="headerlink" href="#2-admin-owned-sandbox-installation" title="Permanent link">&para;</a></h2>
+<p><strong>What it solves:</strong> Two problems at once — <strong>policy enforcement</strong> (admin sets a security baseline that users cannot weaken) and <strong>sandbox self-protection</strong> (with bwrap/firejail, scripts are read-only inside the sandbox; with admin-owned scripts at <code>/app/lib/agent-sandbox/</code>, the agent can't modify them even without a mount namespace). Users can customize within bounds via a separate <code>user.conf</code> — adding data mounts and extra blocked paths — but cannot remove admin-enforced protections like blocked credentials or hidden paths.</p>
+<p><strong>Effort:</strong> Low-medium. <strong>Category:</strong> Admin-enforced.</p>
+<p>Key features:
+- <strong>Multi-level config</strong> — admin <code>sandbox.conf</code> (set via <code>_ADMIN_DIR</code> in <code>sandbox-lib.sh</code>, defaults to <code>/app/lib/agent-sandbox/</code>) sets the baseline; user config (<code>user.conf</code>) and per-project configs (<code>conf.d/*.conf</code>) can only add to it. The path is a script variable (not an env var) to prevent agent redirection. User configs run in isolated subprocesses — only known config variables are extracted. Admin values are enforced via comparison+merge after each config layer.
+- <strong>Backend selection</strong> — on Ubuntu 24.04+, AppArmor blocks unprivileged user namespaces. An admin AppArmor profile (low effort) enables the recommended bwrap backend. Firejail (setuid) is an alternative. Without either, the sandbox falls back to Landlock with <a href="../install/#landlock-fallback">significant gaps</a>.
+- <strong>Seccomp trade-offs</strong> — all three backends block <code>io_uring</code>, <code>userfaultfd</code>, and <code>kexec</code> via seccomp. See <a href="../install/#seccomp-filter--hpc-compatibility">HPC compatibility analysis</a>.</p>
+<p>For full setup instructions, config hierarchy, backend comparison, and seccomp details, see <strong><a href="../install/">Admin Install</a></strong>. After installation, run <code>bash test.sh</code> (backend isolation) and <code>bash test-admin.sh</code> (config enforcement) to verify the deployment.</p>
+<hr />
+<h2 id="3-dedicated-user_ai-accounts">3. Dedicated <code>${USER}_ai</code> Accounts<a class="headerlink" href="#3-dedicated-user_ai-accounts" title="Permanent link">&para;</a></h2>
+<p><strong>What it solves:</strong> True user separation. No amount of bubblewrap can prevent a process from accessing files owned by the same UID. A dedicated OS account (<code>alice_ai</code>) would run the agent under a different UID, so filesystem permissions enforce isolation without any sandbox at all.</p>
+<p><strong>Effort:</strong> High (new accounts, group structure, Slurm associations, ACLs). <strong>Category:</strong> Admin-enforced.</p>
+<h3 id="account-and-group-structure">Account and Group Structure<a class="headerlink" href="#account-and-group-structure" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>User account:   alice        (UID 1001, primary group: alice)
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>Agent account:  alice_ai     (UID 2001, primary group: alice_ai)
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>Lab AI group:   mylab_ai     (GID 3001)
+</span></code></pre></div>
+<p><strong>Group memberships:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Account</th>
+<th>Groups</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>alice</code></td>
+<td><code>alice</code>, <code>alice_ai</code>, <code>mylab</code></td>
+<td>Human can read agent output (via <code>alice_ai</code> group)</td>
+</tr>
+<tr>
+<td><code>alice_ai</code></td>
+<td><code>alice_ai</code>, <code>mylab_ai</code></td>
+<td>Agent creates files owned by <code>alice_ai</code>; lab-wide agent collaboration via <code>mylab_ai</code></td>
+</tr>
+</tbody>
+</table>
+<p>This means:
+- Files the agent creates are owned by <code>alice_ai:alice_ai</code>
+- The human (<code>alice</code>) is in the <code>alice_ai</code> group, so they can read/manage agent output
+- Multiple agents in the lab share <code>mylab_ai</code> for cross-user collaboration
+- The agent <strong>cannot</strong> read <code>alice</code>'s private files (SSH keys, credentials) because it's a different UID</p>
+<h3 id="slurm-association">Slurm Association<a class="headerlink" href="#slurm-association" title="Permanent link">&para;</a></h3>
+<p>A separate Slurm account and QOS could be created with resource limits:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sacctmgr<span class="w"> </span>add<span class="w"> </span>account<span class="w"> </span>ai_agents<span class="w"> </span><span class="nv">Description</span><span class="o">=</span><span class="s2">&quot;AI agent jobs&quot;</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>sacctmgr<span class="w"> </span>add<span class="w"> </span>user<span class="w"> </span>alice_ai<span class="w"> </span><span class="nv">Account</span><span class="o">=</span>ai_agents
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Optional: limit resources via QOS</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>sacctmgr<span class="w"> </span>add<span class="w"> </span>qos<span class="w"> </span>agent_qos<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nv">MaxTRESPerUser</span><span class="o">=</span><span class="nv">cpu</span><span class="o">=</span><span class="m">64</span>,gres/gpu<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nv">MaxJobsPerUser</span><span class="o">=</span><span class="m">10</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nv">MaxSubmitJobsPerUser</span><span class="o">=</span><span class="m">20</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nv">Priority</span><span class="o">=</span><span class="m">10</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>sacctmgr<span class="w"> </span>modify<span class="w"> </span>user<span class="w"> </span>alice_ai<span class="w"> </span><span class="nb">set</span><span class="w"> </span><span class="nv">DefaultQOS</span><span class="o">=</span>agent_qos
+</span></code></pre></div>
+<h3 id="file-permissions">File Permissions<a class="headerlink" href="#file-permissions" title="Permanent link">&para;</a></h3>
+<p>POSIX ACLs on shared data directories would let agents read lab data but not private dirs:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Lab shared data: agents can read</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>setfacl<span class="w"> </span>-R<span class="w"> </span>-m<span class="w"> </span>g:mylab_ai:rX<span class="w"> </span>/fh/fast/mylab/shared_data
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># User private dirs: no agent access (default — different UID, no group overlap)</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="c1"># alice_ai cannot read /home/alice/.ssh — OS enforces this</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="c1"># Agent workspace: both human and agent can read/write</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>/fh/fast/mylab/user/alice/agent_workspace
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>chown<span class="w"> </span>alice_ai:alice_ai<span class="w"> </span>/fh/fast/mylab/user/alice/agent_workspace
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>chmod<span class="w"> </span><span class="m">2775</span><span class="w"> </span>/fh/fast/mylab/user/alice/agent_workspace
+</span></code></pre></div>
+<h3 id="role-of-the-sandbox-with-dedicated-accounts">Role of the Sandbox with Dedicated Accounts<a class="headerlink" href="#role-of-the-sandbox-with-dedicated-accounts" title="Permanent link">&para;</a></h3>
+<p>OS user separation handles credential isolation — the agent physically cannot read <code>alice</code>'s SSH keys or AWS credentials because they're owned by a different UID. However, the sandbox remains useful for <strong>fine-grained write restriction within allowed paths</strong>: the agent account may have write access to multiple project directories, but the sandbox can restrict a given session to only one.</p>
+<hr />
+<h2 id="4-network-controls">4. Network Controls<a class="headerlink" href="#4-network-controls" title="Permanent link">&para;</a></h2>
+<p><strong>What it solves:</strong> The current sandbox shares the host network stack. The <a href="../../reference/chaperon/">chaperon</a> removed the dependency on in-sandbox network access for Slurm on bwrap/firejail (munge socket is blocked, all Slurm communication goes through FIFOs). On Landlock, the munge socket remains accessible — see §1. However, the agent still has unrestricted outbound network — it can reach any host the user can, using the same institutional IP.</p>
+<p>Agents legitimately need general web access: reading documentation, downloading papers (often through institutional proxy/IP for paywall access), installing packages, cloning repos. The goal is not to cut off network access, but to <strong>route agent traffic through a controllable path</strong> where agent-specific policies can be applied — blocking certain services, logging traffic, or rate-limiting — without breaking research workflows.</p>
+<p><strong>Threat model:</strong> The concern is not bulk data transfer (the agent already has API access to exfiltrate context). It's about preventing the agent from reaching services it shouldn't: SSH to an unsandboxed shell, internal REST APIs, cloud metadata endpoints (169.254.169.254), or other agents' sandboxes. General HTTPS to the open web (research, PyPI, GitHub, paper access) is typically fine.</p>
+<p><strong>Effort:</strong> Varies by option (see below). <strong>Category:</strong> Admin-enforced (Options A, B) or self-serve (Option C).</p>
+<h3 id="option-a-per-uid-iptablesnftables-rules">Option A: Per-UID iptables/nftables Rules<a class="headerlink" href="#option-a-per-uid-iptablesnftables-rules" title="Permanent link">&para;</a></h3>
+<p><strong>Requires:</strong> Dedicated <code>${USER}_ai</code> accounts (Section 3). <strong>Effort:</strong> Medium.</p>
+<p>The simplest admin approach — iptables <code>--uid-owner</code> matches on the agent's UID, so no changes to the sandbox itself are needed. Rules selectively block dangerous services while allowing general web access:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Allow loopback and established connections</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>iptables<span class="w"> </span>-A<span class="w"> </span>OUTPUT<span class="w"> </span>-m<span class="w"> </span>owner<span class="w"> </span>--uid-owner<span class="w"> </span>alice_ai<span class="w"> </span>-o<span class="w"> </span>lo<span class="w"> </span>-j<span class="w"> </span>ACCEPT
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>iptables<span class="w"> </span>-A<span class="w"> </span>OUTPUT<span class="w"> </span>-m<span class="w"> </span>owner<span class="w"> </span>--uid-owner<span class="w"> </span>alice_ai<span class="w"> </span>-m<span class="w"> </span>state<span class="w"> </span>--state<span class="w"> </span>ESTABLISHED,RELATED<span class="w"> </span>-j<span class="w"> </span>ACCEPT
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="c1"># --- Block dangerous destinations first (order matters: checked before ACCEPT) ---</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="c1"># Block SSH out (prevents escape to unsandboxed shell)</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>iptables<span class="w"> </span>-A<span class="w"> </span>OUTPUT<span class="w"> </span>-m<span class="w"> </span>owner<span class="w"> </span>--uid-owner<span class="w"> </span>alice_ai<span class="w"> </span>-p<span class="w"> </span>tcp<span class="w"> </span>--dport<span class="w"> </span><span class="m">22</span><span class="w"> </span>-j<span class="w"> </span>DROP
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="c1"># Block cloud metadata endpoint</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>iptables<span class="w"> </span>-A<span class="w"> </span>OUTPUT<span class="w"> </span>-m<span class="w"> </span>owner<span class="w"> </span>--uid-owner<span class="w"> </span>alice_ai<span class="w"> </span>-d<span class="w"> </span><span class="m">169</span>.254.169.254<span class="w"> </span>-j<span class="w"> </span>DROP
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="c1"># Block internal network ranges (adjust to your environment)</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>iptables<span class="w"> </span>-A<span class="w"> </span>OUTPUT<span class="w"> </span>-m<span class="w"> </span>owner<span class="w"> </span>--uid-owner<span class="w"> </span>alice_ai<span class="w"> </span>-d<span class="w"> </span><span class="m">10</span>.0.0.0/8<span class="w"> </span>-j<span class="w"> </span>DROP
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>iptables<span class="w"> </span>-A<span class="w"> </span>OUTPUT<span class="w"> </span>-m<span class="w"> </span>owner<span class="w"> </span>--uid-owner<span class="w"> </span>alice_ai<span class="w"> </span>-d<span class="w"> </span><span class="m">172</span>.16.0.0/12<span class="w"> </span>-j<span class="w"> </span>DROP
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="c1"># --- Allow general access (after blocks) ---</span>
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="c1"># DNS, HTTPS, HTTP — research, API, packages, papers via institutional IP</span>
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>iptables<span class="w"> </span>-A<span class="w"> </span>OUTPUT<span class="w"> </span>-m<span class="w"> </span>owner<span class="w"> </span>--uid-owner<span class="w"> </span>alice_ai<span class="w"> </span>-p<span class="w"> </span>udp<span class="w"> </span>--dport<span class="w"> </span><span class="m">53</span><span class="w"> </span>-j<span class="w"> </span>ACCEPT
+</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>iptables<span class="w"> </span>-A<span class="w"> </span>OUTPUT<span class="w"> </span>-m<span class="w"> </span>owner<span class="w"> </span>--uid-owner<span class="w"> </span>alice_ai<span class="w"> </span>-p<span class="w"> </span>tcp<span class="w"> </span>--dport<span class="w"> </span><span class="m">443</span><span class="w"> </span>-j<span class="w"> </span>ACCEPT
+</span><span id="__span-4-20"><a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>iptables<span class="w"> </span>-A<span class="w"> </span>OUTPUT<span class="w"> </span>-m<span class="w"> </span>owner<span class="w"> </span>--uid-owner<span class="w"> </span>alice_ai<span class="w"> </span>-p<span class="w"> </span>tcp<span class="w"> </span>--dport<span class="w"> </span><span class="m">80</span><span class="w"> </span>-j<span class="w"> </span>ACCEPT
+</span><span id="__span-4-21"><a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>
+</span><span id="__span-4-22"><a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="c1"># Drop everything else (non-HTTP protocols to external hosts)</span>
+</span><span id="__span-4-23"><a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a>iptables<span class="w"> </span>-A<span class="w"> </span>OUTPUT<span class="w"> </span>-m<span class="w"> </span>owner<span class="w"> </span>--uid-owner<span class="w"> </span>alice_ai<span class="w"> </span>-j<span class="w"> </span>DROP
+</span></code></pre></div>
+<p>Rules are evaluated top-to-bottom: dangerous destinations are dropped first, then HTTP/HTTPS to anywhere else is allowed, and non-web protocols (raw TCP, SMTP, etc.) are dropped at the end. This preserves research workflows (paper access, package installation, web search) while blocking known-dangerous paths.</p>
+<p><strong>Pros:</strong> Transparent to the sandboxed process — no proxy configuration needed; institutional IP preserved for paper access; easy to audit and extend. <strong>Cons:</strong> Requires dedicated accounts (Section 3); can't inspect HTTPS content (only destination IP/port); a determined agent could exfiltrate via any allowed HTTPS connection.</p>
+<h3 id="option-b-cgroup-nftables-matching">Option B: cgroup + nftables Matching<a class="headerlink" href="#option-b-cgroup-nftables-matching" title="Permanent link">&para;</a></h3>
+<p><strong>Requires:</strong> Admin (nftables, cgroup setup). <strong>Does not require</strong> dedicated accounts. <strong>Effort:</strong> Medium.</p>
+<p>Modern nftables (≥ 0.9.3, Linux ≥ 4.10) can match packets by cgroup membership instead of UID. The sandbox launches processes inside a dedicated cgroup slice, and nftables applies the same targeted-block policy as Option A — but keyed on cgroup membership rather than UID:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Launch sandbox inside a cgroup slice (sandbox-exec.sh would do this)</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>systemd-run<span class="w"> </span>--user<span class="w"> </span>--scope<span class="w"> </span>--slice<span class="o">=</span>sandbox.slice<span class="w"> </span>--<span class="w"> </span>sandbox-exec.sh<span class="w"> </span>...
+</span></code></pre></div>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>table inet sandbox_filter {
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    # Destinations to block for sandboxed agents
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    set blocked_nets {
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>        type ipv4_addr; flags interval
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>        elements = {
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>            169.254.169.254,    # cloud metadata
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>            10.0.0.0/8,         # internal network (adjust to environment)
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>            172.16.0.0/12       # internal network
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>        }
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>    }
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>    chain output {
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>        type filter hook output priority 0; policy accept;
+</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>
+</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>        # Match only sandboxed processes via cgroup
+</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>        # (cgroup path varies by distro — verify with: cat /proc/self/cgroup)
+</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>        socket cgroupv2 level 2 &quot;user.slice/user-1001.slice/user@1001.service/sandbox.slice&quot; \
+</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a>            ip daddr @blocked_nets drop
+</span><span id="__span-6-19"><a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a>
+</span><span id="__span-6-20"><a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>        # Block SSH out from sandbox (prevents escape to unsandboxed shell)
+</span><span id="__span-6-21"><a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>        socket cgroupv2 level 2 &quot;user.slice/user-1001.slice/user@1001.service/sandbox.slice&quot; \
+</span><span id="__span-6-22"><a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a>            meta l4proto tcp th dport 22 drop
+</span><span id="__span-6-23"><a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a>
+</span><span id="__span-6-24"><a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a>        # Everything else from sandbox is allowed (research, API, packages)
+</span><span id="__span-6-25"><a id="__codelineno-6-25" name="__codelineno-6-25" href="#__codelineno-6-25"></a>    }
+</span><span id="__span-6-26"><a id="__codelineno-6-26" name="__codelineno-6-26" href="#__codelineno-6-26"></a>}
+</span></code></pre></div>
+<p><strong>Pros:</strong> No dedicated accounts needed — cgroup membership identifies sandboxed processes; transparent to the process (no proxy config); institutional IP preserved; default-allow keeps research workflows intact; works with any backend. <strong>Cons:</strong> cgroup path hierarchy varies by distro and systemd version — the nftables rules must match the actual cgroup tree; <code>systemd-run --user --scope</code> may require <code>loginctl enable-linger</code> for the user; multi-user deployments need per-user rules or a common slice.</p>
+<h3 id="option-c-network-namespace-policy-proxy">Option C: Network Namespace + Policy Proxy<a class="headerlink" href="#option-c-network-namespace-policy-proxy" title="Permanent link">&para;</a></h3>
+<p><strong>Does not require</strong> dedicated accounts or admin. <strong>Effort:</strong> Medium-high (self-serve).</p>
+<p>Bwrap supports <code>--unshare-net</code>, which places the sandbox in a network namespace with <strong>no interfaces at all</strong>. All network access is then restored through a proxy running outside the sandbox, listening on a Unix socket (bind-mounted in, like the chaperon FIFOs). The proxy becomes a policy enforcement point — it can allow general web access while blocking specific destinations, logging requests, or applying rate limits.</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>sandbox-exec.sh
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>  ├── start policy-proxy on Unix socket (outside sandbox)
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>  │     ├── allows: general HTTPS/HTTP (research, papers, packages)
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>  │     ├── blocks: SSH, internal networks, metadata endpoint
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>  │     └── logs: all CONNECT requests (destination + timestamp)
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>  ├── --unshare-net (no network interfaces inside sandbox)
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>  ├── bind-mount proxy socket into sandbox
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>  ├── export HTTPS_PROXY=http+unix:///path/to/proxy.sock
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>  └── enter sandbox
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>        └── all outbound traffic → proxy socket → policy check → internet
+</span></code></pre></div>
+<p>The proxy could be a lightweight HTTP CONNECT proxy (e.g., a small Go binary, or Python's <code>http.server</code> with CONNECT support) with a deny-list of destinations. Since it sees every connection request, it can:</p>
+<ul>
+<li><strong>Block by destination</strong>: SSH (port 22), internal IPs, metadata endpoints</li>
+<li><strong>Log</strong>: record every outbound connection for audit</li>
+<li><strong>Rate-limit</strong>: prevent bulk exfiltration</li>
+<li><strong>Preserve institutional IP</strong>: the proxy runs on the host, so outbound connections use the institutional IP — paper access through publisher paywalls works as expected</li>
+</ul>
+<p><strong>Pros:</strong> No admin involvement; no dedicated accounts; strongest isolation (zero network interfaces — abstract Unix sockets unreachable); full visibility into outbound connections; policy is code (version-controlled, testable). <strong>Cons:</strong> All tools must respect <code>HTTPS_PROXY</code> / <code>http_proxy</code> (most do — curl, pip, conda, git, wget — but some don't); the proxy is an additional component to build and maintain; not available on Landlock (no network namespace support); adds a hop for every connection.</p>
+<h3 id="comparison">Comparison<a class="headerlink" href="#comparison" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Accounts?</th>
+<th>Admin?</th>
+<th>Transparent?</th>
+<th>Abstract sockets?</th>
+<th>Logging?</th>
+<th>Landlock?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A: UID iptables</strong></td>
+<td>Yes (#3)</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>No</td>
+<td>No (add auditd)</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><strong>B: cgroup nftables</strong></td>
+<td>No</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>No</td>
+<td>No (add auditd)</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><strong>C: netns + proxy</strong></td>
+<td>No</td>
+<td>No</td>
+<td>No (<code>HTTPS_PROXY</code>)</td>
+<td>Blocked</td>
+<td>Built-in</td>
+<td>No</td>
+</tr>
+</tbody>
+</table>
+<p>All three options use a <strong>default-allow</strong> policy for general web access (research, packages, papers) with <strong>targeted blocks</strong> on dangerous services (SSH, internal networks, metadata endpoints). The difference is where enforcement happens: in the kernel (A, B) or in a userspace proxy (C).</p>
+<p><strong>Recommendation:</strong> Option B is the best balance for admin-managed deployments — no dedicated accounts needed, transparent to processes, and works with all backends. Option C provides the deepest control (logging, rate-limiting, policy-as-code) and requires no admin, but needs proxy configuration. Option A is simplest if dedicated accounts (Section 3) are already deployed.</p>
+<hr />
+<h2 id="5-audit-logging">5. Audit Logging<a class="headerlink" href="#5-audit-logging" title="Permanent link">&para;</a></h2>
+<p><strong>What it solves:</strong> Visibility into what the agent did — which files it accessed, which jobs it submitted, and what commands it ran. Useful for compliance, forensics, and debugging.</p>
+<p><strong>Built-in chaperon logging:</strong> The chaperon already logs every proxied Slurm request with full arguments, working directory, script size, and all security denials (<code>_sandbox_deny</code> / <code>_sandbox_warn</code>). Logs are per-session files in <code>~/.local/state/agent-sandbox/chaperon/</code>, auto-pruned by age and total size. Configure <code>CHAPERON_LOG_LEVEL</code> and <code>CHAPERON_LOG_RETAIN_DAYS</code> in <code>sandbox.conf</code>. This covers Slurm-level audit without any admin setup. See <a href="../../reference/chaperon/#logging">Chaperon</a> for details.</p>
+<p><strong>For system-level audit</strong> (file access, process execution, network connections), dedicated accounts and auditd are needed:</p>
+<p><strong>Effort:</strong> Low-medium (auditd rules + Slurm accounting config). <strong>Category:</strong> Admin-enforced. <strong>Requires:</strong> Dedicated <code>${USER}_ai</code> accounts (Section 3) — auditd filters on UID, so without a separate agent UID there is no way to distinguish agent activity from human activity in the audit log.</p>
+<h3 id="file-access-auditing-with-auditd">File Access Auditing with auditd<a class="headerlink" href="#file-access-auditing-with-auditd" title="Permanent link">&para;</a></h3>
+<p>File access by agent accounts could be logged:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># /etc/audit/rules.d/agent-audit.rules</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="c1"># Log file opens by alice_ai</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>-a<span class="w"> </span>always,exit<span class="w"> </span>-F<span class="w"> </span><span class="nv">arch</span><span class="o">=</span>b64<span class="w"> </span>-S<span class="w"> </span>open,openat<span class="w"> </span>-F<span class="w"> </span><span class="nv">uid</span><span class="o">=</span><span class="m">2001</span><span class="w"> </span>-k<span class="w"> </span>agent_file_access
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="c1"># Log process execution by alice_ai</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>-a<span class="w"> </span>always,exit<span class="w"> </span>-F<span class="w"> </span><span class="nv">arch</span><span class="o">=</span>b64<span class="w"> </span>-S<span class="w"> </span>execve<span class="w"> </span>-F<span class="w"> </span><span class="nv">uid</span><span class="o">=</span><span class="m">2001</span><span class="w"> </span>-k<span class="w"> </span>agent_exec
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="c1"># Log network connections by alice_ai</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>-a<span class="w"> </span>always,exit<span class="w"> </span>-F<span class="w"> </span><span class="nv">arch</span><span class="o">=</span>b64<span class="w"> </span>-S<span class="w"> </span>connect<span class="w"> </span>-F<span class="w"> </span><span class="nv">uid</span><span class="o">=</span><span class="m">2001</span><span class="w"> </span>-k<span class="w"> </span>agent_network
+</span></code></pre></div>
+<p>Reload rules with <code>augenrules --load</code>. Example queries:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># What files did the agent open?</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>ausearch<span class="w"> </span>-k<span class="w"> </span>agent_file_access<span class="w"> </span>--uid<span class="w"> </span><span class="m">2001</span><span class="w"> </span>-ts<span class="w"> </span>today
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="c1"># What commands did it run?</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>ausearch<span class="w"> </span>-k<span class="w"> </span>agent_exec<span class="w"> </span>--uid<span class="w"> </span><span class="m">2001</span><span class="w"> </span>-ts<span class="w"> </span>today
+</span></code></pre></div>
+<h3 id="slurm-job-accounting">Slurm Job Accounting<a class="headerlink" href="#slurm-job-accounting" title="Permanent link">&para;</a></h3>
+<p>With dedicated Slurm accounts (Section 3), all agent jobs are automatically tracked:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># All jobs submitted by agent accounts</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>sacct<span class="w"> </span>-a<span class="w"> </span>--accounts<span class="o">=</span>ai_agents<span class="w"> </span>--starttime<span class="o">=</span><span class="m">2024</span>-01-01<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span>--format<span class="o">=</span>JobID,User,Account,JobName,State,ExitCode,Start,End,Elapsed,MaxRSS
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="c1"># Resource usage summary</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>sreport<span class="w"> </span>cluster<span class="w"> </span>AccountUtilizationByUser<span class="w"> </span><span class="nv">Accounts</span><span class="o">=</span>ai_agents<span class="w"> </span><span class="nv">Start</span><span class="o">=</span><span class="m">2024</span>-01-01
+</span></code></pre></div>
+<p>The separate account/QOS makes it trivial to query, report on, and set limits for agent workloads without any custom tooling.</p>
+<p><strong>Complements:</strong> Downstream of dedicated <code>${USER}_ai</code> accounts — both auditd and Slurm accounting depend on having a separate UID/account to filter on.</p>
+<hr />
+<h2 id="summary">Summary<a class="headerlink" href="#summary" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Improvement</th>
+<th>Effort</th>
+<th>Category</th>
+<th>What It Closes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><a href="#1-enforce-sandbox-on-agent-submitted-slurm-jobs">Enforce sandbox on Slurm jobs</a> <em>(largely superseded by <a href="../../reference/chaperon/">chaperon</a>)</em></td>
+<td>Medium</td>
+<td>Admin-enforced</td>
+<td>Server-side complement to the chaperon — job submit plugin sandboxes all jobs unless caller provides bypass token (eBPF LSM protects token from <code>no_new_privs</code> processes). Optional if the chaperon meets your needs</td>
+</tr>
+<tr>
+<td>2</td>
+<td><a href="#2-admin-owned-sandbox-installation">Admin-owned sandbox installation</a> (<a href="../install/">details</a>)</td>
+<td>Low-medium</td>
+<td>Admin-enforced</td>
+<td>Users weakening config; sandbox self-protection; multi-level config with post-merge validation; <a href="../install/#choosing-a-backend-on-ubuntu-2404">backend selection</a> (bwrap via AppArmor recommended, firejail alternative); <a href="../install/#seccomp-filter--hpc-compatibility">seccomp trade-offs</a>; <a href="../install/#landlock-fallback">Landlock fallback gaps</a></td>
+</tr>
+<tr>
+<td>3</td>
+<td><a href="#3-dedicated-user_ai-accounts">Dedicated <code>${USER}_ai</code> accounts</a></td>
+<td>High</td>
+<td>Admin-enforced</td>
+<td>Same-UID credential access; OS-level separation</td>
+</tr>
+<tr>
+<td>4</td>
+<td><a href="#4-network-controls">Network controls</a></td>
+<td>Medium</td>
+<td>Admin-enforced or self-serve</td>
+<td>Agent-specific network policy (block SSH escape, internal services, metadata endpoint) while preserving web access for research — three options: UID iptables (requires #3), cgroup nftables (no #3), or netns + policy proxy (no admin)</td>
+</tr>
+<tr>
+<td>5</td>
+<td><a href="#5-audit-logging">Audit logging</a></td>
+<td>Low-medium</td>
+<td>Admin-enforced (requires #3)</td>
+<td>Visibility, compliance, forensics</td>
+</tr>
+</tbody>
+</table>
+<p>Sections 1, 2, and 4 are independent and can be deployed individually. Section 1 is optional if the <a href="../../reference/chaperon/">chaperon</a> meets your Slurm enforcement needs — it adds server-side defense-in-depth. Section 2 includes backend selection for Ubuntu 24.04+ — an AppArmor profile for bwrap (recommended) or firejail avoids falling back to Landlock. Section 4 applies agent-specific network policy (default-allow for research, targeted blocks on SSH/internal services) with three options — Option C (netns + proxy) requires no admin or dedicated accounts. Section 5 requires Section 3 (dedicated accounts).</p>
+<hr />
+<h2 id="sandbox-vs-apptainer-containers">Sandbox vs. Apptainer Containers<a class="headerlink" href="#sandbox-vs-apptainer-containers" title="Permanent link">&para;</a></h2>
+<p>For a detailed security comparison with Apptainer (the standard HPC container runtime), including default isolation tables, CVE history, architectural weaknesses, and shared gaps, see <strong><a href="../../reference/apptainer-comparison/">Apptainer Comparison</a></strong>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../install/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Installation">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Installation
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../sandbox-help/" class="md-footer__link md-footer__link--next" aria-label="Next: Sandbox config guide">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Sandbox config guide
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/katosh/agent_sandbox" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.footer", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.action.edit", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

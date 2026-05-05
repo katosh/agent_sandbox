@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://katosh.github.io/agent_sandbox/</loc>
+         <lastmod>2026-05-05</lastmod>
+    </url>
+    <url>
+         <loc>https://katosh.github.io/agent_sandbox/admin/hardening/</loc>
+         <lastmod>2026-05-05</lastmod>
+    </url>
+    <url>
+         <loc>https://katosh.github.io/agent_sandbox/admin/install/</loc>
+         <lastmod>2026-05-05</lastmod>
+    </url>
+    <url>
+         <loc>https://katosh.github.io/agent_sandbox/admin/sandbox-help/</loc>
+         <lastmod>2026-05-05</lastmod>
+    </url>
+    <url>
+         <loc>https://katosh.github.io/agent_sandbox/reference/apptainer-comparison/</loc>
+         <lastmod>2026-05-05</lastmod>
+    </url>
+    <url>
+         <loc>https://katosh.github.io/agent_sandbox/reference/chaperon/</loc>
+         <lastmod>2026-05-05</lastmod>
+    </url>
+    <url>
+         <loc>https://katosh.github.io/agent_sandbox/reference/device-passthrough/</loc>
+         <lastmod>2026-05-05</lastmod>
+    </url>
+    <url>
+         <loc>https://katosh.github.io/agent_sandbox/reference/security/</loc>
+         <lastmod>2026-05-05</lastmod>
+    </url>
+</urlset>

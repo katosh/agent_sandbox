@@ -1,0 +1,2801 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Kernel-enforced filesystem isolation for AI coding agents on Linux.">
+      
+      
+      
+        <link rel="canonical" href="https://katosh.github.io/agent_sandbox/reference/chaperon/">
+      
+      
+        <link rel="prev" href="../..">
+      
+      
+        <link rel="next" href="../device-passthrough/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Chaperon (Slurm proxy) - agent-sandbox</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#chaperon-secure-slurm-proxy-for-sandboxed-sessions" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="agent-sandbox" class="md-header__button md-logo" aria-label="agent-sandbox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            agent-sandbox
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Chaperon (Slurm proxy)
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/katosh/agent_sandbox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    katosh/agent_sandbox
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../admin/install/" class="md-tabs__link">
+          
+  
+  
+  Admin
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="agent-sandbox" class="md-nav__button md-logo" aria-label="agent-sandbox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    agent-sandbox
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/katosh/agent_sandbox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    katosh/agent_sandbox
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chaperon (Slurm proxy)
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chaperon (Slurm proxy)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#problem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Problem">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#user-facing-experience" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        User-Facing Experience
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#component-roles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Component Roles
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#file-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Structure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#protocol-chaperon1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Protocol: CHAPERON/1
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Protocol: CHAPERON/1">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#request-stub-chaperon" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Request (stub → chaperon)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-chaperon-stub" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response (chaperon → stub)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#safety-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Safety Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fifo-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FIFO Design
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#chaperon-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chaperon Lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#logging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Logging
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Logging">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#log-location" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Log Location
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#log-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Log Format
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-is-logged" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is Logged
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#retention" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Retention
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#debugging-a-dead-chaperon" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debugging a Dead Chaperon
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#handler-dispatch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Handler Dispatch
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Handler Dispatch">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#sbatch-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sbatch Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#job-tagging-and-scoping-via-comment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Job Tagging and Scoping via --comment
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Job Tagging and Scoping via --comment">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#tag-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tag format
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scancel-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        scancel Handler
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="scancel Handler">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#scope-levels" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope Levels
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#denied-sbatch-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Denied sbatch Flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#srun-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srun Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#squeue-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        squeue Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scontrol-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        scontrol Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sacct-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sacct Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sacctmgr-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sacctmgr Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sinfo-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sinfo Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sstat-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sstat Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sprio-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sprio Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sshare-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sshare Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sdiag-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sdiag Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sreport-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sreport Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#comment-stripping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Comment Stripping
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#blocked-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Blocked Commands
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-gets-blocked-inside-the-sandbox" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Gets Blocked Inside the Sandbox
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#comparison-with-previous-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Comparison with Previous Architecture
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#security-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security Properties
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#extending" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Extending
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Extending">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#adding-a-new-slurm-command" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adding a new Slurm command
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#adding-a-new-allowed-sbatch-flag" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adding a new allowed sbatch flag
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuring-slurm-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuring Slurm scope
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#querying-sandbox-jobs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Querying sandbox jobs
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../device-passthrough/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Device passthrough
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../apptainer-comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox vs. Apptainer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Admin
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Admin
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../admin/install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../admin/hardening/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hardening
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../admin/sandbox-help/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox config guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#problem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Problem">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#user-facing-experience" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        User-Facing Experience
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#component-roles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Component Roles
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#file-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File Structure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#protocol-chaperon1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Protocol: CHAPERON/1
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Protocol: CHAPERON/1">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#request-stub-chaperon" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Request (stub → chaperon)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#response-chaperon-stub" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response (chaperon → stub)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#safety-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Safety Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fifo-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FIFO Design
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#chaperon-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chaperon Lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#logging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Logging
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Logging">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#log-location" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Log Location
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#log-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Log Format
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-is-logged" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is Logged
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#retention" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Retention
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#debugging-a-dead-chaperon" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debugging a Dead Chaperon
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#handler-dispatch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Handler Dispatch
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Handler Dispatch">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#sbatch-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sbatch Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#job-tagging-and-scoping-via-comment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Job Tagging and Scoping via --comment
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Job Tagging and Scoping via --comment">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#tag-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tag format
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scancel-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        scancel Handler
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="scancel Handler">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#scope-levels" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope Levels
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#denied-sbatch-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Denied sbatch Flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#srun-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        srun Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#squeue-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        squeue Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scontrol-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        scontrol Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sacct-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sacct Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sacctmgr-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sacctmgr Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sinfo-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sinfo Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sstat-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sstat Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sprio-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sprio Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sshare-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sshare Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sdiag-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sdiag Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sreport-handler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sreport Handler
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#comment-stripping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Comment Stripping
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#blocked-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Blocked Commands
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-gets-blocked-inside-the-sandbox" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Gets Blocked Inside the Sandbox
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#comparison-with-previous-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Comparison with Previous Architecture
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#security-properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security Properties
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#extending" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Extending
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Extending">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#adding-a-new-slurm-command" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adding a new Slurm command
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#adding-a-new-allowed-sbatch-flag" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adding a new allowed sbatch flag
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuring-slurm-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuring Slurm scope
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#querying-sandbox-jobs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Querying sandbox jobs
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/katosh/agent_sandbox/edit/main/docs/reference/chaperon.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="chaperon-secure-slurm-proxy-for-sandboxed-sessions">Chaperon: Secure Slurm Proxy for Sandboxed Sessions<a class="headerlink" href="#chaperon-secure-slurm-proxy-for-sandboxed-sessions" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p><strong>Disclaimer:</strong> The chaperon is a best-effort security mechanism. It has not been formally audited and comes with <strong>no guarantees</strong>. While it aims to prevent sandbox bypass via Slurm, there may be edge cases, Slurm version-specific behaviors, or site-specific configurations that weaken its protections. Review the <a href="#security-properties">Security Properties</a> and <a href="#blocked-commands">Known Limitations</a> sections, and test against your environment before relying on it. Use at your own risk.</p>
+</blockquote>
+<h2 id="problem">Problem<a class="headerlink" href="#problem" title="Permanent link">&para;</a></h2>
+<p>The previous Slurm isolation model exposed the munge authentication socket (<code>/run/munge</code>) read-only inside the sandbox, allowing the PATH-shadowing wrappers to authenticate with slurmctld. This meant anything inside the sandbox that could talk to munge — a crafted binary, Python ctypes, a direct <code>socat</code> call — could submit jobs without going through the sandbox wrappers. PATH shadowing was a speed bump, not a wall.</p>
+<p>The chaperon replaces this with a <strong>zero-trust architecture</strong>: all Slurm authentication assets are blocked inside the sandbox, and a proxy process running <em>outside</em> the sandbox validates, wraps, and submits jobs on behalf of the sandboxed process.</p>
+<h3 id="user-facing-experience">User-Facing Experience<a class="headerlink" href="#user-facing-experience" title="Permanent link">&para;</a></h3>
+<p>Although every Slurm call from inside the sandbox is heavily filtered by the chaperon (argument whitelisting, CWD validation, scope-filtered output, denied subcommands, comment-tag injection and stripping), <strong>interacting with Slurm through any utility from within the sandbox is indistinguishable from interacting with it from outside the sandbox</strong>. The stubs shadow the real binaries on PATH, the exit codes match, and stdout/stderr are passed through verbatim (with only chaperon-internal metadata stripped). An agent running <code>sbatch</code>, <code>srun</code>, <code>squeue</code>, <code>scancel</code>, <code>scontrol show job</code>, <code>sacct</code>, <code>sinfo</code>, etc. sees output that looks like an unmodified Slurm CLI. The filtering is transparent in the allowed case, and explicit in the denied case: rejected flags and blocked subcommands fail with a clear error message instead of a silent rewrite.</p>
+<h2 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sandbox-exec.sh
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  │
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  ├── mktemp -d → _CHAPERON_FIFO_DIR (chmod 700)
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  ├── mkfifo req (chmod 600)
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  ├── backend_prepare (bind-mounts FIFO dir into sandbox)
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  ├── fork chaperon (reads req pipe, outside sandbox)
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>  ├── close FDs 3+ (no exceptions needed — FIFOs are filesystem-based)
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  ├── export _CHAPERON_FIFO_DIR
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>  └── backend_exec → enters sandbox
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        │
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        └── Inside sandbox:
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>              - /run/munge BLOCKED (no munge auth)
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>              - /usr/bin/{sbatch,srun,...} BLOCKED
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>              - /etc/slurm/ BLOCKED
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>              - stub sbatch → writes to req FIFO (flock for atomicity)
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>                → chaperon validates, closes FD 3 for handler children
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>                (3&gt;&amp;-), wraps in sandbox-exec.sh, calls real sbatch
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>                → writes response to per-request FIFO → stub reads result
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>              - stub srun → writes to req FIFO → chaperon validates flags:
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>                  alloc mode (login node): wraps command in sandbox-exec.sh,
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>                    calls real srun → compute node runs sandboxed
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>                  step mode (compute node, SLURM_JOB_ID set): execs real
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>                    srun directly for job-step launching (MPI)
+</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>              - stub scancel → writes to req FIFO → chaperon validates
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>                job scope, calls real scancel
+</span></code></pre></div>
+<h3 id="component-roles">Component Roles<a class="headerlink" href="#component-roles" title="Permanent link">&para;</a></h3>
+<p><strong>Trusted side</strong> (runs outside the sandbox, has Slurm credentials):</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>chaperon.sh</strong></td>
+<td>Main loop: reads requests from FIFO, dispatches to handlers, writes responses</td>
+</tr>
+<tr>
+<td><strong>handlers/_handler_lib.sh</strong></td>
+<td>Shared utilities: argument whitelisting, CWD validation, job wrapping, comment tag encoding/stripping</td>
+</tr>
+<tr>
+<td><strong>handlers/sbatch.sh</strong></td>
+<td>Validates args, wraps job in <code>sandbox-exec.sh</code>, submits to real sbatch</td>
+</tr>
+<tr>
+<td><strong>handlers/srun.sh</strong></td>
+<td>Validates flags; allocation mode wraps in <code>sandbox-exec.sh</code>, step mode execs real srun</td>
+</tr>
+<tr>
+<td><strong>handlers/scancel.sh</strong></td>
+<td>Validates job scope, forwards to real scancel</td>
+</tr>
+<tr>
+<td><strong>handlers/squeue.sh</strong></td>
+<td>Scopes output to session/project, strips chaperon tags</td>
+</tr>
+<tr>
+<td><strong>handlers/scontrol.sh</strong></td>
+<td>Scoped <code>show job</code>, <code>hold</code>, <code>release</code>, <code>requeue</code>, <code>update</code>; strips chaperon tags</td>
+</tr>
+<tr>
+<td><strong>handlers/sacct.sh</strong></td>
+<td>User-scoped accounting; strips chaperon tags</td>
+</tr>
+<tr>
+<td><strong>handlers/sacctmgr.sh</strong></td>
+<td>Read-only cluster/QOS/TRES queries; blocks user enumeration</td>
+</tr>
+<tr>
+<td><strong>handlers/sinfo.sh, sstat.sh, sprio.sh, sshare.sh, sdiag.sh</strong></td>
+<td>Read-only or user-scoped passthrough</td>
+</tr>
+<tr>
+<td><strong>handlers/sreport.sh, blocked.sh</strong></td>
+<td>Blocked (user enumeration risk / unsupported commands)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Untrusted side</strong> (runs inside the sandbox, no Slurm credentials):</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>stubs/{sbatch,srun,scancel,...}</strong></td>
+<td>PATH-shadow the real Slurm binaries; serialize the user's command into a FIFO request and relay the response</td>
+</tr>
+<tr>
+<td><strong>stubs/_stub_lib.sh</strong></td>
+<td>Shared stub helpers: FIFO communication, request framing, response parsing</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Shared:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>protocol.sh</strong></td>
+<td><code>CHAPERON/1</code> wire protocol: base64 encode/decode, message framing</td>
+</tr>
+</tbody>
+</table>
+<h2 id="file-structure">File Structure<a class="headerlink" href="#file-structure" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>chaperon/
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>├── chaperon.sh              # Main loop (runs OUTSIDE sandbox)
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>├── protocol.sh              # Read/write protocol messages (shared)
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>├── handlers/
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>│   ├── _handler_lib.sh      # Arg whitelisting, CWD validation, job wrapping
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>│   ├── sbatch.sh            # Validates, wraps, submits via real sbatch
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>│   ├── srun.sh              # Validates srun flags, wraps or execs real srun
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>│   ├── scancel.sh           # Validates job scope, cancels via real scancel
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>│   ├── squeue.sh            # Filters squeue output to scoped jobs
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>│   ├── scontrol.sh          # Scoped scontrol: show, hold, release, update
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>│   ├── sacct.sh             # User-scoped sacct (--allusers denied)
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>│   ├── sacctmgr.sh          # Read-only cluster/QOS/TRES queries
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>│   ├── sinfo.sh             # Read-only partition/node info
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>│   ├── sstat.sh             # User-scoped job step statistics
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>│   ├── sprio.sh             # User-scoped job priority factors
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>│   ├── sshare.sh            # User-scoped fairshare data
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>│   ├── sdiag.sh             # Read-only scheduler diagnostics
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>│   ├── sreport.sh           # Blocked (user enumeration risk)
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>│   └── blocked.sh           # Generic &quot;command blocked&quot; response
+</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>└── stubs/                   # PATH-shadowing stubs (all talk to chaperon)
+</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>    ├── _stub_lib.sh         # Stub→chaperon communication library
+</span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>    ├── sbatch, srun, scancel, squeue, scontrol
+</span><span id="__span-1-23"><a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>    ├── sacct, sacctmgr, sinfo, sstat, sprio, sshare, sdiag, sreport
+</span><span id="__span-1-24"><a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a>    └── salloc, sattach, sbcast, scrontab, scrun, strigger  # blocked
+</span></code></pre></div>
+<h2 id="protocol-chaperon1">Protocol: <code>CHAPERON/1</code><a class="headerlink" href="#protocol-chaperon1" title="Permanent link">&para;</a></h2>
+<p>Line-based, all user data base64-encoded (injection-proof in bash).</p>
+<h3 id="request-stub-chaperon">Request (stub → chaperon)<a class="headerlink" href="#request-stub-chaperon" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>CHAPERON/1 sbatch
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>ARG &lt;base64&gt;          # one per sbatch flag/value
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>ARG &lt;base64&gt;
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>CWD &lt;base64&gt;          # working directory (validated by handler)
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>SCRIPT &lt;base64&gt;       # job script content (--wrap converted to script)
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>RESP_FIFO &lt;path&gt;      # raw filesystem path (not base64) — validated by chaperon
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>END
+</span></code></pre></div>
+<p>Note: <code>protocol.sh</code> provides <code>chaperon_send_request()</code> as a helper, but <code>_stub_lib.sh</code> builds the request message directly (to include the <code>RESP_FIFO</code> field and support atomic writes via <code>flock</code>). The chaperon main loop also parses requests inline rather than using <code>chaperon_read_request()</code>, in order to support read timeouts and parent liveness checks.</p>
+<h3 id="response-chaperon-stub">Response (chaperon → stub)<a class="headerlink" href="#response-chaperon-stub" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>CHAPERON/1 RESULT
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>EXIT &lt;number&gt;         # exit code from real sbatch
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>STDOUT &lt;base64&gt;       # stdout (e.g., &quot;Submitted batch job 12345&quot;)
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>STDERR &lt;base64&gt;       # stderr (e.g., validation errors)
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>END
+</span></code></pre></div>
+<h3 id="safety-properties">Safety Properties<a class="headerlink" href="#safety-properties" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong><code>base64 -w 0</code></strong>: single-line encoding prevents newline injection</li>
+<li><strong><code>IFS= read -r</code></strong>: prevents word splitting on read</li>
+<li><strong>Unknown lines silently ignored</strong>: forward compatibility — new fields can be added without breaking old readers</li>
+<li><strong>No shell interpretation</strong>: the chaperon never passes user data to <code>sh -c</code>, <code>eval</code>, or any form of shell expansion</li>
+</ul>
+<h2 id="fifo-design">FIFO Design<a class="headerlink" href="#fifo-design" title="Permanent link">&para;</a></h2>
+<p>The communication channel uses named pipes (FIFOs) in a per-session temporary directory created before the sandbox is entered:</p>
+<ol>
+<li><strong>Per-session directory</strong>: <code>mktemp -d</code> creates a directory with <code>chmod 700</code> — only the owning user can access it. The directory is bind-mounted into the sandbox so both sides can reach it.</li>
+<li><strong>Persistent request pipe</strong>: A single <code>req</code> FIFO handles all requests. The chaperon opens it O_RDWR to prevent blocking and avoid EOF between requests.</li>
+<li><strong>Per-request response pipes</strong>: Each stub creates an atomically-named directory (<code>mktemp -d</code>) containing a response FIFO (<code>fifo</code>), sends the path in the request, and reads the response from it. This eliminates the TOCTOU window that <code>mktemp -u</code> + <code>mkfifo</code> would have. The FIFO is created with <code>mkfifo -m 600</code> (permissions set atomically).</li>
+<li><strong>No FD inheritance needed</strong>: Unlike socketpairs, FIFOs are filesystem-backed and survive bwrap's FD closing (which closes all FDs &gt; 2). No exemptions needed.</li>
+<li><strong>Timeouts</strong>: The stub reads responses with a 30-second timeout (<code>chaperon_read_response</code> in <code>_stub_lib.sh</code>) to prevent infinite hangs if the chaperon dies. The chaperon uses a 30-second body read timeout and a 10-second response write timeout to prevent stalls from malicious or dead stubs. All internal squeue calls (for scope resolution) use <code>timeout 10</code>.</li>
+<li><strong>Cleanup on exit</strong>: The chaperon's EXIT trap removes the entire FIFO directory.</li>
+</ol>
+<h2 id="chaperon-lifecycle">Chaperon Lifecycle<a class="headerlink" href="#chaperon-lifecycle" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Creation</strong>: <code>sandbox-exec.sh</code> creates a FIFO directory via <code>mktemp -d</code> and a request pipe via <code>mkfifo</code>, launches <code>chaperon.sh</code> as a background process, and exports <code>_CHAPERON_FIFO_DIR</code> for the sandbox.</li>
+<li><strong>Logging</strong>: The chaperon initializes structured logging via <code>logging.sh</code> (see <a href="#logging">Logging</a> below). The log file is created before the main loop starts.</li>
+<li><strong>Orphan prevention</strong>: The chaperon sets <code>PR_SET_PDEATHSIG</code> via Python/ctypes so it receives SIGTERM if its parent (sandbox-exec.sh) dies. This prevents orphaned chaperon processes.</li>
+<li><strong>Signal handling</strong>: SIGTERM and SIGINT are trapped for clean shutdown (FD cleanup, shutdown log entry).</li>
+<li><strong>Main loop</strong>: Reads requests inline with timeouts (30-second body timeout to prevent stalls from malformed requests), dispatches to the appropriate handler with FD 3 closed (<code>3&gt;&amp;-</code>) to prevent child processes from inheriting the request FIFO, captures stdout/stderr, and writes the response via the held response FD with a 10-second write timeout. Each request is logged with its full arguments, and handler stderr (including <code>_sandbox_deny</code> / <code>_sandbox_warn</code> messages) is captured in the log.</li>
+<li><strong>Exit</strong>: On read error, parent death (liveness polling), or signal, the chaperon logs shutdown, removes the FIFO directory, and exits 0.</li>
+</ol>
+<p>Note: <code>protocol.sh</code> provides a <code>chaperon_read_request()</code> helper, but the main loop in <code>chaperon.sh</code> performs its own inline parsing to support read timeouts and liveness checks that the helper does not provide.</p>
+<h2 id="logging">Logging<a class="headerlink" href="#logging" title="Permanent link">&para;</a></h2>
+<p>The chaperon writes structured, timestamped logs to per-session files for debugging and security auditing.</p>
+<h3 id="log-location">Log Location<a class="headerlink" href="#log-location" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>${XDG_STATE_HOME:-~/.local/state}/agent-sandbox/chaperon/&lt;hostname&gt;_&lt;PID&gt;_&lt;timestamp&gt;.log
+</span></code></pre></div>
+<p>Filenames include the hostname so that multiple sandboxes across machines sharing an NFS home directory produce distinct, non-conflicting log files. Each chaperon instance gets its own file.</p>
+<h3 id="log-format">Log Format<a class="headerlink" href="#log-format" title="Permanent link">&para;</a></h3>
+<p>Each log file starts with a metadata header (host, PID, PPID, project dir, slurm scope, log level), followed by timestamped structured lines:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>2026-04-15T20:34:49Z [INFO] starting (pid=12345, ppid=12340, fifo=/tmp/chaperon-abc123)
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>2026-04-15T20:34:50Z [INFO] request: sbatch args=[--partition=campus-new --mem=4G] cwd=/fh/fast/lab/project
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>2026-04-15T20:34:50Z [INFO] request: sbatch script=247 bytes
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>2026-04-15T20:34:50Z [DEBUG] handler sbatch exited 0
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>2026-04-15T20:34:52Z [INFO] request: salloc args=[--partition=campus] cwd=/fh/fast/lab/project
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>2026-04-15T20:34:52Z [WARN] handler salloc exited 1
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>2026-04-15T20:34:52Z [WARN] handler salloc stderr: sandbox: &#39;salloc&#39; is not allowed inside the sandbox.
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>2026-04-15T20:34:52Z [WARN] handler salloc stderr:   ⚠ This action was blocked for security. [...]
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>2026-04-15T20:35:00Z [INFO] shutting down (pid=12345)
+</span></code></pre></div>
+<h3 id="what-is-logged">What is Logged<a class="headerlink" href="#what-is-logged" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Level</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>ERROR</strong></td>
+<td>Security rejections (RESP_FIFO validation failures, symlink attacks, invalid command names)</td>
+</tr>
+<tr>
+<td><strong>WARN</strong></td>
+<td>Handler non-zero exits, handler stderr output (<code>_sandbox_deny</code> / <code>_sandbox_warn</code> messages), response write timeouts, missing RESP_FIFO</td>
+</tr>
+<tr>
+<td><strong>INFO</strong></td>
+<td>Startup/shutdown, each request with full arguments and CWD, script size and shebang</td>
+</tr>
+<tr>
+<td><strong>DEBUG</strong></td>
+<td>Handler success exit codes</td>
+</tr>
+</tbody>
+</table>
+<p>Handler stderr is particularly important for security audit: it captures every <code>_sandbox_deny</code> (bypass attempts, scope violations) and <code>_sandbox_warn</code> (unrecognized flags, usage errors) with the full denial message.</p>
+<p><strong>Script body content is intentionally not logged</strong> at any level. Scripts may contain embedded secrets (API keys, database credentials), PHI/PII, or paths to restricted data. The command arguments, CWD, script size, shebang, and handler denial messages provide a sufficient audit trail without the secret exposure risk. Log files are restricted to owner-only access (<code>chmod 700</code> on the directory, <code>chmod 600</code> on each file) as defense-in-depth.</p>
+<h3 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h3>
+<p>Two settings in <code>sandbox.conf</code> (or per-project <code>conf.d/*.conf</code>):</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Log level: debug, info (default), warn, error</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="nv">CHAPERON_LOG_LEVEL</span><span class="o">=</span><span class="s2">&quot;info&quot;</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Days to retain log files (pruned at each chaperon startup)</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="nv">CHAPERON_LOG_RETAIN_DAYS</span><span class="o">=</span><span class="m">7</span>
+</span></code></pre></div>
+<h3 id="retention">Retention<a class="headerlink" href="#retention" title="Permanent link">&para;</a></h3>
+<p>At startup, the chaperon prunes old logs in the background (non-blocking):</p>
+<ol>
+<li><strong>Age-based</strong>: Log files older than <code>CHAPERON_LOG_RETAIN_DAYS</code> are deleted.</li>
+<li><strong>Size-based</strong>: If total log size exceeds 50 MiB, the oldest files are removed first (the current session's log is never deleted).</li>
+</ol>
+<p>This prevents unbounded accumulation on shared NFS home directories even with many concurrent sandboxes across machines.</p>
+<h3 id="debugging-a-dead-chaperon">Debugging a Dead Chaperon<a class="headerlink" href="#debugging-a-dead-chaperon" title="Permanent link">&para;</a></h3>
+<p>When a chaperon dies unexpectedly, the log file persists (it is not in the ephemeral FIFO directory). To investigate:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Find recent chaperon logs</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>ls<span class="w"> </span>-lt<span class="w"> </span>~/.local/state/agent-sandbox/chaperon/
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># Check the last entries of a specific session</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>tail<span class="w"> </span>-20<span class="w"> </span>~/.local/state/agent-sandbox/chaperon/&lt;hostname&gt;_&lt;pid&gt;_&lt;timestamp&gt;.log
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># Find all security denials across sessions</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>grep<span class="w"> </span><span class="s1">&#39;\[WARN\].*stderr:.*sandbox:&#39;</span><span class="w"> </span>~/.local/state/agent-sandbox/chaperon/*.log
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="c1"># Find all denied commands</span>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>grep<span class="w"> </span><span class="s1">&#39;\[WARN\].*stderr:.*⚠&#39;</span><span class="w"> </span>~/.local/state/agent-sandbox/chaperon/*.log
+</span></code></pre></div>
+<p>For deeper tracing, set <code>CHAPERON_LOG_LEVEL=debug</code> to capture handler success exit codes and submitted script content.</p>
+<h2 id="handler-dispatch">Handler Dispatch<a class="headerlink" href="#handler-dispatch" title="Permanent link">&para;</a></h2>
+<p>Filesystem-based: when a request for command <code>X</code> arrives, the chaperon looks for <code>handlers/X.sh</code> and calls <code>handle_X()</code>. If no handler exists, <code>handlers/blocked.sh</code> is used.</p>
+<p>This design makes it trivial to add support for new commands (drop a handler file) or block them (they're blocked by default).</p>
+<h3 id="sbatch-handler">sbatch Handler<a class="headerlink" href="#sbatch-handler" title="Permanent link">&para;</a></h3>
+<p>The sbatch handler (<code>handlers/sbatch.sh</code>) performs three validation steps before submission:</p>
+<ol>
+<li><strong>CWD validation</strong>: The requested working directory must be a physical path under the project directory (resolves symlinks to prevent escape). Both sbatch and srun (allocation mode) validate CWD.</li>
+<li><strong>Argument whitelisting</strong>: Every flag is checked against <code>_SBATCH_ALLOWED_FLAGS</code> (~40 safe flags). Denied flags cause immediate rejection with a clear error message.</li>
+<li><strong>Job wrapping</strong>: The user's script is written to a temp file, and a wrapper script is generated that runs it inside <code>sandbox-exec.sh --project-dir $PROJECT_DIR</code>. The wrapper is submitted to the real sbatch.</li>
+</ol>
+<h3 id="job-tagging-and-scoping-via-comment">Job Tagging and Scoping via <code>--comment</code><a class="headerlink" href="#job-tagging-and-scoping-via-comment" title="Permanent link">&para;</a></h3>
+<p>The chaperon needs to track which jobs belong to which sandbox session/project so that <code>squeue</code>, <code>scancel</code>, and other scoped handlers can filter appropriately. This is done by injecting a structured tag into Slurm's <code>--comment</code> field on every submitted job.</p>
+<p><strong>Why <code>--comment</code> and not <code>--job-name</code>?</strong> The <code>--job-name</code> (<code>-J</code>) field is user-visible, commonly set by workflows and scripts, and used for human identification (e.g., <code>alignment-step1</code>, <code>train-model</code>). Overwriting or prefixing it would break existing workflows that parse job names. The <code>--comment</code> field, by contrast, is rarely used in practice — it's a free-text metadata field that most users never set, and it doesn't appear in default <code>squeue</code> output. This makes it ideal for machine-readable tagging without interfering with user workflows.</p>
+<p><strong>What happens to user-supplied comments?</strong> If the user passes <code>--comment "my note"</code> to sbatch, the chaperon preserves it by appending it (percent-encoded) to the tag as <code>user=my%20note</code>. The encoding prevents crafted comments from injecting fake <code>chaperon:</code>, <code>sid=</code>, or <code>proj=</code> patterns that would confuse scope filtering. When the sandbox user queries jobs (via <code>squeue</code>, <code>scontrol show job</code>, or <code>sacct</code>), the chaperon tag is automatically stripped and the original comment is restored — the user sees <code>my note</code>, not the internal tag.</p>
+<h4 id="tag-format">Tag format<a class="headerlink" href="#tag-format" title="Permanent link">&para;</a></h4>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>chaperon:sid=&lt;session_id&gt;,proj=&lt;project_hash&gt;[,user=&lt;original_comment&gt;]:END
+</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Content</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sid</code></td>
+<td><code>&lt;PID&gt;.&lt;epoch&gt;</code></td>
+<td>Unique per chaperon instance (session scope). Set once at startup and guarded against re-initialization when <code>_handler_lib.sh</code> is re-sourced per handler dispatch.</td>
+</tr>
+<tr>
+<td><code>proj</code></td>
+<td>First 12 hex of <code>md5(project_dir)</code></td>
+<td>Groups jobs by project (project scope)</td>
+</tr>
+<tr>
+<td><code>user</code></td>
+<td>User's original <code>--comment</code> value (percent-encoded)</td>
+<td>Preserves user metadata</td>
+</tr>
+<tr>
+<td><code>:END</code></td>
+<td>Literal end marker</td>
+<td>Unambiguous tag boundary for stripping (colons are percent-encoded in user values, so <code>:END</code> cannot appear inside the encoded comment)</td>
+</tr>
+</tbody>
+</table>
+<p>This tag is set once at submission and is <strong>inherited by array tasks</strong>, <strong>survives preemption</strong> (job ID may change, comment does not), and is <strong>queryable via squeue/sacct</strong>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-h<span class="w"> </span>-o<span class="w"> </span><span class="s2">&quot;%i %k&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">&quot;chaperon:sid=</span><span class="nv">$SID</span><span class="s2">&quot;</span><span class="w">     </span><span class="c1"># session</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-h<span class="w"> </span>-o<span class="w"> </span><span class="s2">&quot;%i %k&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">&quot;chaperon:.*proj=</span><span class="nv">$HASH</span><span class="s2">&quot;</span><span class="w">  </span><span class="c1"># project</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-h<span class="w"> </span>-o<span class="w"> </span><span class="s2">&quot;%i %k&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">&quot;chaperon:&quot;</span><span class="w">              </span><span class="c1"># all sandbox jobs</span>
+</span></code></pre></div>
+<h3 id="scancel-handler">scancel Handler<a class="headerlink" href="#scancel-handler" title="Permanent link">&para;</a></h3>
+<p>The scancel handler (<code>handlers/scancel.sh</code>) queries <code>squeue --comment</code> to resolve which jobs are in scope, then passes only matching IDs to the real scancel. No file-based tracking — the tag in Slurm is the source of truth.</p>
+<ol>
+<li><strong>Argument whitelisting</strong>: Only safe scancel flags are forwarded. Flags like <code>--user</code>, <code>--me</code>, <code>--account</code>, <code>--wckey</code> are denied — scope is controlled by the chaperon.</li>
+<li><strong>Job ID validation</strong>: Positional arguments must be numeric job IDs.</li>
+<li><strong>Scope filtering</strong>: Requested job IDs are checked against <code>squeue</code> output filtered by the chaperon tag.</li>
+<li><strong><code>scancel all</code></strong>: Cancels everything within scope (no specific IDs needed).</li>
+</ol>
+<h4 id="scope-levels">Scope Levels<a class="headerlink" href="#scope-levels" title="Permanent link">&para;</a></h4>
+<p>Configured via <code>SLURM_SCOPE</code> in <code>sandbox.conf</code>. Applies to scancel, squeue, scontrol, and sstat:</p>
+<table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>Behavior</th>
+<th>Filter</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>session</code></td>
+<td>Only jobs from THIS sandbox session</td>
+<td><code>chaperon:sid=&lt;this_session&gt;</code></td>
+</tr>
+<tr>
+<td><code>project</code> (default)</td>
+<td>Jobs from any sandbox with same project dir</td>
+<td><code>chaperon:.*proj=&lt;hash&gt;</code></td>
+</tr>
+<tr>
+<td><code>user</code></td>
+<td>All jobs of the current user (including non-sandbox jobs)</td>
+<td><code>squeue --me</code></td>
+</tr>
+<tr>
+<td><code>none</code></td>
+<td>No scope restriction (full access to your own jobs)</td>
+<td><code>squeue --me</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="denied-sbatch-flags">Denied sbatch Flags<a class="headerlink" href="#denied-sbatch-flags" title="Permanent link">&para;</a></h3>
+<p>These flags are explicitly rejected because they could bypass sandboxing:</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--wrap</code></td>
+<td>Reconstructed by the handler (user data from protocol, not shell)</td>
+</tr>
+<tr>
+<td><code>--chdir</code> / <code>-D</code></td>
+<td>CWD comes from protocol and is validated against project dir</td>
+</tr>
+<tr>
+<td><code>--uid</code> / <code>--gid</code></td>
+<td>Must not impersonate other users</td>
+</tr>
+<tr>
+<td><code>--get-user-env</code></td>
+<td>Can leak host environment variables</td>
+</tr>
+<tr>
+<td><code>--propagate</code></td>
+<td>Can propagate unsafe resource limits</td>
+</tr>
+<tr>
+<td><code>--prolog</code> / <code>--epilog</code></td>
+<td>Run arbitrary scripts outside sandbox control</td>
+</tr>
+<tr>
+<td><code>--task-prolog</code> / <code>--task-epilog</code></td>
+<td>Same as above</td>
+</tr>
+<tr>
+<td><code>--burst-buffer-file</code> / <code>--bbf</code></td>
+<td>Arbitrary file access</td>
+</tr>
+<tr>
+<td><code>--bcast</code></td>
+<td>Copy binary to compute nodes (bypass wrapping)</td>
+</tr>
+<tr>
+<td><code>--container</code></td>
+<td>OCI container execution could bypass sandbox wrapping</td>
+</tr>
+</tbody>
+</table>
+<p>Unknown flags (not in the whitelist) are also rejected.</p>
+<h3 id="srun-handler">srun Handler<a class="headerlink" href="#srun-handler" title="Permanent link">&para;</a></h3>
+<p>The srun handler (<code>handlers/srun.sh</code>) operates in two modes:</p>
+<p><strong>Allocation mode</strong> (no <code>SLURM_JOB_ID</code> — login node):
+1. Validates CWD is under the project directory (same check as sbatch)
+2. Validates flags against a whitelist that includes scheduling flags (<code>-p</code>, <code>-A</code>, <code>-t</code>, etc.)
+3. Wraps the command in <code>sandbox-exec.sh --project-dir $DIR</code> so the compute-node process inherits sandbox restrictions
+4. Calls real srun with the validated flags and wrapped command</p>
+<p><strong>Step mode</strong> (<code>SLURM_JOB_ID</code> set — inside a compute-node allocation):
+1. Validates flags against a step-only whitelist (no scheduling flags — steps inherit the job's resources)
+2. Execs real srun directly — the command runs within the existing sandboxed allocation</p>
+<p><strong>Denied srun flags</strong> (both modes):</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--pty</code></td>
+<td>No PTY passthrough via the chaperon protocol</td>
+</tr>
+<tr>
+<td><code>--jobid</code> / <code>-j</code></td>
+<td>Cannot attach to arbitrary allocations</td>
+</tr>
+<tr>
+<td><code>--uid</code> / <code>--gid</code></td>
+<td>Must not impersonate other users</td>
+</tr>
+<tr>
+<td><code>--chdir</code> / <code>-D</code></td>
+<td>CWD comes from protocol and is validated</td>
+</tr>
+<tr>
+<td><code>--get-user-env</code></td>
+<td>Can leak host environment variables</td>
+</tr>
+<tr>
+<td><code>--propagate</code></td>
+<td>Can propagate unsafe resource limits</td>
+</tr>
+<tr>
+<td><code>--prolog</code> / <code>--epilog</code> / <code>--task-prolog</code> / <code>--task-epilog</code></td>
+<td>Arbitrary script execution</td>
+</tr>
+<tr>
+<td><code>--bcast</code></td>
+<td>Binary broadcast (bypass wrapping)</td>
+</tr>
+<tr>
+<td><code>--container</code></td>
+<td>OCI container execution bypasses sandbox</td>
+</tr>
+<tr>
+<td><code>--network</code></td>
+<td>Network namespace manipulation</td>
+</tr>
+</tbody>
+</table>
+<p>In step mode, allocation flags (<code>-p</code>, <code>-A</code>, <code>-t</code>, <code>-q</code>, <code>--reservation</code>, etc.) are also denied.</p>
+<h3 id="squeue-handler">squeue Handler<a class="headerlink" href="#squeue-handler" title="Permanent link">&para;</a></h3>
+<p>The squeue handler (<code>handlers/squeue.sh</code>) filters queue output to only show jobs within scope. Uses the <code>SLURM_SCOPE</code> setting from <code>sandbox.conf</code>.</p>
+<ul>
+<li>Flags like <code>--user</code>, <code>--me</code>, <code>--account</code> are denied (scope controlled by chaperon)</li>
+<li>If specific job IDs are requested via <code>-j</code>, they're validated against scope</li>
+<li>Otherwise, all jobs in scope are shown</li>
+<li>All internal squeue calls use <code>timeout 10</code> to prevent hangs if slurmctld is unresponsive</li>
+</ul>
+<h3 id="scontrol-handler">scontrol Handler<a class="headerlink" href="#scontrol-handler" title="Permanent link">&para;</a></h3>
+<p>The scontrol handler (<code>handlers/scontrol.sh</code>) allows a subset of scontrol subcommands with scope enforcement:</p>
+<table>
+<thead>
+<tr>
+<th>Subcommand</th>
+<th>Scoped?</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>show job [ID]</code></td>
+<td>Yes</td>
+<td>Shows only chaperon-submitted jobs</td>
+</tr>
+<tr>
+<td><code>show node/partition/config/step</code></td>
+<td>No</td>
+<td>Read-only system info</td>
+</tr>
+<tr>
+<td><code>hold JOBID</code></td>
+<td>Yes</td>
+<td>Must be in scope</td>
+</tr>
+<tr>
+<td><code>release JOBID</code></td>
+<td>Yes</td>
+<td>Must be in scope</td>
+</tr>
+<tr>
+<td><code>requeue JOBID</code></td>
+<td>Yes</td>
+<td>Must be in scope</td>
+</tr>
+<tr>
+<td><code>update job JOBID Key=Val</code></td>
+<td>Yes</td>
+<td>Must be in scope; only safe update keys allowed</td>
+</tr>
+</tbody>
+</table>
+<p>Denied subcommands: <code>shutdown</code>, <code>reconfigure</code>, <code>create</code>, <code>delete</code>, and all others.</p>
+<p>Denied update keys: <code>UserId</code>, <code>GroupId</code>, <code>WorkDir</code>, <code>AdminComment</code>, and all keys not in the whitelist. See <code>handlers/scontrol.sh</code> for the full list.</p>
+<h3 id="sacct-handler">sacct Handler<a class="headerlink" href="#sacct-handler" title="Permanent link">&para;</a></h3>
+<p>The sacct handler (<code>handlers/sacct.sh</code>) enforces user-level scoping:</p>
+<ul>
+<li>Always injects <code>--user=$(whoami)</code> — only the current user's jobs are shown</li>
+<li><code>--allusers</code> and <code>--accounts</code> are denied</li>
+<li><code>--user</code> / <code>--uid</code> / <code>--me</code>: self-scoped values (<code>--user $USER</code>, <code>--user=$USER</code>, <code>--me</code>, <code>--uid $(id -u)</code>) are silently accepted — they're equivalent to the auto-inject. Cross-user values are denied with an actionable message ("drop the flag, or pass <code>--me</code>")</li>
+<li>Job-level scoping (by chaperon comment) is intentionally not applied — sacct is retrospective and the full job history is useful for debugging</li>
+</ul>
+<h3 id="sacctmgr-handler">sacctmgr Handler<a class="headerlink" href="#sacctmgr-handler" title="Permanent link">&para;</a></h3>
+<p>The sacctmgr handler (<code>handlers/sacctmgr.sh</code>) is heavily restricted to prevent user/group enumeration:</p>
+<table>
+<thead>
+<tr>
+<th>Subcommand</th>
+<th>Allowed targets</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>show</code> / <code>list</code></td>
+<td><code>cluster</code>, <code>qos</code>, <code>tres</code>, <code>configuration</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Denied show targets</strong>: <code>user</code>, <code>account</code>, <code>association</code>, <code>coordinator</code>, <code>event</code>, <code>reservation</code>, <code>transaction</code>, <code>wckey</code> — all expose user/group data.</p>
+<p><strong>Denied subcommands</strong>: <code>add</code>, <code>modify</code>, <code>delete</code>, <code>archive</code>, <code>dump</code>, <code>load</code>, <code>reconfigure</code> — all write operations.</p>
+<h3 id="sinfo-handler">sinfo Handler<a class="headerlink" href="#sinfo-handler" title="Permanent link">&para;</a></h3>
+<p>Read-only passthrough for partition/node status. No scoping needed — this is system information. Unknown flags are rejected.</p>
+<h3 id="sstat-handler">sstat Handler<a class="headerlink" href="#sstat-handler" title="Permanent link">&para;</a></h3>
+<p>Shows statistics for running job steps. Job step IDs (format <code>jobid.stepid</code>) are validated — the base job ID must be in the current scope. Uses <code>_validate_job_in_scope</code> from <code>_handler_lib.sh</code>.</p>
+<h3 id="sprio-handler">sprio Handler<a class="headerlink" href="#sprio-handler" title="Permanent link">&para;</a></h3>
+<p>Shows priority factors for pending jobs. Always injects <code>--user=$(whoami)</code> to scope output to the current user. <code>--allusers</code> and <code>--user</code> are denied.</p>
+<h3 id="sshare-handler">sshare Handler<a class="headerlink" href="#sshare-handler" title="Permanent link">&para;</a></h3>
+<p>Shows fairshare data. Always injects <code>--user=$(whoami)</code>. Denies <code>--all</code>, <code>--user</code>, and <code>--accounts</code> to prevent enumerating other users' fairshare allocations.</p>
+<h3 id="sdiag-handler">sdiag Handler<a class="headerlink" href="#sdiag-handler" title="Permanent link">&para;</a></h3>
+<p>Read-only scheduler diagnostics passthrough. Denies <code>--reset</code> (clears scheduler statistics — a write operation).</p>
+<h3 id="sreport-handler">sreport Handler<a class="headerlink" href="#sreport-handler" title="Permanent link">&para;</a></h3>
+<p>Blocked entirely. <code>sreport</code> generates accounting reports across many sub-report types, many of which enumerate users and accounts. Use <code>sacct</code> with formatting options for similar data scoped to your user.</p>
+<h3 id="comment-stripping">Comment Stripping<a class="headerlink" href="#comment-stripping" title="Permanent link">&para;</a></h3>
+<p>The chaperon injects structured tags into Slurm's <code>--comment</code> field for scoping, but the sandbox user should never see these internals. The <code>_strip_chaperon_tags()</code> function in <code>_handler_lib.sh</code> is piped over the output of all user-facing handlers that may display comments: <strong>squeue</strong>, <strong>scontrol</strong> (<code>show job</code>), and <strong>sacct</strong>.</p>
+<p>The stripping pipeline:
+1. <strong>Extracts the user value</strong>: regex matches the full tag <code>chaperon:sid=...,proj=...[,user=VALUE]:END</code> and replaces it with just <code>VALUE</code> (or empty string if no user comment was set)
+2. <strong>Decodes percent-encoding</strong>: restores <code>%2C</code> → <code>,</code>, <code>%3A</code> → <code>:</code>, <code>%3D</code> → <code>=</code></p>
+<p>The <code>:END</code> marker makes extraction reliable across all Slurm output formats (tabular, parsable/pipe-delimited, JSON, YAML, <code>scontrol</code> key=value). Because colons are percent-encoded (<code>%3A</code>) in user values, <code>:END</code> cannot appear inside the encoded comment, providing an unambiguous boundary.</p>
+<p><strong>Result</strong>: sandbox users see their original <code>--comment</code> value (or an empty field) — the Slurm interface behaves as expected with no chaperon artifacts visible.</p>
+<p>Comments on jobs <strong>not</strong> submitted through the chaperon (e.g., in <code>user</code>/<code>none</code> scope modes) pass through unchanged.</p>
+<h3 id="blocked-commands">Blocked Commands<a class="headerlink" href="#blocked-commands" title="Permanent link">&para;</a></h3>
+<p>The following commands are routed to <code>blocked.sh</code> (no handler):</p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>salloc</code></td>
+<td>Interactive allocations can't be safely proxied (requires PTY)</td>
+</tr>
+<tr>
+<td><code>sattach</code></td>
+<td>Attaching to step I/O could interfere with other jobs</td>
+</tr>
+<tr>
+<td><code>sbcast</code></td>
+<td>File broadcast bypasses sandbox restrictions</td>
+</tr>
+<tr>
+<td><code>scrontab</code></td>
+<td>Recurring jobs would bypass sandbox wrapping</td>
+</tr>
+<tr>
+<td><code>scrun</code></td>
+<td>OCI container launcher bypasses sandbox</td>
+</tr>
+<tr>
+<td><code>strigger</code></td>
+<td>Event triggers can execute arbitrary commands</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-gets-blocked-inside-the-sandbox">What Gets Blocked Inside the Sandbox<a class="headerlink" href="#what-gets-blocked-inside-the-sandbox" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Resource</th>
+<th>bwrap</th>
+<th>firejail</th>
+<th>landlock</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/run/munge/</code> (auth socket)</td>
+<td>Hidden (tmpfs /run, not re-mounted)</td>
+<td><code>--blacklist=/run/munge</code></td>
+<td><strong>NOT BLOCKED</strong> — Landlock cannot restrict <code>AF_UNIX connect()</code></td>
+</tr>
+<tr>
+<td><code>/usr/bin/{sbatch,srun,...}</code></td>
+<td><code>--ro-bind /dev/null</code></td>
+<td><code>--blacklist=</code></td>
+<td>Not blocked (no mount namespace)</td>
+</tr>
+<tr>
+<td><code>/etc/slurm/</code>, <code>/etc/slurm-llnl/</code></td>
+<td><code>--tmpfs</code></td>
+<td><code>--blacklist=</code></td>
+<td>Not blocked</td>
+</tr>
+<tr>
+<td>Munge auth capability</td>
+<td><strong>None</strong> — can't auth without socket</td>
+<td><strong>None</strong></td>
+<td><strong>FULL</strong> — socket reachable, credentials forgeable</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Defense in depth (bwrap/firejail)</strong>: Without the munge socket, even finding a Slurm binary is useless — authentication will fail. The chaperon is the only path to Slurm interaction.</p>
+<blockquote>
+<p><strong>⚠ Landlock: chaperon is fully bypassable.</strong> Landlock cannot block <code>AF_UNIX connect()</code> (not available in any Landlock ABI version as of kernel 6.11). A sandboxed process can connect to <code>/run/munge/munge.socket.2</code>, forge credentials, and call <code>/usr/bin/sbatch</code> directly — completely bypassing the chaperon. <strong><a href="../../admin/hardening/#1-enforce-sandbox-on-agent-submitted-slurm-jobs">Admin Hardening §1</a> (SPANK plugin) is mandatory for Landlock deployments with Slurm.</strong> Alternatively, use the bwrap or firejail backend.</p>
+</blockquote>
+<h2 id="comparison-with-previous-architecture">Comparison with Previous Architecture<a class="headerlink" href="#comparison-with-previous-architecture" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Previous (PATH wrappers)</th>
+<th>Chaperon</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Munge socket</td>
+<td><strong>Exposed</strong> (read-only inside sandbox)</td>
+<td><strong>Blocked</strong> (bwrap/firejail) / <strong>Exposed</strong> (Landlock — cannot block <code>AF_UNIX connect</code>)</td>
+</tr>
+<tr>
+<td>Slurm binaries</td>
+<td><strong>Relocated</strong> (bwrap) or <strong>available</strong> (others)</td>
+<td><strong>Blocked</strong> (bwrap/firejail) / <strong>Available</strong> (Landlock)</td>
+</tr>
+<tr>
+<td>Bypass via crafted binary</td>
+<td><strong>Possible</strong> (munge auth available)</td>
+<td><strong>Impossible</strong> (bwrap/firejail) / <strong>Possible</strong> (Landlock — munge reachable)</td>
+</tr>
+<tr>
+<td>Bypass via <code>/usr/bin/sbatch</code></td>
+<td><strong>Possible</strong> (firejail/landlock)</td>
+<td><strong>Impossible</strong> (bwrap/firejail) / <strong>Possible</strong> (Landlock)</td>
+</tr>
+<tr>
+<td>Argument injection</td>
+<td><strong>Possible</strong> (wrappers pass-through)</td>
+<td><strong>Blocked</strong> (whitelist rejects unknown flags)</td>
+</tr>
+<tr>
+<td>Communication channel</td>
+<td>PATH ordering (soft)</td>
+<td>Named pipes (per-session temp dir, 700 permissions)</td>
+</tr>
+<tr>
+<td>Compute-node wrapping</td>
+<td>Via wrapper scripts</td>
+<td>Via wrapper scripts (same)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="security-properties">Security Properties<a class="headerlink" href="#security-properties" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>No shell interpretation</strong>: The chaperon never passes user data to <code>sh -c</code>, <code>eval</code>, or any form of shell expansion. Script content is written to files via <code>printf '%s\n'</code>, and arguments are passed as array elements.</li>
+<li><strong>Base64 encoding</strong>: All user data in the protocol is base64-encoded, preventing newline injection, null byte issues, and protocol framing attacks.</li>
+<li><strong>Argument whitelisting</strong>: Only explicitly allowed sbatch flags are forwarded. The whitelist is conservative — new Slurm flags must be manually added.</li>
+<li><strong>CWD validation</strong>: The working directory is resolved to a physical path (following symlinks) and validated as being under the project directory. Both sbatch and srun (allocation mode) perform this check.</li>
+<li><strong>Always wrapped</strong>: Every job submitted through the chaperon is wrapped in <code>sandbox-exec.sh</code>, ensuring compute-node execution inherits sandbox restrictions.</li>
+<li><strong>FIFO security</strong>: Communication uses named pipes in a per-session temp directory with 700 permissions. Response FIFOs are created inside atomically-named subdirectories (<code>mktemp -d</code>), validated against path traversal (<code>..</code>) and symlinks (<code>-L</code> check), and must match the expected <code>FIFO_DIR/resp-XXXXXX/fifo</code> structure.</li>
+<li><strong>Die-with-parent</strong>: The chaperon sets <code>PR_SET_PDEATHSIG</code> and polls parent liveness every 5 seconds as a fallback.</li>
+<li><strong>Handler dispatch validation</strong>: Command names are validated against <code>^[a-z_][a-z0-9_]*$</code> to prevent path traversal in handler lookup.</li>
+<li><strong>TOCTOU prevention</strong>: Response FIFOs are opened to a held FD immediately after validation, and writes go through the FD (not the path). Symlinks are rejected before the <code>-p</code> (FIFO) check to prevent symlink-following attacks.</li>
+<li><strong>#SBATCH directive filtering</strong>: <code>#SBATCH</code> directives are filtered against the flag whitelist — safe directives pass through, dangerous ones are stripped.</li>
+<li><strong>Atomic request writes</strong>: Request messages are built into a buffer and written with <code>flock</code> on the request FIFO lock file to prevent interleaving from concurrent stubs.</li>
+<li><strong>scancel scoping</strong>: Job cancellation is restricted to jobs submitted by this session/project/user, preventing cancellation of other users' jobs.</li>
+</ol>
+<h2 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h2>
+<p>The test suite (<code>test.sh</code> sections 5–6) verifies:</p>
+<ul>
+<li>PATH shadowing resolves to chaperon stubs</li>
+<li>Munge socket is hidden/blocked inside sandbox</li>
+<li>Slurm binaries are blocked inside sandbox (bwrap/firejail)</li>
+<li>Slurm config is hidden inside sandbox (bwrap/firejail)</li>
+<li><code>srun --pty</code> and <code>srun --jobid</code> are denied by chaperon</li>
+<li><code>_CHAPERON_FIFO_DIR</code> is set inside sandbox</li>
+<li>Chaperon request FIFO exists inside sandbox</li>
+<li>Comment stripping (<code>_strip_chaperon_tags</code>):</li>
+<li>User comment restored from chaperon tag</li>
+<li>Empty result when no user comment was set</li>
+<li>Percent-encoded special characters decoded correctly</li>
+<li>Non-chaperon comments pass through unchanged</li>
+<li>Correct across output formats: tabular, JSON, pipe-delimited (parsable)</li>
+<li><code>sbatch --wrap</code> via chaperon submits jobs successfully</li>
+<li>No infinite recursion in chaperon sbatch path</li>
+<li>Denied flags (<code>--uid</code>, <code>--get-user-env</code>) are rejected</li>
+<li>scancel can cancel jobs submitted by the same session</li>
+<li>scancel rejects jobs not submitted by the current session</li>
+</ul>
+<h2 id="extending">Extending<a class="headerlink" href="#extending" title="Permanent link">&para;</a></h2>
+<h3 id="adding-a-new-slurm-command">Adding a new Slurm command<a class="headerlink" href="#adding-a-new-slurm-command" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Create <code>chaperon/handlers/newcmd.sh</code> with a <code>handle_newcmd()</code> function</li>
+<li>Create <code>chaperon/stubs/newcmd</code> that uses <code>_stub_lib.sh</code> to send the request (see <code>stubs/scancel</code> for a minimal example)</li>
+<li>Make the stub executable: <code>chmod +x chaperon/stubs/newcmd</code></li>
+<li>The chaperon's filesystem-based dispatch will automatically route requests</li>
+<li>Binary blocking is automatic: backends scan <code>chaperon/stubs/</code> at startup to build the block list (any executable file not starting with <code>_</code> is blocked)</li>
+<li><code>install.sh</code> uses globs to copy handlers and stubs — no edits needed</li>
+</ol>
+<p>To block a command without proxying it, create a standalone stub that prints an error without sourcing <code>_stub_lib.sh</code>.</p>
+<h3 id="adding-a-new-allowed-sbatch-flag">Adding a new allowed sbatch flag<a class="headerlink" href="#adding-a-new-allowed-sbatch-flag" title="Permanent link">&para;</a></h3>
+<p>Add the flag to <code>_SBATCH_ALLOWED_FLAGS</code> in <code>handlers/_handler_lib.sh</code>. If it takes a value argument, also add it to <code>_SBATCH_VALUE_FLAGS</code>.</p>
+<h3 id="configuring-slurm-scope">Configuring Slurm scope<a class="headerlink" href="#configuring-slurm-scope" title="Permanent link">&para;</a></h3>
+<p>Set <code>SLURM_SCOPE</code> in <code>sandbox.conf</code>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Jobs from any sandbox session with the same project dir (default)</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="nv">SLURM_SCOPE</span><span class="o">=</span><span class="s2">&quot;project&quot;</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="c1"># Only jobs submitted by THIS sandbox session</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="nv">SLURM_SCOPE</span><span class="o">=</span><span class="s2">&quot;session&quot;</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="c1"># All jobs of the current user (including non-sandbox jobs)</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="nv">SLURM_SCOPE</span><span class="o">=</span><span class="s2">&quot;user&quot;</span>
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="c1"># No restriction (full access to your own jobs)</span>
+</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="nv">SLURM_SCOPE</span><span class="o">=</span><span class="s2">&quot;none&quot;</span>
+</span></code></pre></div>
+<h3 id="querying-sandbox-jobs">Querying sandbox jobs<a class="headerlink" href="#querying-sandbox-jobs" title="Permanent link">&para;</a></h3>
+<p>The <code>--comment</code> tag makes it easy to filter squeue from outside:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># All sandbox jobs for this user</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-o<span class="w"> </span><span class="s2">&quot;%.18i %.9P %.8j %.2t %.10M %k&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>chaperon:
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="c1"># Jobs from a specific project</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-h<span class="w"> </span>-o<span class="w"> </span><span class="s2">&quot;%i %k&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">&quot;proj=&lt;hash&gt;&quot;</span>
+</span></code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../.." class="md-footer__link md-footer__link--prev" aria-label="Previous: Home">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Home
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../device-passthrough/" class="md-footer__link md-footer__link--next" aria-label="Next: Device passthrough">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Device passthrough
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/katosh/agent_sandbox" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.footer", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.action.edit", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

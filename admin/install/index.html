@@ -1,0 +1,2051 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Kernel-enforced filesystem isolation for AI coding agents on Linux.">
+      
+      
+      
+        <link rel="canonical" href="https://katosh.github.io/agent_sandbox/admin/install/">
+      
+      
+        <link rel="prev" href="../../reference/security/">
+      
+      
+        <link rel="next" href="../hardening/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Installation - agent-sandbox</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#admin-owned-sandbox-installation" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="agent-sandbox" class="md-header__button md-logo" aria-label="agent-sandbox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            agent-sandbox
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Installation
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/katosh/agent_sandbox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    katosh/agent_sandbox
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../reference/chaperon/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
+          
+  
+  
+  Admin
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="agent-sandbox" class="md-nav__button md-logo" aria-label="agent-sandbox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    agent-sandbox
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/katosh/agent_sandbox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    katosh/agent_sandbox
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/chaperon/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chaperon (Slurm proxy)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/device-passthrough/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Device passthrough
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/apptainer-comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox vs. Apptainer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Admin
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Admin
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#quick-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Setup
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Quick Setup">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#step-1-install-scripts-and-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 1: Install scripts and config
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-this-protects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What this protects
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#config-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config Hierarchy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Config Hierarchy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-users-can-customize" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What users can customize
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-enforcement-subprocess-isolation-policy-merge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin enforcement: subprocess isolation + policy merge
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#admin-config-skeleton" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin Config Skeleton
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#example-user-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example User Config
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#per-project-overrides" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-Project Overrides
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#chaperon-slurm-proxy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chaperon: Slurm Proxy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choosing-a-backend-on-ubuntu-2404" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing a Backend on Ubuntu 24.04+
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Choosing a Backend on Ubuntu 24.04+">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#enabling-bwrap-via-apparmor-profile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Enabling bwrap via AppArmor profile
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#firejail-backend-alternative-to-bwrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Firejail backend (alternative to bwrap)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bwrap-vs-firejail-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        bwrap vs firejail comparison
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#seccomp-filter-hpc-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Seccomp Filter — HPC Compatibility
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Seccomp Filter — HPC Compatibility">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-is-blocked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is blocked
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-is-intentionally-allowed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is intentionally allowed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#seccomp-for-bwrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Seccomp for bwrap
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#landlock-fallback" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Landlock Fallback
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Landlock Fallback">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gaps-compared-to-bwrapfirejail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gaps compared to bwrap/firejail
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#disable-systemd-user-instances" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Disable systemd user instances
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#complementary-hardening" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Complementary Hardening
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hardening/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hardening
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-help/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox config guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#quick-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Setup
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Quick Setup">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#step-1-install-scripts-and-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 1: Install scripts and config
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-this-protects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What this protects
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#config-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config Hierarchy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Config Hierarchy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-users-can-customize" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What users can customize
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#admin-enforcement-subprocess-isolation-policy-merge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin enforcement: subprocess isolation + policy merge
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#admin-config-skeleton" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin Config Skeleton
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#example-user-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example User Config
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#per-project-overrides" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-Project Overrides
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#chaperon-slurm-proxy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chaperon: Slurm Proxy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choosing-a-backend-on-ubuntu-2404" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing a Backend on Ubuntu 24.04+
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Choosing a Backend on Ubuntu 24.04+">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#enabling-bwrap-via-apparmor-profile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Enabling bwrap via AppArmor profile
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#firejail-backend-alternative-to-bwrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Firejail backend (alternative to bwrap)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bwrap-vs-firejail-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        bwrap vs firejail comparison
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#seccomp-filter-hpc-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Seccomp Filter — HPC Compatibility
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Seccomp Filter — HPC Compatibility">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-is-blocked" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is blocked
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-is-intentionally-allowed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is intentionally allowed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#seccomp-for-bwrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Seccomp for bwrap
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#landlock-fallback" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Landlock Fallback
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Landlock Fallback">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gaps-compared-to-bwrapfirejail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gaps compared to bwrap/firejail
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#disable-systemd-user-instances" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Disable systemd user instances
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#complementary-hardening" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Complementary Hardening
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/katosh/agent_sandbox/edit/main/docs/admin/install.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="admin-owned-sandbox-installation">Admin-Owned Sandbox Installation<a class="headerlink" href="#admin-owned-sandbox-installation" title="Permanent link">&para;</a></h1>
+<p>An admin-owned installation solves two problems:</p>
+<ol>
+<li><strong>Config protection</strong> — the admin config is tamper-proof (root-owned, outside the user's sandbox dir). The sandbox scripts are also root-owned at <code>/app/lib/agent-sandbox/</code>, and <code>~/.config/agent-sandbox/</code> contains only user data (config, agent profiles), not scripts. With bwrap/firejail the scripts are additionally read-only inside the sandbox via mount namespace.</li>
+<li><strong>Policy enforcement</strong> — the admin sets a security baseline that users cannot weaken. Users can customize within bounds (add data mounts, extra blocked paths) but cannot remove admin-enforced protections.</li>
+</ol>
+<h2 id="quick-setup">Quick Setup<a class="headerlink" href="#quick-setup" title="Permanent link">&para;</a></h2>
+<p>A secure admin installation has two parts: a <strong>root-owned config</strong> (tamper-proof policy) and <strong>protected scripts</strong> (the code that enforces it). A root-owned config alone is not sufficient — if the agent can modify <code>sandbox-lib.sh</code>, it can bypass any config.</p>
+<h3 id="step-1-install-scripts-and-config">Step 1: Install scripts and config<a class="headerlink" href="#step-1-install-scripts-and-config" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Install to the default admin prefix (/app — matches _ADMIN_DIR</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1"># in sandbox-lib.sh). Puts agent-sandbox in /app/bin/ and runtime</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># files in /app/lib/agent-sandbox/.</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>sudo<span class="w"> </span>make<span class="w"> </span>install<span class="w"> </span><span class="nv">PREFIX</span><span class="o">=</span>/app
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="c1"># Start from the minimal admin skeleton (not the full user config).</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="c1"># Only set what you want to ENFORCE — users control everything else.</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>sudo<span class="w"> </span>cp<span class="w"> </span>/app/lib/agent-sandbox/sandbox-admin.conf<span class="w"> </span>/app/lib/agent-sandbox/sandbox.conf
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>sudo<span class="w"> </span><span class="nv">$EDITOR</span><span class="w"> </span>/app/lib/agent-sandbox/sandbox.conf
+</span></code></pre></div>
+<p>The install ships three config files:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sandbox.conf</code></td>
+<td>Admin enforcement baseline (replace with <code>sandbox-admin.conf</code> skeleton)</td>
+</tr>
+<tr>
+<td><code>sandbox.conf.template</code></td>
+<td>Full user config, auto-deployed to <code>~/.config/agent-sandbox/sandbox.conf</code> on first run. Never modified by admins — ensures users always get the complete documented config.</td>
+</tr>
+<tr>
+<td><code>sandbox-admin.conf</code></td>
+<td>Minimal skeleton with only enforcement knobs. Copy over <code>sandbox.conf</code> to use as admin baseline.</td>
+</tr>
+</tbody>
+</table>
+<p>The Makefile handles directory creation, permissions, and the <code>agent-sandbox</code> symlink. If your site uses a different prefix (e.g. <code>/usr/local</code>), change <code>_ADMIN_DIR</code> in <code>sandbox-lib.sh</code> to match.</p>
+<p>On first run, users automatically get <code>sandbox.conf</code> (from <code>sandbox.conf.template</code>) and agent templates (<code>agent.md</code>, <code>settings.json</code>) in <code>~/.config/agent-sandbox/</code>. On upgrade, unmodified copies are silently updated; user-edited files are preserved with a message pointing to the new version. Users customize via <code>sandbox.conf</code>, <code>user.conf</code>, and <code>conf.d/*.conf</code>. Agent overlays run in subshells, so mutations to permission globals are structurally impossible — per-agent profiles cannot bypass admin-enforced policy.</p>
+<p>Each agent profile directory (<code>agents/&lt;name&gt;/</code>) follows a file contract:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>config.conf</code></td>
+<td><strong>Declarative metadata only</strong> — env vars, auth markers, and paths the agent uses. Read for startup warnings; MUST NOT modify sandbox permissions.</td>
+</tr>
+<tr>
+<td><code>overlay.sh</code></td>
+<td>Mechanical config merge (e.g., merge <code>CLAUDE.md</code>, create <code>settings.json</code>) and env-var exports. Runs in a subshell — mutations to permission globals cannot reach the parent.</td>
+</tr>
+<tr>
+<td><code>agent.md</code></td>
+<td>Sandbox-awareness instructions injected into the agent's context</td>
+</tr>
+<tr>
+<td><code>settings.json</code></td>
+<td>Agent-specific settings template (optional, agent-dependent)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Permissions live in the sandbox configuration layer.</strong> <code>HOME_WRITABLE</code>, <code>HOME_READONLY</code>, <code>BLOCKED_FILES</code>, <code>BLOCKED_ENV_VARS</code>, and <code>ALLOWED_ENV_VARS</code> are set by the admin config (<code>/app/lib/agent-sandbox/sandbox.conf</code>), the user config (<code>~/.config/agent-sandbox/sandbox.conf</code> or <code>user.conf</code>), and per-project overrides (<code>conf.d/*.conf</code>) — each layer adds to the previous. Admin-enforced entries cannot be weakened by user config or by any agent profile.</p>
+<h3 id="what-this-protects">What this protects<a class="headerlink" href="#what-this-protects" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>bwrap/firejail</th>
+<th>Landlock</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Admin config</strong> (<code>/app/lib/agent-sandbox/sandbox.conf</code>)</td>
+<td>Protected (root-owned, enforced via subprocess isolation)</td>
+<td>Protected (root-owned, enforced via subprocess isolation)</td>
+</tr>
+<tr>
+<td><strong>Sandbox scripts</strong> (<code>sandbox-lib.sh</code>, backends/)</td>
+<td>Protected (root-owned + read-only inside sandbox via mount namespace)</td>
+<td>Protected (root-owned at <code>/app/lib/agent-sandbox/</code>). <code>~/.config/agent-sandbox/</code> contains only user data, not scripts.</td>
+</tr>
+<tr>
+<td><strong>User config</strong> (<code>user.conf</code>, <code>conf.d/</code>)</td>
+<td>Cannot weaken admin policy (subprocess isolation + policy merge)</td>
+<td>Cannot weaken admin policy (subprocess isolation + policy merge)</td>
+</tr>
+</tbody>
+</table>
+<p>The admin path is set in <code>_ADMIN_DIR</code> in <code>sandbox-lib.sh</code> (not configurable via environment variable). To use a different path, change this single line. The Slurm enforcement scripts (<code>slurm-enforce/</code>) have their own <code>_ADMIN_CONF</code> variable at the top of each script for the same reason.</p>
+<h2 id="config-hierarchy">Config Hierarchy<a class="headerlink" href="#config-hierarchy" title="Permanent link">&para;</a></h2>
+<p>The sandbox loads config in layers, each adding to the previous:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>1. Defaults           (built into sandbox-lib.sh)
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>2. Admin config       (/app/lib/agent-sandbox/sandbox.conf)  ← security baseline (if present)
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>3. User config        (~/.config/agent-sandbox/user.conf)          ← additive customization
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>4. Per-project config (~/.config/agent-sandbox/conf.d/*.conf)      ← project-specific additions
+</span></code></pre></div>
+<p>Without an admin config, the sandbox loads a single <code>sandbox.conf</code> from <code>~/.config/agent-sandbox/</code>, identical to the user-only install (layers 2 and 3 collapse into one). When an admin config is present but the user has not yet created <code>user.conf</code>, the sandbox accepts <code>~/.config/agent-sandbox/sandbox.conf</code> as user config — this eases the transition when an admin install is deployed after users have already customized <code>sandbox.conf</code>.</p>
+<h3 id="what-users-can-customize">What users can customize<a class="headerlink" href="#what-users-can-customize" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>User can add entries</th>
+<th>User can remove admin entries</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ALLOWED_PROJECT_PARENTS</code></td>
+<td>Yes — add project prefixes</td>
+<td>N/A (additive)</td>
+</tr>
+<tr>
+<td><code>READONLY_MOUNTS</code></td>
+<td>Yes — mount more data read-only</td>
+<td>N/A (additive)</td>
+</tr>
+<tr>
+<td><code>EXTRA_WRITABLE_PATHS</code></td>
+<td>Yes — add writable directories (subject to <code>DENIED_WRITABLE_PATHS</code>)</td>
+<td>N/A (additive)</td>
+</tr>
+<tr>
+<td><code>DENIED_WRITABLE_PATHS</code></td>
+<td>No</td>
+<td><strong>No — admin-only deny-list</strong></td>
+</tr>
+<tr>
+<td><code>HOME_READONLY</code></td>
+<td>Yes — expose more dotfiles</td>
+<td>N/A (additive)</td>
+</tr>
+<tr>
+<td><code>HOME_WRITABLE</code></td>
+<td>Yes (but not items in admin's <code>HOME_READONLY</code>)</td>
+<td>N/A (additive)</td>
+</tr>
+<tr>
+<td><code>BLOCKED_FILES</code></td>
+<td>Yes — block more files</td>
+<td><strong>No — restored with warning</strong></td>
+</tr>
+<tr>
+<td><code>BLOCKED_ENV_VARS</code></td>
+<td>Yes — block more env vars</td>
+<td><strong>No — restored with warning</strong></td>
+</tr>
+<tr>
+<td><code>BLOCKED_ENV_PATTERNS</code></td>
+<td>Yes — add more glob patterns</td>
+<td><strong>No — restored with warning</strong></td>
+</tr>
+<tr>
+<td><code>EXTRA_BLOCKED_PATHS</code></td>
+<td>Yes — block more paths</td>
+<td><strong>No — restored with warning</strong></td>
+</tr>
+<tr>
+<td><code>TOKEN_FILE</code> / <code>SANDBOX_BYPASS_TOKEN</code></td>
+<td>No — would overwrite</td>
+<td><strong>No — restored with warning</strong></td>
+</tr>
+<tr>
+<td><code>ALLOWED_ENV_VARS</code></td>
+<td>Yes — unblock specific env vars</td>
+<td>N/A (additive)</td>
+</tr>
+<tr>
+<td><code>PRIVATE_TMP</code></td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><code>BIND_DEV_PTS</code></td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><code>FILTER_PASSWD</code></td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><code>SANDBOX_BACKEND</code></td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><code>SLURM_SCOPE</code></td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><code>HOME_ACCESS</code></td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+<h3 id="admin-enforcement-subprocess-isolation-policy-merge">Admin enforcement: subprocess isolation + policy merge<a class="headerlink" href="#admin-enforcement-subprocess-isolation-policy-merge" title="Permanent link">&para;</a></h3>
+<p>User configs (<code>user.conf</code>, <code>conf.d/*.conf</code>) are loaded in an <strong>isolated subprocess</strong> (<code>/bin/bash --norc --noprofile</code>). Only known config variables are extracted via <code>declare -p</code> and validated before being applied in the parent. After each untrusted config layer, <code>_enforce_admin_policy()</code> compares the resulting values against the admin snapshot, restores admin entries, and merges user additions on top.</p>
+<p>This eliminates entire attack classes: function overrides (<code>source</code>, <code>eval</code>, <code>builtin</code>), DEBUG/RETURN traps, <code>exit</code>/<code>return</code> escapes, IFS manipulation, and background processes — none can escape the subprocess boundary. The merge logic runs in the parent shell, unreachable from user config.</p>
+<p><strong>Enforced arrays</strong> (<code>BLOCKED_FILES</code>, <code>BLOCKED_ENV_VARS</code>, <code>BLOCKED_ENV_PATTERNS</code>, <code>EXTRA_BLOCKED_PATHS</code>): admin entries are always present. User additions are preserved, but user removals are undone with a warning:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>WARNING: User config removed admin-enforced BLOCKED_ENV_VARS entry &#39;GITHUB_TOKEN&#39; — restored.
+</span></code></pre></div>
+<p><strong>HOME_READONLY → HOME_WRITABLE escalation</strong>: if a user config moves an admin read-only entry to writable, the escalation is reverted with a warning:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>WARNING: User config moved admin HOME_READONLY entry &#39;.gnupg&#39; to HOME_WRITABLE — reverted.
+</span></code></pre></div>
+<p><strong>DENIED_WRITABLE_PATHS</strong>: any <code>EXTRA_WRITABLE_PATHS</code> entry matching or under a denied path is stripped with a warning:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>WARNING: User config added EXTRA_WRITABLE_PATHS entry &#39;/etc/cron.d&#39; under denied path &#39;/etc&#39; — removed.
+</span></code></pre></div>
+<h2 id="admin-config-skeleton">Admin Config Skeleton<a class="headerlink" href="#admin-config-skeleton" title="Permanent link">&para;</a></h2>
+<p>The <code>sandbox-admin.conf</code> shipped with the install is a minimal starting point. It contains only the enforcement-only knobs (<code>DENIED_WRITABLE_PATHS</code>, <code>BLOCKED_*</code>, <code>ALLOWED_PROJECT_PARENTS</code>, etc.) with commented-out examples. Uncomment and edit what you need.</p>
+<p>See <a href="https://github.com/katosh/agent_sandbox/blob/main/sandbox-admin.conf"><code>sandbox-admin.conf</code></a> for the full skeleton.</p>
+<p><strong>Environment overrides:</strong> Users can override <code>SLURM_SCOPE</code> and <code>HOME_ACCESS</code> at launch time without editing any config file: <code>SLURM_SCOPE=session agent-sandbox claude</code> or <code>HOME_ACCESS=tmpwrite agent-sandbox bash</code>. Environment values take precedence over both admin and user configs.</p>
+<h2 id="example-user-config">Example User Config<a class="headerlink" href="#example-user-config" title="Permanent link">&para;</a></h2>
+<p>Users create <code>~/.config/agent-sandbox/user.conf</code> to add project-specific mounts and tools:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># ~/.config/agent-sandbox/user.conf — User customization</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="c1"># Adds to admin baseline. Cannot remove admin-enforced entries.</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Additional data I need</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="nv">READONLY_MOUNTS</span><span class="o">+=(</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="s2">&quot;/shared/reference_genomes&quot;</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="o">)</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="c1"># My editor config</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="nv">HOME_READONLY</span><span class="o">+=(</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">    </span><span class="s2">&quot;.vimrc&quot;</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">    </span><span class="s2">&quot;.vim&quot;</span>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="o">)</span>
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>
+</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="c1"># Extra scratch space</span>
+</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="nv">EXTRA_WRITABLE_PATHS</span><span class="o">+=(</span>
+</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="w">    </span><span class="s2">&quot;/fh/scratch/delete30/mylab/pipeline-output&quot;</span>
+</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="o">)</span>
+</span></code></pre></div>
+<p>Note the <code>+=</code> syntax — this appends to the admin's arrays. Using <code>=()</code> to replace an enforced array has no effect — the admin values are forcefully re-applied.</p>
+<h2 id="per-project-overrides">Per-Project Overrides<a class="headerlink" href="#per-project-overrides" title="Permanent link">&para;</a></h2>
+<p>Per-project configs in <code>~/.config/agent-sandbox/conf.d/*.conf</code> are user-controlled and subject to the same post-merge validation as <code>user.conf</code> (cannot remove admin-enforced entries).</p>
+<p>Example — a project-specific config that conditionally activates based on project path:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># conf.d/genomics.conf</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="o">[[</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$_PROJECT_DIR</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">==</span><span class="w"> </span>/fh/fast/mylab/genomics/*<span class="w"> </span><span class="o">]]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="m">0</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="nv">READONLY_MOUNTS</span><span class="o">+=(</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span><span class="s2">&quot;/fh/fast/shared/reference_genomes&quot;</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="o">)</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="nv">EXTRA_WRITABLE_PATHS</span><span class="o">+=(</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">    </span><span class="s2">&quot;/fh/scratch/delete30/mylab/pipeline-output&quot;</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="o">)</span>
+</span></code></pre></div>
+<p>These configs also run in isolated subprocesses and go through admin enforcement — they cannot remove admin-set entries.</p>
+<h2 id="chaperon-slurm-proxy">Chaperon: Slurm Proxy<a class="headerlink" href="#chaperon-slurm-proxy" title="Permanent link">&para;</a></h2>
+<p>The chaperon is a zero-trust Slurm proxy that sits between the sandboxed agent and the real Slurm commands. Inside the sandbox, Slurm binaries (<code>sbatch</code>, <code>srun</code>, <code>scancel</code>, <code>squeue</code>, etc.) are replaced with stubs that communicate with a chaperon process running outside the sandbox via FIFO IPC. The chaperon validates every request against a flag whitelist, wraps submitted jobs to re-enter the sandbox on compute nodes, and scopes <code>squeue</code>/<code>scancel</code> to the agent's own jobs.</p>
+<p><strong>Key security properties:</strong>
+- Real Slurm binaries are blocked inside the sandbox (bind-mounted to <code>/dev/null</code> on bwrap, blacklisted on firejail). Munge socket is blocked on bwrap/firejail. <strong>Landlock: neither Slurm binaries nor munge socket are blocked</strong> — chaperon is fully bypassable (see <a href="../hardening/">Admin Hardening</a> §1)
+- Dangerous flags (<code>--uid</code>, <code>--prolog</code>, <code>--bcast</code>, <code>--container</code>, <code>--get-user-env</code>) are rejected
+- Job wrapping: sbatch scripts are inlined via heredoc into a wrapper that calls <code>sandbox-exec.sh</code> on the compute node — no temp files on NFS
+- Job scoping via <code>--comment</code> tags: <code>squeue</code>/<code>scancel</code> only see jobs submitted by this sandbox session/project (configurable via <code>SLURM_SCOPE</code>)
+- Scope-widening flags (<code>squeue --me</code>, <code>scancel --all</code>, <code>scancel -u &lt;user&gt;</code>) are silently mapped to "all jobs in your scope" — transparent to the user
+- All denials include prompt-injection recovery messages that re-anchor the agent to its instructions</p>
+<p>See <a href="../../reference/chaperon/">Chaperon</a> for the full protocol, supported commands, and flag whitelists.</p>
+<h2 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h2>
+<p>Two test suites validate the sandbox:</p>
+<ul>
+<li><strong><code>test.sh</code></strong> — run on every install to verify backend isolation: filesystem, env blocking, agent overlays, chaperon Slurm proxy (flag validation, job submission, scoped cancel, transparent squeue/scancel, comment tag stripping), security hardening, symlink/hardlink attacks, <code>/proc</code> escapes, FD inheritance, signal isolation, TIOCSTI, cgroup/userns restrictions, deterministic isolation, concurrent instances. Tests all available backends (bwrap, firejail, landlock).</li>
+<li><strong><code>test-admin.sh</code></strong> — run on admin installs to verify config enforcement: admin entries survive user tampering, <code>DENIED_WRITABLE_PATHS</code>, <code>HOME_READONLY</code> escalation blocking, scalar protection, <code>HOME</code> override resistance, <code>conf.d</code> enforcement, subprocess isolation of escape attempts, admin Slurm wrappers. Skips automatically if no admin config is found.</li>
+</ul>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>bash<span class="w"> </span>test.sh<span class="w">                          </span><span class="c1"># all backends</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>bash<span class="w"> </span>test.sh<span class="w"> </span>--backend<span class="w"> </span>bwrap<span class="w">          </span><span class="c1"># single backend</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>bash<span class="w"> </span>test-admin.sh<span class="w">                    </span><span class="c1"># admin enforcement (needs admin config)</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>bash<span class="w"> </span>test-admin.sh<span class="w"> </span>--verbose<span class="w">          </span><span class="c1"># show output on failure</span>
+</span></code></pre></div>
+<hr />
+<h2 id="choosing-a-backend-on-ubuntu-2404">Choosing a Backend on Ubuntu 24.04+<a class="headerlink" href="#choosing-a-backend-on-ubuntu-2404" title="Permanent link">&para;</a></h2>
+<p>On Ubuntu 24.04+, AppArmor blocks unprivileged user namespaces, so bwrap doesn't work out of the box. The admin has three options:</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Effort</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Enable bwrap via AppArmor</strong></td>
+<td>Low</td>
+<td>Strongest backend — mount namespace, PID namespace, <code>/tmp</code> isolation, self-protection</td>
+</tr>
+<tr>
+<td><strong>Install firejail</strong></td>
+<td>Low</td>
+<td>Strong — setuid binary bypasses AppArmor; mount namespace, PID namespace, seccomp</td>
+</tr>
+<tr>
+<td><strong>Do nothing</strong></td>
+<td>None</td>
+<td>Sandbox falls back to Landlock (weakest — see <a href="#landlock-fallback">Landlock fallback</a> below)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Recommendation:</strong> Enable bwrap. It provides the strongest isolation, is fully unprivileged (no setuid binary on the system), and has a significantly better security track record (4 CVEs with zero root exploits vs firejail's 18 CVEs with 12 root exploits). Firejail is a fallback if bwrap's AppArmor profile is not desired, but installing it adds a setuid-root binary to every node. See the <a href="../../reference/apptainer-comparison/#security-track-record">full CVE comparison</a> for details.</p>
+<h3 id="enabling-bwrap-via-apparmor-profile">Enabling bwrap via AppArmor profile<a class="headerlink" href="#enabling-bwrap-via-apparmor-profile" title="Permanent link">&para;</a></h3>
+<p>Install bwrap and create an AppArmor profile that allows it to create user namespaces:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># 1. Install bwrap</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>bubblewrap
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># 2. Create AppArmor profile</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="nv">BWRAP_PATH</span><span class="o">=</span><span class="k">$(</span><span class="nb">command</span><span class="w"> </span>-v<span class="w"> </span>bwrap<span class="k">)</span><span class="w">   </span><span class="c1"># typically /usr/bin/bwrap</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>cat<span class="w"> </span>&gt;<span class="w"> </span>/etc/apparmor.d/bwrap-sandbox<span class="w"> </span><span class="s">&lt;&lt; EOF</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="s">abi &lt;abi/4.0&gt;,</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="s">include &lt;tunables/global&gt;</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="s">profile bwrap-sandbox $BWRAP_PATH flags=(unconfined) {</span>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="s">  userns,</span>
+</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="s">}</span>
+</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="s">EOF</span>
+</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>
+</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>sudo<span class="w"> </span>apparmor_parser<span class="w"> </span>-r<span class="w"> </span>/etc/apparmor.d/bwrap-sandbox
+</span></code></pre></div>
+<p>This allows bwrap to create user namespaces. Other programs remain restricted. The profile survives reboots. Verify:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># As a regular user — should work after the profile is loaded</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>bwrap<span class="w"> </span>--ro-bind<span class="w"> </span>/<span class="w"> </span>/<span class="w"> </span>--<span class="w"> </span>id
+</span></code></pre></div>
+<p>The sandbox auto-detects bwrap from <code>$PATH</code>, or admins can set <code>BWRAP=/path/to/bwrap</code> in <code>sandbox.conf</code> to pin a specific binary. Users can also install bwrap via <a href="https://brew.sh/">Homebrew</a> (<code>brew install bubblewrap</code>) — the AppArmor profile would need to include that path too (<code>~/.linuxbrew/bin/bwrap</code>) or a second profile entry.</p>
+<p><strong>Note:</strong> The AppArmor profile grants <code>userns</code> to any invocation of bwrap at the profiled path, not just sandbox-initiated ones. This is acceptable — bwrap user namespaces are unprivileged and cannot escalate beyond what the calling user already has access to. The sandbox adds filesystem restrictions on top.</p>
+<h3 id="firejail-backend-alternative-to-bwrap">Firejail backend (alternative to bwrap)<a class="headerlink" href="#firejail-backend-alternative-to-bwrap" title="Permanent link">&para;</a></h3>
+<p><a href="https://firejail.wordpress.com/">Firejail</a> installs <strong>setuid root</strong>, so it can create mount namespaces regardless of AppArmor settings. The sandbox auto-detects firejail when bwrap is unavailable (priority: bwrap &gt; firejail &gt; landlock).</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># 1. Install firejail</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>firejail
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="c1"># 2. The sandbox auto-detects firejail — no user config needed.</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="c1">#    Force firejail for testing:</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="nv">SANDBOX_BACKEND</span><span class="o">=</span>firejail<span class="w"> </span>./sandbox-exec.sh<span class="w"> </span>--<span class="w"> </span>bash
+</span></code></pre></div>
+<p>The sandbox uses <code>--allusers</code> to disable firejail's built-in <code>/etc/passwd</code> filtering, which would otherwise remove UIDs &gt;= <code>UID_MIN</code> (typically 1000) and break Slurm if the <code>slurm</code> user has a UID in that range. User enumeration prevention is handled separately by <code>FILTER_PASSWD=true</code> (default), which blocks NSS daemon sockets to prevent LDAP/AD enumeration. <strong>Caveat:</strong> on LDAP/AD clusters where the current user exists only in LDAP (not in local <code>/etc/passwd</code>), <code>FILTER_PASSWD=true</code> breaks user resolution and should be set to <code>false</code>. The bwrap backend handles LDAP users correctly via <code>/etc/passwd</code> overlay.</p>
+<p><strong><code>/tmp</code> isolation</strong> (<code>--private-tmp</code>): Enabled by default for both bwrap and firejail (controlled by <code>PRIVATE_TMP</code> in <code>sandbox.conf</code>). Breaks MPI shared-memory transport (OpenMPI, MPICH) and NCCL inter-GPU sockets. Set <code>PRIVATE_TMP=false</code> in <code>sandbox.conf</code> for multi-rank MPI or multi-GPU workloads.</p>
+<p><strong>Supplementary groups</strong>: Preserved (no <code>--nogroups</code>). HPC file access relies on supplementary groups for lab data directories.</p>
+<h3 id="bwrap-vs-firejail-comparison">bwrap vs firejail comparison<a class="headerlink" href="#bwrap-vs-firejail-comparison" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>bwrap</th>
+<th>firejail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Privilege model</td>
+<td>Unprivileged (user namespaces)</td>
+<td>Setuid root binary</td>
+</tr>
+<tr>
+<td>Mount namespace</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>PID namespace</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td><code>/tmp</code> isolation</td>
+<td>✓ (<code>--tmpfs /tmp</code>)</td>
+<td>✓ (<code>--private-tmp</code>)</td>
+</tr>
+<tr>
+<td>Sandbox self-protection</td>
+<td>✓ (scripts read-only via bind mount)</td>
+<td>✓ (scripts hidden via mount namespace)</td>
+</tr>
+<tr>
+<td>User enumeration filtering</td>
+<td>✓ (overlays <code>/etc/passwd</code> + <code>nsswitch.conf</code>, LDAP-safe)</td>
+<td>Partial (blacklists NSS sockets, but breaks LDAP-only users)</td>
+</tr>
+<tr>
+<td>Slurm binary relocation</td>
+<td>✓ (overlays <code>/usr/bin/sbatch</code> with redirector)</td>
+<td>PATH-based only (no overlay)</td>
+</tr>
+<tr>
+<td>Seccomp</td>
+<td>Generated BPF filter (<code>generate-seccomp.py</code>) — <a href="#seccomp-for-bwrap">see below</a></td>
+<td>Built-in (<code>--seccomp</code> + <code>--caps.drop=all</code>)</td>
+</tr>
+<tr>
+<td>Internal state exposure</td>
+<td>None</td>
+<td><code>/run/firejail/mnt/seccomp/</code> readable (reveals BPF filter)</td>
+</tr>
+<tr>
+<td>Attack surface</td>
+<td>Minimal, no setuid</td>
+<td>Setuid root binary on every node</td>
+</tr>
+<tr>
+<td>CVE history</td>
+<td><a href="https://www.opencve.io/cve?search=bubblewrap">4 CVEs</a>, 0 root exploits, none since 2020</td>
+<td><a href="https://www.cvedetails.com/vulnerability-list/vendor_id-16191/Firejail.html">18 CVEs</a>, 12 local root exploits (<a href="../../reference/apptainer-comparison/#firejail-18-cves-12-are-local-root">details</a>)</td>
+</tr>
+<tr>
+<td>Supplementary groups</td>
+<td>Display as <code>nogroup</code> (user namespace limitation — file perms unaffected)</td>
+<td>Correct display (setuid avoids user namespace)</td>
+</tr>
+<tr>
+<td>AppArmor on Ubuntu 24.04+</td>
+<td>Requires admin AppArmor profile</td>
+<td>Works without admin action</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="seccomp-filter-hpc-compatibility">Seccomp Filter — HPC Compatibility<a class="headerlink" href="#seccomp-filter-hpc-compatibility" title="Permanent link">&para;</a></h2>
+<p>All three backends include seccomp filters that block dangerous syscalls. Firejail and Landlock have built-in filters; bwrap loads a generated BPF filter via <code>--seccomp FD</code> (see <code>generate-seccomp.py</code>).</p>
+<h3 id="what-is-blocked">What is blocked<a class="headerlink" href="#what-is-blocked" title="Permanent link">&para;</a></h3>
+<p>The filters block two groups of syscalls:</p>
+<ol>
+<li>
+<p><strong>Core attack-surface denials</strong> — <code>io_uring_{setup,enter,register}</code>, <code>userfaultfd</code>, <code>kexec_load</code>/<code>kexec_file_load</code>. The <code>io_uring</code> block provides the main security value; it has a <a href="https://security.googleblog.com/2023/06/learnings-from-kctf-vrps-42-linux.html">large kernel attack surface</a> and <a href="https://github.com/moby/moby/pull/46762">Docker's default seccomp profile</a> blocks it since version 25.0.</p>
+</li>
+<li>
+<p><strong>Defense-in-depth set</strong> — <code>bpf</code>, <code>mount</code>, <code>umount2</code>, <code>pivot_root</code>, <code>reboot</code>, <code>swapon</code>/<code>swapoff</code>, <code>personality</code>, <code>acct</code>, <code>quotactl</code>, <code>kcmp</code>. Each of these is already rejected at the capability layer for an unprivileged sandboxed process; denying them at the seccomp layer too is belt-and-suspenders in case a kernel bug or misconfiguration ever leaks the gating capability. Zero observable effect on HPC/ML workloads — see <a href="../../reference/security/#seccomp-filter">SECURITY.md §Seccomp Filter</a> for the per-syscall justification.</p>
+</li>
+</ol>
+<p>The Landlock backend additionally denies <code>ptrace</code> and <code>process_vm_readv</code>/<code>writev</code> because it has no PID namespace to prevent sibling-process inspection. bwrap and firejail rely on PID namespacing for that.</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Uses <code>io_uring</code></th>
+<th>When blocked</th>
+<th>Impact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://nodejs.org/">Node.js</a> / libuv</td>
+<td>Yes — async file I/O (<a href="https://github.com/libuv/libuv/pull/3952">libuv PR #3952</a>)</td>
+<td>Falls back to epoll + threadpool</td>
+<td>None — transparent fallback</td>
+</tr>
+<tr>
+<td><a href="https://rocksdb.org/">RocksDB</a></td>
+<td>Yes — parallel SST reads (<a href="https://github.com/facebook/rocksdb/blob/main/env/io_posix.cc">io_posix.cc</a>)</td>
+<td>Falls back to synchronous <code>pread</code></td>
+<td>Minor — slightly slower bulk reads</td>
+</tr>
+<tr>
+<td><a href="https://www.qemu.org/">QEMU</a></td>
+<td>Yes — block I/O backend (<a href="https://github.com/QEMU/qemu/blob/master/block/io_uring.c">block/io_uring.c</a>)</td>
+<td>Falls back to <code>aio=threads</code></td>
+<td>Minor — slightly slower disk I/O</td>
+</tr>
+<tr>
+<td>Rust <a href="https://github.com/tokio-rs/tokio-uring">tokio-uring</a></td>
+<td>Yes — io_uring-only runtime (<a href="https://github.com/tokio-rs/io-uring">io-uring crate</a>)</td>
+<td><strong>No fallback — fails</strong></td>
+<td><strong>Breaking</strong> — but standard tokio (epoll) is unaffected</td>
+</tr>
+<tr>
+<td>DuckDB, SQLite</td>
+<td>No</td>
+<td>—</td>
+<td>None</td>
+</tr>
+</tbody>
+</table>
+<p><code>userfaultfd</code> lets a process intercept page faults in userspace, pausing the faulting kernel thread indefinitely. Attackers exploit this to create arbitrary-width race windows for TOCTOU and use-after-free exploits (e.g. <a href="https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2021-22555">CVE-2021-22555</a>, <a href="https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2024-1086">CVE-2024-1086</a>). <a href="https://github.com/moby/moby/commit/96896f2d">Docker blocks it</a>, and the kernel restricts unprivileged access by default since 5.11 (<code>vm.unprivileged_userfaultfd=0</code>). No HPC tools use it — only QEMU postcopy live migration and CRIU lazy restore are affected, both of which fall back gracefully.</p>
+<h3 id="what-is-intentionally-allowed">What is intentionally allowed<a class="headerlink" href="#what-is-intentionally-allowed" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Syscall</th>
+<th>Used by</th>
+<th>Security risk (accepted)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>memfd_create</code></td>
+<td><a href="https://developer.nvidia.com/cuda-toolkit">CUDA</a> / <a href="https://rocm.docs.amd.com/">ROCm</a> GPU drivers, <a href="https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/MapAllocator.cpp">PyTorch</a> shared memory, <a href="https://numba.pydata.org/">Numba</a> JIT, <a href="https://github.com/jax-ml/jax">JAX</a>/<a href="https://openxla.org/xla">XLA</a> compiler, <a href="https://github.com/openjdk/jdk/blob/master/src/hotspot/os/linux/gc/z/zPhysicalMemoryBacking_linux.cpp">OpenJDK ZGC</a></td>
+<td>Anonymous executable memory regions</td>
+</tr>
+<tr>
+<td><code>process_vm_readv/writev</code></td>
+<td><a href="https://github.com/open-mpi/ompi/blob/main/opal/mca/smsc/cma/smsc_cma_module.c">OpenMPI</a> CMA transport, <a href="https://github.com/strace/strace">strace</a>, <a href="https://sourceware.org/gdb/">gdb</a></td>
+<td>Cross-process memory access (mitigated by PID namespace in bwrap/firejail)</td>
+</tr>
+</tbody>
+</table>
+<p>Blocking <code>memfd_create</code> would silently break CUDA, PyTorch DataLoader, Numba, and JAX/XLA. Docker's default seccomp profile also <a href="https://github.com/moby/profiles/blob/main/seccomp/default.json">allows it</a>. Blocking <code>process_vm_readv</code> would break MPI CMA shared-memory transport (Docker <a href="https://github.com/moby/moby/commit/dca15781">allows it on kernel &gt;= 4.8</a>). The filesystem sandbox remains the primary isolation mechanism; seccomp is defense-in-depth.</p>
+<h3 id="seccomp-for-bwrap">Seccomp for bwrap<a class="headerlink" href="#seccomp-for-bwrap" title="Permanent link">&para;</a></h3>
+<p>bwrap's mount namespace + PID namespace + <code>no_new_privs</code> already provide strong containment. A seccomp filter closes two remaining gaps:</p>
+<table>
+<thead>
+<tr>
+<th>Syscall</th>
+<th>Already mitigated by</th>
+<th>Impact of blocking</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>io_uring_setup</code> / <code>io_uring_enter</code></td>
+<td>Nothing — real attack surface reduction</td>
+<td>Node.js falls back to epoll, RocksDB falls back to <code>pread</code>. tokio-uring (Rust) would fail, but standard tokio is unaffected</td>
+</tr>
+<tr>
+<td><code>userfaultfd</code></td>
+<td>Kernel restricts unprivileged use since 5.11, but user-mode faults still allowed</td>
+<td>No HPC tools use it</td>
+</tr>
+<tr>
+<td><code>kexec_load</code> / <code>kexec_file_load</code></td>
+<td><code>no_new_privs</code> (requires <code>CAP_SYS_BOOT</code>)</td>
+<td>None — already ineffective without capabilities</td>
+</tr>
+</tbody>
+</table>
+<p>Adding a seccomp filter to bwrap is reasonable and aligns with Docker's precedent.</p>
+<hr />
+<h2 id="landlock-fallback">Landlock Fallback<a class="headerlink" href="#landlock-fallback" title="Permanent link">&para;</a></h2>
+<p>If neither bwrap nor firejail is available (e.g. Ubuntu 24.04+ without an AppArmor profile or firejail installed), the sandbox falls back to the Landlock backend. Landlock provides kernel-enforced filesystem isolation but lacks the mount namespace that bwrap and firejail use for stronger containment.</p>
+<h3 id="gaps-compared-to-bwrapfirejail">Gaps compared to bwrap/firejail<a class="headerlink" href="#gaps-compared-to-bwrapfirejail" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Impact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No mount namespace</td>
+<td>Blocked paths return EACCES instead of ENOENT; no file overlays (passwd filtering, Slurm binary relocation)</td>
+</tr>
+<tr>
+<td>No PID namespace</td>
+<td>Host processes visible via <code>/proc</code>; agent can read <code>/proc/PID/environ</code> of same-UID processes</td>
+</tr>
+<tr>
+<td>No <code>/tmp</code> isolation</td>
+<td>Shared host <code>/tmp</code> — cross-session data leakage possible</td>
+</tr>
+<tr>
+<td>No sandbox self-protection</td>
+<td>In user-only install, scripts writable under <code>~/.config/agent-sandbox/</code>. Admin install avoids this — scripts are root-owned, <code>~/.config/agent-sandbox/</code> contains only user data.</td>
+</tr>
+<tr>
+<td>Unix socket <code>connect()</code> not blocked</td>
+<td><code>systemd-run --user</code> escape viable (see below)</td>
+</tr>
+<tr>
+<td>User enumeration (LDAP)</td>
+<td>Cannot overlay <code>/etc/passwd</code> or block NSS sockets</td>
+</tr>
+</tbody>
+</table>
+<h3 id="disable-systemd-user-instances">Disable systemd user instances<a class="headerlink" href="#disable-systemd-user-instances" title="Permanent link">&para;</a></h3>
+<p>Landlock cannot block Unix domain socket <code>connect()</code> (not available in any Landlock ABI version as of kernel 6.11). A sandboxed process can connect to <code>/run/user/&lt;UID&gt;/systemd/private</code> and use <code>systemd-run --user</code> to execute commands outside the sandbox. Both bwrap and firejail are unaffected — they replace <code>/run</code> with a tmpfs.</p>
+<p><strong>What is affected by disabling:</strong> <code>gpg-agent</code> socket activation (users doing GPG signing would need to start <code>gpg-agent --daemon</code> manually) and <code>systemctl --user</code> commands.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># Option A: Mask the user@ template service (recommended)</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>systemctl<span class="w"> </span>mask<span class="w"> </span>user@.service
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="c1"># Option B: Limit via logind</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="c1"># /etc/systemd/logind.conf.d/no-user-sessions.conf</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="o">[</span>Login<span class="o">]</span>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="nv">UserTasksMax</span><span class="o">=</span><span class="m">0</span>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="nv">KillUserProcesses</span><span class="o">=</span>yes
+</span></code></pre></div>
+<p>Option A prevents the user systemd instance from starting at all. Verify with <code>systemd-run --user -- id</code> (should fail with "Failed to connect to bus").</p>
+<hr />
+<h2 id="complementary-hardening">Complementary Hardening<a class="headerlink" href="#complementary-hardening" title="Permanent link">&para;</a></h2>
+<p>An admin-owned installation pairs with:</p>
+<ul>
+<li><strong><a href="https://github.com/katosh/agent_sandbox/tree/main/slurm-enforce">Slurm job enforcement</a></strong> — ensures agent-submitted Slurm jobs inherit the sandbox. All Slurm enforcement variables (<code>TOKEN_FILE</code>, <code>REAL_SBATCH</code>, <code>REAL_SRUN</code>, <code>SANDBOX_EXEC</code>) can be added directly to <code>/app/lib/agent-sandbox/sandbox.conf</code> — one config file for both systems. See the <a href="#example-admin-config">example admin config</a> for the Slurm variables.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../../reference/security/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Security model">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Security model
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../hardening/" class="md-footer__link md-footer__link--next" aria-label="Next: Hardening">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Hardening
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/katosh/agent_sandbox" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.footer", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.action.edit", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
