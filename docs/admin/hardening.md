@@ -4,13 +4,11 @@
 
 The [sandbox](../index.md) is fully user-space, requiring no root or admin involvement. All three backends (bubblewrap, firejail, and Landlock) provide kernel-enforced filesystem isolation for AI coding agents. Slurm access is mediated by the [chaperon](../reference/chaperon.md) — a zero-trust proxy that blocks Slurm authentication assets inside the sandbox (bwrap/firejail) and validates every job submission.
 
-> **⚠ Landlock is not a full sandbox.** Landlock cannot block `AF_UNIX connect()` (not available in any Landlock ABI version as of kernel 6.11). This means: (1) the munge socket is reachable, so the **chaperon is fully bypassable** — agents can submit arbitrary unwrapped Slurm jobs; (2) if `user@.service` is running, agents can call `systemd-run --user` to **escape the sandbox entirely** — reading SSH keys, AWS credentials, and writing arbitrary files with no Landlock restrictions. **If Landlock is the only available backend, §0 (disable user@.service) and §1 (SPANK plugin) are mandatory, not optional.** Prefer bwrap or firejail whenever possible.
+> **⚠ Landlock is not a full sandbox.** Landlock cannot block `AF_UNIX connect()` (not available in any Landlock ABI version as of kernel 6.11). This means: (1) the munge socket is reachable, so the **chaperon is fully bypassable** — agents can submit arbitrary unwrapped Slurm jobs; (2) if `user@.service` is running, agents can call `systemd-run --user` to **escape the sandbox entirely** — reading SSH keys, AWS credentials, and writing arbitrary files with no Landlock restrictions. **If Landlock is the only available backend, §0 (disable user@.service) is mandatory and Slurm enforcement cannot be made robust** — prefer bwrap or firejail whenever possible.
 
 > **Ubuntu 24.04 consideration:** Ubuntu 24.04 enables AppArmor's restriction on unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`), which prevents bubblewrap from working. Without admin intervention, the sandbox falls back to the **Landlock** backend, which has significant limitations (no mount namespace, no `/tmp` isolation, no sandbox self-protection, `systemd-run` escape; see the comparison table under §2). **Recommended:** Create an AppArmor profile to allow bwrap (see §2 below). This is low effort and gives users the strongest backend. Alternatively, installing firejail (setuid) also bypasses the restriction.
 
-This document describes **improvements** that could close remaining gaps. Sections 1, 2, and 4 are independent and can be deployed individually. Sections 3 and 5 build on each other (5 requires 3; 4 has options that benefit from 3 but does not require it). They are ordered roughly from least to most effort.
-
-> **Update:** The [chaperon](../reference/chaperon.md) now provides a hard Slurm boundary by default (no admin setup needed). Section 1 below is still useful as a server-side complement, but the chaperon has closed the main gap that motivated it. My current priority is **Section 2** (admin-owned installation for policy enforcement).
+This document describes **improvements** that could close remaining gaps. Sections 2 and 4 are independent and can be deployed individually. Sections 3 and 5 build on each other (5 requires 3; 4 has options that benefit from 3 but does not require it). They are ordered roughly from least to most effort.
 
 ### Self-serve vs. admin-enforced
 
@@ -40,25 +38,6 @@ systemctl status user@501.service   # should show "masked"
 **What is affected by disabling:** `gpg-agent` socket activation (users doing GPG signing would need to start `gpg-agent --daemon` manually), `systemctl --user` commands, and any user-level systemd services. On HPC login nodes this is rarely an issue — most user workflows don't depend on systemd user instances.
 
 **Note:** bwrap and firejail are **not affected** — they replace `/run` with a tmpfs (bwrap) or blacklist the socket (firejail), so the D-Bus socket is unreachable regardless.
-
----
-
-## 1. Enforce Sandbox on Agent-Submitted Slurm Jobs
-
-> **Largely superseded by the chaperon (bwrap/firejail only).** The [chaperon](../reference/chaperon.md) — a zero-trust Slurm proxy — provides a stronger default boundary than the token-based approach described here. On bwrap/firejail, the chaperon blocks all Slurm authentication assets (munge socket, Slurm binaries, Slurm config) inside the sandbox. **On Landlock, the chaperon is fully bypassable** — Landlock cannot block `AF_UNIX connect()`, so the munge socket is reachable and `/usr/bin/sbatch` is directly callable. **This SPANK plugin section is mandatory for Landlock deployments with Slurm.**
-
-**What it solves:** Server-side enforcement of sandbox wrapping on Slurm jobs, using a job submit plugin and an eBPF LSM-protected bypass token. Complements the chaperon by adding a second enforcement layer at the Slurm controller. Users who do not use the sandbox are unaffected — their workflow does not change.
-
-**Effort:** Medium. **Category:** Admin-enforced.
-
-| Scenario | What happens |
-|---|---|
-| Agent calls `sbatch` (any method) | No bypass token → plugin wraps job in `sandbox-exec.sh` → **sandboxed** |
-| Agent tries to read token file | eBPF LSM checks `no_new_privs` → **EACCES** |
-| User outside sandbox | Reads token → passes to sbatch → **unsandboxed** |
-| `curl` to `slurmrestd` | Works if exposed (see §4 for network isolation) |
-
-Design, setup instructions, components, and verification steps are in [`slurm-enforce/`](https://github.com/katosh/agent_sandbox/tree/main/slurm-enforce). If also deploying Section 2, the Slurm enforcement variables can go directly in `/app/lib/agent-sandbox/sandbox.conf` — one config file for both systems.
 
 ---
 
@@ -146,7 +125,7 @@ OS user separation handles credential isolation — the agent physically cannot 
 
 ## 4. Network Controls
 
-**What it solves:** The current sandbox shares the host network stack. The [chaperon](../reference/chaperon.md) removed the dependency on in-sandbox network access for Slurm on bwrap/firejail (munge socket is blocked, all Slurm communication goes through FIFOs). On Landlock, the munge socket remains accessible — see §1. However, the agent still has unrestricted outbound network — it can reach any host the user can, using the same institutional IP.
+**What it solves:** The current sandbox shares the host network stack. The [chaperon](../reference/chaperon.md) removed the dependency on in-sandbox network access for Slurm on bwrap/firejail (munge socket is blocked, all Slurm communication goes through FIFOs). On Landlock, the munge socket remains accessible — use bwrap or firejail for any deployment that needs a hard Slurm boundary. The agent still has unrestricted outbound network on every backend — it can reach any host the user can, using the same institutional IP.
 
 Agents legitimately need general web access: reading documentation, downloading papers (often through institutional proxy/IP for paywall access), installing packages, cloning repos. The goal is not to cut off network access, but to **route agent traffic through a controllable path** where agent-specific policies can be applied — blocking certain services, logging traffic, or rate-limiting — without breaking research workflows.
 
@@ -334,13 +313,13 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 
 | # | Improvement | Effort | Category | What It Closes |
 |---|---|---|---|---|
-| 1 | [Enforce sandbox on Slurm jobs](#1-enforce-sandbox-on-agent-submitted-slurm-jobs) *(largely superseded by [chaperon](../reference/chaperon.md))* | Medium | Admin-enforced | Server-side complement to the chaperon — job submit plugin sandboxes all jobs unless caller provides bypass token (eBPF LSM protects token from `no_new_privs` processes). Optional if the chaperon meets your needs |
+| 0 | [Disable systemd user instances](#0-disable-systemd-user-instances-landlock-escape-prevention) | Minimal | Admin-enforced | Landlock-only systems: blocks `systemd-run --user` sandbox escape. Mandatory for Landlock deployments |
 | 2 | [Admin-owned sandbox installation](#2-admin-owned-sandbox-installation) ([details](install.md)) | Low-medium | Admin-enforced | Users weakening config; sandbox self-protection; multi-level config with post-merge validation; [backend selection](install.md#choosing-a-backend-on-ubuntu-2404) (bwrap via AppArmor recommended, firejail alternative); [seccomp trade-offs](install.md#seccomp-filter--hpc-compatibility); [Landlock fallback gaps](install.md#landlock-fallback) |
 | 3 | [Dedicated `${USER}_ai` accounts](#3-dedicated-user_ai-accounts) | High | Admin-enforced | Same-UID credential access; OS-level separation |
 | 4 | [Network controls](#4-network-controls) | Medium | Admin-enforced or self-serve | Agent-specific network policy (block SSH escape, internal services, metadata endpoint) while preserving web access for research — three options: UID iptables (requires #3), cgroup nftables (no #3), or netns + policy proxy (no admin) |
 | 5 | [Audit logging](#5-audit-logging) | Low-medium | Admin-enforced (requires #3) | Visibility, compliance, forensics |
 
-Sections 1, 2, and 4 are independent and can be deployed individually. Section 1 is optional if the [chaperon](../reference/chaperon.md) meets your Slurm enforcement needs — it adds server-side defense-in-depth. Section 2 includes backend selection for Ubuntu 24.04+ — an AppArmor profile for bwrap (recommended) or firejail avoids falling back to Landlock. Section 4 applies agent-specific network policy (default-allow for research, targeted blocks on SSH/internal services) with three options — Option C (netns + proxy) requires no admin or dedicated accounts. Section 5 requires Section 3 (dedicated accounts).
+Sections 2 and 4 are independent and can be deployed individually. Section 2 includes backend selection for Ubuntu 24.04+ — an AppArmor profile for bwrap (recommended) or firejail avoids falling back to Landlock. Section 4 applies agent-specific network policy (default-allow for research, targeted blocks on SSH/internal services) with three options — Option C (netns + proxy) requires no admin or dedicated accounts. Section 5 requires Section 3 (dedicated accounts). Slurm enforcement is provided by the [chaperon](../reference/chaperon.md) by default on bwrap/firejail; on Landlock the chaperon is bypassable, so Slurm cannot be hardened robustly without switching backends.
 
 ---
 
