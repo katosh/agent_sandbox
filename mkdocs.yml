@@ -1,0 +1,91 @@
+site_name: agent-sandbox
+site_description: Kernel-enforced filesystem isolation for AI coding agents on Linux.
+site_url: https://katosh.github.io/agent_sandbox/
+repo_url: https://github.com/katosh/agent_sandbox
+repo_name: katosh/agent_sandbox
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: en
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.instant
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.action.edit
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.smartsymbols
+  - pymdownx.caret
+  - pymdownx.tilde
+  - pymdownx.keys
+
+nav:
+  - Home: index.md
+  - Reference:
+      - Chaperon (Slurm proxy): reference/chaperon.md
+      - Device passthrough: reference/device-passthrough.md
+      - Sandbox vs. Apptainer: reference/apptainer-comparison.md
+      - Security model: reference/security.md
+  - Admin:
+      - Installation: admin/install.md
+      - Hardening: admin/hardening.md
+      - Sandbox config guide: admin/sandbox-help.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/katosh/agent_sandbox
+  generator: false
+
+# Symlinks (e.g. docs/admin/sandbox-help.md → ../../agents/sandbox-help.md)
+# need to be followed at build time so the runtime-shipped help file
+# also renders on the site without duplication.
+strict: false
