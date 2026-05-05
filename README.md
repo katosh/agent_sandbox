@@ -2,6 +2,11 @@
 
 **Kernel-enforced filesystem isolation for AI coding agents on Linux.**
 
+[![CI](https://github.com/katosh/agent_sandbox/actions/workflows/ci.yml/badge.svg)](https://github.com/katosh/agent_sandbox/actions/workflows/ci.yml)
+[![Docs](https://github.com/katosh/agent_sandbox/actions/workflows/docs.yml/badge.svg)](https://github.com/katosh/agent_sandbox/actions/workflows/docs.yml)
+[![Release](https://img.shields.io/github/v/release/katosh/agent_sandbox)](https://github.com/katosh/agent_sandbox/releases)
+[![License](https://img.shields.io/github/license/katosh/agent_sandbox)](LICENSE)
+
 > [!WARNING]
 > **Disclaimer.** This sandbox is a best-effort, user-space isolation layer. It is **not** a security product and comes with **no guarantees**. It reduces the attack surface of AI coding agents on shared systems, but it cannot prevent all possible bypasses — see the [Security model](https://katosh.github.io/agent_sandbox/reference/security/) for documented limitations. Use at your own risk.
 
@@ -34,7 +39,7 @@ The agent starts in your project directory with read access to the system but wr
 
 **Backends.** Bubblewrap is the primary backend and the recommended dependency. Firejail (setuid root) and Landlock (kernel ≥ 5.13, no mount/PID namespaces) are fallbacks for systems where bwrap is unavailable; they have documented gaps. See the [backend comparison](https://katosh.github.io/agent_sandbox/reference/security/#backend-comparison) for the per-backend protection matrix.
 
-For other install paths (Make, system-wide, no-Homebrew), HPC integration, configuration, troubleshooting, and the full security model, see the **[documentation site](https://katosh.github.io/agent_sandbox/)**.
+Read more on the docs site: [installation paths](https://katosh.github.io/agent_sandbox/admin/install/) — [HPC integration](https://katosh.github.io/agent_sandbox/reference/chaperon/) — [**configuration reference**](https://katosh.github.io/agent_sandbox/configure/) — [troubleshooting](https://katosh.github.io/agent_sandbox/troubleshooting/) — [security model](https://katosh.github.io/agent_sandbox/reference/security/) — or the [docs landing page](https://katosh.github.io/agent_sandbox/) for the full nav.
 
 ## Project links
 
