@@ -271,25 +271,6 @@ DEVICES_BLACKLIST=(
     /dev/loop*
 )
 
-# Host driver/runtime libraries to expose inside the sandbox so a
-# non-system dynamic linker (e.g. brewed Python's bundled glibc ld.so)
-# can resolve them by bare name. Each entry is one of:
-#   "preset:NAME"       — built-in preset (auto-NAME = enabled only when
-#                         the trigger device exists on the host)
-#   "PATH:LIB_GLOB ..." — explicit search path + space-separated globs
-# Built-in presets: nvidia.  Driver libs only — never libstdc++/libc/etc.
-# (those would shadow brewed-toolchain libs and segfault torch). See
-# sandbox.conf for a full discussion. Default: NVIDIA preset, auto-on
-# when /dev/nvidia* exists.
-HOST_LIBS_PASSTHROUGH=("preset:auto-nvidia")
-
-# Deprecated. Set HOST_LIBS_PASSTHROUGH instead. Kept as a deprecation
-# shim that translates a legacy "auto"/"true"/"false" value into the
-# matching HOST_LIBS_PASSTHROUGH entry at sandbox bring-up; emits a
-# stderr warning. Default empty so users who never set it see no
-# warning.
-GPU_PASSTHROUGH=""
-
 # Suppress the startup banner. Set to true to hide the one-line message
 # showing backend, project dir, and home access mode.
 SANDBOX_QUIET=false
@@ -535,11 +516,9 @@ _CONFIG_ARRAYS=(
     EXTRA_BLOCKED_PATHS EXTRA_WRITABLE_PATHS DENIED_WRITABLE_PATHS
     DEVICES DEVICES_BLACKLIST
     SANDBOX_ENV SUPPRESS_AGENT_WARNINGS SANDBOX_MODULES ENABLED_AGENTS
-    HOST_LIBS_PASSTHROUGH
 )
 _CONFIG_SCALARS=(
     SANDBOX_BACKEND PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD BIND_DEV_PTS
-    GPU_PASSTHROUGH
     SLURM_SCOPE HOME_ACCESS SANDBOX_QUIET SANDBOX_NPROC_LIMIT
     CHAPERON_LOG_LEVEL CHAPERON_LOG_RETAIN_DAYS
 )
@@ -1360,149 +1339,6 @@ generate_filtered_passwd() {
     _FILTERED_PASSWD="$tmpdir/passwd"
     _FILTERED_GROUP="$tmpdir/group"
     _FILTERED_NSSWITCH="$tmpdir/nsswitch.conf"
-}
-
-# ── Host driver/runtime library passthrough ────────────────────────
-#
-# Sets _HOST_LIBS_DIR to a host-side directory of symlinks to host
-# driver/runtime libraries. Backends bind/grant that path read-only
-# and prepend it to LD_LIBRARY_PATH inside the sandbox, so bare-name
-# dlopen() works for non-system dynamic linkers (Homebrew/Linuxbrew
-# Python's bundled glibc ld.so reads its own ld.so.cache and ignores
-# /etc/ld.so.cache, so dlopen("libcuda.so.1") fails even when the file
-# is fully accessible at /usr/lib/x86_64-linux-gnu/libcuda.so.1).
-#
-# Driver libs only — never libstdc++/libc/etc., which would shadow
-# brewed-toolchain libs and segfault torch on import. Same scope as
-# nvidia-container-toolkit's libnvidia-container, generalized to any
-# host driver/runtime class via the HOST_LIBS_PASSTHROUGH array.
-#
-# Empty when disabled or no entry produced any symlinks.
-_HOST_LIBS_DIR=""
-
-# Translate the deprecated GPU_PASSTHROUGH scalar into HOST_LIBS_PASSTHROUGH
-# entries. Emits a stderr warning so users update their configs. Default
-# GPU_PASSTHROUGH="" (empty) means no warning for users who never set it.
-_apply_gpu_passthrough_shim() {
-    [[ -z "${GPU_PASSTHROUGH:-}" ]] && return 0
-
-    local _have_nvidia=0 _e
-    for _e in "${HOST_LIBS_PASSTHROUGH[@]}"; do
-        case "$_e" in preset:nvidia|preset:auto-nvidia) _have_nvidia=1 ;; esac
-    done
-
-    case "$GPU_PASSTHROUGH" in
-        true|yes|1|on)
-            printf 'agent-sandbox: GPU_PASSTHROUGH is deprecated; replace with HOST_LIBS_PASSTHROUGH+=("preset:nvidia")\n' >&2
-            [[ "$_have_nvidia" == 0 ]] && HOST_LIBS_PASSTHROUGH+=("preset:nvidia")
-            ;;
-        auto)
-            printf 'agent-sandbox: GPU_PASSTHROUGH is deprecated; replace with HOST_LIBS_PASSTHROUGH+=("preset:auto-nvidia")\n' >&2
-            [[ "$_have_nvidia" == 0 ]] && HOST_LIBS_PASSTHROUGH+=("preset:auto-nvidia")
-            ;;
-        false|no|0|off)
-            printf 'agent-sandbox: GPU_PASSTHROUGH is deprecated; remove the line and use HOST_LIBS_PASSTHROUGH=() to disable\n' >&2
-            local _new=()
-            for _e in "${HOST_LIBS_PASSTHROUGH[@]}"; do
-                case "$_e" in
-                    preset:nvidia|preset:auto-nvidia) ;;
-                    *) _new+=("$_e") ;;
-                esac
-            done
-            HOST_LIBS_PASSTHROUGH=("${_new[@]}")
-            ;;
-        *)
-            printf 'agent-sandbox: GPU_PASSTHROUGH=%q is unrecognized; ignoring (use HOST_LIBS_PASSTHROUGH instead)\n' "$GPU_PASSTHROUGH" >&2
-            ;;
-    esac
-}
-
-# Populate the symlink dir from a path-set + glob-set. Optional sentinel
-# is a specific bare lib name to look up via ldconfig first; if found,
-# its dirname is prepended to the search paths so driver libs in unusual
-# locations (multilib, vendor-specific install paths) are caught.
-# Returns 0 if any symlink was placed, 1 otherwise.
-_populate_host_libs() {
-    local _dir="$1" _paths="$2" _globs="$3" _sentinel="$4"
-
-    if [[ -n "$_sentinel" ]] && command -v ldconfig &>/dev/null; then
-        local _ldlib
-        _ldlib="$(ldconfig -p 2>/dev/null \
-            | awk -v s="$_sentinel" '$0 ~ "[[:space:]]"s"[[:space:]]" {print $NF; exit}')"
-        if [[ -n "$_ldlib" && -e "$_ldlib" ]]; then
-            _paths="$(dirname "$_ldlib") $_paths"
-        fi
-    fi
-
-    local _p _g _f _placed=0
-    for _p in $_paths; do
-        [[ -d "$_p" ]] || continue
-        for _g in $_globs; do
-            for _f in "$_p"/$_g; do
-                [[ -e "$_f" ]] || continue
-                ln -sf "$_f" "$_dir/$(basename "$_f")"
-                _placed=1
-            done
-        done
-    done
-
-    [[ "$_placed" == 1 ]]
-}
-
-setup_host_libs_dir() {
-    _HOST_LIBS_DIR=""
-
-    _apply_gpu_passthrough_shim
-
-    [[ ${#HOST_LIBS_PASSTHROUGH[@]} -eq 0 ]] && return 0
-
-    local _dir="$_USER_DATA_DIR/.host-libs"
-    mkdir -p "$_dir"
-    # Repopulate each sandbox start so driver upgrades take effect.
-    find "$_dir" -maxdepth 1 -type l -delete 2>/dev/null || true
-
-    local _entry _populated=0 _preset _auto_only
-    for _entry in "${HOST_LIBS_PASSTHROUGH[@]}"; do
-        if [[ "$_entry" == preset:* ]]; then
-            _preset="${_entry#preset:}"
-            _auto_only=0
-            if [[ "$_preset" == auto-* ]]; then
-                _preset="${_preset#auto-}"
-                _auto_only=1
-            fi
-            case "$_preset" in
-                nvidia)
-                    if [[ "$_auto_only" == 1 ]]; then
-                        compgen -G '/dev/nvidia*' >/dev/null 2>&1 || continue
-                    fi
-                    if _populate_host_libs "$_dir" \
-                        '/usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib64' \
-                        'libcuda.so* libnvidia-*.so* libcudadebugger.so*' \
-                        'libcuda.so.1'; then
-                        _populated=1
-                    fi
-                    ;;
-                # Future presets (rdma, amd, lustre, mpi) become pure data
-                # additions to this case.  See issue #11 for the design.
-                *)
-                    printf 'agent-sandbox: HOST_LIBS_PASSTHROUGH preset "%s" is unknown\n' "$_preset" >&2
-                    ;;
-            esac
-        elif [[ "$_entry" == *:* ]]; then
-            local _path="${_entry%%:*}"
-            local _globs="${_entry#*:}"
-            if _populate_host_libs "$_dir" "$_path" "$_globs" ""; then
-                _populated=1
-            fi
-        else
-            printf 'agent-sandbox: HOST_LIBS_PASSTHROUGH entry "%s" is malformed (expected "preset:NAME" or "PATH:LIB_GLOB")\n' "$_entry" >&2
-        fi
-    done
-
-    if [[ "$_populated" == 1 ]]; then
-        _HOST_LIBS_DIR="$_dir"
-    fi
-    return 0
 }
 
 # ── Device passthrough resolution ──────────────────────────────────
