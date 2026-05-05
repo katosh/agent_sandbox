@@ -24,6 +24,9 @@ agent-sandbox bash            # interactive shell, sandboxed
 
 The agent starts in your project directory with read access to the system but write access only there. SSH keys, sensitive tokens, and unrelated credentials are invisible.
 
+> [!TIP]
+> **Configure the sandbox.** Mounts, devices, environment variables, Slurm scope, and admin enforcement: see the [configuration reference](https://katosh.github.io/agent_sandbox/configure/).
+
 ## Slurm-aware sandboxing for HPC
 
 **Sandbox status is preserved across Slurm jobs.** Calls to `sbatch`, `srun`, `squeue`, `scancel`, `scontrol`, `sacct`, and `sacctmgr` from inside the sandbox are mediated by the chaperon — a proxy running outside the sandbox. The agent uses Slurm normally; under the hood every submission is rewritten to wrap the job in `sandbox-exec.sh` on the compute node, flags are whitelisted, and munge authentication plus the real Slurm binaries are blocked inside the sandbox. There is no path where an agent submits a job that escapes the sandbox.
