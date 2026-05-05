@@ -69,7 +69,10 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Configure: configure.md
   - Reference:
+      - Architecture: reference/architecture.md
+      - Agents: reference/agents.md
       - Chaperon (Slurm proxy): reference/chaperon.md
       - Device passthrough: reference/device-passthrough.md
       - Sandbox vs. Apptainer: reference/apptainer-comparison.md
@@ -78,6 +81,7 @@ nav:
       - Installation: admin/install.md
       - Hardening: admin/hardening.md
       - Sandbox config guide: admin/sandbox-help.md
+  - Troubleshooting: troubleshooting.md
 
 extra:
   social:
