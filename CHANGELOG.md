@@ -11,16 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
-- **`HOST_LIBS_PASSTHROUGH` and `GPU_PASSTHROUGH` removed.** Per the
-  architectural review on `dotto-nexus#75`, host-driver-library
-  passthrough at the sandbox-entry layer addressed a brewed-Python
-  `ld.so` configuration limitation that reproduces outside any
-  sandbox — not a sandbox concern. Use uv-installed Python
-  (`python-build-standalone`, system linker) or Lmod-loaded Python
-  (system glibc) for GPU work; both resolve `libcuda.so.1` against
-  `/etc/ld.so.cache` and find host driver libs by bare name. See
-  `agents/sandbox-help.md` for the GPU-workload guidance.
-  `DEVICES=("preset:auto-nvidia")` remains the device-node default.
+- **`HOST_LIBS_PASSTHROUGH` and `GPU_PASSTHROUGH` configuration
+  variables.** The sandbox no longer materializes a private symlink
+  dir of host driver libraries or prepends one to `LD_LIBRARY_PATH`.
+  Stale entries in user configs are silently ignored with the
+  existing unknown-variable warning. `DEVICES=("preset:auto-nvidia")`
+  remains the device-node default.
 
 ## [0.6.1] - 2026-05-05
 
