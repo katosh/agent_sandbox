@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-05-05
+
 ### Fixed
 
 - **`BIND_DEV_PTS=true` is now a kernel-aware no-op on kernel >= 5.4.**
@@ -30,7 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   silently puzzling over "Permission denied". New `_kernel_at_least`
   helper in `sandbox-lib.sh` for downstream use. Tests `DEV08` /
   `DEV09` / `DEV10` cover the no-op branch, the helper itself, and
-  the shadow warning. See [DEVICE_PASSTHROUGH.md](DEVICE_PASSTHROUGH.md).
+  the shadow warning; `DEV06` mocks `uname` via a PATH shim so the
+  legacy < 5.4 branch is exercised on kernel-6 CI runners. See
+  [DEVICE_PASSTHROUGH.md](DEVICE_PASSTHROUGH.md). PR #18.
 
 ## [0.6.0] - 2026-05-04
 
