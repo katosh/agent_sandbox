@@ -54,7 +54,7 @@ Each agent profile directory (`agents/<name>/`) follows a file contract:
 | **Sandbox scripts** (`sandbox-lib.sh`, backends/) | Protected (root-owned + read-only inside sandbox via mount namespace) | Protected (root-owned at `/app/lib/agent-sandbox/`). `~/.config/agent-sandbox/` contains only user data, not scripts. |
 | **User config** (`user.conf`, `conf.d/`) | Cannot weaken admin policy (subprocess isolation + policy merge) | Cannot weaken admin policy (subprocess isolation + policy merge) |
 
-The admin path is set in `_ADMIN_DIR` in `sandbox-lib.sh` (not configurable via environment variable). To use a different path, change this single line. The Slurm enforcement scripts (`slurm-enforce/`) have their own `_ADMIN_CONF` variable at the top of each script for the same reason.
+The admin path is set in `_ADMIN_DIR` in `sandbox-lib.sh` (not configurable via environment variable). To use a different path, change this single line.
 
 ## Config Hierarchy
 
@@ -83,7 +83,6 @@ Without an admin config, the sandbox loads a single `sandbox.conf` from `~/.conf
 | `BLOCKED_ENV_VARS` | Yes — block more env vars | **No — restored with warning** |
 | `BLOCKED_ENV_PATTERNS` | Yes — add more glob patterns | **No — restored with warning** |
 | `EXTRA_BLOCKED_PATHS` | Yes — block more paths | **No — restored with warning** |
-| `TOKEN_FILE` / `SANDBOX_BYPASS_TOKEN` | No — would overwrite | **No — restored with warning** |
 | `ALLOWED_ENV_VARS` | Yes — unblock specific env vars | N/A (additive) |
 | `PRIVATE_TMP` | Yes | Yes |
 | `BIND_DEV_PTS` | Yes | Yes |
@@ -176,7 +175,7 @@ These configs also run in isolated subprocesses and go through admin enforcement
 The chaperon is a zero-trust Slurm proxy that sits between the sandboxed agent and the real Slurm commands. Inside the sandbox, Slurm binaries (`sbatch`, `srun`, `scancel`, `squeue`, etc.) are replaced with stubs that communicate with a chaperon process running outside the sandbox via FIFO IPC. The chaperon validates every request against a flag whitelist, wraps submitted jobs to re-enter the sandbox on compute nodes, and scopes `squeue`/`scancel` to the agent's own jobs.
 
 **Key security properties:**
-- Real Slurm binaries are blocked inside the sandbox (bind-mounted to `/dev/null` on bwrap, blacklisted on firejail). Munge socket is blocked on bwrap/firejail. **Landlock: neither Slurm binaries nor munge socket are blocked** — chaperon is fully bypassable (see [Admin Hardening](hardening.md) §1)
+- Real Slurm binaries are blocked inside the sandbox (bind-mounted to `/dev/null` on bwrap, blacklisted on firejail). Munge socket is blocked on bwrap/firejail. **Landlock: neither Slurm binaries nor munge socket are blocked** — chaperon is fully bypassable; use bwrap or firejail for any deployment that needs a hard Slurm boundary
 - Dangerous flags (`--uid`, `--prolog`, `--bcast`, `--container`, `--get-user-env`) are rejected
 - Job wrapping: sbatch scripts are inlined via heredoc into a wrapper that calls `sandbox-exec.sh` on the compute node — no temp files on NFS
 - Job scoping via `--comment` tags: `squeue`/`scancel` only see jobs submitted by this sandbox session/project (configurable via `SLURM_SCOPE`)
@@ -366,11 +365,3 @@ KillUserProcesses=yes
 ```
 
 Option A prevents the user systemd instance from starting at all. Verify with `systemd-run --user -- id` (should fail with "Failed to connect to bus").
-
----
-
-## Complementary Hardening
-
-An admin-owned installation pairs with:
-
-- **[Slurm job enforcement](https://github.com/katosh/agent_sandbox/tree/main/slurm-enforce)** — ensures agent-submitted Slurm jobs inherit the sandbox. All Slurm enforcement variables (`TOKEN_FILE`, `REAL_SBATCH`, `REAL_SRUN`, `SANDBOX_EXEC`) can be added directly to `/app/lib/agent-sandbox/sandbox.conf` — one config file for both systems. See the [example admin config](#example-admin-config) for the Slurm variables.
