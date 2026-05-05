@@ -9,11 +9,9 @@
 #   T04-T05:  ALLOWED_ENV_VARS user additions and admin merge
 #   T09-T10:  HOME_READONLY -> HOME_WRITABLE escalation (.ssh, .gnupg)
 #   T11-T14:  DENIED_WRITABLE_PATHS enforcement
-#   T15-T16:  Scalar protection (TOKEN_FILE, SANDBOX_BYPASS_TOKEN)
 #   A01:      HOME=/tmp/evil override
 #   conf.d:   Enforcement after conf.d, syntax errors, edge cases
 #   Combined: Multiple violations, adjacent paths, all blocked vars
-#   Admin wrappers: sbatch/srun wrapper validation
 #
 # Usage: ./test-admin.sh [--verbose] [--backend BACKEND] [PROJECT_DIR]
 
@@ -372,49 +370,6 @@ clean_user_conf
 echo ""
 
 # ══════════════════════════════════════════════════════════════════
-#  T15-T16: Scalar protection
-# ══════════════════════════════════════════════════════════════════
-
-echo "Scalar Protection (T15-T16)"
-echo ""
-
-# ── T15: TOKEN_FILE scalar override blocked ──
-echo "  T15: TOKEN_FILE scalar override attempt"
-write_user_conf 'TOKEN_FILE="/tmp/fake-token"'
-if has_mount_ns; then
-    echo "fake-secret" > /tmp/fake-token 2>/dev/null || true
-    if sandbox_raw bash -c 'cat /app/lib/agent-sandbox/.sandbox-bypass-token 2>&1'; then
-        if echo "$OUTPUT" | grep -q "fake-secret"; then
-            fail "T15: User redirected TOKEN_FILE to fake token"
-        else
-            pass "T15: TOKEN_FILE override did not expose admin token path"
-        fi
-    else
-        pass "T15: Admin token file still protected despite TOKEN_FILE override"
-    fi
-    rm -f /tmp/fake-token
-else
-    skip "T15: TOKEN_FILE overlay — not applicable for $CURRENT_BACKEND backend"
-fi
-clean_user_conf
-
-# ── T16: SANDBOX_BYPASS_TOKEN scalar override blocked ──
-echo "  T16: SANDBOX_BYPASS_TOKEN scalar override attempt"
-write_user_conf 'SANDBOX_BYPASS_TOKEN="/tmp/fake"'
-if sandbox_raw bash -c 'echo done'; then
-    if echo "$OUTPUT" | grep -q "done"; then
-        pass "T16: Sandbox starts normally despite SANDBOX_BYPASS_TOKEN override attempt"
-    else
-        fail "T16: Sandbox output unexpected" "$OUTPUT"
-    fi
-else
-    fail "T16: Sandbox failed to start" "$OUTPUT"
-fi
-clean_user_conf
-
-echo ""
-
-# ══════════════════════════════════════════════════════════════════
 #  A01: HOME=/tmp/evil override
 # ══════════════════════════════════════════════════════════════════
 
@@ -565,7 +520,6 @@ echo "  Combined: Multiple violations in single user.conf"
 write_user_conf 'BLOCKED_ENV_VARS=()
 BLOCKED_FILES=()
 EXTRA_BLOCKED_PATHS=()
-TOKEN_FILE="/tmp/evil"
 HOME_WRITABLE+=(".ssh" ".gnupg")
 EXTRA_WRITABLE_PATHS+=("/etc/cron.d" "/app/bin")'
 export GITHUB_TOKEN="leak-multi"
@@ -633,151 +587,6 @@ fi
 unset GITHUB_TOKEN
 
 echo ""
-
-# ══════════════════════════════════════════════════════════════════
-#  Admin wrappers (sandbox-wrapper.conf)
-# ══════════════════════════════════════════════════════════════════
-
-WRAPPER_CONF=""
-if [[ -f /app/lib/agent-sandbox/sandbox.conf ]]; then
-    WRAPPER_CONF="/app/lib/agent-sandbox/sandbox.conf"
-elif [[ -f "$SCRIPT_DIR/slurm-enforce/sandbox-wrapper.conf" ]]; then
-    WRAPPER_CONF="$SCRIPT_DIR/slurm-enforce/sandbox-wrapper.conf"
-fi
-
-if [[ -n "$WRAPPER_CONF" ]]; then
-    source "$WRAPPER_CONF"
-    echo "Admin Wrappers (sandbox-wrapper.conf)"
-    echo ""
-
-    # Check that real binaries exist at configured locations
-    if [[ -x "${REAL_SBATCH:-}" ]]; then
-        OUTPUT=$(file "$REAL_SBATCH" 2>&1)
-        if echo "$OUTPUT" | grep -qi 'ELF'; then
-            pass "Real sbatch binary at $REAL_SBATCH"
-        else
-            fail "Real sbatch at $REAL_SBATCH is not an ELF binary" "$OUTPUT"
-        fi
-    else
-        skip "Real sbatch not found at ${REAL_SBATCH:-<unset>}"
-    fi
-
-    if [[ -x "${REAL_SRUN:-}" ]]; then
-        OUTPUT=$(file "$REAL_SRUN" 2>&1)
-        if echo "$OUTPUT" | grep -qi 'ELF'; then
-            pass "Real srun binary at $REAL_SRUN"
-        else
-            fail "Real srun at $REAL_SRUN is not an ELF binary" "$OUTPUT"
-        fi
-    else
-        skip "Real srun not found at ${REAL_SRUN:-<unset>}"
-    fi
-
-    # Check that /usr/bin/sbatch and /usr/bin/srun are wrapper scripts
-    if [[ -f /usr/bin/sbatch ]]; then
-        OUTPUT=$(file /usr/bin/sbatch 2>&1)
-        if echo "$OUTPUT" | grep -qi 'script\|text'; then
-            pass "/usr/bin/sbatch is a wrapper script (not the real binary)"
-        else
-            skip "/usr/bin/sbatch is the real binary (admin wrappers not deployed)"
-        fi
-    fi
-
-    if [[ -f /usr/bin/srun ]]; then
-        OUTPUT=$(file /usr/bin/srun 2>&1)
-        if echo "$OUTPUT" | grep -qi 'script\|text'; then
-            pass "/usr/bin/srun is a wrapper script (not the real binary)"
-        else
-            skip "/usr/bin/srun is the real binary (admin wrappers not deployed)"
-        fi
-    fi
-
-    # Check token file exists and is readable
-    if [[ -n "${TOKEN_FILE:-}" && -f "$TOKEN_FILE" ]]; then
-        if cat "$TOKEN_FILE" &>/dev/null; then
-            pass "Token file readable ($TOKEN_FILE)"
-        else
-            fail "Token file exists but is not readable ($TOKEN_FILE)"
-        fi
-    else
-        skip "Token file not found (${TOKEN_FILE:-<unset>})"
-    fi
-
-    # Test sbatch wrapper logic (dry run — no job submission needed)
-    SBATCH_WRAPPER=""
-    if [[ -f /usr/bin/sbatch ]] && head -1 /usr/bin/sbatch 2>/dev/null | grep -q bash; then
-        SBATCH_WRAPPER=/usr/bin/sbatch
-    fi
-
-    if [[ -n "$SBATCH_WRAPPER" ]]; then
-        # Verify wrapper sources sandbox-wrapper.conf
-        if grep -q 'sandbox-wrapper.conf' "$SBATCH_WRAPPER"; then
-            pass "sbatch wrapper sources sandbox-wrapper.conf"
-        else
-            fail "sbatch wrapper does not source sandbox-wrapper.conf"
-        fi
-
-        # Verify wrapper strips _SANDBOX_BYPASS from --export= flags
-        if grep -q '_SANDBOX_BYPASS' "$SBATCH_WRAPPER"; then
-            pass "sbatch wrapper handles _SANDBOX_BYPASS stripping"
-        else
-            fail "sbatch wrapper does not handle _SANDBOX_BYPASS stripping"
-        fi
-
-        # Verify wrapper injects token via env var (not CLI)
-        if grep -q 'export _SANDBOX_BYPASS' "$SBATCH_WRAPPER"; then
-            pass "sbatch wrapper injects token via environment (not CLI)"
-        else
-            fail "sbatch wrapper does not export _SANDBOX_BYPASS"
-        fi
-
-        # Test the stripping logic directly
-        OUTPUT=$(echo "ALL,_SANDBOX_BYPASS=secret,FOO=bar" | sed 's/,\?_SANDBOX_BYPASS=[^,]*//' | sed 's/^,//')
-        if [[ "$OUTPUT" == "ALL,FOO=bar" ]]; then
-            pass "Token stripping preserves other --export= variables"
-        else
-            fail "Token stripping produced unexpected output" "$OUTPUT"
-        fi
-    fi
-
-    # Test srun wrapper logic (dry run)
-    SRUN_WRAPPER=""
-    if [[ -f /usr/bin/srun ]] && head -1 /usr/bin/srun 2>/dev/null | grep -q bash; then
-        SRUN_WRAPPER=/usr/bin/srun
-    fi
-
-    if [[ -n "$SRUN_WRAPPER" ]]; then
-        # Verify wrapper checks SANDBOX_ACTIVE to avoid nesting
-        if grep -q 'SANDBOX_ACTIVE' "$SRUN_WRAPPER"; then
-            pass "srun wrapper checks SANDBOX_ACTIVE (avoids nesting)"
-        else
-            fail "srun wrapper does not check SANDBOX_ACTIVE"
-        fi
-
-        # Verify wrapper reads token to decide pass-through vs sandbox
-        if grep -q 'TOKEN_FILE\|sandbox-wrapper.conf' "$SRUN_WRAPPER"; then
-            pass "srun wrapper reads token for pass-through decision"
-        else
-            fail "srun wrapper does not read token"
-        fi
-    fi
-
-    # Test token protection: sandboxed process cannot read token
-    if [[ -n "${TOKEN_FILE:-}" && -f "$TOKEN_FILE" && -x "$SANDBOX_EXEC" ]]; then
-        OUTPUT=$(timeout 15 "$SANDBOX_EXEC" \
-            --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- \
-            cat "$TOKEN_FILE" 2>&1) || true
-        if echo "$OUTPUT" | grep -qi 'permission denied\|EACCES'; then
-            pass "Token protected from sandboxed process"
-        elif [[ -z "$OUTPUT" ]]; then
-            pass "Token hidden from sandboxed process (empty read)"
-        else
-            fail "Token readable from sandboxed process" "$OUTPUT"
-        fi
-    fi
-
-    echo ""
-fi
 
 # ══════════════════════════════════════════════════════════════════
 #  Summary

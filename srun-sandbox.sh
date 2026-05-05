@@ -16,23 +16,7 @@
 
 set -euo pipefail
 
-# Inside the sandbox, the real srun may be at a relocated path (bwrap)
-# or at its original location (landlock).
-if [[ "${SANDBOX_ACTIVE:-}" == "1" ]]; then
-    if [[ "${SANDBOX_BACKEND:-bwrap}" == "bwrap" ]]; then
-        REAL_SRUN="${REAL_SRUN:-/tmp/.sandbox-slurm-real/srun}"
-    else
-        REAL_SRUN="${REAL_SRUN:-/usr/bin/srun}"
-    fi
-else
-    # If admin wrappers are deployed, source the admin config to get
-    # the real binary path and skip the admin wrapper indirection.
-    _ADMIN_CONF="/app/lib/agent-sandbox/sandbox.conf"
-    if [[ -z "${REAL_SRUN:-}" && -f "$_ADMIN_CONF" ]]; then
-        source "$_ADMIN_CONF"
-    fi
-    REAL_SRUN="${REAL_SRUN:-/usr/bin/srun}"
-fi
+REAL_SRUN="${REAL_SRUN:-/usr/bin/srun}"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 PROJECT_DIR="${SANDBOX_PROJECT_DIR:-$(pwd)}"

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the eBPF/SPANK admin-hardening construct (the `slurm-enforce/`
+  subsystem and its `SANDBOX_BYPASS_TOKEN` / `TOKEN_FILE` integration
+  in the sandbox). The chaperon has been the supported boundary for
+  sandboxed agent Slurm calls since v0.5; the token construct was
+  largely superseded on bwrap/firejail and partial on Landlock, and
+  shipping it alongside the chaperon doubled the surface admins had
+  to reason about. Sites that depended on the eBPF/SPANK layer can
+  pin to v0.7.0. Affected surfaces: `slurm-enforce/` directory
+  (deleted), `SANDBOX_BYPASS_TOKEN` defaults / snapshot / restore
+  paths in `sandbox-lib.sh`, the bypass-token hide in
+  `backends/{bwrap,firejail}.sh`, the `TOKEN_FILE` example in
+  `sandbox-admin.conf`, and the corresponding tests in `test.sh` /
+  `test-admin.sh`. `sbatch-sandbox.sh` / `srun-sandbox.sh` no longer
+  source the admin config to look up `REAL_SBATCH` / `REAL_SRUN`.
+
 ## [0.7.0] - 2026-05-05
 
 ### Removed

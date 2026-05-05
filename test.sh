@@ -4203,68 +4203,6 @@ else
     skip "FILTER_PASSWD: not supported on Landlock (no mount namespace)"
 fi
 
-# SANDBOX_BYPASS_TOKEN — verify the token file is hidden inside the sandbox
-# bwrap overlays with /dev/null; firejail blacklists; landlock relies on eBPF LSM
-if has_mount_ns; then
-    # Mount-namespace backends: test with a temp token file
-    _TOKEN_FILE="/tmp/.sandbox-test-bypass-token-$$"
-    echo "test-bypass-secret" > "$_TOKEN_FILE"
-    _TOKEN_RAW=$(SANDBOX_BYPASS_TOKEN="$_TOKEN_FILE" \
-        timeout 15 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
-        --project-dir "$PROJECT_DIR" -- cat "$_TOKEN_FILE" 2>&1) || true
-    _TOKEN_OUT=$(echo "$_TOKEN_RAW" | grep -v \
-        -e '^Warning:' -e '^Parent pid' -e '^Child process' -e '^Parent is shutting')
-    if echo "$_TOKEN_OUT" | grep -q "test-bypass-secret"; then
-        fail "SANDBOX_BYPASS_TOKEN is readable inside sandbox"
-    else
-        pass "SANDBOX_BYPASS_TOKEN is hidden inside sandbox"
-    fi
-    rm -f "$_TOKEN_FILE"
-else
-    # Landlock: cannot hide files via mount namespace. Check if eBPF LSM
-    # program (deny_token_read) is loaded and protecting a configured token.
-    _EBPF_LOADED=false
-    if command -v bpftool &>/dev/null; then
-        if sudo -n bpftool prog list 2>/dev/null | grep -q 'deny_token_read'; then
-            _EBPF_LOADED=true
-        fi
-    fi
-
-    if [[ "$_EBPF_LOADED" == "true" ]]; then
-        # eBPF is loaded — find the configured token path and test it
-        # Try sandbox.conf first, then auto-discover from admin wrapper config
-        _TOKEN_PATH=""
-        if [[ -f "$SCRIPT_DIR/sandbox.conf" ]]; then
-            _TOKEN_PATH=$(bash -c "source '$SCRIPT_DIR/sandbox.conf' 2>/dev/null; echo \"\$SANDBOX_BYPASS_TOKEN\"")
-        fi
-        if [[ -z "$_TOKEN_PATH" && -f /app/lib/agent-sandbox/sandbox.conf ]]; then
-            _TOKEN_PATH=$(bash -c 'source /app/lib/agent-sandbox/sandbox.conf 2>/dev/null; echo "$SANDBOX_BYPASS_TOKEN"')
-        fi
-        if [[ -n "$_TOKEN_PATH" && -f "$_TOKEN_PATH" ]]; then
-            # Landlock sets NO_NEW_PRIVS — eBPF should deny the read
-            if sandbox cat "$_TOKEN_PATH" 2>&1; then
-                # eBPF is loaded but not blocking. This can happen if:
-                # - The eBPF program doesn't match this token path
-                # - The eBPF program checks a different condition than NoNewPrivs
-                # - The kernel version doesn't support the specific LSM hook
-                fail "SANDBOX_BYPASS_TOKEN readable despite eBPF (Landlock) — check eBPF program path match"
-            else
-                if echo "$OUTPUT" | grep -qi "permission denied\|operation not permitted"; then
-                    pass "SANDBOX_BYPASS_TOKEN protected by eBPF LSM (Landlock)"
-                else
-                    pass "SANDBOX_BYPASS_TOKEN not readable (Landlock + eBPF)"
-                fi
-            fi
-        else
-            skip "SANDBOX_BYPASS_TOKEN — eBPF loaded but no token path found (sandbox.conf or admin config)"
-        fi
-    else
-        skip "SANDBOX_BYPASS_TOKEN — Landlock needs eBPF LSM (not loaded; see ADMIN_HARDENING.md §1)"
-    fi
-fi
-
-echo ""
-
 # ── 11.5 Device passthrough (bwrap only) ──────────────────────────
 
 echo "11.5. Device passthrough"
