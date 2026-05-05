@@ -87,6 +87,19 @@ DEVICES=(/dev/something-specific)
 
 The `DEVICES_BLACKLIST` (admin-enforced when an admin install is in place) vetoes individual entries with a stderr notice. Defaults block `/dev/mem`, `/dev/kmem`, `/dev/port`, `/dev/pts` (TIOCSTI on kernel < 6.2), `/dev/sd*`, `/dev/nvme*`, `/dev/loop*`. The legacy `BIND_DEV_PTS=true` knob is rewritten to `DEVICES+=(/dev/pts)` for backward compatibility.
 
+## Running GPU workloads inside the sandbox
+
+The sandbox exposes NVIDIA driver device nodes by default (`DEVICES=("preset:auto-nvidia")`, expanded to `/dev/nvidia*` etc.); on hosts without GPUs the glob is a no-op. **You also need a Python distribution that uses the system dynamic linker** so that `dlopen("libcuda.so.1")` resolves against the host driver libraries indexed in `/etc/ld.so.cache`.
+
+Recommended:
+
+- **uv-installed Python** (`uv python install 3.12; uv venv; uv pip install torch ...`). Uses `python-build-standalone`, whose ELF `.interp` is `/lib64/ld-linux-x86-64.so.2`; the system linker reads `/etc/ld.so.cache` and finds host driver libs by bare name. Works inside the sandbox without further configuration.
+- **Lmod-loaded Python** (`module load Python/3.x.y-GCCcore-*`). Built against system glibc; same as uv Python from the loader's perspective.
+
+Not recommended for scientific GPU compute:
+
+- **Linuxbrew-installed Python.** Uses a brewed `ld.so` whose private cache (`~/.linuxbrew/etc/ld.so.cache`) and built-in search paths index brewed cellars only — never `/usr/lib/x86_64-linux-gnu`. `dlopen("libcuda.so.1")` fails for bare-name lookups regardless of sandbox state; the same failure reproduces outside any sandbox. If you must use brewed Python with GPU libs, set `LD_LIBRARY_PATH` manually to a curated symlink dir of driver libs (`libcuda.so*`, `libnvidia-*.so*`, `libcudadebugger.so*`) — never to `/usr/lib/x86_64-linux-gnu` directly, which would shadow brewed `libstdc++`/`libc` and segfault the toolchain.
+
 ## Slurm (chaperon proxy)
 
 Slurm commands work inside the sandbox but are proxied through a secure chaperon process running outside. This is because munge authentication is intentionally blocked inside the sandbox.

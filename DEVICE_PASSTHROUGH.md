@@ -16,8 +16,7 @@ visibility:
 The "true" half opens `/dev/pts`, which on kernels < 6.2 lets a sandboxed
 process inject keystrokes into the user's other terminals via `TIOCSTI`.
 Fred Hutch's gizmo cluster runs `5.4.0-228-generic`, so the toggle is a
-GPU-vs-TIOCSTI dilemma. (`GPU_PASSTHROUGH=auto`, the recent libcuda
-discoverability fix, is library-side only — it doesn't bind device nodes.)
+GPU-vs-TIOCSTI dilemma.
 
 The fix is a **targeted** mechanism: expose only the device nodes the
 workload needs.

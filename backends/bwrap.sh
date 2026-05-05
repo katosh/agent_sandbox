@@ -359,18 +359,6 @@ backend_prepare() {
     # Prepend chaperon stubs to PATH (before bin/ for sbatch/srun override)
     BWRAP_ARGS+=(--setenv PATH "$SANDBOX_DIR/chaperon/stubs:$SANDBOX_DIR/bin:${PATH}")
 
-    # Host driver/runtime library passthrough — expose the symlink dir
-    # and prepend it to LD_LIBRARY_PATH so non-system dynamic linkers
-    # (e.g. brewed Python's bundled ld.so) can resolve libcuda.so.1 and
-    # other driver libs by bare name. Driver libs only; libstdc++/libc
-    # are not shadowed.  See HOST_LIBS_PASSTHROUGH in sandbox.conf.
-    setup_host_libs_dir
-    if [[ -n "${_HOST_LIBS_DIR:-}" ]]; then
-        BWRAP_ARGS+=(--ro-bind "$_HOST_LIBS_DIR" "$_HOST_LIBS_DIR")
-        BWRAP_ARGS+=(--setenv LD_LIBRARY_PATH \
-            "$_HOST_LIBS_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}")
-    fi
-
     # Bind-mount chaperon FIFO directory into the sandbox (writable for
     # per-request response FIFOs created by stubs)
     if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -d "${_CHAPERON_FIFO_DIR:-}" ]]; then
