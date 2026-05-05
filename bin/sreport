@@ -1,5 +1,0 @@
-#!/bin/bash --
-# Sandbox sreport — shadows /usr/bin/sreport inside the sandbox.
-# Delegates to chaperon stub which blocks sreport entirely.
-_BIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-exec "$_BIN_DIR/../chaperon/stubs/sreport" "$@"
