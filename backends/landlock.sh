@@ -16,16 +16,16 @@
 #         /usr/bin/sbatch and /usr/bin/srun remain directly callable.
 #       * Munge socket is also accessible (Landlock cannot block
 #         AF_UNIX connect), so agents can bypass chaperon entirely.
-#         SPANK plugin enforcement (ADMIN_HARDENING.md §1) is mandatory.
+#         SPANK plugin enforcement (docs/admin/hardening.md §1) is mandatory.
 #       * Sandbox self-protection not possible — Landlock rules are
 #         additive, so can't make a subdir read-only when parent is
 #         writable. An agent could modify sandbox scripts to weaken
 #         future sessions or submitted Slurm jobs.
-#     See ADMIN_HARDENING.md §2 for mitigations.
+#     See docs/admin/hardening.md §2 for mitigations.
 #   - Cannot block Unix socket connect() — Landlock controls file
 #     operations but not AF_UNIX socket connections. If systemd user
 #     instances are running, systemd-run --user can escape the sandbox.
-#     See ADMIN_HARDENING.md §0 for the fix (disable user@.service).
+#     See docs/admin/hardening.md §0 for the fix (disable user@.service).
 #   - Agent config merging handled by prepare_agent_configs() in sandbox-lib.sh
 #   - Environment filtering done in shell (not via bwrap --unsetenv/--setenv)
 
@@ -75,7 +75,7 @@ backend_prepare() {
     # /run/munge/munge.socket.2, forge credentials, and call
     # /usr/bin/sbatch directly (also not blockable without mount
     # namespace). The chaperon is bypassed completely on Landlock.
-    # ADMIN_HARDENING.md §1 (SPANK plugin) is MANDATORY for Landlock
+    # docs/admin/hardening.md §1 (SPANK plugin) is MANDATORY for Landlock
     # deployments with Slurm.
     [[ -d /run/nscd ]]             && LANDLOCK_ARGS+=(--ro /run/nscd)
     [[ -d /run/systemd/resolve ]]  && LANDLOCK_ARGS+=(--ro /run/systemd/resolve)

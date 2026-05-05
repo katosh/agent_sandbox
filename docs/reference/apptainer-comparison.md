@@ -79,7 +79,7 @@ The advisory for CVE-2023-30549 notes that "many ext4 filesystem vulnerabilities
 
 The setuid-root architecture is the common thread. Both firejail and Apptainer's setuid mode have been repeatedly exploited for local root. Bubblewrap avoids this entirely by using unprivileged user namespaces, and Landlock avoids it by being a pure kernel LSM with no userspace privileged component.
 
-When choosing a sandbox backend, this matters: **bwrap has 4 CVEs and zero root exploits; firejail has 18 CVEs and 12 root exploits.** Firejail provides strong isolation features (seccomp, caps dropping) but installs a setuid-root binary on every node. On systems where bwrap is available (or can be enabled via AppArmor), it is the safer choice. See the [bwrap vs firejail comparison](ADMIN_INSTALL.md#bwrap-vs-firejail-comparison) in Admin Install.
+When choosing a sandbox backend, this matters: **bwrap has 4 CVEs and zero root exploits; firejail has 18 CVEs and 12 root exploits.** Firejail provides strong isolation features (seccomp, caps dropping) but installs a setuid-root binary on every node. On systems where bwrap is available (or can be enabled via AppArmor), it is the safer choice. See the [bwrap vs firejail comparison](../admin/install.md#bwrap-vs-firejail-comparison) in Admin Install.
 
 ## Architectural weaknesses unique to Apptainer
 
@@ -102,7 +102,7 @@ Neither approach provides complete isolation. Both share these weaknesses:
 | **SSH escape** | If `~/.ssh` is exposed, agent can SSH to localhost for an unsandboxed shell. | `$HOME` bind-mounted by default, so `~/.ssh` is exposed unless `--contain` is used. |
 | **`/dev/shm` / IPC** | Isolated on bwrap (`--unshare-ipc`) and firejail (`--ipc-namespace`). Shared on Landlock. | Writable and shared by default. |
 | **`memfd_create`** | Not blocked (needed by CUDA, PyTorch, JAX). Docker's default seccomp profile also allows it. `userfaultfd` and `io_uring` are blocked by all three backends via seccomp. | Not blocked (no seccomp by default). |
-| **Slurm wrapping** | Munge socket blocked (bwrap/firejail). Slurm binaries blocked (bwrap/firejail). **Landlock: neither munge nor Slurm binaries are blocked** — `AF_UNIX connect()` bypasses Landlock, so the chaperon is fully bypassable. See [Admin Hardening §1](ADMIN_HARDENING.md#1-enforce-sandbox-on-agent-submitted-slurm-jobs) (mandatory for Landlock) | No wrapping at all. Slurm fully accessible. |
+| **Slurm wrapping** | Munge socket blocked (bwrap/firejail). Slurm binaries blocked (bwrap/firejail). **Landlock: neither munge nor Slurm binaries are blocked** — `AF_UNIX connect()` bypasses Landlock, so the chaperon is fully bypassable. See [Admin Hardening §1](../admin/hardening.md#1-enforce-sandbox-on-agent-submitted-slurm-jobs) (mandatory for Landlock) | No wrapping at all. Slurm fully accessible. |
 
 The sandbox has additional backend-specific gaps documented in the [README's Known Limitations](README.md#known-limitations):
 
@@ -111,7 +111,7 @@ The sandbox has additional backend-specific gaps documented in the [README's Kno
 - **Landlock** leaves IPC namespace shared (`/dev/shm` writable by all same-UID processes). Bwrap and firejail isolate IPC by default.
 - **All backends** leave the network namespace shared. Abstract Unix sockets are covert channels between sandbox sessions.
 
-The key difference is not that the sandbox has no gaps (it does), but that its gaps are smaller and better characterized. Apptainer's default posture exposes the entire host environment; the sandbox's default posture hides everything and selectively re-exposes what is needed. Both require admin hardening for strong isolation (see [Admin Hardening §§1-5](ADMIN_HARDENING.md#summary)).
+The key difference is not that the sandbox has no gaps (it does), but that its gaps are smaller and better characterized. Apptainer's default posture exposes the entire host environment; the sandbox's default posture hides everything and selectively re-exposes what is needed. Both require admin hardening for strong isolation (see [Admin Hardening §§1-5](../admin/hardening.md#summary)).
 
 ## What Apptainer does better
 
@@ -123,7 +123,7 @@ The key difference is not that the sandbox has no gaps (it does), but that its g
 
 **Community and ecosystem.** Apptainer has broad HPC adoption, extensive documentation, and integration with registries (Docker Hub, ORAS, library://). The sandbox is purpose-built for AI coding agents.
 
-The two approaches are complementary, not competing. An agent running inside the sandbox can submit Slurm jobs that use Apptainer containers. The sandbox controls what the agent can access on the host, while Apptainer provides the reproducible environment inside the job. The sandbox's Slurm wrappers ([Admin Hardening §1](ADMIN_HARDENING.md#1-enforce-sandbox-on-agent-submitted-slurm-jobs)) ensure that submitted jobs are also sandboxed, regardless of whether they use Apptainer internally.
+The two approaches are complementary, not competing. An agent running inside the sandbox can submit Slurm jobs that use Apptainer containers. The sandbox controls what the agent can access on the host, while Apptainer provides the reproducible environment inside the job. The sandbox's Slurm wrappers ([Admin Hardening §1](../admin/hardening.md#1-enforce-sandbox-on-agent-submitted-slurm-jobs)) ensure that submitted jobs are also sandboxed, regardless of whether they use Apptainer internally.
 
 ## Bottom line
 
@@ -131,4 +131,4 @@ For **AI agent containment on HPC**, the sandbox provides stronger default isola
 
 The sandbox achieves this containment out of the box, with HPC-specific accommodations (munge passthrough, Slurm wrapping, supplementary groups, LDAP filtering) built in. With the bwrap backend (recommended), the attack surface is minimal: no setuid helper, no image parsing, no SIF verification code, and only 4 CVEs in a decade (none since 2020). The firejail backend provides comparable isolation but carries a worse CVE record than Apptainer itself (see [Security track record](#security-track-record)).
 
-Neither tool is a complete solution. The sandbox does not isolate the network (an agent can exfiltrate data over HTTP or SSH), does not block `memfd_create` (needed by CUDA/PyTorch, also allowed by Docker's default seccomp), and its Slurm wrapping is a soft boundary. Apptainer shares all of these gaps and more. Both benefit from the admin hardening options described in [Admin Hardening §§1-5](ADMIN_HARDENING.md#summary): dedicated accounts, network isolation, and audit logging close gaps that neither tool addresses alone. The trade-off between them is clear: the sandbox does not provide environment reproducibility, Apptainer does not provide agent containment, and each is the right tool for its purpose.
+Neither tool is a complete solution. The sandbox does not isolate the network (an agent can exfiltrate data over HTTP or SSH), does not block `memfd_create` (needed by CUDA/PyTorch, also allowed by Docker's default seccomp), and its Slurm wrapping is a soft boundary. Apptainer shares all of these gaps and more. Both benefit from the admin hardening options described in [Admin Hardening §§1-5](../admin/hardening.md#summary): dedicated accounts, network isolation, and audit logging close gaps that neither tool addresses alone. The trade-off between them is clear: the sandbox does not provide environment reproducibility, Apptainer does not provide agent containment, and each is the right tool for its purpose.

@@ -463,7 +463,7 @@ The following commands are routed to `blocked.sh` (no handler):
 
 **Defense in depth (bwrap/firejail)**: Without the munge socket, even finding a Slurm binary is useless — authentication will fail. The chaperon is the only path to Slurm interaction.
 
-> **⚠ Landlock: chaperon is fully bypassable.** Landlock cannot block `AF_UNIX connect()` (not available in any Landlock ABI version as of kernel 6.11). A sandboxed process can connect to `/run/munge/munge.socket.2`, forge credentials, and call `/usr/bin/sbatch` directly — completely bypassing the chaperon. **ADMIN_HARDENING.md §1 (SPANK plugin) is mandatory for Landlock deployments with Slurm.** Alternatively, use the bwrap or firejail backend.
+> **⚠ Landlock: chaperon is fully bypassable.** Landlock cannot block `AF_UNIX connect()` (not available in any Landlock ABI version as of kernel 6.11). A sandboxed process can connect to `/run/munge/munge.socket.2`, forge credentials, and call `/usr/bin/sbatch` directly — completely bypassing the chaperon. **[Admin Hardening §1](../admin/hardening.md#1-enforce-sandbox-on-agent-submitted-slurm-jobs) (SPANK plugin) is mandatory for Landlock deployments with Slurm.** Alternatively, use the bwrap or firejail backend.
 
 ## Comparison with Previous Architecture
 

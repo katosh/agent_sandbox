@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `DEV09` / `DEV10` cover the no-op branch, the helper itself, and
   the shadow warning; `DEV06` mocks `uname` via a PATH shim so the
   legacy < 5.4 branch is exercised on kernel-6 CI runners. See
-  [DEVICE_PASSTHROUGH.md](DEVICE_PASSTHROUGH.md). PR #18.
+  [DEVICE_PASSTHROUGH.md](docs/reference/device-passthrough.md). PR #18.
 
 ## [0.6.0] - 2026-05-04
 
@@ -70,7 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Migration: `BIND_DEV_PTS=true` is rewritten to
   `DEVICES+=(/dev/pts)` at config-load time with a deprecation
   notice; the admin blacklist still applies. See
-  [DEVICE_PASSTHROUGH.md](DEVICE_PASSTHROUGH.md) for the full
+  [DEVICE_PASSTHROUGH.md](docs/reference/device-passthrough.md) for the full
   design and [sandbox.conf](sandbox.conf) for the user template.
   PR #14.
 
@@ -96,7 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   locked-down installs (so `BIND_DEV_PTS=true` becomes a logged
   no-op there, which is a strict security improvement over the old
   bypass behaviour). Migration table in the v0.6.0 PR #14 body and
-  in [DEVICE_PASSTHROUGH.md](DEVICE_PASSTHROUGH.md).
+  in [DEVICE_PASSTHROUGH.md](docs/reference/device-passthrough.md).
 
 ### Fixed
 
