@@ -11,12 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
-- **`HOST_LIBS_PASSTHROUGH` and `GPU_PASSTHROUGH` configuration
-  variables.** The sandbox no longer materializes a private symlink
-  dir of host driver libraries or prepends one to `LD_LIBRARY_PATH`.
-  Stale entries in user configs are silently ignored with the
-  existing unknown-variable warning. `DEVICES=("preset:auto-nvidia")`
-  remains the device-node default.
+- Removed unused host-library configuration surface. The sandbox no
+  longer materializes a private symlink dir of host driver libraries
+  or prepends one to `LD_LIBRARY_PATH`. Stale entries in user configs
+  are silently ignored with the existing unknown-variable warning.
+  `DEVICES=("preset:auto-nvidia")` remains the device-node default.
 
 ## [0.6.1] - 2026-05-05
 
