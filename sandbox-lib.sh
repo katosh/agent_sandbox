@@ -174,12 +174,6 @@ SANDBOX_MODULES=()
 # them) are stripped with a warning. Admins set this in the admin sandbox.conf.
 DENIED_WRITABLE_PATHS=()
 
-# Path to the Slurm sandbox bypass token (see docs/admin/hardening.md §1).
-# When set, the bwrap backend automatically hides this file from the sandbox
-# (overlays it with /dev/null). For the Landlock backend, use the eBPF LSM
-# program instead (see slurm-enforce/token_protect.bpf.c).
-# Can be set as SANDBOX_BYPASS_TOKEN or TOKEN_FILE (the Slurm wrapper name).
-
 # Isolate /tmp with a private tmpfs (bwrap and firejail backends).
 # Default: true. Set to false if the sandboxed process needs shared /tmp
 # access (e.g., MPI shared-memory transport between ranks on the same node,
@@ -280,11 +274,6 @@ SANDBOX_QUIET=false
 # Preserve any value from env/CLI before setting the default — the override
 # is restored after config loading (see _SANDBOX_BACKEND_OVERRIDE below).
 SANDBOX_BACKEND="${SANDBOX_BACKEND:-}"
-
-# Path to the Slurm bypass token file. bwrap/firejail hide it inside
-# the sandbox. Can be set as SANDBOX_BYPASS_TOKEN or TOKEN_FILE (the
-# Slurm wrapper name).
-SANDBOX_BYPASS_TOKEN=""
 
 # Process limit (defense-in-depth against fork bombs). Empty = no limit.
 # Sets RLIMIT_NPROC via ulimit -u / firejail --rlimit-nproc.
@@ -524,10 +513,6 @@ _CONFIG_SCALARS=(
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
 _ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS EXTRA_BLOCKED_PATHS DEVICES_BLACKLIST)
-# Token paths are admin-only — set in the admin config (sourced directly),
-# never extracted from user configs.  Keeping them out of _CONFIG_SCALARS
-# prevents users from overriding them and avoids declare -p failures when
-# TOKEN_FILE has no default.
 
 # --- Load an untrusted config file in an isolated subprocess ---
 #
@@ -818,8 +803,6 @@ _enforce_admin_policy() {
     HOME_WRITABLE=("${_ADMIN_HOME_WRITABLE[@]}")
     DENIED_WRITABLE_PATHS=("${_ADMIN_DENIED_WRITABLE_PATHS[@]}")
     DEVICES_BLACKLIST=("${_ADMIN_DEVICES_BLACKLIST[@]}")
-    SANDBOX_BYPASS_TOKEN="$_ADMIN_SANDBOX_BYPASS_TOKEN"
-    TOKEN_FILE="$_ADMIN_TOKEN_FILE"
 
     # --- Merge: admin base + user-only additions ---
     local _in_admin
@@ -954,12 +937,6 @@ _source_trusted_config() {
 
 # --- Snapshot admin config values after loading ---
 _snapshot_admin_config() {
-    # Auto-discover token path before snapshotting, so the admin value
-    # is captured and enforced through _enforce_admin_policy().
-    if [[ -z "${SANDBOX_BYPASS_TOKEN:-}" && -n "${TOKEN_FILE:-}" ]]; then
-        SANDBOX_BYPASS_TOKEN="$TOKEN_FILE"
-    fi
-
     _ADMIN_BLOCKED_FILES=("${BLOCKED_FILES[@]}")
     _ADMIN_BLOCKED_ENV_VARS=("${BLOCKED_ENV_VARS[@]}")
     _ADMIN_BLOCKED_ENV_PATTERNS=("${BLOCKED_ENV_PATTERNS[@]}")
@@ -973,8 +950,6 @@ _snapshot_admin_config() {
     _ADMIN_READONLY_MOUNTS=("${READONLY_MOUNTS[@]}")
     _ADMIN_ALLOWED_PROJECT_PARENTS=("${ALLOWED_PROJECT_PARENTS[@]}")
     _ADMIN_DEVICES_BLACKLIST=("${DEVICES_BLACKLIST[@]}")
-    _ADMIN_SANDBOX_BYPASS_TOKEN="${SANDBOX_BYPASS_TOKEN:-}"
-    _ADMIN_TOKEN_FILE="${TOKEN_FILE:-}"
 
     # Security-critical booleans: snapshot so users cannot weaken them.
     _ADMIN_PRIVATE_TMP="${PRIVATE_TMP:-true}"
@@ -1195,13 +1170,6 @@ if _kernel_at_least 5 4 && [[ ${#DEVICES[@]} -gt 0 ]]; then
         fi
     done
     unset _dev_entry
-fi
-
-# Auto-discover bypass token path.
-# TOKEN_FILE is the Slurm wrapper name; SANDBOX_BYPASS_TOKEN is the sandbox name.
-# The admin config may set either.
-if [[ -z "${SANDBOX_BYPASS_TOKEN:-}" && -n "${TOKEN_FILE:-}" ]]; then
-    SANDBOX_BYPASS_TOKEN="$TOKEN_FILE"
 fi
 
 # ── Helpers ─────────────────────────────────────────────────────

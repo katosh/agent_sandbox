@@ -345,11 +345,6 @@ backend_prepare() {
         fi
     done
 
-    # Hide the sandbox bypass token if configured (see docs/admin/hardening.md §1)
-    if [[ -n "${SANDBOX_BYPASS_TOKEN:-}" && -e "$SANDBOX_BYPASS_TOKEN" ]]; then
-        FIREJAIL_ARGS+=(--blacklist="$SANDBOX_BYPASS_TOKEN")
-    fi
-
     # Extra blocked paths
     for blocked in "${EXTRA_BLOCKED_PATHS[@]}"; do
         if [[ -e "$blocked" ]]; then

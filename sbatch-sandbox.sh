@@ -19,23 +19,7 @@
 
 set -euo pipefail
 
-# Inside the sandbox, the real sbatch may be at a relocated path (bwrap)
-# or at its original location (landlock).
-if [[ "${SANDBOX_ACTIVE:-}" == "1" ]]; then
-    if [[ "${SANDBOX_BACKEND:-bwrap}" == "bwrap" ]]; then
-        REAL_SBATCH="${REAL_SBATCH:-/tmp/.sandbox-slurm-real/sbatch}"
-    else
-        REAL_SBATCH="${REAL_SBATCH:-/usr/bin/sbatch}"
-    fi
-else
-    # If admin wrappers are deployed, source the admin config to get
-    # the real binary path and skip the admin wrapper indirection.
-    _ADMIN_CONF="/app/lib/agent-sandbox/sandbox.conf"
-    if [[ -z "${REAL_SBATCH:-}" && -f "$_ADMIN_CONF" ]]; then
-        source "$_ADMIN_CONF"
-    fi
-    REAL_SBATCH="${REAL_SBATCH:-/usr/bin/sbatch}"
-fi
+REAL_SBATCH="${REAL_SBATCH:-/usr/bin/sbatch}"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 SANDBOX_EXEC="$SCRIPT_DIR/sandbox-exec.sh"
 
