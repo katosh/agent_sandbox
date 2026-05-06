@@ -41,13 +41,17 @@ When `/app/lib/agent-sandbox/sandbox.conf` exists, it is sourced first as a trus
 
 **`DENIED_WRITABLE_PATHS`** — admin-only deny-list (no user-side equivalent). Any user `EXTRA_WRITABLE_PATHS` or `HOME_WRITABLE` entry that resolves under a denied path is stripped with a warning. Symlinks are resolved on both sides so a writable path can't bypass the blocklist by pointing at a denied target.
 
+**`ALLOWED_PROJECT_PARENTS` (narrowing-only)** — the user can only **narrow** admin's list, never expand it. A user-supplied path is admissible iff its canonical resolution (via `realpath`) is identical to or a path-component subdir of the canonical resolution of one of admin's allowed parents. Symlinks are followed: a user path that resolves outside admin's tree is rejected, even if its literal string appears under an admin entry. Inadmissible entries are stripped with a `WARNING`. If the merge yields an empty effective list (e.g., user requested only paths outside admin's tree), the sandbox refuses to start.
+
+If admin doesn't set `ALLOWED_PROJECT_PARENTS`, the narrowing baseline is `/` (the user's list passes through unchanged). If admin sets a malformed value (non-array, non-absolute path, command substitution), the sandbox refuses to start. Missing admin file vs. malformed admin file is an explicit security boundary: missing → default to `/`; malformed → fail-closed (no fall-through).
+
 Without an admin baseline, `~/.config/agent-sandbox/sandbox.conf` is the only config and there is no enforcement layer — the user's configuration is the effective policy in full. See [Admin Install](admin/install.md) for setting up an admin baseline.
 
 ## Variables index
 
 | Variable | Type | Admin-enforced? | Default |
 |---|---|---|---|
-| [`ALLOWED_PROJECT_PARENTS`](#allowed_project_parents) | array | additive merge | `/fh/fast`, `/fh/scratch`, `$HOME` |
+| [`ALLOWED_PROJECT_PARENTS`](#allowed_project_parents) | array | **narrowing-only** (user can only restrict admin's list) | `/fh/fast`, `/fh/scratch`, `$HOME` |
 | [`READONLY_MOUNTS`](#readonly_mounts) | array | additive merge | system paths + `/app` |
 | [`HOME_ACCESS`](#home_access) | scalar | no | `tmpwrite` |
 | [`HOME_READONLY`](#home_readonly) | array | RO→WR escalation blocked | shell + tool defaults |
@@ -84,7 +88,7 @@ Without an admin baseline, `~/.config/agent-sandbox/sandbox.conf` is the only co
 
 ### `ALLOWED_PROJECT_PARENTS`
 
-**Type** array · **Admin-enforced** additive merge · **Default** `("/fh/fast" "/fh/scratch" "$HOME")`
+**Type** array · **Admin-enforced** narrowing-only (user can only restrict admin's list) · **Default** `("/fh/fast" "/fh/scratch" "$HOME")`
 
 The sandbox grants write access to exactly one directory — the **project dir**, set with `--project-dir` or defaulting to `$PWD`. For safety, that path must resolve under one of the entries listed here. A project dir outside this set is rejected at sandbox start.
 
@@ -97,6 +101,12 @@ ALLOWED_PROJECT_PARENTS=(
     "/scratch/myorg"
 )
 ```
+
+**Admin/user merge — narrowing-only.** When an admin baseline is present, the user can only **restrict** the admin's allow-list. A user-supplied entry is admissible iff its canonical path (via `realpath`, with all symlinks followed) is identical to or a path-component subdir of the canonical path of one of admin's entries. The check is canonical-on-canonical, so a user-supplied path whose canonical form escapes admin's tree (via a symlink that *looks* admissible) is rejected.
+
+The path-component boundary is enforced: `/foo` is **not** a parent of `/foobar`. Each non-admissible entry is stripped from the effective list with a `WARNING:` line on stderr. If every user-requested entry is rejected (or the user's array is empty), the sandbox refuses to start — there is no fall-through to a permissive default.
+
+**Missing vs. malformed admin config.** If the admin file is missing entirely, the narrowing baseline defaults to `/` (no narrowing — the user's list passes through unchanged). If the admin file is present but malformed — syntax error, runtime error during source, `ALLOWED_PROJECT_PARENTS` is not an indexed array, an entry is not absolute, or an entry contains command substitution — the sandbox refuses to start with a clear error. The boundary is explicit and security-relevant: missing admin → default; malformed admin → fail-closed.
 
 ### `HOME_ACCESS`
 

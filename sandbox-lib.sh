@@ -706,10 +706,102 @@ _resolve_path() {
 # subdirectory of PARENT.  Trailing slashes are stripped.  The "/"
 # boundary check prevents false positives like /etc vs /etcetera.
 _path_under() {
+    # Special case: parent="/" means "everything absolute is a subdir".
+    # Stripping the trailing slash from "/" produces "" which would
+    # otherwise short-circuit the empty-parent guard below. Handle it
+    # explicitly first.
+    if [[ "$2" == "/" ]]; then
+        [[ "$1" == /* ]]
+        return $?
+    fi
     local _child="${1%/}"
     local _parent="${2%/}"
     [[ -z "$_parent" ]] && return 1
     [[ "$_child" == "$_parent" || "$_child" == "$_parent/"* ]]
+}
+
+# _narrow_allowed_project_parents: filter user-requested project parents
+# to those admissible under admin's allow-list.
+#
+# Semantics: a user entry is admissible iff its CANONICAL resolution
+# (via realpath/_resolve_path, following all symlinks) is identical to
+# or a path-component subdir of the CANONICAL resolution of one of
+# admin's allowed parents. The canonical form is the ground truth that
+# the kernel sees when bind-mounts and access checks happen, so a
+# user-supplied path whose canonical escapes admin's tree (via symlink
+# or ../) is rejected even if the literal string appears under an
+# admin entry.
+#
+# Why canonical-on-canonical (not the 4-way literal/canonical OR used
+# by validate_project_dir): the 4-way OR admits a literal-string match
+# even when the canonical escapes. That's safe at validate_project_dir
+# because $PROJECT_DIR is canonicalized via `cd && pwd -P` upstream;
+# `dir` is already canonical. The merge function runs before any such
+# canonicalization, so a literal-only match here would let a user
+# bypass admin narrowing by symlinking a path that *looks* admissible.
+#
+# Path-component boundary: /foo is NOT a parent of /foobar (delegated
+# to _path_under).
+#
+# Per-entry rejection (documented choice, not all-or-nothing): each
+# non-admissible user entry is dropped with a WARNING. Consistent with
+# how DENIED_WRITABLE_PATHS strips offending HOME_WRITABLE entries with
+# a warning rather than aborting. Caller (_enforce_admin_policy) checks
+# whether the resulting list is empty and aborts startup in that case.
+#
+# Args:
+#   $1 — name of an indexed array containing the user-requested entries
+#   $2 — label for warning messages (e.g., "User config", "Project config")
+# Sets:
+#   ALLOWED_PROJECT_PARENTS — narrowed effective list (in caller scope)
+_narrow_allowed_project_parents() {
+    local -n _user_arr=$1
+    local _label="$2"
+
+    # Canonicalize admin list once.
+    local _admin_can=() _adm _adm_x
+    for _adm in "${_ADMIN_ALLOWED_PROJECT_PARENTS[@]}"; do
+        _adm_x="${_adm//\$\{HOME\}/$HOME}"
+        _adm_x="${_adm_x/#\~\//$HOME/}"
+        _adm_x="${_adm_x/\$HOME/$HOME}"
+        _adm_x="${_adm_x%/}"
+        [[ -z "$_adm_x" ]] && _adm_x="/"
+        _admin_can+=("$(_resolve_path "$_adm_x")")
+    done
+
+    local _effective=() _u _u_lit _u_can _admissible _i
+    for _u in "${_user_arr[@]}"; do
+        _u_lit="${_u//\$\{HOME\}/$HOME}"
+        _u_lit="${_u_lit/#\~\//$HOME/}"
+        _u_lit="${_u_lit/\$HOME/$HOME}"
+        _u_lit="${_u_lit%/}"
+        if [[ -z "$_u_lit" ]]; then
+            echo "WARNING: ${_label} ALLOWED_PROJECT_PARENTS contains an empty entry — rejected." >&2
+            continue
+        fi
+        _u_can="$(_resolve_path "$_u_lit")"
+        _admissible=false
+        _i=0
+        while [[ $_i -lt ${#_admin_can[@]} ]]; do
+            if _path_under "$_u_can" "${_admin_can[$_i]}"; then
+                _admissible=true
+                break
+            fi
+            _i=$((_i + 1))
+        done
+        if $_admissible; then
+            _effective+=("$_u")
+        else
+            if [[ "$_u_lit" != "$_u_can" ]]; then
+                echo "WARNING: ${_label} ALLOWED_PROJECT_PARENTS entry '${_u}' (resolves to '${_u_can}') is not under any admin-allowed parent — rejected." >&2
+            else
+                echo "WARNING: ${_label} ALLOWED_PROJECT_PARENTS entry '${_u}' is not under any admin-allowed parent — rejected." >&2
+            fi
+            echo "  Admin-allowed: ${_ADMIN_ALLOWED_PROJECT_PARENTS[*]}" >&2
+        fi
+    done
+
+    ALLOWED_PROJECT_PARENTS=("${_effective[@]}")
 }
 
 # --- Enforce admin policy: compare extracted values against admin snapshot ---
@@ -799,7 +891,12 @@ _enforce_admin_policy() {
     HOME_SEEDED_FILES=("${_ADMIN_HOME_SEEDED_FILES[@]}")
     EXTRA_WRITABLE_PATHS=("${_ADMIN_EXTRA_WRITABLE_PATHS[@]}")
     READONLY_MOUNTS=("${_ADMIN_READONLY_MOUNTS[@]}")
-    ALLOWED_PROJECT_PARENTS=("${_ADMIN_ALLOWED_PROJECT_PARENTS[@]}")
+    # ALLOWED_PROJECT_PARENTS is computed below by
+    # _narrow_allowed_project_parents (narrowing-only merge: user can
+    # only restrict admin's allow-list, never expand it). No restore
+    # here, no _merge_additions call; the narrow function sets the
+    # final effective value from _user_app filtered against the admin
+    # snapshot.
     HOME_WRITABLE=("${_ADMIN_HOME_WRITABLE[@]}")
     DENIED_WRITABLE_PATHS=("${_ADMIN_DENIED_WRITABLE_PATHS[@]}")
     DEVICES_BLACKLIST=("${_ADMIN_DEVICES_BLACKLIST[@]}")
@@ -827,7 +924,7 @@ _enforce_admin_policy() {
     _merge_additions _user_rom  _ADMIN_READONLY_MOUNTS        READONLY_MOUNTS
     _merge_additions _user_hro  _ADMIN_HOME_READONLY          HOME_READONLY
     _merge_additions _user_hsf  _ADMIN_HOME_SEEDED_FILES      HOME_SEEDED_FILES
-    _merge_additions _user_app  _ADMIN_ALLOWED_PROJECT_PARENTS ALLOWED_PROJECT_PARENTS
+    _narrow_allowed_project_parents _user_app "$_label"
     _merge_additions _user_dbl  _ADMIN_DEVICES_BLACKLIST       DEVICES_BLACKLIST
 
     # HOME_WRITABLE: merge user additions, but strip admin HOME_READONLY items
@@ -921,21 +1018,90 @@ _enforce_admin_policy() {
         done
         HOME_WRITABLE=("${_clean[@]}")
     fi
+
+    # --- Refuse startup if narrowing emptied the project-parents list ---
+    #
+    # Per directive: refusing project access is not a degraded mode the
+    # sandbox can fall through to. If every user-requested entry was
+    # rejected as outside admin's tree (or the user explicitly cleared
+    # the list), abort with a clear, actionable error rather than
+    # starting the sandbox with no admissible project locations.
+    if [[ ${#ALLOWED_PROJECT_PARENTS[@]} -eq 0 ]]; then
+        echo "Error: ALLOWED_PROJECT_PARENTS is empty after admin/user merge — sandbox cannot start." >&2
+        echo "  Admin-allowed: ${_ADMIN_ALLOWED_PROJECT_PARENTS[*]}" >&2
+        echo "  User-requested: ${_user_app[*]:-(none)}" >&2
+        echo "  Add at least one path under an admin-allowed parent to your user config." >&2
+        exit 1
+    fi
 }
 
 # --- Source a trusted config file (admin-owned, no isolation needed) ---
 _source_trusted_config() {
     local _conf="$1"
-    if ! bash -n "$_conf" 2>/dev/null; then
+    local _syntax_diag _syntax_rc=0
+    # Capture diagnostic + rc atomically. The `|| _syntax_rc=$?` guard
+    # is required: under `set -e` (active globally), a command
+    # substitution that exits non-zero on the right-hand side of a
+    # plain `var="$(...)"` assignment aborts the script in bash 4.x
+    # before subsequent error-handling can run. Pinning the rc into a
+    # branch of `||` keeps the compound exit zero so we always reach
+    # the explicit error path below.
+    _syntax_diag="$(bash -n "$_conf" 2>&1)" || _syntax_rc=$?
+    if [[ $_syntax_rc -ne 0 ]]; then
         echo "Error: Syntax error in $_conf" >&2
-        bash -n "$_conf" >&2
+        [[ -n "$_syntax_diag" ]] && echo "$_syntax_diag" >&2
         exit 1
     fi
     # shellcheck disable=SC1090
     source "$_conf"
 }
 
+# --- Validate admin-set ALLOWED_PROJECT_PARENTS shape ---
+#
+# Called from Phase 1 only when admin explicitly set the variable. Fails
+# closed: any malformed value aborts startup with a clear error rather
+# than falling through to a permissive default.
+#
+# Validates: indexed-array type (not scalar/associative), no command
+# substitution (defense in depth), no empty entries, every entry is an
+# absolute path (after $HOME / ~ expansion).
+_validate_admin_allowed_project_parents() {
+    local _decl
+    _decl="$(declare -p ALLOWED_PROJECT_PARENTS 2>/dev/null || true)"
+    # Must be an indexed array. Bash declare flags: 'a' = indexed array,
+    # 'x' = exported (also valid). Any other shape (scalar 'declare --',
+    # associative 'declare -A') is rejected.
+    if [[ "$_decl" != "declare -a "* && "$_decl" != "declare -ax "* ]]; then
+        echo "Error: Admin config ${_ADMIN_CONF}: ALLOWED_PROJECT_PARENTS must be an indexed array." >&2
+        echo "  Got: ${_decl:-<unset>}" >&2
+        exit 1
+    fi
+    local _entry _expanded
+    for _entry in "${ALLOWED_PROJECT_PARENTS[@]}"; do
+        if [[ "$_entry" =~ \$\( ]] || [[ "$_entry" =~ \` ]]; then
+            echo "Error: Admin config ${_ADMIN_CONF}: ALLOWED_PROJECT_PARENTS contains command substitution: '${_entry}'" >&2
+            exit 1
+        fi
+        _expanded="${_entry//\$\{HOME\}/$HOME}"
+        _expanded="${_expanded/#\~\//$HOME/}"
+        _expanded="${_expanded/\$HOME/$HOME}"
+        if [[ -z "$_expanded" ]]; then
+            echo "Error: Admin config ${_ADMIN_CONF}: ALLOWED_PROJECT_PARENTS contains an empty entry." >&2
+            exit 1
+        fi
+        if [[ "${_expanded:0:1}" != "/" ]]; then
+            echo "Error: Admin config ${_ADMIN_CONF}: ALLOWED_PROJECT_PARENTS entry must be an absolute path: '${_entry}'" >&2
+            exit 1
+        fi
+    done
+}
+
 # --- Snapshot admin config values after loading ---
+#
+# ALLOWED_PROJECT_PARENTS: if admin explicitly set the variable
+# (_admin_set_app=true), snapshot admin's value as the narrowing
+# baseline. Otherwise default to ("/") so the narrowing merge admits
+# every user-supplied path (admin is silent → no narrowing).
 _snapshot_admin_config() {
     _ADMIN_BLOCKED_FILES=("${BLOCKED_FILES[@]}")
     _ADMIN_BLOCKED_ENV_VARS=("${BLOCKED_ENV_VARS[@]}")
@@ -948,7 +1114,11 @@ _snapshot_admin_config() {
     _ADMIN_DENIED_WRITABLE_PATHS=("${DENIED_WRITABLE_PATHS[@]}")
     _ADMIN_EXTRA_WRITABLE_PATHS=("${EXTRA_WRITABLE_PATHS[@]}")
     _ADMIN_READONLY_MOUNTS=("${READONLY_MOUNTS[@]}")
-    _ADMIN_ALLOWED_PROJECT_PARENTS=("${ALLOWED_PROJECT_PARENTS[@]}")
+    if [[ "${_admin_set_app:-false}" == true ]]; then
+        _ADMIN_ALLOWED_PROJECT_PARENTS=("${ALLOWED_PROJECT_PARENTS[@]}")
+    else
+        _ADMIN_ALLOWED_PROJECT_PARENTS=("/")
+    fi
     _ADMIN_DEVICES_BLACKLIST=("${DEVICES_BLACKLIST[@]}")
 
     # Security-critical booleans: snapshot so users cannot weaken them.
@@ -957,9 +1127,48 @@ _snapshot_admin_config() {
     _ADMIN_FILTER_PASSWD="${FILTER_PASSWD:-true}"
 }
 
+# ── Test-harness early-return ────────────────────────────────────
+#
+# Tests can source this file as a function library by setting
+# _SANDBOX_LIB_NO_INIT=1 before sourcing. Phases 1–3 (admin source,
+# user source, enforcement) and downstream validation/backend
+# detection are skipped, but every helper function and the admin/user
+# snapshot machinery above is defined and ready to call.
+#
+# Production callers (sandbox-exec.sh, sbatch-sandbox.sh,
+# srun-sandbox.sh) leave _SANDBOX_LIB_NO_INIT unset and get the full
+# init. The variable is internal — neither config nor environment
+# should set it; only the in-tree unit-test harness does.
+[[ "${_SANDBOX_LIB_NO_INIT:-}" == "1" ]] && return 0
+
 # ── Phase 1: Source admin config (trusted — admin-owned, root-protected) ──
+#
+# Missing-vs-malformed boundary: a missing admin config file causes
+# _ADMIN_CONF to be unset above, so this block is skipped entirely and
+# the sandbox runs in user-only mode. A present-but-malformed admin
+# config is caught here: parse errors abort via _source_trusted_config,
+# and shape errors on ALLOWED_PROJECT_PARENTS abort via
+# _validate_admin_allowed_project_parents. There is no fall-through to
+# a permissive default once admin has spoken.
 if [[ -n "$_ADMIN_CONF" && -f "$_ADMIN_CONF" ]]; then
+    # Unset before sourcing so we can detect whether admin explicitly
+    # sets ALLOWED_PROJECT_PARENTS. Lib defaults at line 68 mean the
+    # variable is always set before this point; unsetting lets the
+    # post-source declare -p check distinguish "admin silent" (apply
+    # narrowing default "/") from "admin set" (snapshot admin's value).
+    unset ALLOWED_PROJECT_PARENTS
     _source_trusted_config "$_ADMIN_CONF"
+    if declare -p ALLOWED_PROJECT_PARENTS &>/dev/null; then
+        _admin_set_app=true
+        _validate_admin_allowed_project_parents
+    else
+        _admin_set_app=false
+        # Restore lib default so downstream code paths see a populated
+        # array. The narrowing merge uses _ADMIN_ALLOWED_PROJECT_PARENTS
+        # (set to ("/") by _snapshot_admin_config when admin is silent),
+        # not this value, so no permissive admin policy results.
+        ALLOWED_PROJECT_PARENTS=("/fh/fast" "/fh/scratch" "$HOME")
+    fi
     _snapshot_admin_config
 fi
 
