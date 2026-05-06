@@ -50,7 +50,7 @@ systemctl status user@501.service   # should show "masked"
 Key features:
 - **Multi-level config** — admin `sandbox.conf` (set via `_ADMIN_DIR` in `sandbox-lib.sh`, defaults to `/app/lib/agent-sandbox/`) sets the baseline; user config (`user.conf`) and per-project configs (`conf.d/*.conf`) can only add to it. The path is a script variable (not an env var) to prevent agent redirection. User configs run in isolated subprocesses — only known config variables are extracted. Admin values are enforced via comparison+merge after each config layer.
 - **Backend selection** — on Ubuntu 24.04+, AppArmor blocks unprivileged user namespaces. An admin AppArmor profile (low effort) enables the recommended bwrap backend. Firejail (setuid) is an alternative. Without either, the sandbox falls back to Landlock with [significant gaps](install.md#landlock-fallback).
-- **Seccomp trade-offs** — all three backends block `io_uring`, `userfaultfd`, and `kexec` via seccomp. See [HPC compatibility analysis](install.md#seccomp-filter--hpc-compatibility).
+- **Seccomp trade-offs** — all three backends block `io_uring`, `userfaultfd`, and `kexec` via seccomp. See [HPC compatibility analysis](install.md#seccomp-filter-hpc-compatibility).
 
 For full setup instructions, config hierarchy, backend comparison, and seccomp details, see **[Admin Install](install.md)**. After installation, run `bash test.sh` (backend isolation) and `bash test-admin.sh` (config enforcement) to verify the deployment.
 
@@ -314,7 +314,7 @@ The separate account/QOS makes it trivial to query, report on, and set limits fo
 | # | Improvement | Effort | Category | What It Closes |
 |---|---|---|---|---|
 | 0 | [Disable systemd user instances](#0-disable-systemd-user-instances-landlock-escape-prevention) | Minimal | Admin-enforced | Landlock-only systems: blocks `systemd-run --user` sandbox escape. Mandatory for Landlock deployments |
-| 2 | [Admin-owned sandbox installation](#2-admin-owned-sandbox-installation) ([details](install.md)) | Low-medium | Admin-enforced | Users weakening config; sandbox self-protection; multi-level config with post-merge validation; [backend selection](install.md#choosing-a-backend-on-ubuntu-2404) (bwrap via AppArmor recommended, firejail alternative); [seccomp trade-offs](install.md#seccomp-filter--hpc-compatibility); [Landlock fallback gaps](install.md#landlock-fallback) |
+| 2 | [Admin-owned sandbox installation](#2-admin-owned-sandbox-installation) ([details](install.md)) | Low-medium | Admin-enforced | Users weakening config; sandbox self-protection; multi-level config with post-merge validation; [backend selection](install.md#choosing-a-backend-on-ubuntu-2404) (bwrap via AppArmor recommended, firejail alternative); [seccomp trade-offs](install.md#seccomp-filter-hpc-compatibility); [Landlock fallback gaps](install.md#landlock-fallback) |
 | 3 | [Dedicated `${USER}_ai` accounts](#3-dedicated-user_ai-accounts) | High | Admin-enforced | Same-UID credential access; OS-level separation |
 | 4 | [Network controls](#4-network-controls) | Medium | Admin-enforced or self-serve | Agent-specific network policy (block SSH escape, internal services, metadata endpoint) while preserving web access for research — three options: UID iptables (requires #3), cgroup nftables (no #3), or netns + policy proxy (no admin) |
 | 5 | [Audit logging](#5-audit-logging) | Low-medium | Admin-enforced (requires #3) | Visibility, compliance, forensics |

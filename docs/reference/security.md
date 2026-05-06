@@ -60,7 +60,7 @@ This project maintains extensive security documentation:
 - [Known Limitations](#known-limitations) — per-backend limitations sorted by severity, with mitigations
 - [Admin Hardening](../admin/hardening.md) — options to close remaining gaps (admin-enforced installation, network restrictions, cgroups)
 - [Apptainer Comparison](apptainer-comparison.md) — detailed comparison with HPC container runtimes
-- [Pentest Reports](pentest/) — findings from structured security audits of all three backends
+- [Pentest Reports](https://github.com/katosh/agent_sandbox/tree/main/pentest) — findings from structured security audits of all three backends
 - [Chaperon](chaperon.md) — Slurm proxy design and security properties
 
 ## Accepted Trade-offs
