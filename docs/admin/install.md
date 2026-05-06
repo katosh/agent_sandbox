@@ -73,7 +73,7 @@ Without an admin config, the sandbox loads a single `sandbox.conf` from `~/.conf
 
 | Setting | User can add entries | User can remove admin entries |
 |---|---|---|
-| `ALLOWED_PROJECT_PARENTS` | Yes — add project prefixes | N/A (additive) |
+| `ALLOWED_PROJECT_PARENTS` | **No — narrowing-only.** User can only restrict admin's list (entries whose canonical path is under an admin entry). Paths outside admin's tree are stripped with a warning. | **Implicitly yes** — by listing fewer or narrower entries. |
 | `READONLY_MOUNTS` | Yes — mount more data read-only | N/A (additive) |
 | `EXTRA_WRITABLE_PATHS` | Yes — add writable directories (subject to `DENIED_WRITABLE_PATHS`) | N/A (additive) |
 | `DENIED_WRITABLE_PATHS` | No | **No — admin-only deny-list** |
@@ -114,6 +114,17 @@ WARNING: User config moved admin HOME_READONLY entry '.gnupg' to HOME_WRITABLE �
 ```
 WARNING: User config added EXTRA_WRITABLE_PATHS entry '/etc/cron.d' under denied path '/etc' — removed.
 ```
+
+**ALLOWED_PROJECT_PARENTS (narrowing-only)**: the user can only restrict admin's allow-list, never expand it. A user-supplied entry is admissible iff its canonical path (via `realpath`, with all symlinks followed) is identical to or a path-component subdir of one of admin's entries. Inadmissible entries are stripped with a warning:
+
+```
+WARNING: User config ALLOWED_PROJECT_PARENTS entry '/tmp/foo' is not under any admin-allowed parent — rejected.
+  Admin-allowed: /home/dotto
+```
+
+If every user-requested entry is rejected (or the user's array is empty), the sandbox refuses to start rather than continuing with no admissible project locations.
+
+**Admin-config error handling — fail-closed.** A missing admin file is treated as the narrowing default `/` (no narrowing — the user's list passes through). A present-but-malformed admin file refuses sandbox startup with a clear error: parse error during `bash -n`, runtime error during `source`, `ALLOWED_PROJECT_PARENTS` is not an indexed array, an entry is not absolute, or an entry contains command substitution. The boundary is explicit and security-relevant: missing admin → permissive default; malformed admin → fail-closed (no fall-through).
 
 ## Admin Config Skeleton
 

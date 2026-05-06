@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking (admin-mode only):** `ALLOWED_PROJECT_PARENTS` admin/user
+  merge is now **narrowing-only**. Previously the user config could
+  ADD project parents to admin's list (additive merge); now the user
+  can only NARROW admin's list. A user-supplied path is admissible
+  iff its canonical resolution (via `realpath`) is identical to or a
+  path-component subdir of the canonical resolution of one of admin's
+  allowed parents. Symlinks that escape admin's tree are rejected.
+  In absence of an admin specification we assume `/` (no narrowing),
+  preserving the user-only-install path. User-only installs without
+  an admin baseline are unaffected.
+- **Admin-config parse errors fail closed.** A malformed admin
+  `sandbox.conf` (syntax error, runtime error during source, or a
+  malformed `ALLOWED_PROJECT_PARENTS` — non-array, non-absolute paths,
+  command substitution) now refuses sandbox startup with a clear
+  error rather than falling through to a permissive default. The
+  missing-vs-malformed boundary is explicit: a missing admin file
+  defaults to `/`; a present-but-malformed admin file fails closed.
+- If the admin/user merge yields an empty `ALLOWED_PROJECT_PARENTS`
+  (e.g. the user requested only paths outside admin's tree, or
+  cleared the array), the sandbox refuses to start instead of
+  silently continuing with no admissible project locations.
+
+### Added
+
+- `test-admin-narrowing.sh` — unit tests for the narrowing merge,
+  the missing-vs-malformed admin-config boundary, the `/foo` vs
+  `/foobar` path-component trap, and symlink-escape rejection. The
+  tests use a `_SANDBOX_LIB_NO_INIT=1` test-harness seam in
+  `sandbox-lib.sh` so they run without root or a deployed admin
+  install.
+
 ## [0.8.0] - 2026-05-05
 
 ### Added
