@@ -1586,8 +1586,8 @@
 <tbody>
 <tr>
 <td><code>ALLOWED_PROJECT_PARENTS</code></td>
-<td>Yes — add project prefixes</td>
-<td>N/A (additive)</td>
+<td><strong>No — narrowing-only.</strong> User can only restrict admin's list (entries whose canonical path is under an admin entry). Paths outside admin's tree are stripped with a warning.</td>
+<td><strong>Implicitly yes</strong> — by listing fewer or narrower entries.</td>
 </tr>
 <tr>
 <td><code>READONLY_MOUNTS</code></td>
@@ -1683,44 +1683,50 @@
 <p><strong>DENIED_WRITABLE_PATHS</strong>: any <code>EXTRA_WRITABLE_PATHS</code> entry matching or under a denied path is stripped with a warning:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>WARNING: User config added EXTRA_WRITABLE_PATHS entry &#39;/etc/cron.d&#39; under denied path &#39;/etc&#39; — removed.
 </span></code></pre></div>
+<p><strong>ALLOWED_PROJECT_PARENTS (narrowing-only)</strong>: the user can only restrict admin's allow-list, never expand it. A user-supplied entry is admissible iff its canonical path (via <code>realpath</code>, with all symlinks followed) is identical to or a path-component subdir of one of admin's entries. Inadmissible entries are stripped with a warning:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>WARNING: User config ALLOWED_PROJECT_PARENTS entry &#39;/tmp/foo&#39; is not under any admin-allowed parent — rejected.
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>  Admin-allowed: /home/dotto
+</span></code></pre></div>
+<p>If every user-requested entry is rejected (or the user's array is empty), the sandbox refuses to start rather than continuing with no admissible project locations.</p>
+<p><strong>Admin-config error handling — fail-closed.</strong> A missing admin file is treated as the narrowing default <code>/</code> (no narrowing — the user's list passes through). A present-but-malformed admin file refuses sandbox startup with a clear error: parse error during <code>bash -n</code>, runtime error during <code>source</code>, <code>ALLOWED_PROJECT_PARENTS</code> is not an indexed array, an entry is not absolute, or an entry contains command substitution. The boundary is explicit and security-relevant: missing admin → permissive default; malformed admin → fail-closed (no fall-through).</p>
 <h2 id="admin-config-skeleton">Admin Config Skeleton<a class="headerlink" href="#admin-config-skeleton" title="Permanent link">&para;</a></h2>
 <p>The <code>sandbox-admin.conf</code> shipped with the install is a minimal starting point. It contains only the enforcement-only knobs (<code>DENIED_WRITABLE_PATHS</code>, <code>BLOCKED_*</code>, <code>ALLOWED_PROJECT_PARENTS</code>, etc.) with commented-out examples. Uncomment and edit what you need.</p>
 <p>See <a href="https://github.com/katosh/agent_sandbox/blob/main/sandbox-admin.conf"><code>sandbox-admin.conf</code></a> for the full skeleton.</p>
 <p><strong>Environment overrides:</strong> Users can override <code>SLURM_SCOPE</code> and <code>HOME_ACCESS</code> at launch time without editing any config file: <code>SLURM_SCOPE=session agent-sandbox claude</code> or <code>HOME_ACCESS=tmpwrite agent-sandbox bash</code>. Environment values take precedence over both admin and user configs.</p>
 <h2 id="example-user-config">Example User Config<a class="headerlink" href="#example-user-config" title="Permanent link">&para;</a></h2>
 <p>Users create <code>~/.config/agent-sandbox/user.conf</code> to add project-specific mounts and tools:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># ~/.config/agent-sandbox/user.conf — User customization</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="c1"># Adds to admin baseline. Cannot remove admin-enforced entries.</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Additional data I need</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="nv">READONLY_MOUNTS</span><span class="o">+=(</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="s2">&quot;/shared/reference_genomes&quot;</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="o">)</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="c1"># My editor config</span>
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="nv">HOME_READONLY</span><span class="o">+=(</span>
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">    </span><span class="s2">&quot;.vimrc&quot;</span>
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">    </span><span class="s2">&quot;.vim&quot;</span>
-</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="o">)</span>
-</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>
-</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="c1"># Extra scratch space</span>
-</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="nv">EXTRA_WRITABLE_PATHS</span><span class="o">+=(</span>
-</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="w">    </span><span class="s2">&quot;/fh/scratch/delete30/mylab/pipeline-output&quot;</span>
-</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="o">)</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># ~/.config/agent-sandbox/user.conf — User customization</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="c1"># Adds to admin baseline. Cannot remove admin-enforced entries.</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Additional data I need</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="nv">READONLY_MOUNTS</span><span class="o">+=(</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">    </span><span class="s2">&quot;/shared/reference_genomes&quot;</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="o">)</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="c1"># My editor config</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="nv">HOME_READONLY</span><span class="o">+=(</span>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">    </span><span class="s2">&quot;.vimrc&quot;</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">    </span><span class="s2">&quot;.vim&quot;</span>
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="o">)</span>
+</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>
+</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a><span class="c1"># Extra scratch space</span>
+</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a><span class="nv">EXTRA_WRITABLE_PATHS</span><span class="o">+=(</span>
+</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="w">    </span><span class="s2">&quot;/fh/scratch/delete30/mylab/pipeline-output&quot;</span>
+</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a><span class="o">)</span>
 </span></code></pre></div>
 <p>Note the <code>+=</code> syntax — this appends to the admin's arrays. Using <code>=()</code> to replace an enforced array has no effect — the admin values are forcefully re-applied.</p>
 <h2 id="per-project-overrides">Per-Project Overrides<a class="headerlink" href="#per-project-overrides" title="Permanent link">&para;</a></h2>
 <p>Per-project configs in <code>~/.config/agent-sandbox/conf.d/*.conf</code> are user-controlled and subject to the same post-merge validation as <code>user.conf</code> (cannot remove admin-enforced entries).</p>
 <p>Example — a project-specific config that conditionally activates based on project path:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># conf.d/genomics.conf</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="o">[[</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$_PROJECT_DIR</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">==</span><span class="w"> </span>/fh/fast/mylab/genomics/*<span class="w"> </span><span class="o">]]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="m">0</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="nv">READONLY_MOUNTS</span><span class="o">+=(</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span><span class="s2">&quot;/fh/fast/shared/reference_genomes&quot;</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="o">)</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="nv">EXTRA_WRITABLE_PATHS</span><span class="o">+=(</span>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">    </span><span class="s2">&quot;/fh/scratch/delete30/mylab/pipeline-output&quot;</span>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="o">)</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># conf.d/genomics.conf</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="o">[[</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$_PROJECT_DIR</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">==</span><span class="w"> </span>/fh/fast/mylab/genomics/*<span class="w"> </span><span class="o">]]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="m">0</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="nv">READONLY_MOUNTS</span><span class="o">+=(</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="s2">&quot;/fh/fast/shared/reference_genomes&quot;</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="o">)</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="nv">EXTRA_WRITABLE_PATHS</span><span class="o">+=(</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">    </span><span class="s2">&quot;/fh/scratch/delete30/mylab/pipeline-output&quot;</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="o">)</span>
 </span></code></pre></div>
 <p>These configs also run in isolated subprocesses and go through admin enforcement — they cannot remove admin-set entries.</p>
 <h2 id="chaperon-slurm-proxy">Chaperon: Slurm Proxy<a class="headerlink" href="#chaperon-slurm-proxy" title="Permanent link">&para;</a></h2>
@@ -1739,10 +1745,10 @@
 <li><strong><code>test.sh</code></strong> — run on every install to verify backend isolation: filesystem, env blocking, agent overlays, chaperon Slurm proxy (flag validation, job submission, scoped cancel, transparent squeue/scancel, comment tag stripping), security hardening, symlink/hardlink attacks, <code>/proc</code> escapes, FD inheritance, signal isolation, TIOCSTI, cgroup/userns restrictions, deterministic isolation, concurrent instances. Tests all available backends (bwrap, firejail, landlock).</li>
 <li><strong><code>test-admin.sh</code></strong> — run on admin installs to verify config enforcement: admin entries survive user tampering, <code>DENIED_WRITABLE_PATHS</code>, <code>HOME_READONLY</code> escalation blocking, scalar protection, <code>HOME</code> override resistance, <code>conf.d</code> enforcement, subprocess isolation of escape attempts, admin Slurm wrappers. Skips automatically if no admin config is found.</li>
 </ul>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>bash<span class="w"> </span>test.sh<span class="w">                          </span><span class="c1"># all backends</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>bash<span class="w"> </span>test.sh<span class="w"> </span>--backend<span class="w"> </span>bwrap<span class="w">          </span><span class="c1"># single backend</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>bash<span class="w"> </span>test-admin.sh<span class="w">                    </span><span class="c1"># admin enforcement (needs admin config)</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>bash<span class="w"> </span>test-admin.sh<span class="w"> </span>--verbose<span class="w">          </span><span class="c1"># show output on failure</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>bash<span class="w"> </span>test.sh<span class="w">                          </span><span class="c1"># all backends</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>bash<span class="w"> </span>test.sh<span class="w"> </span>--backend<span class="w"> </span>bwrap<span class="w">          </span><span class="c1"># single backend</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>bash<span class="w"> </span>test-admin.sh<span class="w">                    </span><span class="c1"># admin enforcement (needs admin config)</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>bash<span class="w"> </span>test-admin.sh<span class="w"> </span>--verbose<span class="w">          </span><span class="c1"># show output on failure</span>
 </span></code></pre></div>
 <hr />
 <h2 id="choosing-a-backend-on-ubuntu-2404">Choosing a Backend on Ubuntu 24.04+<a class="headerlink" href="#choosing-a-backend-on-ubuntu-2404" title="Permanent link">&para;</a></h2>
@@ -1776,37 +1782,37 @@
 <p><strong>Recommendation:</strong> Enable bwrap. It provides the strongest isolation, is fully unprivileged (no setuid binary on the system), and has a significantly better security track record (4 CVEs with zero root exploits vs firejail's 18 CVEs with 12 root exploits). Firejail is a fallback if bwrap's AppArmor profile is not desired, but installing it adds a setuid-root binary to every node. See the <a href="../../reference/apptainer-comparison/#security-track-record">full CVE comparison</a> for details.</p>
 <h3 id="enabling-bwrap-via-apparmor-profile">Enabling bwrap via AppArmor profile<a class="headerlink" href="#enabling-bwrap-via-apparmor-profile" title="Permanent link">&para;</a></h3>
 <p>Install bwrap and create an AppArmor profile that allows it to create user namespaces:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># 1. Install bwrap</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>bubblewrap
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># 2. Create AppArmor profile</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="nv">BWRAP_PATH</span><span class="o">=</span><span class="k">$(</span><span class="nb">command</span><span class="w"> </span>-v<span class="w"> </span>bwrap<span class="k">)</span><span class="w">   </span><span class="c1"># typically /usr/bin/bwrap</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>cat<span class="w"> </span>&gt;<span class="w"> </span>/etc/apparmor.d/bwrap-sandbox<span class="w"> </span><span class="s">&lt;&lt; EOF</span>
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="s">abi &lt;abi/4.0&gt;,</span>
-</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="s">include &lt;tunables/global&gt;</span>
-</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>
-</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="s">profile bwrap-sandbox $BWRAP_PATH flags=(unconfined) {</span>
-</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="s">  userns,</span>
-</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="s">}</span>
-</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="s">EOF</span>
-</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>
-</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>sudo<span class="w"> </span>apparmor_parser<span class="w"> </span>-r<span class="w"> </span>/etc/apparmor.d/bwrap-sandbox
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># 1. Install bwrap</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>bubblewrap
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="c1"># 2. Create AppArmor profile</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="nv">BWRAP_PATH</span><span class="o">=</span><span class="k">$(</span><span class="nb">command</span><span class="w"> </span>-v<span class="w"> </span>bwrap<span class="k">)</span><span class="w">   </span><span class="c1"># typically /usr/bin/bwrap</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>cat<span class="w"> </span>&gt;<span class="w"> </span>/etc/apparmor.d/bwrap-sandbox<span class="w"> </span><span class="s">&lt;&lt; EOF</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="s">abi &lt;abi/4.0&gt;,</span>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="s">include &lt;tunables/global&gt;</span>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>
+</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="s">profile bwrap-sandbox $BWRAP_PATH flags=(unconfined) {</span>
+</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="s">  userns,</span>
+</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="s">}</span>
+</span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="s">EOF</span>
+</span><span id="__span-9-15"><a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a>
+</span><span id="__span-9-16"><a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a>sudo<span class="w"> </span>apparmor_parser<span class="w"> </span>-r<span class="w"> </span>/etc/apparmor.d/bwrap-sandbox
 </span></code></pre></div>
 <p>This allows bwrap to create user namespaces. Other programs remain restricted. The profile survives reboots. Verify:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># As a regular user — should work after the profile is loaded</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>bwrap<span class="w"> </span>--ro-bind<span class="w"> </span>/<span class="w"> </span>/<span class="w"> </span>--<span class="w"> </span>id
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># As a regular user — should work after the profile is loaded</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>bwrap<span class="w"> </span>--ro-bind<span class="w"> </span>/<span class="w"> </span>/<span class="w"> </span>--<span class="w"> </span>id
 </span></code></pre></div>
 <p>The sandbox auto-detects bwrap from <code>$PATH</code>, or admins can set <code>BWRAP=/path/to/bwrap</code> in <code>sandbox.conf</code> to pin a specific binary. Users can also install bwrap via <a href="https://brew.sh/">Homebrew</a> (<code>brew install bubblewrap</code>) — the AppArmor profile would need to include that path too (<code>~/.linuxbrew/bin/bwrap</code>) or a second profile entry.</p>
 <p><strong>Note:</strong> The AppArmor profile grants <code>userns</code> to any invocation of bwrap at the profiled path, not just sandbox-initiated ones. This is acceptable — bwrap user namespaces are unprivileged and cannot escalate beyond what the calling user already has access to. The sandbox adds filesystem restrictions on top.</p>
 <h3 id="firejail-backend-alternative-to-bwrap">Firejail backend (alternative to bwrap)<a class="headerlink" href="#firejail-backend-alternative-to-bwrap" title="Permanent link">&para;</a></h3>
 <p><a href="https://firejail.wordpress.com/">Firejail</a> installs <strong>setuid root</strong>, so it can create mount namespaces regardless of AppArmor settings. The sandbox auto-detects firejail when bwrap is unavailable (priority: bwrap &gt; firejail &gt; landlock).</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># 1. Install firejail</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>firejail
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="c1"># 2. The sandbox auto-detects firejail — no user config needed.</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="c1">#    Force firejail for testing:</span>
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="nv">SANDBOX_BACKEND</span><span class="o">=</span>firejail<span class="w"> </span>./sandbox-exec.sh<span class="w"> </span>--<span class="w"> </span>bash
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># 1. Install firejail</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>firejail
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="c1"># 2. The sandbox auto-detects firejail — no user config needed.</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="c1">#    Force firejail for testing:</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="nv">SANDBOX_BACKEND</span><span class="o">=</span>firejail<span class="w"> </span>./sandbox-exec.sh<span class="w"> </span>--<span class="w"> </span>bash
 </span></code></pre></div>
 <p>The sandbox uses <code>--allusers</code> to disable firejail's built-in <code>/etc/passwd</code> filtering, which would otherwise remove UIDs &gt;= <code>UID_MIN</code> (typically 1000) and break Slurm if the <code>slurm</code> user has a UID in that range. User enumeration prevention is handled separately by <code>FILTER_PASSWD=true</code> (default), which blocks NSS daemon sockets to prevent LDAP/AD enumeration. <strong>Caveat:</strong> on LDAP/AD clusters where the current user exists only in LDAP (not in local <code>/etc/passwd</code>), <code>FILTER_PASSWD=true</code> breaks user resolution and should be set to <code>false</code>. The bwrap backend handles LDAP users correctly via <code>/etc/passwd</code> overlay.</p>
 <p><strong><code>/tmp</code> isolation</strong> (<code>--private-tmp</code>): Enabled by default for both bwrap and firejail (controlled by <code>PRIVATE_TMP</code> in <code>sandbox.conf</code>). Breaks MPI shared-memory transport (OpenMPI, MPICH) and NCCL inter-GPU sockets. Set <code>PRIVATE_TMP=false</code> in <code>sandbox.conf</code> for multi-rank MPI or multi-GPU workloads.</p>
@@ -2038,14 +2044,14 @@
 <h3 id="disable-systemd-user-instances">Disable systemd user instances<a class="headerlink" href="#disable-systemd-user-instances" title="Permanent link">&para;</a></h3>
 <p>Landlock cannot block Unix domain socket <code>connect()</code> (not available in any Landlock ABI version as of kernel 6.11). A sandboxed process can connect to <code>/run/user/&lt;UID&gt;/systemd/private</code> and use <code>systemd-run --user</code> to execute commands outside the sandbox. Both bwrap and firejail are unaffected — they replace <code>/run</code> with a tmpfs.</p>
 <p><strong>What is affected by disabling:</strong> <code>gpg-agent</code> socket activation (users doing GPG signing would need to start <code>gpg-agent --daemon</code> manually) and <code>systemctl --user</code> commands.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># Option A: Mask the user@ template service (recommended)</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>systemctl<span class="w"> </span>mask<span class="w"> </span>user@.service
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
-</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="c1"># Option B: Limit via logind</span>
-</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="c1"># /etc/systemd/logind.conf.d/no-user-sessions.conf</span>
-</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="o">[</span>Login<span class="o">]</span>
-</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="nv">UserTasksMax</span><span class="o">=</span><span class="m">0</span>
-</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="nv">KillUserProcesses</span><span class="o">=</span>yes
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># Option A: Mask the user@ template service (recommended)</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>systemctl<span class="w"> </span>mask<span class="w"> </span>user@.service
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="c1"># Option B: Limit via logind</span>
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="c1"># /etc/systemd/logind.conf.d/no-user-sessions.conf</span>
+</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="o">[</span>Login<span class="o">]</span>
+</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="nv">UserTasksMax</span><span class="o">=</span><span class="m">0</span>
+</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="nv">KillUserProcesses</span><span class="o">=</span>yes
 </span></code></pre></div>
 <p>Option A prevents the user systemd instance from starting at all. Verify with <code>systemd-run --user -- id</code> (should fail with "Failed to connect to bus").</p>
 

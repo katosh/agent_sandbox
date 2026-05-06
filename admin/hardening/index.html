@@ -1390,7 +1390,7 @@
 <p>Key features:
 - <strong>Multi-level config</strong> — admin <code>sandbox.conf</code> (set via <code>_ADMIN_DIR</code> in <code>sandbox-lib.sh</code>, defaults to <code>/app/lib/agent-sandbox/</code>) sets the baseline; user config (<code>user.conf</code>) and per-project configs (<code>conf.d/*.conf</code>) can only add to it. The path is a script variable (not an env var) to prevent agent redirection. User configs run in isolated subprocesses — only known config variables are extracted. Admin values are enforced via comparison+merge after each config layer.
 - <strong>Backend selection</strong> — on Ubuntu 24.04+, AppArmor blocks unprivileged user namespaces. An admin AppArmor profile (low effort) enables the recommended bwrap backend. Firejail (setuid) is an alternative. Without either, the sandbox falls back to Landlock with <a href="../install/#landlock-fallback">significant gaps</a>.
-- <strong>Seccomp trade-offs</strong> — all three backends block <code>io_uring</code>, <code>userfaultfd</code>, and <code>kexec</code> via seccomp. See <a href="../install/#seccomp-filter--hpc-compatibility">HPC compatibility analysis</a>.</p>
+- <strong>Seccomp trade-offs</strong> — all three backends block <code>io_uring</code>, <code>userfaultfd</code>, and <code>kexec</code> via seccomp. See <a href="../install/#seccomp-filter-hpc-compatibility">HPC compatibility analysis</a>.</p>
 <p>For full setup instructions, config hierarchy, backend comparison, and seccomp details, see <strong><a href="../install/">Admin Install</a></strong>. After installation, run <code>bash test.sh</code> (backend isolation) and <code>bash test-admin.sh</code> (config enforcement) to verify the deployment.</p>
 <hr />
 <h2 id="3-dedicated-user_ai-accounts">3. Dedicated <code>${USER}_ai</code> Accounts<a class="headerlink" href="#3-dedicated-user_ai-accounts" title="Permanent link">&para;</a></h2>
@@ -1654,7 +1654,7 @@
 <td><a href="#2-admin-owned-sandbox-installation">Admin-owned sandbox installation</a> (<a href="../install/">details</a>)</td>
 <td>Low-medium</td>
 <td>Admin-enforced</td>
-<td>Users weakening config; sandbox self-protection; multi-level config with post-merge validation; <a href="../install/#choosing-a-backend-on-ubuntu-2404">backend selection</a> (bwrap via AppArmor recommended, firejail alternative); <a href="../install/#seccomp-filter--hpc-compatibility">seccomp trade-offs</a>; <a href="../install/#landlock-fallback">Landlock fallback gaps</a></td>
+<td>Users weakening config; sandbox self-protection; multi-level config with post-merge validation; <a href="../install/#choosing-a-backend-on-ubuntu-2404">backend selection</a> (bwrap via AppArmor recommended, firejail alternative); <a href="../install/#seccomp-filter-hpc-compatibility">seccomp trade-offs</a>; <a href="../install/#landlock-fallback">Landlock fallback gaps</a></td>
 </tr>
 <tr>
 <td>3</td>

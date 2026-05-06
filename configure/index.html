@@ -2027,6 +2027,8 @@
 </table>
 <p><strong><code>HOME_READONLY</code> → <code>HOME_WRITABLE</code> escalation prevented</strong> — if the admin lists an entry in <code>HOME_READONLY</code>, the user cannot move it to <code>HOME_WRITABLE</code>. The sandbox warns and reverts.</p>
 <p><strong><code>DENIED_WRITABLE_PATHS</code></strong> — admin-only deny-list (no user-side equivalent). Any user <code>EXTRA_WRITABLE_PATHS</code> or <code>HOME_WRITABLE</code> entry that resolves under a denied path is stripped with a warning. Symlinks are resolved on both sides so a writable path can't bypass the blocklist by pointing at a denied target.</p>
+<p><strong><code>ALLOWED_PROJECT_PARENTS</code> (narrowing-only)</strong> — the user can only <strong>narrow</strong> admin's list, never expand it. A user-supplied path is admissible iff its canonical resolution (via <code>realpath</code>) is identical to or a path-component subdir of the canonical resolution of one of admin's allowed parents. Symlinks are followed: a user path that resolves outside admin's tree is rejected, even if its literal string appears under an admin entry. Inadmissible entries are stripped with a <code>WARNING</code>. If the merge yields an empty effective list (e.g., user requested only paths outside admin's tree), the sandbox refuses to start.</p>
+<p>If admin doesn't set <code>ALLOWED_PROJECT_PARENTS</code>, the narrowing baseline is <code>/</code> (the user's list passes through unchanged). If admin sets a malformed value (non-array, non-absolute path, command substitution), the sandbox refuses to start. Missing admin file vs. malformed admin file is an explicit security boundary: missing → default to <code>/</code>; malformed → fail-closed (no fall-through).</p>
 <p>Without an admin baseline, <code>~/.config/agent-sandbox/sandbox.conf</code> is the only config and there is no enforcement layer — the user's configuration is the effective policy in full. See <a href="../admin/install/">Admin Install</a> for setting up an admin baseline.</p>
 <h2 id="variables-index">Variables index<a class="headerlink" href="#variables-index" title="Permanent link">&para;</a></h2>
 <table>
@@ -2042,7 +2044,7 @@
 <tr>
 <td><a href="#allowed_project_parents"><code>ALLOWED_PROJECT_PARENTS</code></a></td>
 <td>array</td>
-<td>additive merge</td>
+<td><strong>narrowing-only</strong> (user can only restrict admin's list)</td>
 <td><code>/fh/fast</code>, <code>/fh/scratch</code>, <code>$HOME</code></td>
 </tr>
 <tr>
@@ -2224,7 +2226,7 @@
 <hr />
 <h2 id="project-home">Project &amp; home<a class="headerlink" href="#project-home" title="Permanent link">&para;</a></h2>
 <h3 id="allowed_project_parents"><code>ALLOWED_PROJECT_PARENTS</code><a class="headerlink" href="#allowed_project_parents" title="Permanent link">&para;</a></h3>
-<p><strong>Type</strong> array · <strong>Admin-enforced</strong> additive merge · <strong>Default</strong> <code>("/fh/fast" "/fh/scratch" "$HOME")</code></p>
+<p><strong>Type</strong> array · <strong>Admin-enforced</strong> narrowing-only (user can only restrict admin's list) · <strong>Default</strong> <code>("/fh/fast" "/fh/scratch" "$HOME")</code></p>
 <p>The sandbox grants write access to exactly one directory — the <strong>project dir</strong>, set with <code>--project-dir</code> or defaulting to <code>$PWD</code>. For safety, that path must resolve under one of the entries listed here. A project dir outside this set is rejected at sandbox start.</p>
 <p>Set this to the parents under which projects live on your system. On non-Fred-Hutch hosts the defaults can be replaced (<code>+=</code> to append, plain <code>=</code> to replace).</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nv">ALLOWED_PROJECT_PARENTS</span><span class="o">=(</span>
@@ -2233,6 +2235,9 @@
 </span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="s2">&quot;/scratch/myorg&quot;</span>
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="o">)</span>
 </span></code></pre></div>
+<p><strong>Admin/user merge — narrowing-only.</strong> When an admin baseline is present, the user can only <strong>restrict</strong> the admin's allow-list. A user-supplied entry is admissible iff its canonical path (via <code>realpath</code>, with all symlinks followed) is identical to or a path-component subdir of the canonical path of one of admin's entries. The check is canonical-on-canonical, so a user-supplied path whose canonical form escapes admin's tree (via a symlink that <em>looks</em> admissible) is rejected.</p>
+<p>The path-component boundary is enforced: <code>/foo</code> is <strong>not</strong> a parent of <code>/foobar</code>. Each non-admissible entry is stripped from the effective list with a <code>WARNING:</code> line on stderr. If every user-requested entry is rejected (or the user's array is empty), the sandbox refuses to start — there is no fall-through to a permissive default.</p>
+<p><strong>Missing vs. malformed admin config.</strong> If the admin file is missing entirely, the narrowing baseline defaults to <code>/</code> (no narrowing — the user's list passes through unchanged). If the admin file is present but malformed — syntax error, runtime error during source, <code>ALLOWED_PROJECT_PARENTS</code> is not an indexed array, an entry is not absolute, or an entry contains command substitution — the sandbox refuses to start with a clear error. The boundary is explicit and security-relevant: missing admin → default; malformed admin → fail-closed.</p>
 <h3 id="home_access"><code>HOME_ACCESS</code><a class="headerlink" href="#home_access" title="Permanent link">&para;</a></h3>
 <p><strong>Type</strong> scalar · <strong>Admin-enforced</strong> no · <strong>Default</strong> <code>tmpwrite</code></p>
 <p>Controls how much of <code>$HOME</code> the agent sees and whether unlisted writes persist. Override per-session via <code>HOME_ACCESS=read agent-sandbox bash</code>.</p>
