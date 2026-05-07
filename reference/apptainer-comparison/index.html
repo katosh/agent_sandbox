@@ -1185,6 +1185,7 @@
 <p>Apptainer was designed for <strong>reproducibility</strong>: running the same software stack across different clusters. Its documented philosophy is <a href="https://apptainer.org/docs/admin/main/admin_quickstart.html">"integration over isolation"</a>, meaning containers share the host PID space, network, IPC, and home directory by default. This is deliberate, since HPC workloads need access to GPUs, InfiniBand, parallel filesystems, and Slurm.</p>
 <p>This sandbox was designed for <strong>containment</strong>: restricting what AI coding agents (Claude Code, Codex, Gemini CLI, Aider, OpenCode) can see and modify on the host. Its philosophy is isolation-first, with selective holes for what the agent needs (project directory, Slurm via chaperon proxy, agent-specific API keys via config.conf profiles).</p>
 <p>These are opposite defaults. An Apptainer container is wide-open unless you lock it down; the sandbox is locked-down unless you open it up.</p>
+<p>Throughout this comparison, "this sandbox" refers to the <strong>bwrap backend</strong>, which is the default and the primary supported configuration. The firejail and landlock backends are fallbacks for environments where bwrap is unavailable (e.g. AppArmor-restricted user namespaces on Ubuntu 24.04+, or older kernels without unprivileged userns); their isolation is weaker in specific dimensions, called out where relevant below.</p>
 <h2 id="default-isolation-comparison">Default isolation comparison<a class="headerlink" href="#default-isolation-comparison" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1216,7 +1217,7 @@
 </tr>
 <tr>
 <td>IPC namespace</td>
-<td>✗ (shared)</td>
+<td>✓ (bwrap/firejail; ✗ landlock)</td>
 <td>✗ (opt-in <code>--ipc</code>)</td>
 <td>✓</td>
 </tr>
@@ -1231,6 +1232,12 @@
 <td>✓ (private tmpfs)</td>
 <td>✗</td>
 <td>✗</td>
+</tr>
+<tr>
+<td><code>/dev</code> filtering</td>
+<td>✓ (minimal devtmpfs + targeted <a href="../device-passthrough/"><code>DEVICES</code></a> bind, admin-blacklist enforced)</td>
+<td>✗ (host <code>/dev</code> bind-mounted)</td>
+<td>✓ (minimal <code>/dev</code>)</td>
 </tr>
 <tr>
 <td>Home directory</td>
@@ -1438,7 +1445,7 @@
 </tr>
 <tr>
 <td><strong>SSH escape</strong></td>
-<td>If <code>~/.ssh</code> is exposed, agent can SSH to localhost for an unsandboxed shell.</td>
+<td>Hidden by default — <code>~/.ssh</code>, <code>~/.aws</code>, <code>~/.gnupg</code> are always-blocked regardless of <code>HOME_ACCESS</code> mode. Only reachable if a config explicitly re-exposes them.</td>
 <td><code>$HOME</code> bind-mounted by default, so <code>~/.ssh</code> is exposed unless <code>--contain</code> is used.</td>
 </tr>
 <tr>
@@ -1469,7 +1476,6 @@
 <h2 id="what-apptainer-does-better">What Apptainer does better<a class="headerlink" href="#what-apptainer-does-better" title="Permanent link">&para;</a></h2>
 <p><strong>Reproducible environments.</strong> Apptainer containers bundle the entire OS userland: a specific Python version, CUDA toolkit, library stack. The sandbox does not provide environment isolation; it restricts the agent within the host environment. If the goal is running a known-good software stack, Apptainer is the right tool.</p>
 <p><strong>Image distribution and caching.</strong> SIF images can be built once, signed, and distributed across clusters. The sandbox has no equivalent and relies on the host's installed software.</p>
-<p><strong>GPU passthrough.</strong> Apptainer has mature <code>--nv</code> (NVIDIA) and <code>--rocm</code> (AMD) GPU passthrough. The sandbox passes through GPUs implicitly (no mount isolation of <code>/dev</code> by default), which works but is less controlled.</p>
 <p><strong>Community and ecosystem.</strong> Apptainer has broad HPC adoption, extensive documentation, and integration with registries (Docker Hub, ORAS, library://). The sandbox is purpose-built for AI coding agents.</p>
 <p>The two approaches are complementary, not competing. An agent running inside the sandbox can submit Slurm jobs that use Apptainer containers. The sandbox controls what the agent can access on the host, while Apptainer provides the reproducible environment inside the job. The chaperon ensures that jobs submitted from inside the sandbox (on bwrap/firejail) are themselves sandboxed, regardless of whether they use Apptainer internally.</p>
 <h2 id="bottom-line">Bottom line<a class="headerlink" href="#bottom-line" title="Permanent link">&para;</a></h2>
