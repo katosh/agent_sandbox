@@ -12,6 +12,8 @@ This sandbox was designed for **containment**: restricting what AI coding agents
 
 These are opposite defaults. An Apptainer container is wide-open unless you lock it down; the sandbox is locked-down unless you open it up.
 
+Throughout this comparison, "this sandbox" refers to the **bwrap backend**, which is the default and the primary supported configuration. The firejail and landlock backends are fallbacks for environments where bwrap is unavailable (e.g. AppArmor-restricted user namespaces on Ubuntu 24.04+, or older kernels without unprivileged userns); their isolation is weaker in specific dimensions, called out where relevant below.
+
 ## Default isolation comparison
 
 | Isolation layer | This sandbox (bwrap) | Apptainer (default) | Apptainer (`--containall`) |
@@ -19,9 +21,10 @@ These are opposite defaults. An Apptainer container is wide-open unless you lock
 | Mount namespace | ✓ | ✓ | ✓ |
 | PID namespace | ✓ | ✗ (opt-in `--pid`) | ✓ |
 | Network namespace | ✗ (shared) | ✗ (shared) | ✗ (shared) |
-| IPC namespace | ✗ (shared) | ✗ (opt-in `--ipc`) | ✓ |
+| IPC namespace | ✓ (bwrap/firejail; ✗ landlock) | ✗ (opt-in `--ipc`) | ✓ |
 | `/tmp` isolation | ✓ (private tmpfs) | ✗ ([bind-mounts host `/tmp`](https://apptainer.org/docs/user/main/bind_paths_and_mounts.html)) | ✓ |
 | `/run` isolation | ✓ (private tmpfs) | ✗ | ✗ |
+| `/dev` filtering | ✓ (minimal devtmpfs + targeted [`DEVICES`](device-passthrough.md) bind, admin-blacklist enforced) | ✗ (host `/dev` bind-mounted) | ✓ (minimal `/dev`) |
 | Home directory | Blank tmpfs + selective re-mount | [Bind-mounts `$HOME`](https://apptainer.org/docs/user/main/bind_paths_and_mounts.html) | Isolated (empty `$HOME`) |
 | CWD bind mount | Project dir only | Full CWD | CWD |
 | Host `/proc` | Isolated (unshare-pid) | Full host `/proc` | Isolated |
@@ -99,7 +102,7 @@ Neither approach provides complete isolation. Both share these weaknesses:
 |---|---|---|
 | **Network not isolated** | Shared host network (all backends). Agent can exfiltrate data via HTTP, DNS, or SSH. | Shared host network by default. `--net` available but breaks Slurm/munge. |
 | **Abstract Unix sockets** | Accessible since bwrap/firejail share the network namespace. `@/org/freedesktop/...` reachable. | Accessible (shared network namespace). |
-| **SSH escape** | If `~/.ssh` is exposed, agent can SSH to localhost for an unsandboxed shell. | `$HOME` bind-mounted by default, so `~/.ssh` is exposed unless `--contain` is used. |
+| **SSH escape** | Hidden by default — `~/.ssh`, `~/.aws`, `~/.gnupg` are always-blocked regardless of `HOME_ACCESS` mode. Only reachable if a config explicitly re-exposes them. | `$HOME` bind-mounted by default, so `~/.ssh` is exposed unless `--contain` is used. |
 | **`/dev/shm` / IPC** | Isolated on bwrap (`--unshare-ipc`) and firejail (`--ipc-namespace`). Shared on Landlock. | Writable and shared by default. |
 | **`memfd_create`** | Not blocked (needed by CUDA, PyTorch, JAX). Docker's default seccomp profile also allows it. `userfaultfd` and `io_uring` are blocked by all three backends via seccomp. | Not blocked (no seccomp by default). |
 | **Slurm wrapping** | Munge socket blocked (bwrap/firejail). Slurm binaries blocked (bwrap/firejail). **Landlock: neither munge nor Slurm binaries are blocked** — `AF_UNIX connect()` bypasses Landlock, so the chaperon is fully bypassable. Use bwrap or firejail for any deployment that needs a hard Slurm boundary. | No wrapping at all. Slurm fully accessible. |
@@ -118,8 +121,6 @@ The key difference is not that the sandbox has no gaps (it does), but that its g
 **Reproducible environments.** Apptainer containers bundle the entire OS userland: a specific Python version, CUDA toolkit, library stack. The sandbox does not provide environment isolation; it restricts the agent within the host environment. If the goal is running a known-good software stack, Apptainer is the right tool.
 
 **Image distribution and caching.** SIF images can be built once, signed, and distributed across clusters. The sandbox has no equivalent and relies on the host's installed software.
-
-**GPU passthrough.** Apptainer has mature `--nv` (NVIDIA) and `--rocm` (AMD) GPU passthrough. The sandbox passes through GPUs implicitly (no mount isolation of `/dev` by default), which works but is less controlled.
 
 **Community and ecosystem.** Apptainer has broad HPC adoption, extensive documentation, and integration with registries (Docker Hub, ORAS, library://). The sandbox is purpose-built for AI coding agents.
 
