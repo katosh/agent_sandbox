@@ -12,6 +12,15 @@
 
 Hides SSH keys, cloud credentials, GPG keys, and environment secrets from AI coding agents while letting them do their job. Backed by bubblewrap (with firejail and Landlock as fallbacks), six built-in agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode, pi-mono) with a one-line recipe for adding more, zero containers.
 
+## Why agent-sandbox?
+
+The agent-sandboxing field has converged into roughly six isolation layers — kernel-bind wrappers, OCI containers, gVisor, microVMs, WASM, and hosted SaaS. agent-sandbox sits in the small cluster of process-level kernel-bind wrappers (alongside Anthropic's `sandbox-runtime`, OpenAI Codex CLI's Linux sandbox, `nono`, `cco`, and `scode`) and is the **only project surveyed with first-class HPC/Slurm awareness**: the [chaperon proxy](https://katosh.github.io/agent_sandbox/reference/chaperon/) mediates `sbatch`, `srun`, `squeue`, `scancel`, `scontrol`, `sacct`, and `sacctmgr` so submissions made from inside the sandbox stay sandboxed on the compute node, with no path for an agent to escape via job submission. Two structural strengths follow from the design:
+
+- **Kernel-enforced bind-mount FS isolation** rather than a path-denylist — denied paths return `ENOENT`, with no canonical name for an agent to reach via `ld-linux` or `/proc/self/root`. Whole evasion classes documented for denylist sandboxes do not apply.
+- **Containment without a container** — no image to build, no daemon, no setuid helper on the bwrap backend; `lmod`, conda envs, CUDA, MPI, and your installed compiled software work as on the host.
+
+For the field overview, the comparison matrix against six deeply-compared peers, and an honest accounting of where the project lags the field (egress allowlists, credential proxies), see [agent-sandbox in the agent-sandboxing landscape](https://katosh.github.io/agent_sandbox/reference/landscape-comparison/).
+
 ## Quick start
 
 ```bash
