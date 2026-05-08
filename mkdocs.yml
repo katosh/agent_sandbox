@@ -76,6 +76,7 @@ nav:
       - Chaperon (Slurm proxy): reference/chaperon.md
       - Device passthrough: reference/device-passthrough.md
       - Sandbox vs. Apptainer: reference/apptainer-comparison.md
+      - Agent-sandboxing landscape: reference/landscape-comparison.md
       - Security model: reference/security.md
   - Admin:
       - Installation: admin/install.md
