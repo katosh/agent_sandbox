@@ -2,50 +2,54 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://katosh.github.io/agent_sandbox/</loc>
-         <lastmod>2026-05-07</lastmod>
+         <lastmod>2026-05-08</lastmod>
     </url>
     <url>
          <loc>https://katosh.github.io/agent_sandbox/configure/</loc>
-         <lastmod>2026-05-07</lastmod>
+         <lastmod>2026-05-08</lastmod>
     </url>
     <url>
          <loc>https://katosh.github.io/agent_sandbox/troubleshooting/</loc>
-         <lastmod>2026-05-07</lastmod>
+         <lastmod>2026-05-08</lastmod>
     </url>
     <url>
          <loc>https://katosh.github.io/agent_sandbox/admin/hardening/</loc>
-         <lastmod>2026-05-07</lastmod>
+         <lastmod>2026-05-08</lastmod>
     </url>
     <url>
          <loc>https://katosh.github.io/agent_sandbox/admin/install/</loc>
-         <lastmod>2026-05-07</lastmod>
+         <lastmod>2026-05-08</lastmod>
     </url>
     <url>
          <loc>https://katosh.github.io/agent_sandbox/admin/sandbox-help/</loc>
-         <lastmod>2026-05-07</lastmod>
+         <lastmod>2026-05-08</lastmod>
     </url>
     <url>
          <loc>https://katosh.github.io/agent_sandbox/reference/agents/</loc>
-         <lastmod>2026-05-07</lastmod>
+         <lastmod>2026-05-08</lastmod>
     </url>
     <url>
          <loc>https://katosh.github.io/agent_sandbox/reference/apptainer-comparison/</loc>
-         <lastmod>2026-05-07</lastmod>
+         <lastmod>2026-05-08</lastmod>
     </url>
     <url>
          <loc>https://katosh.github.io/agent_sandbox/reference/architecture/</loc>
-         <lastmod>2026-05-07</lastmod>
+         <lastmod>2026-05-08</lastmod>
     </url>
     <url>
          <loc>https://katosh.github.io/agent_sandbox/reference/chaperon/</loc>
-         <lastmod>2026-05-07</lastmod>
+         <lastmod>2026-05-08</lastmod>
     </url>
     <url>
          <loc>https://katosh.github.io/agent_sandbox/reference/device-passthrough/</loc>
-         <lastmod>2026-05-07</lastmod>
+         <lastmod>2026-05-08</lastmod>
+    </url>
+    <url>
+         <loc>https://katosh.github.io/agent_sandbox/reference/landscape-comparison/</loc>
+         <lastmod>2026-05-08</lastmod>
     </url>
     <url>
          <loc>https://katosh.github.io/agent_sandbox/reference/security/</loc>
-         <lastmod>2026-05-07</lastmod>
+         <lastmod>2026-05-08</lastmod>
     </url>
 </urlset>

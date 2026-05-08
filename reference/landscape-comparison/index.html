@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://katosh.github.io/agent_sandbox/reference/apptainer-comparison/">
+        <link rel="canonical" href="https://katosh.github.io/agent_sandbox/reference/landscape-comparison/">
       
       
-        <link rel="prev" href="../device-passthrough/">
+        <link rel="prev" href="../apptainer-comparison/">
       
       
-        <link rel="next" href="../landscape-comparison/">
+        <link rel="next" href="../security/">
       
       
         
@@ -27,7 +27,7 @@
     
     
       
-        <title>Sandbox vs. Apptainer - agent-sandbox</title>
+        <title>Agent-sandboxing landscape - agent-sandbox</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#sandbox-vs-apptainer-containers" class="md-skip">
+        <a href="#agent-sandbox-in-the-agent-sandboxing-landscape" class="md-skip">
           Skip to content
         </a>
       
@@ -112,7 +112,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Sandbox vs. Apptainer
+              Agent-sandboxing landscape
             
           </span>
         </div>
@@ -595,6 +595,34 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../apptainer-comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox vs. Apptainer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -614,7 +642,7 @@
   <span class="md-ellipsis">
     
   
-    Sandbox vs. Apptainer
+    Agent-sandboxing landscape
   
 
     
@@ -632,7 +660,7 @@
   <span class="md-ellipsis">
     
   
-    Sandbox vs. Apptainer
+    Agent-sandboxing landscape
   
 
     
@@ -658,10 +686,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#design-philosophy" class="md-nav__link">
+  <a href="#the-field" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Design philosophy
+        The field
       
     </span>
   </a>
@@ -669,10 +697,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#default-isolation-comparison" class="md-nav__link">
+  <a href="#where-agent-sandbox-sits" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Default isolation comparison
+        Where agent-sandbox sits
       
     </span>
   </a>
@@ -680,71 +708,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#security-track-record" class="md-nav__link">
+  <a href="#what-is-unique-to-agent-sandbox" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Security track record
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Security track record">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#bubblewrap-4-cves-none-since-2020" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Bubblewrap (4 CVEs, none since 2020)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#firejail-18-cves-12-are-local-root" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Firejail (18 CVEs, 12 are local root)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#apptainersingularity-18-cves" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Apptainer/Singularity (18+ CVEs)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#takeaway" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Takeaway
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#architectural-weaknesses-unique-to-apptainer" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Architectural weaknesses unique to Apptainer
+        What is unique to agent-sandbox
       
     </span>
   </a>
@@ -752,10 +719,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#shared-weaknesses-and-honest-gaps" class="md-nav__link">
+  <a href="#feature-matrix" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Shared weaknesses and honest gaps
+        Feature matrix
       
     </span>
   </a>
@@ -763,10 +730,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-apptainer-does-better" class="md-nav__link">
+  <a href="#what-this-means-for-agent-sandboxs-design" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What Apptainer does better
+        What this means for agent-sandbox's design
       
     </span>
   </a>
@@ -784,38 +751,21 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#survey-provenance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Survey provenance
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
       
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../landscape-comparison/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Agent-sandboxing landscape
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -1053,10 +1003,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#design-philosophy" class="md-nav__link">
+  <a href="#the-field" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Design philosophy
+        The field
       
     </span>
   </a>
@@ -1064,10 +1014,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#default-isolation-comparison" class="md-nav__link">
+  <a href="#where-agent-sandbox-sits" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Default isolation comparison
+        Where agent-sandbox sits
       
     </span>
   </a>
@@ -1075,71 +1025,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#security-track-record" class="md-nav__link">
+  <a href="#what-is-unique-to-agent-sandbox" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Security track record
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Security track record">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#bubblewrap-4-cves-none-since-2020" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Bubblewrap (4 CVEs, none since 2020)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#firejail-18-cves-12-are-local-root" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Firejail (18 CVEs, 12 are local root)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#apptainersingularity-18-cves" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Apptainer/Singularity (18+ CVEs)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#takeaway" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Takeaway
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#architectural-weaknesses-unique-to-apptainer" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Architectural weaknesses unique to Apptainer
+        What is unique to agent-sandbox
       
     </span>
   </a>
@@ -1147,10 +1036,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#shared-weaknesses-and-honest-gaps" class="md-nav__link">
+  <a href="#feature-matrix" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Shared weaknesses and honest gaps
+        Feature matrix
       
     </span>
   </a>
@@ -1158,10 +1047,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-apptainer-does-better" class="md-nav__link">
+  <a href="#what-this-means-for-agent-sandboxs-design" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What Apptainer does better
+        What this means for agent-sandbox's design
       
     </span>
   </a>
@@ -1173,6 +1062,17 @@
     <span class="md-ellipsis">
       
         Bottom line
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#survey-provenance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Survey provenance
       
     </span>
   </a>
@@ -1196,7 +1096,7 @@
 
 
   
-    <a href="https://github.com/katosh/agent_sandbox/edit/main/docs/reference/apptainer-comparison.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/katosh/agent_sandbox/edit/main/docs/reference/landscape-comparison.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1204,312 +1104,264 @@
   
 
 
-<h1 id="sandbox-vs-apptainer-containers">Sandbox vs. Apptainer Containers<a class="headerlink" href="#sandbox-vs-apptainer-containers" title="Permanent link">&para;</a></h1>
+<h1 id="agent-sandbox-in-the-agent-sandboxing-landscape">agent-sandbox in the agent-sandboxing landscape<a class="headerlink" href="#agent-sandbox-in-the-agent-sandboxing-landscape" title="Permanent link">&para;</a></h1>
 <blockquote>
-<p><strong>Disclaimer:</strong> This is not a formal security audit or a complete vulnerability assessment. It reflects personal research and best-effort analysis of publicly available documentation, CVE databases, and source code. Claims may be incomplete or outdated. If you are making security decisions for your organization, consult your security team and verify the findings independently.</p>
+<p><strong>Disclaimer.</strong> This is not a formal benchmark or security audit of peer
+tools. It is a best-effort survey of publicly available documentation and
+source code, written so that readers evaluating agent-sandboxing choices on
+shared HPC clusters can place this project in context. Project capabilities
+change quickly — verify against each project's current docs before making
+deployment decisions. Last reviewed: <strong>2026-05-07</strong>.</p>
 </blockquote>
-<p>Docker requires root and is not available on shared HPC clusters. The natural comparison is therefore with <a href="https://apptainer.org/">Apptainer</a> (formerly Singularity), the standard container runtime in HPC. This document puts the sandbox's security posture in perspective by comparing the two approaches head-to-head.</p>
-<h2 id="design-philosophy">Design philosophy<a class="headerlink" href="#design-philosophy" title="Permanent link">&para;</a></h2>
-<p>Apptainer was designed for <strong>reproducibility</strong>: running the same software stack across different clusters. Its documented philosophy is <a href="https://apptainer.org/docs/admin/main/admin_quickstart.html">"integration over isolation"</a>, meaning containers share the host PID space, network, IPC, and home directory by default. This is deliberate, since HPC workloads need access to GPUs, InfiniBand, parallel filesystems, and Slurm.</p>
-<p>This sandbox was designed for <strong>containment</strong>: restricting what AI coding agents (Claude Code, Codex, Gemini CLI, Aider, OpenCode) can see and modify on the host. Its philosophy is isolation-first, with selective holes for what the agent needs (project directory, Slurm via chaperon proxy, agent-specific API keys via config.conf profiles).</p>
-<p>These are opposite defaults. An Apptainer container is wide-open unless you lock it down; the sandbox is locked-down unless you open it up.</p>
-<p>Throughout this comparison, "this sandbox" refers to the <strong>bwrap backend</strong>, which is the default and the primary supported configuration. The firejail and landlock backends are fallbacks for environments where bwrap is unavailable (e.g. AppArmor-restricted user namespaces on Ubuntu 24.04+, or older kernels without unprivileged userns); their isolation is weaker in specific dimensions, called out where relevant below.</p>
-<h2 id="default-isolation-comparison">Default isolation comparison<a class="headerlink" href="#default-isolation-comparison" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Isolation layer</th>
-<th>This sandbox (bwrap)</th>
-<th>Apptainer (default)</th>
-<th>Apptainer (<code>--containall</code>)</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Mount namespace</td>
-<td>✓</td>
-<td>✓</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>PID namespace</td>
-<td>✓</td>
-<td>✗ (opt-in <code>--pid</code>)</td>
-<td>✓</td>
-</tr>
-<tr>
-<td>Network namespace</td>
-<td>✗ (shared)</td>
-<td>✗ (shared)</td>
-<td>✗ (shared)</td>
-</tr>
-<tr>
-<td>IPC namespace</td>
-<td>✓ (bwrap/firejail; ✗ landlock)</td>
-<td>✗ (opt-in <code>--ipc</code>)</td>
-<td>✓</td>
-</tr>
-<tr>
-<td><code>/tmp</code> isolation</td>
-<td>✓ (private tmpfs)</td>
-<td>✗ (<a href="https://apptainer.org/docs/user/main/bind_paths_and_mounts.html">bind-mounts host <code>/tmp</code></a>)</td>
-<td>✓</td>
-</tr>
-<tr>
-<td><code>/run</code> isolation</td>
-<td>✓ (private tmpfs)</td>
-<td>✗</td>
-<td>✗</td>
-</tr>
-<tr>
-<td><code>/dev</code> filtering</td>
-<td>✓ (minimal devtmpfs + targeted <a href="../device-passthrough/"><code>DEVICES</code></a> bind, admin-blacklist enforced)</td>
-<td>✗ (host <code>/dev</code> bind-mounted)</td>
-<td>✓ (minimal <code>/dev</code>)</td>
-</tr>
-<tr>
-<td>Home directory</td>
-<td>Blank tmpfs + selective re-mount</td>
-<td><a href="https://apptainer.org/docs/user/main/bind_paths_and_mounts.html">Bind-mounts <code>$HOME</code></a></td>
-<td>Isolated (empty <code>$HOME</code>)</td>
-</tr>
-<tr>
-<td>CWD bind mount</td>
-<td>Project dir only</td>
-<td>Full CWD</td>
-<td>CWD</td>
-</tr>
-<tr>
-<td>Host <code>/proc</code></td>
-<td>Isolated (unshare-pid)</td>
-<td>Full host <code>/proc</code></td>
-<td>Isolated</td>
-</tr>
-<tr>
-<td>Env var filtering</td>
-<td>✓ (explicit names + credential patterns: SSH_<em>, </em><em>TOKEN, CI</em>*, etc.)</td>
-<td>✗ (inherits host environment)</td>
-<td>Partial (<code>--cleanenv</code>)</td>
-</tr>
-<tr>
-<td>Passwd/group filtering</td>
-<td>✓ (system accounts + current user)</td>
-<td>Generates container-local files, but includes user info</td>
-<td>Same</td>
-</tr>
-<tr>
-<td>Seccomp</td>
-<td>✓ (bwrap: generated BPF; firejail: --seccomp.drop; landlock: custom)</td>
-<td>✗ (<a href="https://apptainer.org/docs/user/main/security_options.html">not applied by default</a>)</td>
-<td>✗</td>
-</tr>
-<tr>
-<td>io_uring blocked</td>
-<td>✓ (all three backends)</td>
-<td>✗</td>
-<td>✗</td>
-</tr>
-<tr>
-<td>Agent config isolation</td>
-<td>✓ (merged instruction files, kernel-enforced read-only)</td>
-<td>n/a</td>
-<td>n/a</td>
-</tr>
-<tr>
-<td>Slurm integration</td>
-<td>Chaperon proxy (scoped sbatch/scancel/squeue, CWD validation)</td>
-<td>Transparent (no wrapping)</td>
-<td>Transparent</td>
-</tr>
-</tbody>
-</table>
-<p>The sandbox provides <strong>stronger default containment</strong> in every category except network namespace (neither isolates the network by default, since both need it for munge/Slurm). Apptainer's <code>--containall</code> closes some gaps (PID, IPC, <code>/tmp</code>, home) but still does not filter environment variables, does not isolate <code>/run</code>, and does not apply seccomp.</p>
-<h2 id="security-track-record">Security track record<a class="headerlink" href="#security-track-record" title="Permanent link">&para;</a></h2>
-<p>All three sandbox backends and Apptainer have public CVE histories. The differences are stark:</p>
-<table>
-<thead>
-<tr>
-<th>Tool</th>
-<th>Total CVEs</th>
-<th>Critical</th>
-<th>High</th>
-<th>Root exploits</th>
-<th>Last CVE</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Bubblewrap</strong></td>
-<td><a href="https://www.opencve.io/cve?search=bubblewrap">4</a></td>
-<td>0</td>
-<td>3</td>
-<td>0</td>
-<td>2020</td>
-</tr>
-<tr>
-<td><strong>Firejail</strong></td>
-<td><a href="https://www.cvedetails.com/vulnerability-list/vendor_id-16191/Firejail.html">18</a></td>
-<td>2</td>
-<td>13</td>
-<td>12</td>
-<td>2022</td>
-</tr>
-<tr>
-<td><strong>Landlock</strong></td>
-<td>0</td>
-<td>0</td>
-<td>0</td>
-<td>0</td>
-<td>n/a</td>
-</tr>
-<tr>
-<td><strong>Apptainer/Singularity</strong></td>
-<td><a href="https://www.opencve.io/cve?vendor=sylabs&amp;product=singularity">18+</a></td>
-<td>2</td>
-<td>~5</td>
-<td>~4</td>
-<td>2025</td>
-</tr>
-</tbody>
-</table>
-<h3 id="bubblewrap-4-cves-none-since-2020">Bubblewrap (4 CVEs, none since 2020)<a class="headerlink" href="#bubblewrap-4-cves-none-since-2020" title="Permanent link">&para;</a></h3>
-<p>Bubblewrap has a remarkably clean record. Its ~1,500-line C codebase is small and auditable. The most commonly cited issue, <a href="https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2017-5226">CVE-2017-5226</a> (TIOCSTI sandbox escape, scored Critical), was actually a Linux kernel/terminal design flaw, not a bubblewrap bug. The kernel fixed it in Linux 6.2. The remaining three CVEs were a dumpable process issue (fixed in 0.1.3), a <code>/tmp</code> mount-point race (fixed in 0.3.3), and a setuid-mode privilege issue (fixed in 0.4.1).</p>
-<h3 id="firejail-18-cves-12-are-local-root">Firejail (18 CVEs, 12 are local root)<a class="headerlink" href="#firejail-18-cves-12-are-local-root" title="Permanent link">&para;</a></h3>
-<p>Firejail's record is the worst of the group. 12 of its 18 CVEs are direct privilege escalation to root, all exploiting the setuid-root architecture. Notable examples:</p>
-<table>
-<thead>
-<tr>
-<th>CVE</th>
-<th>Severity</th>
-<th>Issue</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><a href="https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2022-31214">CVE-2022-31214</a></td>
-<td>High</td>
-<td>Local root exploit via <code>--join</code> logic. Published PoC works on Debian, Arch, Fedora, openSUSE.</td>
-</tr>
-<tr>
-<td><a href="https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2020-17368">CVE-2020-17368</a></td>
-<td>Critical (9.8)</td>
-<td>Shell metacharacter injection via <code>--output</code>, enabling command injection</td>
-</tr>
-<tr>
-<td><a href="https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2019-12499">CVE-2019-12499</a></td>
-<td>High</td>
-<td>Sandboxed code can truncate the firejail binary on the host</td>
-</tr>
-<tr>
-<td><a href="https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2016-10122">CVE-2016-10122</a></td>
-<td>High</td>
-<td>Environment variables not cleaned (LD_PRELOAD), enabling root shell</td>
-</tr>
-</tbody>
-</table>
-<p>A <a href="https://seclists.org/oss-sec/2017/q1/25">2017 oss-security audit</a> found "a lot of low hanging exploitable fruit" and concluded that the setuid-root model is fundamentally problematic. A <a href="https://www.openwall.com/lists/oss-security/2022/06/08/10">2022 SUSE security disclosure</a> demonstrated a full local root exploit chain using CVE-2022-31214. This is the same class of risk as Apptainer's setuid helper, but more frequent and more severe.</p>
-<h3 id="apptainersingularity-18-cves">Apptainer/Singularity (18+ CVEs)<a class="headerlink" href="#apptainersingularity-18-cves" title="Permanent link">&para;</a></h3>
-<p>Apptainer's CVEs are more varied in severity (more medium-rated issues around image verification and build permissions), but include serious setuid-related privilege escalation:</p>
-<table>
-<thead>
-<tr>
-<th>CVE</th>
-<th>Severity</th>
-<th>Issue</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><a href="https://github.com/apptainer/apptainer/security/advisories/GHSA-j4rf-7357-f4cg">CVE-2023-30549</a></td>
-<td>High</td>
-<td>Setuid mode lets unprivileged users trigger kernel filesystem driver bugs (ext4 use-after-free) on user-writable image data, leading to privilege escalation</td>
-</tr>
-<tr>
-<td><a href="https://github.com/apptainer/apptainer/security/advisories/GHSA-mmx5-32m4-wxvx">CVE-2023-38496</a></td>
-<td>High</td>
-<td>Ineffective privilege drop allows root-privileged code to run on attacker-controlled config</td>
-</tr>
-<tr>
-<td><a href="https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2020-15229">CVE-2020-15229</a></td>
-<td>High</td>
-<td>Path traversal in <code>unsquashfs</code>, allowing arbitrary host file overwrite</td>
-</tr>
-<tr>
-<td><a href="https://github.com/apptainer/apptainer/security/advisories/GHSA-j3rw-fx6g-q46j">CVE-2025-65105</a></td>
-<td>Moderate</td>
-<td>Container can disable <code>--security apparmor:</code> and <code>--security selinux:</code> options</td>
-</tr>
-</tbody>
-</table>
-<p>The advisory for CVE-2023-30549 notes that "many ext4 filesystem vulnerabilities similar to the one in CVE-2022-1184 continue to be found, and most of them do not ever have a CVE assigned." The setuid model systematically elevates moderate kernel bugs to exploitable privilege escalation.</p>
-<h3 id="takeaway">Takeaway<a class="headerlink" href="#takeaway" title="Permanent link">&para;</a></h3>
-<p>The setuid-root architecture is the common thread. Both firejail and Apptainer's setuid mode have been repeatedly exploited for local root. Bubblewrap avoids this entirely by using unprivileged user namespaces, and Landlock avoids it by being a pure kernel LSM with no userspace privileged component.</p>
-<p>When choosing a sandbox backend, this matters: <strong>bwrap has 4 CVEs and zero root exploits; firejail has 18 CVEs and 12 root exploits.</strong> Firejail provides strong isolation features (seccomp, caps dropping) but installs a setuid-root binary on every node. On systems where bwrap is available (or can be enabled via AppArmor), it is the safer choice. See the <a href="../../admin/install/#bwrap-vs-firejail-comparison">bwrap vs firejail comparison</a> in Admin Install.</p>
-<h2 id="architectural-weaknesses-unique-to-apptainer">Architectural weaknesses unique to Apptainer<a class="headerlink" href="#architectural-weaknesses-unique-to-apptainer" title="Permanent link">&para;</a></h2>
-<p><strong>Admin restrictions are unenforceable in rootless mode.</strong> The Apptainer admin docs explicitly state that the <code>limit container</code> and <code>allow container</code> directives "are not effective if unprivileged user namespaces are enabled." On systems with unprivileged user namespaces (the default), a user can compile their own Apptainer binary with any configuration and bypass all administrative restrictions. The admin cannot enforce policy when the user controls the binary.</p>
-<p><strong>ECL (Execution Control List) is ineffective in rootless mode.</strong> The container signing and verification mechanism (ECL) is <a href="https://apptainer.org/docs/admin/main/configfiles.html">"only effectively applied when Apptainer is running in setuid mode."</a> In rootless mode, users can run any container image regardless of signatures.</p>
-<p><strong>SIF image verification has had gaps.</strong> <a href="https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2020-13845">CVE-2020-13845</a> showed that ECL enforcement compared fingerprints against unsigned SIF descriptors rather than cryptographically validated signatures, a verification bypass.</p>
-<p>The sandbox has none of these issues. It does not rely on image verification, does not have a rootless/setuid split in enforcement, and policy is enforced by kernel mechanisms (mount namespace, Landlock LSM) that the user cannot bypass without privilege.</p>
-<h2 id="shared-weaknesses-and-honest-gaps">Shared weaknesses and honest gaps<a class="headerlink" href="#shared-weaknesses-and-honest-gaps" title="Permanent link">&para;</a></h2>
-<p>Neither approach provides complete isolation. Both share these weaknesses:</p>
-<table>
-<thead>
-<tr>
-<th>Gap</th>
-<th>This sandbox</th>
-<th>Apptainer</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Network not isolated</strong></td>
-<td>Shared host network (all backends). Agent can exfiltrate data via HTTP, DNS, or SSH.</td>
-<td>Shared host network by default. <code>--net</code> available but breaks Slurm/munge.</td>
-</tr>
-<tr>
-<td><strong>Abstract Unix sockets</strong></td>
-<td>Accessible since bwrap/firejail share the network namespace. <code>@/org/freedesktop/...</code> reachable.</td>
-<td>Accessible (shared network namespace).</td>
-</tr>
-<tr>
-<td><strong>SSH escape</strong></td>
-<td>Hidden by default — <code>~/.ssh</code>, <code>~/.aws</code>, <code>~/.gnupg</code> are always-blocked regardless of <code>HOME_ACCESS</code> mode. Only reachable if a config explicitly re-exposes them.</td>
-<td><code>$HOME</code> bind-mounted by default, so <code>~/.ssh</code> is exposed unless <code>--contain</code> is used.</td>
-</tr>
-<tr>
-<td><strong><code>/dev/shm</code> / IPC</strong></td>
-<td>Isolated on bwrap (<code>--unshare-ipc</code>) and firejail (<code>--ipc-namespace</code>). Shared on Landlock.</td>
-<td>Writable and shared by default.</td>
-</tr>
-<tr>
-<td><strong><code>memfd_create</code></strong></td>
-<td>Not blocked (needed by CUDA, PyTorch, JAX). Docker's default seccomp profile also allows it. <code>userfaultfd</code> and <code>io_uring</code> are blocked by all three backends via seccomp.</td>
-<td>Not blocked (no seccomp by default).</td>
-</tr>
-<tr>
-<td><strong>Slurm wrapping</strong></td>
-<td>Munge socket blocked (bwrap/firejail). Slurm binaries blocked (bwrap/firejail). <strong>Landlock: neither munge nor Slurm binaries are blocked</strong> — <code>AF_UNIX connect()</code> bypasses Landlock, so the chaperon is fully bypassable. Use bwrap or firejail for any deployment that needs a hard Slurm boundary.</td>
-<td>No wrapping at all. Slurm fully accessible.</td>
-</tr>
-</tbody>
-</table>
-<p>The sandbox has additional backend-specific gaps documented in the <a href="../security/#known-limitations">Known Limitations</a>:</p>
+<h2 id="the-field">The field<a class="headerlink" href="#the-field" title="Permanent link">&para;</a></h2>
+<p>Sandboxing for AI coding agents has converged into roughly six isolation
+layers: process-level kernel-bind wrappers (bubblewrap, firejail, Landlock),
+OCI-container wrappers, gVisor + Kubernetes runtimes, Firecracker / libkrun
+microVMs, WASM language-level containment, and hosted SaaS dev-environment
+runtimes (Devin, Replit, Cursor, Codespaces). A 2026-05 snowball survey
+across <a href="https://github.com/dloss/awesome-agent-sandboxes"><code>dloss/awesome-agent-sandboxes</code></a>
+and the broader GitHub topic surfaced ~30 named projects, of which 25 had
+been pushed to in the previous 90 days. Each layer makes a different
+trade-off between isolation strength, host integration, and operational
+weight; no single layer dominates.</p>
+<h2 id="where-agent-sandbox-sits">Where agent-sandbox sits<a class="headerlink" href="#where-agent-sandbox-sits" title="Permanent link">&para;</a></h2>
+<p>agent-sandbox is a <strong>process-level kernel-bind wrapper</strong>: it builds a
+restricted view of the host filesystem using the kernel's existing
+isolation primitives (mount namespaces via <code>bubblewrap</code>, file-access rules
+via Landlock, or path policies via firejail) and then runs the agent's
+shell inside that view. No image to build, no daemon, no virtual machine.</p>
+<p>The closest peers on isolation primitives are:</p>
 <ul>
-<li><strong>Landlock</strong> cannot block Unix socket <code>connect()</code> (D-Bus/systemd escape), has no PID namespace, no mount namespace (BLOCKED_FILES and PRIVATE_TMP ineffective), and no LDAP user enumeration filtering.</li>
-<li><strong>bwrap</strong> seccomp filter is generated at runtime (<code>generate-seccomp.py</code>) — verify it loads (no "seccomp" warnings on stderr).</li>
-<li><strong>Landlock</strong> leaves IPC namespace shared (<code>/dev/shm</code> writable by all same-UID processes). Bwrap and firejail isolate IPC by default.</li>
-<li><strong>All backends</strong> leave the network namespace shared. Abstract Unix sockets are covert channels between sandbox sessions.</li>
+<li><strong><a href="https://github.com/anthropic-experimental/sandbox-runtime">Anthropic <code>sandbox-runtime</code></a></strong> — the open-source companion to Claude Code's built-in <code>/sandbox</code>. Linux: bwrap + seccomp + a host-side HTTP/SOCKS5 egress proxy. macOS: Apple Seatbelt. Apache-2.0.</li>
+<li><strong>OpenAI Codex CLI's <a href="https://github.com/openai/codex/blob/main/codex-rs/linux-sandbox/README.md"><code>codex-linux-sandbox</code></a></strong> — bwrap (default) + seccomp + Landlock fallback, with <code>unshare-net</code> plus an internal TCP→UDS→TCP managed-proxy mode for egress control. Apache-2.0, on-by-default for non-trusted commands.</li>
+<li><strong><a href="https://github.com/always-further/nono"><code>always-further/nono</code></a></strong> — Landlock-only on Linux, Seatbelt on macOS, with a credential proxy that keeps API keys outside the sandbox entirely. Apache-2.0.</li>
+<li><strong><a href="https://github.com/nikvdp/cco"><code>nikvdp/cco</code></a></strong> ("Claude Condom") — tiered: native primitive when available (sandbox-exec on macOS, bwrap on Linux), Docker as a fallback. MIT.</li>
+<li><strong><a href="https://github.com/bindsch/scode"><code>bindsch/scode</code></a></strong> — single-script bwrap (Linux) / Seatbelt (macOS) wrapper with a unified policy across multiple agent harnesses. MIT.</li>
 </ul>
-<p>The key difference is not that the sandbox has no gaps (it does), but that its gaps are smaller and better characterized. Apptainer's default posture exposes the entire host environment; the sandbox's default posture hides everything and selectively re-exposes what is needed. Both benefit from admin hardening for strong isolation (see <a href="../../admin/hardening/#summary">Admin Hardening</a>).</p>
-<h2 id="what-apptainer-does-better">What Apptainer does better<a class="headerlink" href="#what-apptainer-does-better" title="Permanent link">&para;</a></h2>
-<p><strong>Reproducible environments.</strong> Apptainer containers bundle the entire OS userland: a specific Python version, CUDA toolkit, library stack. The sandbox does not provide environment isolation; it restricts the agent within the host environment. If the goal is running a known-good software stack, Apptainer is the right tool.</p>
-<p><strong>Image distribution and caching.</strong> SIF images can be built once, signed, and distributed across clusters. The sandbox has no equivalent and relies on the host's installed software.</p>
-<p><strong>Community and ecosystem.</strong> Apptainer has broad HPC adoption, extensive documentation, and integration with registries (Docker Hub, ORAS, library://). The sandbox is purpose-built for AI coding agents.</p>
-<p>The two approaches are complementary, not competing. An agent running inside the sandbox can submit Slurm jobs that use Apptainer containers. The sandbox controls what the agent can access on the host, while Apptainer provides the reproducible environment inside the job. The chaperon ensures that jobs submitted from inside the sandbox (on bwrap/firejail) are themselves sandboxed, regardless of whether they use Apptainer internally.</p>
+<p>The cluster shares a thesis: the agent already runs on the user's host, so
+the cheapest way to reduce blast radius is to narrow the host view it sees
+rather than relocate the agent into a separate machine. Different members
+emphasize different things — <code>nono</code> foregrounds credential handling,
+Codex CLI foregrounds being on-by-default, agent-sandbox foregrounds HPC
+compatibility — but the kernel primitives underneath are largely the
+same.</p>
+<h2 id="what-is-unique-to-agent-sandbox">What is unique to agent-sandbox<a class="headerlink" href="#what-is-unique-to-agent-sandbox" title="Permanent link">&para;</a></h2>
+<p><strong>HPC/Slurm awareness via the chaperon proxy.</strong> Of the projects surveyed,
+agent-sandbox is the only one that targets shared-cluster multi-tenant
+deployments as a first-class scenario. The <a href="../chaperon/">chaperon</a> is a
+host-side proxy that mediates <code>sbatch</code>, <code>srun</code>, <code>squeue</code>, <code>scancel</code>,
+<code>scontrol</code>, <code>sacct</code>, and <code>sacctmgr</code> from inside the sandbox: every job is
+rewritten to wrap its payload in <code>sandbox-exec.sh</code> on the compute node,
+arguments are whitelisted, the munge authentication socket is blocked
+inside the sandbox, and the queue view is scoped to sandbox sessions in
+the same project. None of the kernel-bind peers above offer an analogue;
+none of the microVM or container offerings fit cleanly inside the
+existing <code>sbatch</code> submission model that HPC sites already operate.</p>
+<p><strong>Bind-mount FS isolation rather than path-denylist FS isolation.</strong> Most
+of the peer wrappers maintain an explicit deny-list of host paths the
+agent should not see (<code>~/.ssh</code>, cloud-credential directories, etc.). When
+the deny-list grows or is incomplete, agents have repeatedly found
+workarounds — for example, invoking <code>/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 /usr/bin/wget</code>
+to load a binary that an <code>execve</code>-only block had hidden, or routing
+through <code>/proc/self/root</code> to reach paths denied at their canonical names
+(<a href="https://ona.com/stories/how-claude-code-escapes-its-own-denylist-and-sandbox">Ona, 2026-04</a>).
+agent-sandbox's primary backend (bwrap) operates at a layer below where
+those evasions live: the agent runs in a separate mount namespace whose
+filesystem is rebuilt from <code>~/.ssh</code>-blank inputs, so denied paths return
+<code>ENOENT</code> and there is no canonical name reachable through <code>ld-linux</code> or
+<code>/proc/self/root</code>. The Landlock fallback is weaker (path-based,
+<code>EACCES</code>); see <a href="../security/#backend-comparison">Security model — Backend Comparison</a>.</p>
+<h2 id="feature-matrix">Feature matrix<a class="headerlink" href="#feature-matrix" title="Permanent link">&para;</a></h2>
+<p>Six deeply-compared peers plus four reference rows. Snapshot date
+<strong>2026-05-07</strong>; cells reflect each project's documented behaviour at that
+time. Verify against each project's current docs.</p>
+<table>
+<thead>
+<tr>
+<th>Project</th>
+<th>License</th>
+<th>Approach</th>
+<th>FS isolation</th>
+<th>Network policy</th>
+<th>GPU passthrough</th>
+<th>Multi-tenant safety</th>
+<th>HPC/Slurm aware</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>agent-sandbox</strong></td>
+<td>MIT</td>
+<td>Linux kernel-bind: bwrap → firejail → Landlock fallback</td>
+<td>Hidden (<code>ENOENT</code>) on bwrap/firejail; <code>EACCES</code> on Landlock; project-dir-only writable</td>
+<td>Open by default (Anthropic API requirement); admin nftables hardening templates</td>
+<td><code>DEVICES+=(/dev/nvidia*)</code>, admin-locked <code>DEVICES_BLACKLIST</code></td>
+<td>Kernel-enforced; chaperon scopes Slurm to project</td>
+<td><strong>Yes — only project in the surveyed field.</strong> Chaperon mediates sbatch/srun/squeue/scancel/scontrol/sacct/sacctmgr</td>
+</tr>
+<tr>
+<td><strong>Anthropic <code>sandbox-runtime</code></strong></td>
+<td>Apache-2.0</td>
+<td>Linux: bwrap + seccomp + HTTP/SOCKS5 proxy. macOS: Seatbelt</td>
+<td>Deny-then-allow reads, allow-only writes</td>
+<td><strong>Domain allowlist via host-side proxy</strong>; seccomp blocks Unix-socket creation</td>
+<td>Not a stated goal</td>
+<td>Single-user host</td>
+<td>No</td>
+</tr>
+<tr>
+<td><strong>OpenAI Codex CLI sandbox</strong></td>
+<td>Apache-2.0</td>
+<td>Linux: bwrap (default) + seccomp + Landlock fallback. macOS: Seatbelt</td>
+<td><code>--ro-bind / /</code> everywhere, write-restricted to whitelisted roots; <code>/dev/null</code> write-allowed</td>
+<td><code>unshare-net</code> + internal TCP→UDS→TCP managed-proxy</td>
+<td>Not in tree</td>
+<td>Single-user, in-process</td>
+<td>No</td>
+</tr>
+<tr>
+<td><strong>nono</strong></td>
+<td>Apache-2.0</td>
+<td>Linux: Landlock-only. macOS: Seatbelt</td>
+<td>Kernel-irrevocable Landlock rules</td>
+<td><strong>Credential proxy</strong> keeps API keys outside sandbox; injects auth at egress</td>
+<td>Not a stated goal</td>
+<td>Capability-based; restrictions inherit to children</td>
+<td>No</td>
+</tr>
+<tr>
+<td><strong>cco</strong></td>
+<td>MIT</td>
+<td>macOS sandbox-exec / Linux bwrap, Docker fallback</td>
+<td>Native: full host RO + project RW. Docker mode: only mounted paths</td>
+<td>Not enforced (unless Docker mode chosen)</td>
+<td>n/a</td>
+<td>Single-user developer use</td>
+<td>No</td>
+</tr>
+<tr>
+<td><strong>scode</strong></td>
+<td>MIT</td>
+<td>Single bash script: bwrap (Linux) / Seatbelt (macOS)</td>
+<td>Path-based access control over 35+ credential paths and 28+ env-var patterns</td>
+<td>Not enforced</td>
+<td>n/a</td>
+<td>Single-user developer use</td>
+<td>No</td>
+</tr>
+<tr>
+<td><strong>kubernetes-sigs/agent-sandbox</strong></td>
+<td>Apache-2.0</td>
+<td>Kubernetes CRD; pluggable runtime (gVisor / Kata)</td>
+<td>Pod-level</td>
+<td>NetworkPolicy via Kubernetes</td>
+<td>Via device-plugin / ResourceClaim</td>
+<td><strong>Designed for it</strong> — kube-RBAC, singleton stateful pod</td>
+<td>Not directly</td>
+</tr>
+<tr>
+<td><strong>e2b</strong></td>
+<td>Apache-2.0</td>
+<td>Hosted Firecracker microVM</td>
+<td>Hardware VM-isolated</td>
+<td>Configurable per-sandbox</td>
+<td>Available on premium tiers</td>
+<td><strong>Yes, by hypervisor</strong></td>
+<td>No (cloud-only)</td>
+</tr>
+<tr>
+<td><strong>matchlock</strong></td>
+<td>MIT</td>
+<td>Local Firecracker (Linux) / Vz.framework (macOS)</td>
+<td>Per-VM overlay; ephemeral</td>
+<td><strong>Allowlist proxy + MITM secret injection</strong></td>
+<td>Not a stated goal</td>
+<td>Hypervisor-level</td>
+<td>No</td>
+</tr>
+<tr>
+<td><strong>microsandbox</strong></td>
+<td>Apache-2.0</td>
+<td>Local libkrun microVM, MCP integration</td>
+<td>Per-VM</td>
+<td>Configurable per VM</td>
+<td>Not in default profile</td>
+<td>Hardware-isolated</td>
+<td>No</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Reference rows (hosted, not deeply compared because their internals
+are not open):</strong> <a href="https://github.com/daytonaio/daytona">Daytona</a> (OCI
+containers, AGPL-3.0), <a href="https://vercel.com/docs/vercel-sandbox">Vercel Sandbox</a>
+(hosted Firecracker with snapshot/restore),
+<a href="https://modal.com/docs/guide/sandbox">Modal Sandboxes</a> (hosted gVisor),
+<a href="https://github.com/alibaba/OpenSandbox"><code>alibaba/OpenSandbox</code></a>
+(Apache-2.0; OCI + gVisor + Kata + Firecracker, the closest open-source
+peer to a full agent-runtime PaaS).</p>
+<h2 id="what-this-means-for-agent-sandboxs-design">What this means for agent-sandbox's design<a class="headerlink" href="#what-this-means-for-agent-sandboxs-design" title="Permanent link">&para;</a></h2>
+<p>agent-sandbox is opinionated about a narrow scenario — <strong>a single AI
+coding agent running on a user's HPC login node, with kernel-enforced
+boundaries against credential and cross-project leakage</strong> — and trades
+breadth for fit. The tools above sketch a few directions where the field
+has gone further; we have looked at each and recorded our current stance.</p>
+<p><strong>Domain-allowlist egress proxy.</strong> Anthropic <code>sandbox-runtime</code>, <code>nono</code>,
+Codex CLI, and <code>matchlock</code> ship a host-side proxy that restricts the
+sandbox to a configured set of domains. agent-sandbox accepts open
+network as a <a href="../security/#accepted-trade-offs">documented trade-off</a>:
+agents need API access, and a workable allowlist that covers Anthropic,
+OpenAI, GitHub, package indexes, conda channels, and HPC-specific
+endpoints is non-trivial to maintain. The chaperon's UDS-over-bwrap
+pattern is the obvious architectural template if this is ever pursued,
+but it is <strong>not on the current roadmap</strong> — admins who want this today
+should layer nftables / cgroups-net at the host level (see
+<a href="../../admin/hardening/">Admin Hardening</a>).</p>
+<p><strong>Credential injection at the egress boundary.</strong> <code>nono</code> and <code>matchlock</code>
+keep API keys outside the sandbox and inject them at the proxy. Useful,
+but coupled to having a proxy in the first place; same status as above.</p>
+<p><strong>Network-namespace isolation as an opt-in profile.</strong> <code>matchlock</code> ships
+a <code>--no-network</code> mode and Codex CLI's bwrap mode unshares the network
+namespace by default. agent-sandbox does not isolate the network
+namespace today (sharing it is required for DNS / NSS / munge / Slurm in
+the bwrap and firejail backends). A profile that drops network for
+post-hoc analysis or offline review is a clean future addition that does
+not conflict with the existing posture, but is <strong>not on the roadmap</strong>.</p>
+<p><strong>Tamper-resistance messaging.</strong> <code>nono</code> foregrounds the property that
+Landlock rules cannot be widened by the sandboxed process. agent-sandbox
+already provides equivalent (or stronger) tamper-resistance with the
+bwrap backend — the agent runs in a separate user, mount, and PID
+namespace it cannot rejoin — but the security docs do not currently
+state this as a property of its own. A future docs pass should close
+that messaging gap.</p>
+<p><strong>Snapshot / restore and stateful resumption.</strong> Vercel Sandbox and
+Daytona check-point the agent's filesystem and dependencies so a session
+can resume after restart. agent-sandbox's threat model does not motivate
+this, and Apptainer already covers the reproducible-environment case on
+HPC. <strong>Out of scope by design</strong> — see
+<a href="../apptainer-comparison/">Sandbox vs. Apptainer</a> for the longer
+discussion of how the two complement each other.</p>
 <h2 id="bottom-line">Bottom line<a class="headerlink" href="#bottom-line" title="Permanent link">&para;</a></h2>
-<p>For <strong>AI agent containment on HPC</strong>, the sandbox provides stronger default isolation than Apptainer with less complexity. Apptainer's "integration over isolation" design means that a default container is barely more isolated than running directly on the host: it shares PID space, network, home directory, <code>/tmp</code>, and environment variables. Achieving comparable containment with Apptainer requires <code>--containall --cleanenv --pid</code> plus a custom seccomp profile, a configuration that most HPC users do not use and that breaks many workflows.</p>
-<p>The sandbox achieves this containment out of the box, with HPC-specific accommodations (munge passthrough, Slurm wrapping, supplementary groups, LDAP filtering) built in. With the bwrap backend (recommended), the attack surface is minimal: no setuid helper, no image parsing, no SIF verification code, and only 4 CVEs in a decade (none since 2020). The firejail backend provides comparable isolation but carries a worse CVE record than Apptainer itself (see <a href="#security-track-record">Security track record</a>).</p>
-<p>Neither tool is a complete solution. The sandbox does not isolate the network (an agent can exfiltrate data over HTTP or SSH), does not block <code>memfd_create</code> (needed by CUDA/PyTorch, also allowed by Docker's default seccomp), and its Slurm wrapping is a soft boundary. Apptainer shares all of these gaps and more. Both benefit from the admin hardening options described in <a href="../../admin/hardening/#summary">Admin Hardening</a>: dedicated accounts, network isolation, and audit logging close gaps that neither tool addresses alone. The trade-off between them is clear: the sandbox does not provide environment reproducibility, Apptainer does not provide agent containment, and each is the right tool for its purpose.</p>
+<p>For AI agent containment on shared HPC, agent-sandbox occupies a niche
+that no other open-source project surveyed targets directly: a
+process-level kernel-bind sandbox with a Slurm-aware proxy, suitable for
+multi-user clusters where containers need root and microVMs are
+operationally heavy. Within the kernel-bind cluster, peers have
+explored egress allowlists and credential proxies further than this
+project has; outside the cluster, microVM and gVisor offerings provide
+stronger isolation at the cost of HPC integration. Pick the layer that
+matches your threat model and your operational footprint — and read the
+<a href="../security/">Security model</a> and the per-backend
+<a href="../security/#known-limitations">Known Limitations</a> before deploying any
+of them.</p>
+<h2 id="survey-provenance">Survey provenance<a class="headerlink" href="#survey-provenance" title="Permanent link">&para;</a></h2>
+<p>Source for this comparison: an internal landscape survey conducted on
+<strong>2026-05-07</strong> against the v0.8.0 release, tracked at
+<a href="https://github.com/settylab/dotto-nexus/issues/99"><code>settylab/dotto-nexus#99</code></a>
+(private). The survey methodology, full candidate triage, and exclusion
+reasons live in that thread for forensic reference. This page is a
+distillation, not a copy — the comparison-table cells were verified
+against each project's primary documentation at the snapshot date. If
+you spot a stale cell, please open an issue.</p>
 
 
 
@@ -1547,7 +1399,7 @@
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../device-passthrough/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Device passthrough">
+          <a href="../apptainer-comparison/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Sandbox vs. Apptainer">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -1557,20 +1409,20 @@
                 Previous
               </span>
               <div class="md-ellipsis">
-                Device passthrough
+                Sandbox vs. Apptainer
               </div>
             </div>
           </a>
         
         
           
-          <a href="../landscape-comparison/" class="md-footer__link md-footer__link--next" aria-label="Next: Agent-sandboxing landscape">
+          <a href="../security/" class="md-footer__link md-footer__link--next" aria-label="Next: Security model">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Agent-sandboxing landscape
+                Security model
               </div>
             </div>
             <div class="md-footer__button md-icon">
