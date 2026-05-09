@@ -49,6 +49,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the credential-dir hide stays in effect when the config file is
   absent — sandbox-runtime#122/#211 shape (fail-closed reads, not
   silent fall-through to permissive defaults).
+- `test.sh` `S05` — regression case for the symlinked-ancestor
+  `BLOCKED_FILES` bypass. Proves the leaf is unreadable when the
+  agent accesses via the symlinked path.
+- `docs/reference/security.md` — new "Tamper resistance" section
+  documenting the no-in-process-bypass property: once the sandbox
+  is up, the agent inside cannot weaken isolation (no
+  `dangerouslyDisableSandbox`-style knob, irrevocable mount/PID/
+  seccomp/Landlock state). Names this as a deliberate design
+  property rather than an implementation detail. Surfaced by the
+  triage of `anthropic-experimental/sandbox-runtime` issues #13 /
+  #97 (`settylab/dotto-nexus#103`) where agents were instructed to
+  "retry with sandbox disabled" on permission denials.
+- `docs/reference/security.md` — new "Cooperative reinforcement"
+  section documenting the per-agent `agent.md` injection that
+  merges a Sandbox Integrity block into each agent's instruction
+  file at spawn time (`agents/<name>/overlay.sh`). Names this as
+  defense in depth on top of kernel-enforced isolation: a
+  cooperating agent stops wasting turns trying to "fix" denials,
+  and any contrary instruction becomes a recognizable prompt-
+  injection signal with a documented `logger`/mail response
+  recipe. Explicitly not a primary defense — the kernel layer
+  contains the sandbox; the injection is for normal operation
+  and observability.
+
+### Fixed
+
+- **bwrap: `BLOCKED_FILES` bypass when an ancestor is a symlink.**
+  Previously `backends/bwrap.sh` resolved the leaf via `readlink -f`
+  and bound `/dev/null` only on the resolved path. When a path
+  component lived inside a writable bind (e.g. `~/.claude` is in
+  `HOME_WRITABLE` and exists on the host as a symlink to
+  `~/dotfiles/claude/`), the agent could read or write the file via
+  the symlinked path because mount overlays are path-keyed, not
+  inode-keyed — the resolved-path mount never applied. Fix: bind
+  `/dev/null` at the literal leaf path in addition to the resolved
+  path. Both binds are emitted unless they collapse to the same
+  path. See `settylab/dotto-nexus#103` for the comparison report
+  that surfaced this gap.
 
 ## [0.8.0] - 2026-05-05
 

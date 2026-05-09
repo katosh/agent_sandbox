@@ -3248,6 +3248,43 @@ else
     skip "S04: BLOCKED_FILES has no effect on Landlock (no mount namespace)"
 fi
 
+# ── S05: Symlinked ancestor of a BLOCKED_FILES entry ──
+# When an ancestor of a BLOCKED_FILES entry is a symlink that lives
+# inside a writable bind (e.g. ~/dotfile-managed/.claude → real dir),
+# `readlink -f` on the leaf yields a different path than what the agent
+# accesses. Without a defense, the /dev/null overlay is mounted at the
+# resolved path and missed when the agent reads via the symlinked path
+# (mount overlays are path-keyed, not inode-keyed). bwrap.sh emits a
+# literal-path bind in addition to the resolved-path bind so the
+# overlay applies wherever the agent actually opens the file.
+if is_bwrap; then
+    local _ancestor_real="$PROJECT_DIR/.test-ancestor-real-$$"
+    local _ancestor_link="$PROJECT_DIR/.test-ancestor-link-$$"
+    mkdir -p "$_ancestor_real"
+    echo "SENSITIVE" > "$_ancestor_real/secret"
+    ln -snf "$_ancestor_real" "$_ancestor_link"
+    local _slink_anc_conf="$HOME/.config/agent-sandbox/conf.d/test-symlink-ancestor-$$.conf"
+    _TEST_TEMP_FILES+=("$_slink_anc_conf")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    # Block the file via the SYMLINKED parent path.
+    echo "BLOCKED_FILES+=( \"$_ancestor_link/secret\" )" > "$_slink_anc_conf"
+
+    if sandbox bash -c "cat '$_ancestor_link/secret' 2>&1; echo EXIT=\$?"; then
+        if echo "$OUTPUT" | grep -q "SENSITIVE"; then
+            fail "S05: BLOCKED_FILES bypassed via symlinked ancestor — secret leaked" "$OUTPUT"
+        else
+            pass "S05: Symlinked-ancestor BLOCKED_FILES read returns empty"
+        fi
+    else
+        pass "S05: Sandbox blocked symlinked-ancestor read (command failed)"
+    fi
+
+    rm -f "$_slink_anc_conf"
+    rm -rf "$_ancestor_real" "$_ancestor_link"
+else
+    skip "S05: Symlinked-ancestor BLOCKED_FILES test is bwrap-specific"
+fi
+
 # ── H01: Hardlink /etc/passwd into project dir ──
 local _hlink="$PROJECT_DIR/.test-passwd-hardlink-$$"
 if ln /etc/passwd "$_hlink" 2>/dev/null; then
