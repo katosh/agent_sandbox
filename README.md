@@ -16,7 +16,7 @@ Hides SSH keys, cloud credentials, GPG keys, and environment secrets from AI cod
 
 The agent-sandboxing field has converged into roughly six isolation layers — kernel-bind wrappers, OCI containers, gVisor, microVMs, WASM, and hosted SaaS. agent-sandbox sits in the small cluster of process-level kernel-bind wrappers (alongside Anthropic's `sandbox-runtime`, OpenAI Codex CLI's Linux sandbox, `nono`, `cco`, and `scode`) and is the **only project surveyed with first-class HPC/Slurm awareness**: the [chaperon proxy](https://katosh.github.io/agent_sandbox/reference/chaperon/) mediates `sbatch`, `srun`, `squeue`, `scancel`, `scontrol`, `sacct`, and `sacctmgr` so submissions made from inside the sandbox stay sandboxed on the compute node, with no path for an agent to escape via job submission.
 
-![Securing AI agents: agent-sandbox for HPC — overview of kernel-enforced FS isolation, automatic credential stealth, container-free containment, the Slurm chaperon proxy, and built-in agent profiles.](docs/assets/agent-sandbox.png)
+![Securing AI agents: agent-sandbox for HPC — overview of kernel-enforced FS isolation, automatic credential stealth, container-free containment, the Slurm chaperon proxy, and built-in agent profiles.](https://raw.githubusercontent.com/katosh/agent_sandbox/assets/agent-sandbox.png)
 
 Two structural strengths follow from the design:
 
