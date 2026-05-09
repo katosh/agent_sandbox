@@ -206,13 +206,48 @@ backend_prepare() {
 
     # Agent-specific file hiding (e.g., CLAUDE.md, AGENTS.md) is handled
     # by BLOCKED_FILES, populated from agents/*/config.conf by _apply_agent_profiles().
-
+    #
+    # Two binds per BLOCKED_FILES entry to close a symlink-bypass class:
+    #
+    #   1. The LITERAL path. Required when an ancestor of the BLOCKED_FILE
+    #      is a symlink that lives inside a writable bind. Concrete shape:
+    #      ~/.claude is in HOME_WRITABLE and exists on the host as a
+    #      symlink to ~/dotfiles/claude/. bwrap's `--bind ~/.claude
+    #      ~/.claude` follows the source symlink and surfaces the
+    #      resolved directory's contents at the literal path, so
+    #      ~/.claude/CLAUDE.md inside the sandbox is a real file dentry.
+    #      The literal-path mount overlays /dev/null exactly where the
+    #      agent opens the file. Without this bind, mount overlays are
+    #      path-keyed (not inode-keyed): a /dev/null mount at
+    #      ~/dotfiles/claude/CLAUDE.md does NOT apply when the agent
+    #      reaches the same inode via ~/.claude/CLAUDE.md, so the
+    #      BLOCKED_FILES rule was silently bypassed.
+    #
+    #   2. The RESOLVED path. Required when the BLOCKED_FILE itself is
+    #      a symlink (test.sh::S04). bwrap's ensure_file rejects S_IFLNK
+    #      destinations with ENOTSUP, so we cannot mount on the literal
+    #      symlink — readlink -f gives a real-file path bwrap can mount.
+    #      Read-via-symlink follows the symlink to the resolved path and
+    #      hits the /dev/null overlay there.
+    #
+    # Both binds are emitted unless they collapse to the same path. Two
+    # binds at the same destination are accepted by bwrap (later wins),
+    # but the duplicate is needless work — skip when identical. The
+    # literal bind is itself skipped when the leaf is a symlink, since
+    # bwrap rejects ensure_file on S_IFLNK; the resolved bind covers
+    # that case.
+    local _bf_literal _bf_resolved
     for blocked in "${BLOCKED_FILES[@]}"; do
         if [[ -e "$blocked" ]]; then
-            # Resolve symlinks — bwrap can't bind-mount over a symlink.
-            local _resolved
-            _resolved="$(readlink -f "$blocked")"
-            BWRAP_ARGS+=(--ro-bind /dev/null "$_resolved")
+            _bf_literal="$blocked"
+            _bf_resolved="$(readlink -f "$blocked")"
+
+            if [[ ! -L "$_bf_literal" ]]; then
+                BWRAP_ARGS+=(--ro-bind /dev/null "$_bf_literal")
+            fi
+            if [[ "$_bf_resolved" != "$_bf_literal" ]]; then
+                BWRAP_ARGS+=(--ro-bind /dev/null "$_bf_resolved")
+            fi
         fi
     done
 
