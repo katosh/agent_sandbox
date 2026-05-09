@@ -1572,6 +1572,11 @@
 <td><strong>Hard</strong> (bwrap/firejail) / <strong>None</strong> (Landlock) — see <a href="../../admin/hardening/">Admin Hardening §2</a></td>
 </tr>
 <tr>
+<td>Agent bypasses <code>BLOCKED_FILES</code> via symlinked ancestor</td>
+<td>bwrap binds <code>/dev/null</code> at both the literal and resolved leaf paths. The literal-path bind catches the case where a writable parent is a symlink on the host: mount overlays are path-keyed, so a /dev/null mount on the resolved path is missed when the agent opens the file via the symlinked path</td>
+<td><strong>Hard</strong> (bwrap) / Path-based (firejail) / N/A (Landlock — <code>BLOCKED_FILES</code> has no effect)</td>
+</tr>
+<tr>
 <td>SSH escape (if <code>~/.ssh</code> exposed)</td>
 <td>Not protected — sandbox does not restrict network</td>
 <td><strong>None</strong> — agent can SSH to localhost or other nodes to get an unsandboxed shell. <strong>Do not expose <code>~/.ssh</code></strong> unless you understand this risk.</td>
