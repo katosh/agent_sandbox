@@ -39,6 +39,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   tests use a `_SANDBOX_LIB_NO_INIT=1` test-harness seam in
   `sandbox-lib.sh` so they run without root or a deployed admin
   install.
+- `test.sh` `S05` — regression case for the symlinked-ancestor
+  `BLOCKED_FILES` bypass. Proves the leaf is unreadable when the
+  agent accesses via the symlinked path.
+
+### Fixed
+
+- **bwrap: `BLOCKED_FILES` bypass when an ancestor is a symlink.**
+  Previously `backends/bwrap.sh` resolved the leaf via `readlink -f`
+  and bound `/dev/null` only on the resolved path. When a path
+  component lived inside a writable bind (e.g. `~/.claude` is in
+  `HOME_WRITABLE` and exists on the host as a symlink to
+  `~/dotfiles/claude/`), the agent could read or write the file via
+  the symlinked path because mount overlays are path-keyed, not
+  inode-keyed — the resolved-path mount never applied. Fix: bind
+  `/dev/null` at the literal leaf path in addition to the resolved
+  path. Both binds are emitted unless they collapse to the same
+  path. See `settylab/dotto-nexus#103` for the comparison report
+  that surfaced this gap.
 
 ## [0.8.0] - 2026-05-05
 
