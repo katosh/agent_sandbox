@@ -39,6 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   tests use a `_SANDBOX_LIB_NO_INIT=1` test-harness seam in
   `sandbox-lib.sh` so they run without root or a deployed admin
   install.
+- `test.sh` — regression cases for failure modes documented by
+  `anthropic-experimental/sandbox-runtime` issues that don't
+  translate to AS today but should stay broken if the assumption
+  shifts. (1) `HOME_SEEDED_FILES (symlink)` proves a symlinked
+  `~/.gitconfig` is seeded by content (not by bind-mounting the
+  symlink, which fails on bwrap with ENOTSUP) — the
+  sandbox-runtime#185 shape. (2) Missing-SANDBOX_CONF probe asserts
+  the credential-dir hide stays in effect when the config file is
+  absent — sandbox-runtime#122/#211 shape (fail-closed reads, not
+  silent fall-through to permissive defaults).
 - `test.sh` `S05` — regression case for the symlinked-ancestor
   `BLOCKED_FILES` bypass. Proves the leaf is unreadable when the
   agent accesses via the symlinked path.

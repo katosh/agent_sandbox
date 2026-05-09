@@ -564,6 +564,41 @@ else
 fi
 rm -f "$_unset_test_conf"
 
+# ── Config: missing SANDBOX_CONF must NOT fall back to permissive ──
+# anthropic-experimental/sandbox-runtime#122 + #211: a typo'd
+# --settings flag silently fell back to a default config where
+# `denyRead: []` opened all reads. Network/write fail-closed, reads
+# fail-OPEN — invisibly. Verify the analogous AS path is closed:
+# pointing SANDBOX_CONF at a non-existent file must either error
+# with a clear message OR continue with the script-level defaults
+# (HOME_ACCESS=tmpwrite, HOME_READONLY/HOME_WRITABLE preserved) —
+# never a permissive "no restrictions" surface.
+#
+# The probe tests for the credential-dir hide (~/.ssh) which is
+# covered by both _HOME_ALWAYS_BLOCKED and the default tmpfs HOME.
+# A permissive fallback would expose ~/.ssh; a closed fallback hides
+# it.
+_missing_conf="$HOME/.config/agent-sandbox/__nonexistent-test-$$.conf"
+_TEST_TEMP_FILES+=("$_missing_conf")
+[[ ! -e "$_missing_conf" ]] || rm -f "$_missing_conf"
+_missing_raw=$(SANDBOX_CONF="$_missing_conf" "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+    --project-dir "$PROJECT_DIR" -- bash -c \
+    'ls "$HOME/.ssh/" >/dev/null 2>&1 && echo VISIBLE || echo BLOCKED' 2>&1)
+_missing_rc=$?
+if [[ $_missing_rc -ne 0 ]] && \
+   echo "$_missing_raw" | grep -qiE "no such file|does not exist|cannot find|not found"; then
+    pass "Missing SANDBOX_CONF: sandbox refuses to start with clear error (fail-closed)"
+elif [[ $_missing_rc -eq 0 ]] && \
+     echo "$_missing_raw" | grep -q "BLOCKED" && \
+     ! echo "$_missing_raw" | grep -q "VISIBLE"; then
+    pass "Missing SANDBOX_CONF: sandbox falls through to defaults, ~/.ssh stays hidden (fail-closed)"
+elif echo "$_missing_raw" | grep -q "VISIBLE"; then
+    fail "Missing SANDBOX_CONF leaked ~/.ssh — fallback is permissive (fail-OPEN)" "$_missing_raw"
+else
+    # Inconclusive — could not classify. Surface the output for diagnosis.
+    fail "Missing SANDBOX_CONF: unexpected behaviour" "rc=$_missing_rc out=$_missing_raw"
+fi
+
 # ── ALLOWED_PROJECT_PARENTS enforcement ──────────────────────────
 # sandbox-exec.sh must reject --project-dir paths that aren't under
 # any entry in ALLOWED_PROJECT_PARENTS (sandbox.conf:92-97). Build a
@@ -1103,6 +1138,68 @@ if [[ -f "$HOME/.gitconfig" ]]; then
     fi
 else
     skip "HOME_SEEDED_FILES tests — ~/.gitconfig not present on host"
+fi
+
+# ── HOME_SEEDED_FILES: symlinked source ──
+# anthropic-experimental/sandbox-runtime#185: bwrap fails to bind a
+# symlinked DANGEROUS_FILE because ensure_file rejects S_IFLNK
+# destinations with ENOTSUP. AS's seeding pipeline reads file
+# CONTENT via `cp -- "$_src" "$_staged"` (follows symlinks) and feeds
+# bytes to bwrap via `--file FD DEST` — the destination inside the
+# tmpfs HOME is a fresh regular file, never a symlink. Verify via a
+# fixture host where the seeded path is a symlink: content must be
+# present inside the sandbox, host file must remain unmodified after
+# in-sandbox writes.
+if is_bwrap; then
+    local _seed_link_dir=""
+    local _seed_link_target="$HOME/.config/agent-sandbox/test-seed-target-$$"
+    local _seed_orig_gitconfig=""
+    local _had_gitconfig=false
+    if [[ -f "$HOME/.gitconfig" && ! -L "$HOME/.gitconfig" ]]; then
+        # Stash the host's real .gitconfig so we can restore after.
+        _had_gitconfig=true
+        _seed_orig_gitconfig="$HOME/.gitconfig.test-backup-$$"
+        _TEST_TEMP_FILES+=("$_seed_orig_gitconfig")
+        cp -p "$HOME/.gitconfig" "$_seed_orig_gitconfig"
+
+        # Replace .gitconfig with a symlink to a target somewhere
+        # else on the host. The target's content holds a marker that
+        # MUST appear inside the sandbox.
+        local _seed_marker="seed-symlink-marker-$$"
+        printf '[seed-test]\n\tmarker = %s\n' "$_seed_marker" > "$_seed_link_target"
+        _TEST_TEMP_FILES+=("$_seed_link_target")
+        rm -f "$HOME/.gitconfig"
+        ln -s "$_seed_link_target" "$HOME/.gitconfig"
+
+        # Probe 1: marker visible inside sandbox via the seeded copy.
+        if sandbox bash -c "grep -F '$_seed_marker' \"\$HOME/.gitconfig\" >/dev/null 2>&1 && echo OK || echo FAIL"; then
+            if [[ "$OUTPUT" == "OK" ]]; then
+                pass "HOME_SEEDED_FILES (symlink): seeded content from symlink target is visible"
+            else
+                fail "HOME_SEEDED_FILES (symlink): symlinked source not seeded (sandbox-runtime #185 regression)" "$OUTPUT"
+            fi
+        fi
+
+        # Probe 2: in-sandbox writes don't reach the host symlink target.
+        local _target_md5_before
+        _target_md5_before="$(md5sum "$_seed_link_target" | awk '{print $1}')"
+        if sandbox bash -c 'echo "[evil]" >> "$HOME/.gitconfig"' 2>/dev/null; then
+            local _target_md5_after
+            _target_md5_after="$(md5sum "$_seed_link_target" | awk '{print $1}')"
+            if [[ "$_target_md5_before" == "$_target_md5_after" ]]; then
+                pass "HOME_SEEDED_FILES (symlink): host symlink target unchanged after in-sandbox write"
+            else
+                fail "HOME_SEEDED_FILES (symlink): in-sandbox write reached host symlink target — leak" \
+                     "before=$_target_md5_before after=$_target_md5_after"
+            fi
+        fi
+
+        # Restore the original .gitconfig
+        rm -f "$HOME/.gitconfig"
+        cp -p "$_seed_orig_gitconfig" "$HOME/.gitconfig"
+    else
+        skip "HOME_SEEDED_FILES (symlink): no plain ~/.gitconfig to swap for fixture"
+    fi
 fi
 
 echo ""
