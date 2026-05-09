@@ -154,6 +154,54 @@ The following are intentionally not blocked and will not be:
 
 **Accepted risks (all backends):** Fileless execution via `memfd_create` (needed by CUDA/PyTorch/JAX). `/proc/net` information disclosure (needed for network stack). Abstract Unix sockets accessible (shared network namespace required for DNS/NSS). See `pentest/` in the repository for detailed pentest findings.
 
+## Tamper resistance
+
+Once the sandbox is up, the agent inside it cannot weaken the
+isolation. There is **no in-process bypass** — no flag, no env var,
+no API surface that lets a sandboxed agent ask the harness to "retry
+without sandbox" or otherwise re-enter the host's view of the
+filesystem.
+
+This is not a configuration choice; it falls out of the architecture:
+
+- **One-shot wrapper.** `sandbox-exec.sh` invokes `bwrap` (or
+  `firejail`) once with a fixed argument list, then `exec`s the
+  user command. There is no long-lived helper to which the
+  sandboxed process can speak.
+- **Mount-namespace isolation is irrevocable for the sandboxed
+  PIDs.** The agent's `setns()` calls into a different mount
+  namespace are blocked by capability checks (`CAP_SYS_ADMIN` is
+  not held in the user namespace's parent).
+- **Seccomp filter cannot be widened** by the filtered process.
+  `seccomp(SECCOMP_SET_MODE_FILTER, ...)` calls from within only
+  add filters; removing or relaxing the existing filter is not
+  exposed by the kernel API.
+- **Landlock rules cannot be widened** for the same reason — the
+  Landlock LSM only narrows.
+- **No `dangerouslyDisableSandbox` flag.** The chaperon proxies
+  Slurm syscalls but does not honour any "skip sandbox" request.
+
+Practical consequence: when the agent inside the sandbox encounters
+a permission denial, the only recourse is to fail or surface the
+denial to its operator. It cannot reason its way around the
+boundary by toggling a runtime flag. Compare with sandboxes that
+expose an in-process bypass — `sandbox-runtime`'s
+[issue #97](https://github.com/anthropic-experimental/sandbox-runtime/issues/97)
+and [issue #13](https://github.com/anthropic-experimental/sandbox-runtime/issues/13)
+document agents being instructed to "immediately retry with
+sandbox disabled" on permission errors, turning the sandbox into a
+speed-bump. agent-sandbox has no analogous knob.
+
+What this does **not** cover:
+
+- Tampering with the wrapper scripts themselves between sessions.
+  An admin-mode install (`/app/lib/agent-sandbox/`) read-only-binds
+  the script tree so even a compromised user account cannot mutate
+  it; user-mode installs rely on filesystem permissions on the
+  install directory. See [Admin Hardening §2](../admin/hardening.md).
+- Bypasses outside the sandbox (e.g. an SSH escape via an exposed
+  `~/.ssh`). The sandbox does not restrict the network.
+
 ## Backend Comparison
 
 | Tool | Available? | Pros | Cons |
