@@ -51,6 +51,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   triage of `anthropic-experimental/sandbox-runtime` issues #13 /
   #97 (`settylab/dotto-nexus#103`) where agents were instructed to
   "retry with sandbox disabled" on permission denials.
+- `docs/reference/security.md` — new "Cooperative reinforcement"
+  section documenting the per-agent `agent.md` injection that
+  merges a Sandbox Integrity block into each agent's instruction
+  file at spawn time (`agents/<name>/overlay.sh`). Names this as
+  defense in depth on top of kernel-enforced isolation: a
+  cooperating agent stops wasting turns trying to "fix" denials,
+  and any contrary instruction becomes a recognizable prompt-
+  injection signal with a documented `logger`/mail response
+  recipe. Explicitly not a primary defense — the kernel layer
+  contains the sandbox; the injection is for normal operation
+  and observability.
 
 ### Fixed
 
