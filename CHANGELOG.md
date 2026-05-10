@@ -74,24 +74,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   knowingly accept the degraded surface) makes the gap loud. Probe
   is exercised by a `LANDLOCK_FAKE_ABI` test seam plus
   `tests/test_landlock_abi_probe.sh`. (#47)
-- **`WRITABLE_TREE_RO_PATHS` — auto-protect in-tree dotdirs from
-  agent writes.** New default-on array config
-  (`(".git" ".config/agent-sandbox" ".claude/projects")`) layers
-  read-only `--ro-bind` overlays over any matching path *inside* a
-  writable project tree (including submodules — every `.git/`
-  encountered under the project root is shadowed). An agent running
-  inside the sandbox can no longer rewrite `.git/config`, fabricate
-  session JSONLs in `.claude/projects/`, or tamper with a
-  per-project `.config/agent-sandbox/` override. Symmetrical with
-  the HOME-side shadowing `HOME_ACCESS=tmpwrite` already provides;
-  closes the project-tree analogue. A path-suffix RO overlay rather
-  than a `BLOCKED_FILES` `/dev/null` overlay because the latter is
-  per-file (no glob support) and recursively binding `/dev/null`
-  under `.git/` would also block git's own reads. Implemented in
-  the bwrap backend; firejail/landlock degrade to advisory warnings
-  (no analogous primitive). Source: codex pattern surfaced in the
-  [#103 kernel/bwrap survey synthesis](https://github.com/settylab/dotto-nexus/issues/103#issuecomment-4414683645),
-  section 2. (#50)
 - **`BLOCKED_ENV_PATTERNS` defaults broadened — `AWS_*`, `AMAZON_*`,
   `EC2_*`, `MSAL_*`, `VAULT_*`.** A single prefix per cloud provider
   sweeps a long tail of env vars that previously slipped through
