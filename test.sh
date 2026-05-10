@@ -640,6 +640,26 @@ fi
 
 echo ""
 
+# ── 1.5 Landlock ABI hard-requirement probe ──────────────────────
+# Regression test for the startup ABI floor. Uses LANDLOCK_FAKE_ABI
+# (test-only env override) so this works on any host, even ones
+# without Landlock at all.
+
+if is_landlock; then
+    if [[ -x "$SCRIPT_DIR/tests/test_landlock_abi_probe.sh" ]]; then
+        if bash "$SCRIPT_DIR/tests/test_landlock_abi_probe.sh" >/tmp/abi-probe.out 2>&1; then
+            pass "Landlock ABI hard-requirement probe (regression)"
+        else
+            fail "Landlock ABI hard-requirement probe (regression)" "$(cat /tmp/abi-probe.out)"
+        fi
+        rm -f /tmp/abi-probe.out
+    else
+        skip "tests/test_landlock_abi_probe.sh not present"
+    fi
+fi
+
+echo ""
+
 # ── 2. Filesystem isolation ──────────────────────────────────────
 
 echo "2. Filesystem isolation"
