@@ -1296,6 +1296,36 @@ if sandbox bash -c 'echo ${MY_APP_SECRET:-UNSET}'; then
 fi
 unset MY_APP_SECRET
 
+# Cloud-provider prefix wildcards (AWS_*, AMAZON_*, EC2_*, MSAL_*, VAULT_*).
+# These close the long tail of provider env vars beyond AWS_ACCESS_KEY_ID
+# and the *_TOKEN/*_SECRET globs (e.g. AWS_SECRET_ACCESS_KEY, AWS_PROFILE,
+# MSAL_CACHE_PATH, VAULT_ADDR). Inspired by bindsch/scode (scode:113-158).
+_cloud_provider_pre=(
+    AWS_SECRET_ACCESS_KEY=fake-aws-secret
+    AWS_PROFILE=fake-profile
+    AMAZON_ID=fake-amazon
+    EC2_KEYPAIR=fake-ec2
+    MSAL_CACHE_PATH=/tmp/fake-msal
+    VAULT_ADDR=https://vault.fake
+)
+for _kv in "${_cloud_provider_pre[@]}"; do
+    export "$_kv"
+done
+for _kv in "${_cloud_provider_pre[@]}"; do
+    _name="${_kv%%=*}"
+    if sandbox bash -c "echo \${${_name}:-UNSET}"; then
+        if [[ "$OUTPUT" == "UNSET" ]]; then
+            pass "cloud-provider prefix: $_name is blocked"
+        else
+            fail "cloud-provider prefix: $_name leaked into sandbox" "$OUTPUT"
+        fi
+    fi
+done
+for _kv in "${_cloud_provider_pre[@]}"; do
+    unset "${_kv%%=*}"
+done
+unset _cloud_provider_pre _kv _name
+
 # ALLOWED_ENV_VARS overrides pattern blocking
 _pattern_conf="$HOME/.config/agent-sandbox/conf.d/test-pattern-override-$$.conf"
 _TEST_TEMP_FILES+=("$_pattern_conf")
