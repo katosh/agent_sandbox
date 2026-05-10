@@ -1654,6 +1654,11 @@
 <td><strong>Hard</strong> (bwrap) / Path-based (firejail) / N/A (Landlock — <code>BLOCKED_FILES</code> has no effect)</td>
 </tr>
 <tr>
+<td>Agent silently rewrites in-tree <code>.git/</code>, <code>.config/agent-sandbox/</code>, or <code>.claude/projects/</code></td>
+<td><code>WRITABLE_TREE_RO_PATHS</code> re-overlays each matching descendant of a writable root as <code>--ro-bind</code> (bwrap) / <code>--read-only</code> (firejail). Defaults cover git state, the sandbox's own per-project config, and Claude Code session logs; nested matches (submodules) are picked up via a path-suffix <code>find -prune</code> walk</td>
+<td><strong>Hard</strong> (bwrap/firejail) / N/A (Landlock — additive rules cannot make a subdir read-only when its parent is writable; warning emitted)</td>
+</tr>
+<tr>
 <td>SSH escape (if <code>~/.ssh</code> exposed)</td>
 <td>Not protected — sandbox does not restrict network</td>
 <td><strong>None</strong> — agent can SSH to localhost or other nodes to get an unsandboxed shell. <strong>Do not expose <code>~/.ssh</code></strong> unless you understand this risk.</td>

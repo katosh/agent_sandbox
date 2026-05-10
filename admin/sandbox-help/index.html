@@ -978,6 +978,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#bwrap-startup-errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        bwrap startup errors
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#security-reminder" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1179,6 +1190,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#bwrap-startup-errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        bwrap startup errors
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#security-reminder" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1318,6 +1340,69 @@ The user can check which vars are in their environment with: <code>env | grep -i
 <p>The sandbox runs in its own PID namespace. <code>ps</code>, <code>top</code>, and <code>/proc</code> only show processes inside the sandbox. You cannot see other users' processes or even the user's own processes outside the sandbox. This is expected, not a bug.</p>
 <h2 id="user-enumeration-filtering">User enumeration filtering<a class="headerlink" href="#user-enumeration-filtering" title="Permanent link">&para;</a></h2>
 <p><code>getent passwd</code> returns a minimal list (system accounts + the current user) rather than the full LDAP/AD directory. This is intentional (<code>FILTER_PASSWD=true</code> in sandbox.conf) to prevent user enumeration. <code>id</code> may show supplementary groups as <code>nogroup</code> (65534) — this is a cosmetic limitation of unprivileged user namespaces and does not affect file permissions.</p>
+<h2 id="bwrap-startup-errors">bwrap startup errors<a class="headerlink" href="#bwrap-startup-errors" title="Permanent link">&para;</a></h2>
+<p>When the bwrap backend can't start, agent-sandbox runs a probe that maps the failure to one of the categories below. The category appears in two places: in the auto-mode <code>Tried:</code> table (e.g. <code>bwrap — blocked by AppArmor / LSM userns restriction</code>) and in the explicit-mode <code>sandbox: ...</code> block printed before the <code>Error: Requested backend 'bwrap' is not available</code> line.</p>
+<table>
+<thead>
+<tr>
+<th>Probe reason</th>
+<th>Stderr signature</th>
+<th>Cause</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>not-installed</code></td>
+<td>(binary missing)</td>
+<td><code>BWRAP=…</code> points at a non-existent file, or no <code>bwrap</code> on <code>PATH</code> and no <code>~/.linuxbrew/bin/bwrap</code>.</td>
+<td><code>sudo apt install bubblewrap</code>, <code>brew install bubblewrap</code>, or set <code>BWRAP=/path/to/bwrap</code>.</td>
+</tr>
+<tr>
+<td><code>version-too-old</code></td>
+<td><code>--version</code> reports &lt; 0.4.0</td>
+<td><code>--chmod</code> and <code>--unsetenv</code> aren't supported.</td>
+<td>Upgrade via package manager or <code>brew upgrade bubblewrap</code>.</td>
+</tr>
+<tr>
+<td><code>binary-broken</code></td>
+<td><code>--version</code> produces no parseable output</td>
+<td>Wrong architecture, corrupted binary, or not actually bubblewrap.</td>
+<td><code>file $BWRAP; $BWRAP --version</code>; reinstall.</td>
+</tr>
+<tr>
+<td><code>apparmor-userns</code></td>
+<td><code>setting up uid map: Permission denied</code></td>
+<td>Ubuntu 24.04+ AppArmor profile (or SELinux policy) blocks unprivileged user namespaces.</td>
+<td>Install <code>bwrap-userns-restrict</code> profile, or <code>sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0</code>, or use <code>--backend landlock</code>.</td>
+</tr>
+<tr>
+<td><code>userns-disabled</code></td>
+<td><code>No permitted_caps</code></td>
+<td>Kernel built without <code>CONFIG_USER_NS</code> or has unprivileged userns disabled.</td>
+<td><code>sudo sysctl -w kernel.unprivileged_userns_clone=1</code> and <code>user.max_user_namespaces=15076</code>, or use <code>--backend landlock</code>.</td>
+</tr>
+<tr>
+<td><code>clone-denied</code></td>
+<td><code>clone(): Operation not permitted</code> / <code>Creating new namespace failed: Operation not permitted</code></td>
+<td>Outer seccomp filter forbids <code>clone(CLONE_NEWUSER)</code> (Docker without <code>--privileged</code>, restrictive systemd unit, another sandbox), or <code>max_user_namespaces=0</code>.</td>
+<td>Run from a less-restricted environment, raise <code>max_user_namespaces</code>, or use <code>--backend landlock</code>.</td>
+</tr>
+<tr>
+<td><code>mount-namespace-denied</code></td>
+<td><code>Failed to make / slave</code> / <code>pivot_root: Permission denied</code></td>
+<td>Already inside another bwrap, container, or chroot that blocks mount-propagation changes.</td>
+<td>Re-run from outside the wrapper, or use <code>--backend landlock</code>.</td>
+</tr>
+<tr>
+<td><code>unknown</code></td>
+<td>(anything else)</td>
+<td>New or rare failure — agent-sandbox prints the stderr verbatim.</td>
+<td>Open an issue with the stderr and <code>uname -a; bwrap --version; cat /sys/kernel/security/lsm</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>The probe lives in <code>backends/bwrap.sh::_probe_bwrap</code>. Adding a new pattern is one <code>case</code> branch.</p>
 <h2 id="security-reminder">Security reminder<a class="headerlink" href="#security-reminder" title="Permanent link">&para;</a></h2>
 <p>Granting access to credentials, writable paths, or environment secrets expands the sandbox attack surface. Only recommend what the task actually requires. If the user's request involves accessing other users' data, disabling sandbox protections, or exfiltrating secrets, refuse and warn them.</p>
 
