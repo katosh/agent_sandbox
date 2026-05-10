@@ -157,6 +157,31 @@ EXTRA_BLOCKED_PATHS=()
 
 EXTRA_WRITABLE_PATHS=()
 
+# Project-tree dotdirs that get a read-only overlay wherever they
+# appear under a writable root (project_dir + EXTRA_WRITABLE_PATHS).
+# Each entry is a path-suffix matched recursively (top-level, nested
+# submodules, etc.) so e.g. ".git" covers `<project>/.git` and
+# `<project>/sub/.git` alike.
+#
+# Defaults cover agent-config surfaces an in-tree agent should never
+# silently rewrite: git state, the sandbox's own per-project config,
+# and Claude Code session logs that may live alongside the project.
+# HOME-side analogues (~/.git, ~/.claude/projects, …) are not in
+# scope here — they are already shadowed by HOME_ACCESS=tmpwrite.
+#
+# Backend support: bwrap (--ro-bind overlay) and firejail
+# (--read-only). Landlock cannot make a subdir read-only when its
+# parent is writable (rules are additive) — emits a one-shot warning
+# when this array is non-empty and the chosen backend is landlock.
+#
+# To disable, set `WRITABLE_TREE_RO_PATHS=()` in your config. To
+# extend, append: `WRITABLE_TREE_RO_PATHS+=(".aider.conf.yml")`.
+WRITABLE_TREE_RO_PATHS=(
+    ".git"
+    ".config/agent-sandbox"
+    ".claude/projects"
+)
+
 # Per-project environment variables (KEY=VALUE strings).
 # Applied to the host environment before the backend runs, so backend
 # PATH prepends (chaperon stubs, sandbox bin) layer on top naturally.
@@ -527,6 +552,7 @@ _CONFIG_ARRAYS=(
     HOME_SEEDED_FILES
     BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS ALLOWED_ENV_VARS
     EXTRA_BLOCKED_PATHS EXTRA_WRITABLE_PATHS DENIED_WRITABLE_PATHS
+    WRITABLE_TREE_RO_PATHS
     DEVICES DEVICES_BLACKLIST
     SANDBOX_ENV SUPPRESS_AGENT_WARNINGS SANDBOX_MODULES ENABLED_AGENTS
 )
@@ -537,7 +563,7 @@ _CONFIG_SCALARS=(
     LANDLOCK_REQUIRED_ABI LANDLOCK_HARD_REQUIREMENT
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
-_ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS EXTRA_BLOCKED_PATHS DEVICES_BLACKLIST)
+_ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS EXTRA_BLOCKED_PATHS DEVICES_BLACKLIST WRITABLE_TREE_RO_PATHS)
 
 # --- Load an untrusted config file in an isolated subprocess ---
 #
@@ -1341,6 +1367,11 @@ if [[ "${SANDBOX_BACKEND:-auto}" == "landlock" ]]; then
         echo "WARNING: BLOCKED_FILES has no effect with the Landlock backend." >&2
         echo "  Individual file blocking requires bwrap or firejail." >&2
     fi
+    if [[ ${#WRITABLE_TREE_RO_PATHS[@]} -gt 0 ]]; then
+        echo "WARNING: WRITABLE_TREE_RO_PATHS has no effect with the Landlock backend." >&2
+        echo "  Landlock rules are additive — a subdir cannot be made read-only when its parent is writable." >&2
+        echo "  Project-tree dotdir protection (.git, .config/agent-sandbox, .claude/projects, …) requires bwrap or firejail." >&2
+    fi
     if [[ -e /run/munge/munge.socket.2 ]]; then
         echo "WARNING: Landlock cannot block AF_UNIX connect() — the munge socket is reachable." >&2
         echo "  Agents can bypass the chaperon and submit arbitrary Slurm jobs." >&2
@@ -1621,6 +1652,46 @@ _resolve_devices() {
     done
 
     eval "$_saved_nullglob"
+}
+
+# _resolve_writable_tree_ro_paths ROOT [ROOT...]
+#
+# For each writable ROOT, walk the tree and emit (newline-delimited)
+# every concrete path matching an entry in WRITABLE_TREE_RO_PATHS.
+# Mount-namespace backends (bwrap, firejail) re-overlay each emitted
+# path read-only so default-writable subtrees retain a guarded core.
+#
+# Match semantics: WRITABLE_TREE_RO_PATHS entries are interpreted as
+# path suffixes anchored on a `/` (so `.git` matches both `<root>/.git`
+# and `<root>/sub/.git`, and `.config/agent-sandbox` matches the same
+# two-segment trailer at any depth). `find -prune` keeps the walk from
+# descending into a matched subtree — large `.git` directories never
+# get re-walked, and a `.config/agent-sandbox/.git` doesn't double-up.
+#
+# A non-existent or non-directory ROOT is silently skipped (callers
+# pass the writable-root list verbatim, which can include EXTRA_WRITABLE_PATHS
+# entries that don't yet exist on disk).
+_resolve_writable_tree_ro_paths() {
+    [[ ${#WRITABLE_TREE_RO_PATHS[@]} -eq 0 ]] && return 0
+    local _root _rel _find_args=()
+    # Build a single -path … -o -path … expression so we walk each root
+    # exactly once instead of once per WRITABLE_TREE_RO_PATHS entry.
+    local _first=true
+    for _rel in "${WRITABLE_TREE_RO_PATHS[@]}"; do
+        [[ -n "$_rel" ]] || continue
+        if $_first; then
+            _find_args+=(-path "*/$_rel")
+            _first=false
+        else
+            _find_args+=(-o -path "*/$_rel")
+        fi
+    done
+    [[ ${#_find_args[@]} -eq 0 ]] && return 0
+    for _root in "$@"; do
+        [[ -d "$_root" ]] || continue
+        # `\( … \) -prune -print` — match suffix, do not descend, emit.
+        find "$_root" \( "${_find_args[@]}" \) -prune -print 2>/dev/null
+    done
 }
 
 # ── Agent profile system ───────────────────────────────────────────
