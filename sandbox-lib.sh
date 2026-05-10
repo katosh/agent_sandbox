@@ -296,11 +296,10 @@ SUPPRESS_AGENT_WARNINGS=()
 
 BLOCKED_ENV_VARS=(
     # Specific names NOT caught by BLOCKED_ENV_PATTERNS globs.
-    # Names like GITHUB_TOKEN, OPENAI_API_KEY, AWS_SESSION_TOKEN, SSH_*, etc.
+    # Names like GITHUB_TOKEN, OPENAI_API_KEY, AWS_*, AZURE_*, SSH_*, etc.
     # are already matched by patterns — no need to list them here.
     "GITHUB_PAT"
     # Cloud & service credentials
-    "AWS_ACCESS_KEY_ID"
     "ST_AUTH" "SW2_URL"
     # Database credentials
     "DATABASE_URL" "PGPASSWORD" "MYSQL_PWD" "MONGO_URI"
@@ -316,18 +315,35 @@ BLOCKED_ENV_VARS=(
     "TMUX" "TMUX_PANE"
     # Note: vars matching BLOCKED_ENV_PATTERNS globs (SSH_*, *_TOKEN,
     # *_SECRET, *_PASSWORD, *_API_KEY, *_CREDENTIAL, *_SECRET_KEY,
-    # *_PRIVATE_KEY, DOCKER_*, CI_*, AZURE_*, GCP_*, etc.) are blocked
-    # automatically — do not duplicate them here.
+    # *_PRIVATE_KEY, AWS_*, AMAZON_*, EC2_*, AZURE_*, MSAL_*, GCP_*,
+    # VAULT_*, DOCKER_*, CI_*, etc.) are blocked automatically — do
+    # not duplicate them here.
 )
 
 # Credential-pattern globs: block env vars matching common credential naming
 # conventions. Configurable via sandbox.conf / user.conf (admin-enforced).
 # To let a specific variable through, add it to ALLOWED_ENV_VARS.
+#
+# Cloud-provider wildcards (AWS_*, AMAZON_*, EC2_*, MSAL_*, VAULT_*) borrow
+# the broad-prefix approach from bindsch/scode (scode:113-158); see
+# https://github.com/bindsch/scode for the upstream policy.  Using prefixes
+# instead of per-name entries closes the long tail of provider env vars
+# (AWS_SECRET_ACCESS_KEY, AWS_PROFILE, AWS_DEFAULT_REGION, MSAL_CACHE_PATH,
+# VAULT_ADDR, …) without requiring per-key opt-in.
 BLOCKED_ENV_PATTERNS=(
     "SSH_*"
     "*_TOKEN"  "*_SECRET"  "*_PASSWORD"  "*_CREDENTIAL"
     "*_API_KEY"  "*_SECRET_KEY"  "*_PRIVATE_KEY"
-    "AZURE_*"  "GCP_*"  "GCLOUD_*"  "GOOGLE_CLOUD_*"
+    # AWS / Amazon (scode:117 — full-prefix sweep for the long tail
+    # beyond AWS_ACCESS_KEY_ID and AWS_SESSION_TOKEN)
+    "AWS_*"  "AMAZON_*"  "EC2_*"
+    # Azure / Microsoft auth library
+    "AZURE_*"  "MSAL_*"
+    # Google Cloud Platform
+    "GCP_*"  "GCLOUD_*"  "GOOGLE_CLOUD_*"
+    # HashiCorp Vault — VAULT_TOKEN already caught by *_TOKEN; this
+    # also blocks VAULT_ADDR/VAULT_NAMESPACE which leak server topology.
+    "VAULT_*"
     "DOCKER_*"  "REGISTRY_*"
     "CI_*"  "GITLAB_*"  "JENKINS_*"  "BUILDKITE_*"  "CIRCLECI_*"
 )
