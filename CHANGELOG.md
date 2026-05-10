@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-10
+
+### Security
+
+- **bwrap: deny `ioctl(TIOCSTI)` and `ioctl(TIOCLINUX)` via seccomp
+  arg-inspection.** Closes the same-session keystroke-injection
+  primitive (CVE-2017-5226 family — TIOCSTI, CVE-2023-1523 —
+  TIOCLINUX). On every kernel that still permits these ioctls
+  (`CONFIG_LEGACY_TIOCSTI=y` LTS kernels before 6.2, and 6.2+ with
+  `dev.tty.legacy_tiocsti=1` active), a sandboxed agent sharing the
+  user's controlling pty could push attacker-chosen characters into
+  the outer shell's input queue with `ioctl(fd, TIOCSTI, byte)` —
+  bytes that execute at host privilege the moment the user touches
+  the terminal. The seccomp generator now folds an arg-inspection
+  chain into the `ioctl` syscall: loads the low 32 bits of
+  `args[1]`, masks for 32-bit cmd values (forecloses the high-bit
+  bypass class behind CVE-2019-10063), rejects the x32 ABI on
+  x86_64, and returns `EPERM` on TIOCSTI and TIOCLINUX cmds.
+  **Scope:** blocks the direct `ioctl(TIOCSTI)` primitive from
+  inside the sandbox. The cross-pane variant — a sandboxed process
+  using `tmux send-keys` to inject into a sibling tmux pane via the
+  user's tmux AF_UNIX socket — is a different attack class and is
+  outside this PR's scope. Source:
+  [`nikvdp/cco@9744b9f` `seccomp/tiocsti_filter.c`](https://github.com/nikvdp/cco/blob/9744b9fce8f8db1deae20be4dfe430b7a05c2f53/seccomp/tiocsti_filter.c)
+  ([`nikvdp/cco#14`](https://github.com/nikvdp/cco/pull/14)),
+  MIT-licensed; AS folds the same BPF shape into its existing Python
+  `generate-seccomp.py` rather than vendoring the C source. (#49)
+
 ### Added
 
 - **Probe-and-explain bwrap startup** — when the bwrap backend
@@ -19,38 +47,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   user staring at "no sandbox backend available" sees, for
   example, `bwrap — blocked by AppArmor / LSM userns restriction`
   rather than a generic `failed (check user namespace support)`.
-  Inspired by cco's `probe_linux_bwrap` /
-  `explain_linux_bwrap_failure` — closes the support loop today
-  routed through `docs/admin/sandbox-help.md` for users who can't
-  read dmesg. New section "bwrap startup errors" in the help doc
-  cross-references each pattern.
-
-### Changed
-
-- **Breaking (admin-mode only):** `ALLOWED_PROJECT_PARENTS` admin/user
-  merge is now **narrowing-only**. Previously the user config could
-  ADD project parents to admin's list (additive merge); now the user
-  can only NARROW admin's list. A user-supplied path is admissible
-  iff its canonical resolution (via `realpath`) is identical to or a
-  path-component subdir of the canonical resolution of one of admin's
-  allowed parents. Symlinks that escape admin's tree are rejected.
-  In absence of an admin specification we assume `/` (no narrowing),
-  preserving the user-only-install path. User-only installs without
-  an admin baseline are unaffected.
-- **Admin-config parse errors fail closed.** A malformed admin
-  `sandbox.conf` (syntax error, runtime error during source, or a
-  malformed `ALLOWED_PROJECT_PARENTS` — non-array, non-absolute paths,
-  command substitution) now refuses sandbox startup with a clear
-  error rather than falling through to a permissive default. The
-  missing-vs-malformed boundary is explicit: a missing admin file
-  defaults to `/`; a present-but-malformed admin file fails closed.
-- If the admin/user merge yields an empty `ALLOWED_PROJECT_PARENTS`
-  (e.g. the user requested only paths outside admin's tree, or
-  cleared the array), the sandbox refuses to start instead of
-  silently continuing with no admissible project locations.
-
-### Added
-
+  Closes the support loop today routed through
+  `docs/admin/sandbox-help.md` for users who can't read dmesg. New
+  section "bwrap startup errors" in the help doc cross-references
+  each pattern. Source:
+  [`nikvdp/cco@9744b9f` `cco:148-162`](https://github.com/nikvdp/cco/blob/9744b9fce8f8db1deae20be4dfe430b7a05c2f53/cco#L148-L162)
+  (commit
+  [`8c2cecf`](https://github.com/nikvdp/cco/commit/8c2cecfc89ea0ef8e0f55ad11b5c88f1815614a9)),
+  MIT-licensed; AS extends cco's 2-mode classifier (AppArmor uid-map
+  vs. first-stderr-line fallback) to 7-mode + unknown-pattern
+  fallback. (#48)
+- **Landlock ABI hard-requirement probe.** The Landlock helper now
+  refuses to start (default-on, knob-controlled) when the running
+  kernel's Landlock ABI is below what AS's policy relies on. ABI v1
+  (RHEL 8, Ubuntu 22.04 GA — kernel ~5.13–5.15) silently drops
+  `LANDLOCK_ACCESS_FS_REFER` (`rename`/`link` can cross sandbox rule
+  boundaries) and `LANDLOCK_ACCESS_FS_TRUNCATE` (`ftruncate(2)` on a
+  read-only mount succeeds even when `WRITE_FILE` is denied —
+  silent zeroing of files the operator believes are read-only); ABI
+  v2 (5.19–6.1) drops `TRUNCATE`. Previously the helper quietly
+  scaled the rights bitmask down to match the advertised ABI;
+  `--check` reported `landlock: ABI vN` and exited 0 regardless,
+  leaving admins on stale HPC nodes convinced their `--ro` mounts
+  were enforced when they weren't. New `LANDLOCK_HARD_REQUIREMENT`
+  knob (default `on`; set `off` for legacy-kernel sites that
+  knowingly accept the degraded surface) makes the gap loud. Probe
+  is exercised by a `LANDLOCK_FAKE_ABI` test seam plus
+  `tests/test_landlock_abi_probe.sh`. (#47)
+- **`WRITABLE_TREE_RO_PATHS` — auto-protect in-tree dotdirs from
+  agent writes.** New default-on array config
+  (`(".git" ".config/agent-sandbox" ".claude/projects")`) layers
+  read-only `--ro-bind` overlays over any matching path *inside* a
+  writable project tree (including submodules — every `.git/`
+  encountered under the project root is shadowed). An agent running
+  inside the sandbox can no longer rewrite `.git/config`, fabricate
+  session JSONLs in `.claude/projects/`, or tamper with a
+  per-project `.config/agent-sandbox/` override. Symmetrical with
+  the HOME-side shadowing `HOME_ACCESS=tmpwrite` already provides;
+  closes the project-tree analogue. A path-suffix RO overlay rather
+  than a `BLOCKED_FILES` `/dev/null` overlay because the latter is
+  per-file (no glob support) and recursively binding `/dev/null`
+  under `.git/` would also block git's own reads. Implemented in
+  the bwrap backend; firejail/landlock degrade to advisory warnings
+  (no analogous primitive). Source: codex pattern surfaced in the
+  [#103 kernel/bwrap survey synthesis](https://github.com/settylab/dotto-nexus/issues/103#issuecomment-4414683645),
+  section 2. (#50)
+- **`BLOCKED_ENV_PATTERNS` defaults broadened — `AWS_*`, `AMAZON_*`,
+  `EC2_*`, `MSAL_*`, `VAULT_*`.** A single prefix per cloud provider
+  sweeps a long tail of env vars that previously slipped through
+  the pattern list and were not in the explicit `BLOCKED_ENV_VARS`
+  array. Most importantly, `AWS_SECRET_ACCESS_KEY` (matched none of
+  the credential-suffix globs — `*_TOKEN`, `*_SECRET`, `*_API_KEY`
+  — and was absent from `BLOCKED_ENV_VARS`, which only carried
+  `AWS_ACCESS_KEY_ID` / `AWS_SESSION_TOKEN`); also `AWS_PROFILE`,
+  `AWS_DEFAULT_REGION`, `AMAZON_*`, `EC2_*`, `MSAL_*`,
+  `VAULT_ADDR`, `VAULT_NAMESPACE`. Probed against 33 representative
+  cloud-provider env vars on the unmodified defaults: 7 leaked
+  pre-patch, 0 post-patch. `ALLOWED_ENV_VARS` remains the per-key
+  opt-in escape hatch for benign vars (e.g. `AWS_DEFAULT_REGION`)
+  that a workflow legitimately needs inside the sandbox. Source:
+  [`bindsch/scode`](https://github.com/bindsch/scode) `scode:113-158`
+  env-scrub wildcard set — the `AWS_*` prefix is lifted from there;
+  `AMAZON_*`, `EC2_*`, `MSAL_*`, and `VAULT_*` are adjacent
+  expansions. (#46)
 - `test-admin-narrowing.sh` — unit tests for the narrowing merge,
   the missing-vs-malformed admin-config boundary, the `/foo` vs
   `/foobar` path-component trap, and symlink-escape rejection. The
@@ -90,6 +149,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   recipe. Explicitly not a primary defense — the kernel layer
   contains the sandbox; the injection is for normal operation
   and observability.
+
+### Changed
+
+- **Breaking (admin-mode only):** `ALLOWED_PROJECT_PARENTS` admin/user
+  merge is now **narrowing-only**. Previously the user config could
+  ADD project parents to admin's list (additive merge); now the user
+  can only NARROW admin's list. A user-supplied path is admissible
+  iff its canonical resolution (via `realpath`) is identical to or a
+  path-component subdir of the canonical resolution of one of admin's
+  allowed parents. Symlinks that escape admin's tree are rejected.
+  In absence of an admin specification we assume `/` (no narrowing),
+  preserving the user-only-install path. User-only installs without
+  an admin baseline are unaffected.
+- **Admin-config parse errors fail closed.** A malformed admin
+  `sandbox.conf` (syntax error, runtime error during source, or a
+  malformed `ALLOWED_PROJECT_PARENTS` — non-array, non-absolute paths,
+  command substitution) now refuses sandbox startup with a clear
+  error rather than falling through to a permissive default. The
+  missing-vs-malformed boundary is explicit: a missing admin file
+  defaults to `/`; a present-but-malformed admin file fails closed.
+- If the admin/user merge yields an empty `ALLOWED_PROJECT_PARENTS`
+  (e.g. the user requested only paths outside admin's tree, or
+  cleared the array), the sandbox refuses to start instead of
+  silently continuing with no admissible project locations.
 
 ### Fixed
 
