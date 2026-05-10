@@ -285,6 +285,30 @@ backend_prepare() {
         fi
     done
 
+    # Project-tree dotdir read-only overlays — re-bind any descendant
+    # listed in WRITABLE_TREE_RO_PATHS as --ro-bind so the agent cannot
+    # silently rewrite git state, the sandbox's own per-project config,
+    # or in-tree Claude session logs. bwrap is path-keyed and later
+    # mounts win, so the --ro-bind here overlays the writable --bind
+    # above for these specific subpaths only. `find -prune` keeps the
+    # walk shallow (we never descend into a matched subtree).
+    local _ro_match _ro_resolved
+    while IFS= read -r _ro_match; do
+        [[ -e "$_ro_match" ]] || continue
+        BWRAP_ARGS+=(--ro-bind "$_ro_match" "$_ro_match")
+        # Mirror the BLOCKED_FILES symlink-vs-resolved double-bind pattern
+        # (see comment block above): if the matched path itself is a
+        # symlink (e.g. a worktree gitfile pointing outside the project)
+        # also overlay the resolved target so reads via the link land
+        # on the read-only mount.
+        if [[ -L "$_ro_match" ]]; then
+            _ro_resolved="$(readlink -f "$_ro_match")"
+            if [[ -n "$_ro_resolved" && "$_ro_resolved" != "$_ro_match" && -e "$_ro_resolved" ]]; then
+                BWRAP_ARGS+=(--ro-bind "$_ro_resolved" "$_ro_resolved")
+            fi
+        fi
+    done < <(_resolve_writable_tree_ro_paths "$project_dir" "${EXTRA_WRITABLE_PATHS[@]}")
+
     # Mount /run as a tmpfs, then selectively bind only what's needed.
     # Mounting all of /run exposes D-Bus, systemd user sockets, and
     # containerd sockets — allowing sandbox escape via
