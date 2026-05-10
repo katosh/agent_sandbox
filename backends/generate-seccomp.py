@@ -5,8 +5,9 @@ Usage:
     generate-seccomp.py > /tmp/bpf.bin
 
 Generates a denylist BPF filter blocking dangerous syscalls (io_uring,
-userfaultfd, kexec) and writes raw struct sock_filter[] to stdout — the
-format expected by bwrap --seccomp FD (no sock_fprog header).
+userfaultfd, kexec) plus argument-filtered denials of ioctl(TIOCSTI)
+and ioctl(TIOCLINUX), and writes raw struct sock_filter[] to stdout —
+the format expected by bwrap --seccomp FD (no sock_fprog header).
 
 Supports x86_64 and aarch64.  Requires only the Python 3 standard library
 (struct module for byte packing).  The kernel requirement is seccomp-bpf
@@ -46,8 +47,19 @@ SECCOMP_RET_ALLOW = 0x7FFF0000
 SECCOMP_RET_ERRNO = 0x00050000  # | errno
 
 # struct seccomp_data { int nr; __u32 arch; __u64 instruction_pointer; __u64 args[6]; }
-SECCOMP_DATA_NR   = 0   # syscall number (offset 0)
-SECCOMP_DATA_ARCH = 4   # audit architecture (offset 4)
+SECCOMP_DATA_NR     = 0    # syscall number (offset 0)
+SECCOMP_DATA_ARCH   = 4    # audit architecture (offset 4)
+# args[0] starts at offset 16 (after nr+arch+instruction_pointer); each arg is u64.
+# We load the LOW 32 bits of an argument with BPF_LD|BPF_W|BPF_ABS at the arg's
+# byte offset on little-endian architectures (x86_64, aarch64-LE both qualify).
+# For ioctl, the cmd is the second arg (args[1]); the kernel signature is
+#   long sys_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg)
+# so cmd is a 32-bit value — the high 32 bits of args[1] are ignored by the
+# kernel, and reading only the low 32 bits via BPF_W is both sufficient and
+# unforgeable (a caller cannot pass cmd=0x1_0000_5412 and slip past the filter
+# while still hitting the TIOCSTI handler — the handler sees the truncated
+# 0x5412 too).
+SECCOMP_DATA_ARG1_LO = 24  # low 32 bits of args[1] on little-endian
 
 # --- Audit architecture constants ---
 # Source: linux/audit.h
@@ -130,6 +142,31 @@ AUDIT_ARCH_AARCH64 = 0xC00000B7
 #               file descriptors).  Requires CAP_SYS_PTRACE on cross-
 #               UID targets; same-UID inspection can be abused for
 #               kernel-pointer leaks.
+#
+# === ioctl(TIOCSTI / TIOCLINUX) — argument-filtered ===
+#
+# Not in _BLOCKED_SYSCALLS (which is a syscall-nr-only denylist);
+# ioctl itself is essential. We deny it only when args[1] == TIOCSTI
+# (0x5412) or TIOCLINUX (0x541C) — see _IOCTL_DENY_REQUESTS below.
+#
+# TIOCSTI ("terminal ioctl simulate input") pushes a byte into the
+# input queue of any tty the caller controls. Inside an agent
+# sandbox the controlling tty is typically the user's outer shell:
+# the sandboxed agent can therefore type commands the outer shell
+# will execute at host privilege as soon as the agent exits or the
+# user touches the terminal. CVE-2017-5226 (bwrap) and CVE-2023-1523
+# (Snap) both pivot on this.
+#
+# TIOCLINUX subcommand 12 ("paste selection") is a parallel surface
+# specific to Linux text consoles. Seccomp cannot inspect the
+# user-pointer argument, so we deny TIOCLINUX outright. Cost: zero
+# legitimate sandbox workload uses console-paste.
+#
+# Kernel-side mitigations exist (CONFIG_LEGACY_TIOCSTI=n in 6.2+,
+# dev.tty.legacy_tiocsti sysctl), but HPC sites commonly run older
+# LTS kernels (5.4, 5.15) where TIOCSTI is unconditionally allowed.
+# A seccomp denylist is portable defense-in-depth that does not
+# depend on the host kernel's config or sysctl.
 
 _BLOCKED_SYSCALLS = {
     AUDIT_ARCH_X86_64: {
@@ -152,6 +189,8 @@ _BLOCKED_SYSCALLS = {
         "acct":              163,   # syscall_64.tbl: 163 common acct
         "quotactl":          179,   # syscall_64.tbl: 179 common quotactl
         "kcmp":              312,   # syscall_64.tbl: 312 common kcmp
+        # --- Argument-filtered: ioctl (handled separately, not a flat deny) ---
+        "ioctl":              16,   # syscall_64.tbl: 16  common ioctl
     },
     AUDIT_ARCH_AARCH64: {
         # --- Original attack-surface trio ---
@@ -173,7 +212,28 @@ _BLOCKED_SYSCALLS = {
         "acct":               89,   # asm-generic/unistd.h: __NR_acct               89
         "quotactl":           60,   # asm-generic/unistd.h: __NR_quotactl           60
         "kcmp":              272,   # asm-generic/unistd.h: __NR_kcmp              272
+        # --- Argument-filtered: ioctl (handled separately, not a flat deny) ---
+        "ioctl":              29,   # asm-generic/unistd.h: __NR_ioctl              29
     },
+}
+
+# --- Argument-filtered ioctl requests ---
+#
+# Encoded as 16-bit constants in include/uapi/asm-generic/ioctls.h
+# (architecture-independent — the same numeric values apply on
+# x86_64, aarch64, and the other arches Linux supports):
+#   TIOCSTI    = 0x5412  (terminal ioctl simulate input)
+#   TIOCLINUX  = 0x541C  (Linux text-console multiplexer; subcmd 12
+#                         is the "paste selection" surface)
+# Source:
+#   https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/ioctls.h
+#
+# We compare against the LOW 32 bits of args[1] only — see
+# SECCOMP_DATA_ARG1_LO above for why that is both necessary and
+# sufficient.
+_IOCTL_DENY_REQUESTS = {
+    "TIOCSTI":   0x5412,
+    "TIOCLINUX": 0x541C,
 }
 
 
@@ -192,8 +252,37 @@ def build_seccomp_bpf(blocked, audit_arch):
 
     Returns bytes — no sock_fprog header, just the filter instructions.
     This is the format expected by bwrap --seccomp FD.
+
+    Filter layout (offsets are instruction indices used to derive jt/jf):
+        L_arch_load:    load arch
+        L_arch_check:   if arch != audit_arch -> ALLOW (next insn)
+        L_arch_allow:   RET ALLOW                     # arch mismatch passthrough
+        L_nr_load:      load syscall nr
+        L_flat[i]:      if nr == BLOCKED_FLAT[i] -> DENY     (one per syscall)
+        L_ioctl_check:  if nr == ioctl_nr        -> next; else ALLOW
+        L_arg1_load:    load args[1] low 32 bits
+        L_req[j]:       if arg1 == DENY_REQ[j]   -> DENY     (one per request)
+        L_default:      RET ALLOW                            # fall-through allow
+        L_deny:         RET ERRNO|EPERM
     """
     insns = b""
+
+    # Pull out ioctl from the flat list — it's handled with an arg check below.
+    flat_blocked = {name: nr for name, nr in blocked.items() if name != "ioctl"}
+    ioctl_nr = blocked.get("ioctl")  # may be None on arches we don't yet cover
+    deny_requests = list(_IOCTL_DENY_REQUESTS.values()) if ioctl_nr is not None else []
+
+    flat_list = list(flat_blocked.values())
+    n_flat = len(flat_list)
+    n_req  = len(deny_requests)
+
+    # Number of instructions between "after last flat check" and DENY:
+    #   L_ioctl_check (1) + L_arg1_load (1) + n_req checks + L_default (1)
+    # plus 1 because jt/jf are zero-relative offsets ("skip N, then exec").
+    after_flat_to_deny = (1 + 1 + n_req + 1) if ioctl_nr is not None else 1
+    # When ioctl is not present (future arch lacking the entry), the layout
+    # collapses to the original allow/deny pair; after_flat_to_deny = 1
+    # reproduces the legacy `remaining + 1` jt formula.
 
     # Load architecture
     insns += _bpf_stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_ARCH)
@@ -204,11 +293,25 @@ def build_seccomp_bpf(blocked, audit_arch):
     # Load syscall number
     insns += _bpf_stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR)
 
-    # For each blocked syscall: if match, jump to DENY
-    blocked_list = list(blocked.values())
-    for i, nr in enumerate(blocked_list):
-        remaining = len(blocked_list) - i - 1
-        insns += _bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, nr, remaining + 1, 0)
+    # For each flat-blocked syscall: if match, jump to DENY.
+    # jt = (instructions remaining in flat list) + (after_flat_to_deny).
+    for i, nr in enumerate(flat_list):
+        remaining = n_flat - i - 1
+        jt = remaining + after_flat_to_deny
+        insns += _bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, nr, jt, 0)
+
+    if ioctl_nr is not None:
+        # if nr == ioctl: fall through to arg1 load; else jump to L_default (ALLOW).
+        # Skip count for the "else": L_arg1_load + n_req checks = 1 + n_req insns.
+        insns += _bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, ioctl_nr, 0, 1 + n_req)
+        # Load low 32 bits of args[1] (ioctl request).
+        insns += _bpf_stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_ARG1_LO)
+        # For each denied request: if equal, jump to DENY.
+        # jt = (remaining req checks) + (L_default skip = 1).
+        for j, req in enumerate(deny_requests):
+            remaining_req = n_req - j - 1
+            jt = remaining_req + 1
+            insns += _bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, req, jt, 0)
 
     # Default: allow
     insns += _bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW)

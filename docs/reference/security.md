@@ -100,6 +100,17 @@ These are already rejected at the capability layer for unprivileged sandboxed pr
 | `quotactl` | Filesystem quota control. `CAP_SYS_ADMIN`-gated. |
 | `kcmp` | Compares two processes' kernel resources. `CAP_SYS_PTRACE`-gated across UIDs; same-UID inspection can be abused for kernel-pointer leaks. |
 
+### Argument-filtered ioctl denials (bwrap)
+
+Two `ioctl()` requests are denied via argument inspection in the BPF program — the syscall itself is essential, but these specific commands are an unbounded escape primitive on hosts that don't disable them at the kernel.
+
+| Request | Why denied |
+|---|---|
+| `TIOCSTI` (`0x5412`) — "terminal ioctl simulate input" | Pushes a byte into the input queue of any tty the caller controls. Inside the sandbox the controlling tty is typically the user's outer shell, so a sandboxed agent can type commands that the outer shell will execute at host privilege as soon as the agent exits or the user touches the terminal. CVE-2017-5226 (bwrap) and CVE-2023-1523 (Snap) both pivot on this. The kernel disables it under `CONFIG_LEGACY_TIOCSTI=n` (default in 6.2+) or `dev.tty.legacy_tiocsti=0`, but HPC sites commonly run older LTS kernels (5.4, 5.15) where it is unconditionally allowed. |
+| `TIOCLINUX` (`0x541C`) — Linux text-console multiplexer | Subcommand 12 ("paste selection") writes attacker-controlled bytes into the console's input queue, the same primitive as TIOCSTI but reachable through a different ioctl number. Seccomp cannot inspect the user-pointer subcommand argument, so the entire ioctl is denied. Cost: zero legitimate sandbox workload uses console-paste. |
+
+The bwrap backend's BPF filter compares the low 32 bits of `args[1]` (the ioctl `cmd`) against the two request constants and returns `EPERM`. Other ioctl requests (e.g. `TIOCGWINSZ`, `FIONBIO`, GPU ioctls) are unaffected. The landlock and firejail backends rely on their respective vendor seccomp profiles, which on recent versions also deny TIOCSTI; this filter ensures the bwrap backend matches that posture regardless of host kernel config.
+
 ### Landlock-only denials
 
 Because the Landlock backend has no PID namespace, two additional syscalls are denied so that a sandboxed agent cannot read or inject into sibling processes:
@@ -144,7 +155,7 @@ The following are intentionally not blocked and will not be:
 | Extraction of other users' data | Shared filesystems (NFS, Lustre) are restricted; only the project directory and specified paths are accessible | **Hard** — prevents credential-based access to other lab members' data |
 | Agent escapes via Unix sockets | Bwrap/firejail: filesystem-based sockets (e.g. `/run/dbus`) hidden by mount namespace, but abstract sockets (`@/org/...`) remain accessible (shared network namespace). **Landlock: full escape** — `systemd-run --user` executes outside sandbox (reads `~/.ssh`, `~/.aws`, submits Slurm jobs). See [Admin Hardening §0](../admin/hardening.md) | **Partial** (bwrap/firejail) / **None** (Landlock) |
 | Agent escapes via PID namespace | Bwrap/firejail: isolated PID namespace. Landlock: host PIDs visible | **Hard** (bwrap/firejail) / **None** (Landlock) |
-| Agent uses dangerous syscalls | All backends block `io_uring`, `userfaultfd`, `kexec`, plus a defense-in-depth set (`bpf`, `mount`, `umount2`, `pivot_root`, `reboot`, `swapon`/`swapoff`, `personality`, `acct`, `quotactl`, `kcmp`) via seccomp-bpf. See the [Seccomp Filter](#seccomp-filter) section above. | **Hard** — all backends |
+| Agent uses dangerous syscalls | All backends block `io_uring`, `userfaultfd`, `kexec`, plus a defense-in-depth set (`bpf`, `mount`, `umount2`, `pivot_root`, `reboot`, `swapon`/`swapoff`, `personality`, `acct`, `quotactl`, `kcmp`) via seccomp-bpf. Bwrap also denies `ioctl(TIOCSTI)` and `ioctl(TIOCLINUX)` via argument inspection — closes CVE-2017-5226 / CVE-2023-1523 keystroke-injection on the user's outer terminal. See the [Seccomp Filter](#seccomp-filter) section above. | **Hard** — all backends |
 | Slurm job bypasses sandbox | Chaperon proxy: munge socket blocked (bwrap/firejail), Slurm binaries blocked (bwrap/firejail), argument whitelisting, all jobs wrapped in sandbox-exec.sh. **Landlock: chaperon fully bypassable** — munge socket reachable and Slurm binaries callable | **Hard** (bwrap/firejail) / **None** (Landlock — use bwrap or firejail) |
 | Agent tampers with sandbox scripts | Read-only mount (bwrap/firejail) / not protected (Landlock) | **Hard** (bwrap/firejail) / **None** (Landlock) — see [Admin Hardening §2](../admin/hardening.md) |
 | Agent bypasses `BLOCKED_FILES` via symlinked ancestor | bwrap binds `/dev/null` at both the literal and resolved leaf paths. The literal-path bind catches the case where a writable parent is a symlink on the host: mount overlays are path-keyed, so a /dev/null mount on the resolved path is missed when the agent opens the file via the symlinked path | **Hard** (bwrap) / Path-based (firejail) / N/A (Landlock — `BLOCKED_FILES` has no effect) |
