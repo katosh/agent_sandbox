@@ -43,6 +43,41 @@ LANDLOCK_ACCESS_FS_MAKE_SYM    = 1 << 12
 LANDLOCK_ACCESS_FS_REFER       = 1 << 13
 # ABI v3
 LANDLOCK_ACCESS_FS_TRUNCATE    = 1 << 14
+# ABI v4 (network)
+LANDLOCK_ACCESS_NET_BIND_TCP    = 1 << 0
+LANDLOCK_ACCESS_NET_CONNECT_TCP = 1 << 1
+# ABI v5 (IOCTL on devices), v6 (signal scoping) — capabilities AS does
+# not currently rely on, listed here only for the capability summary
+# emitted by the ABI requirement probe.
+
+# Per-ABI capability summary: what NEW capabilities each version adds,
+# relative to the previous one. Used by _abi_requirement_check() to tell
+# the operator exactly which restrictions are silently dropped when the
+# kernel is older than the configured floor. Keep the strings short —
+# the messages get printed verbatim on stale-kernel systems.
+ABI_CAPABILITIES = {
+    1: ("filesystem rights: read/write/execute, dir traversal, "
+        "make/remove files & dirs"),
+    2: ("LANDLOCK_ACCESS_FS_REFER — block rename(2)/link(2) that crosses "
+        "rule boundaries (without it, an agent can move files OUT of a "
+        "writable area into a read-only one to escape later cleanup, or "
+        "shadow trusted binaries via hardlink)"),
+    3: ("LANDLOCK_ACCESS_FS_TRUNCATE — block ftruncate(2) on read-only "
+        "paths (without it, --ro mounts can be silently zeroed even "
+        "though WRITE_FILE is denied)"),
+    4: ("LANDLOCK_ACCESS_NET_BIND_TCP / _CONNECT_TCP — TCP socket "
+        "filtering (without it, network policies cannot be enforced "
+        "via Landlock)"),
+    5: ("LANDLOCK_ACCESS_FS_IOCTL_DEV — ioctl(2) restrictions on device "
+        "files"),
+    6: ("LANDLOCK_SCOPE_SIGNAL / LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET — "
+        "signal and abstract-Unix-socket scoping"),
+}
+
+# AS itself currently relies on capabilities up to ABI v3 (filesystem
+# rights + REFER + TRUNCATE). Network filtering (v4) is not yet wired
+# through landlock.sh; bump this when it is.
+DEFAULT_REQUIRED_ABI = 3
 
 LANDLOCK_RULE_PATH_BENEATH = 1
 
@@ -277,7 +312,22 @@ def libc():
 
 
 def detect_abi_version():
-    """Detect the Landlock ABI version supported by the running kernel."""
+    """Detect the Landlock ABI version supported by the running kernel.
+
+    May be overridden for tests by setting LANDLOCK_FAKE_ABI in the
+    environment to an integer (0 = unavailable). The override is
+    intentionally undocumented in user-facing help: it exists so the
+    ABI-requirement probe can be exercised on hosts whose actual
+    kernel ABI is fine.
+    """
+    fake = os.environ.get("LANDLOCK_FAKE_ABI")
+    if fake is not None:
+        try:
+            return int(fake)
+        except ValueError:
+            print(f"Warning: LANDLOCK_FAKE_ABI={fake!r} is not an integer, ignoring",
+                  file=sys.stderr)
+
     ret = libc().syscall(
         ctypes.c_long(SYS_LANDLOCK_CREATE_RULESET),
         ctypes.c_void_p(None),
@@ -292,6 +342,63 @@ def detect_abi_version():
             return 0
         return 0
     return ret
+
+
+def _abi_requirement_message(actual, required):
+    """Build a human-readable diagnostic for an ABI-version shortfall.
+
+    Lists every capability the operator's policy expected (i.e., introduced
+    at or below `required`) that this kernel does NOT advertise. The list is
+    the actionable bit — telling someone "ABI is too old" without naming
+    the missing capability is useless on an HPC node where the admin has
+    no path to a newer kernel and needs to know exactly which guarantee
+    they're losing.
+    """
+    missing = []
+    for v in range(actual + 1, required + 1):
+        cap = ABI_CAPABILITIES.get(v, f"capabilities introduced in ABI v{v}")
+        missing.append(f"  - v{v}: {cap}")
+
+    head = (
+        f"Landlock ABI v{actual} on this host; configured policy requires "
+        f"v{required}."
+    )
+    if actual == 0:
+        head = (
+            "Landlock is not available on this kernel "
+            f"(configured policy requires ABI v{required})."
+        )
+    body = "Silently dropped capabilities at this ABI level:\n" + "\n".join(missing)
+    hint = (
+        "Remediation: upgrade the kernel (Landlock v4 ships in 6.7+, v3 in "
+        "6.2+, v2 in 5.19+, v1 in 5.13+); or, to accept reduced isolation, "
+        "set LANDLOCK_HARD_REQUIREMENT=false (the warning will still print "
+        "but the sandbox will start). Use LANDLOCK_REQUIRED_ABI=N to lower "
+        "the floor if your policy genuinely doesn't need the missing "
+        "capabilities."
+    )
+    return f"{head}\n{body}\n{hint}"
+
+
+def check_abi_requirement(actual, required, hard, stream=sys.stderr):
+    """Enforce the configured ABI floor.
+
+    Returns True if the sandbox should continue, False if `hard` is true
+    and the floor isn't met (caller should exit non-zero). Always prints
+    the diagnostic when there's a shortfall — silent degradation is the
+    bug we're fixing.
+    """
+    if actual >= required:
+        return True
+
+    msg = _abi_requirement_message(actual, required)
+    if hard:
+        print(f"Error: {msg}", file=stream)
+        return False
+    print(f"WARNING: {msg}", file=stream)
+    print("WARNING: continuing with reduced isolation "
+          "(LANDLOCK_HARD_REQUIREMENT=false).", file=stream)
+    return True
 
 
 def get_handled_access(abi_version):
@@ -456,6 +563,25 @@ def main():
                         metavar="PATH", help="Read-write path")
     parser.add_argument("--no-seccomp", action="store_true",
                         help="Skip seccomp filter installation")
+    parser.add_argument(
+        "--required-abi", type=int, default=DEFAULT_REQUIRED_ABI,
+        metavar="N",
+        help=("Minimum Landlock ABI version the configured policy requires. "
+              "Below this, --hard-requirement (default) refuses to start; "
+              "--no-hard-requirement warns and continues. Default: "
+              f"{DEFAULT_REQUIRED_ABI}."),
+    )
+    hard_group = parser.add_mutually_exclusive_group()
+    hard_group.add_argument(
+        "--hard-requirement", dest="hard_requirement",
+        action="store_true", default=True,
+        help="Refuse to start if kernel ABI < --required-abi (default).",
+    )
+    hard_group.add_argument(
+        "--no-hard-requirement", dest="hard_requirement",
+        action="store_false",
+        help="Warn and continue if kernel ABI < --required-abi.",
+    )
     parser.add_argument("rest", nargs=argparse.REMAINDER)
 
     args = parser.parse_args()
@@ -465,8 +591,13 @@ def main():
         abi = detect_abi_version()
         if abi == 0:
             print("landlock: not available", file=sys.stderr)
+            # In check mode we still surface the ABI floor so installers can
+            # see WHY a host is rejected, even when there is no Landlock at all.
+            check_abi_requirement(abi, args.required_abi, args.hard_requirement)
             sys.exit(1)
         print(f"landlock: ABI v{abi}")
+        if not check_abi_requirement(abi, args.required_abi, args.hard_requirement):
+            sys.exit(1)
         sys.exit(0)
 
     # --- Parse command ---
@@ -480,6 +611,17 @@ def main():
     abi = detect_abi_version()
     if abi == 0:
         print("Error: Landlock is not available on this kernel", file=sys.stderr)
+        # Surface the configured floor too so the operator sees that the
+        # missing capability is what their policy actually requires —
+        # otherwise "not available" looks like a binary on/off.
+        check_abi_requirement(abi, args.required_abi, args.hard_requirement)
+        sys.exit(1)
+
+    # Refuse (or warn, if --no-hard-requirement) when the kernel's ABI is
+    # below the configured floor. Without this probe, AS silently runs
+    # with reduced rights on stale-kernel HPC nodes — admins think their
+    # policy is enforced when it isn't.
+    if not check_abi_requirement(abi, args.required_abi, args.hard_requirement):
         sys.exit(1)
 
     handled = get_handled_access(abi)

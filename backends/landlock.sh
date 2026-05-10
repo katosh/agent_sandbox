@@ -36,7 +36,29 @@ LANDLOCK_SANDBOX="$SANDBOX_DIR/backends/landlock-sandbox.py"
 backend_available() {
     [[ "$(uname -s)" == "Linux" ]] || return 1
     command -v python3 &>/dev/null || return 1
-    python3 "$LANDLOCK_SANDBOX" --check &>/dev/null
+    # Pass the ABI floor through to --check so a stale-kernel host is
+    # rejected at backend selection (auto-detect path), not silently
+    # selected and then bypassed at exec time.
+    local _check_args=()
+    _landlock_abi_args _check_args
+    python3 "$LANDLOCK_SANDBOX" --check "${_check_args[@]}" &>/dev/null
+}
+
+# Build --required-abi / --hard-requirement (or --no-hard-requirement)
+# CLI args from the LANDLOCK_REQUIRED_ABI / LANDLOCK_HARD_REQUIREMENT env
+# vars. Out-param is an array variable name.
+_landlock_abi_args() {
+    local -n _out=$1
+    if [[ -n "${LANDLOCK_REQUIRED_ABI:-}" ]]; then
+        _out+=(--required-abi "$LANDLOCK_REQUIRED_ABI")
+    fi
+    if [[ -n "${LANDLOCK_HARD_REQUIREMENT:-}" ]]; then
+        if _is_true "$LANDLOCK_HARD_REQUIREMENT"; then
+            _out+=(--hard-requirement)
+        else
+            _out+=(--no-hard-requirement)
+        fi
+    fi
 }
 
 backend_name() {
@@ -51,6 +73,12 @@ backend_prepare() {
 
     # --- Build landlock-sandbox.py arguments ---
     LANDLOCK_ARGS=()
+
+    # ABI floor: refuse (or warn) on stale-kernel hosts where the policy's
+    # expected capabilities aren't advertised. Defaults to hard / v3
+    # inside the helper; LANDLOCK_REQUIRED_ABI and LANDLOCK_HARD_REQUIREMENT
+    # in sandbox.conf override.
+    _landlock_abi_args LANDLOCK_ARGS
 
     # Read-only system mounts
     for mount in "${READONLY_MOUNTS[@]}"; do

@@ -281,6 +281,14 @@ SANDBOX_BACKEND="${SANDBOX_BACKEND:-}"
 # pids.max are the primary defense; this is a supplemental safeguard.
 SANDBOX_NPROC_LIMIT=""
 
+# Landlock ABI floor (landlock backend only). Empty means "use the
+# helper's defaults" — see backends/landlock-sandbox.py
+# DEFAULT_REQUIRED_ABI (currently 3) and the --hard-requirement flag
+# (default true). Set to a digit to override the floor; set the boolean
+# to true/false to override the start/refuse behavior.
+LANDLOCK_REQUIRED_ABI="${LANDLOCK_REQUIRED_ABI:-}"
+LANDLOCK_HARD_REQUIREMENT="${LANDLOCK_HARD_REQUIREMENT:-}"
+
 # Silence per-agent credential/path warnings emitted at startup. List
 # agent names (matching agents/<name>/ directories) or "all" to disable
 # every agent warning. Configurable via sandbox.conf.
@@ -510,6 +518,7 @@ _CONFIG_SCALARS=(
     SANDBOX_BACKEND PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD BIND_DEV_PTS
     SLURM_SCOPE HOME_ACCESS SANDBOX_QUIET SANDBOX_NPROC_LIMIT
     CHAPERON_LOG_LEVEL CHAPERON_LOG_RETAIN_DAYS
+    LANDLOCK_REQUIRED_ABI LANDLOCK_HARD_REQUIREMENT
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
 _ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS EXTRA_BLOCKED_PATHS DEVICES_BLACKLIST)
