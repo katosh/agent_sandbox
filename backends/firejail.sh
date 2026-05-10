@@ -314,24 +314,6 @@ backend_prepare() {
         fi
     done
 
-    # Project-tree dotdir read-only overlays — re-mark any descendant
-    # listed in WRITABLE_TREE_RO_PATHS as --read-only so the agent
-    # cannot silently rewrite git state, the sandbox's own per-project
-    # config, or in-tree Claude session logs. firejail applies the most
-    # restrictive directive last, so --read-only on a subpath of a
-    # --read-write parent restricts that subtree.
-    local _ro_match _ro_resolved
-    while IFS= read -r _ro_match; do
-        [[ -e "$_ro_match" ]] || continue
-        FIREJAIL_ARGS+=(--read-only="$_ro_match")
-        if [[ -L "$_ro_match" ]]; then
-            _ro_resolved="$(readlink -f "$_ro_match")"
-            if [[ -n "$_ro_resolved" && "$_ro_resolved" != "$_ro_match" && -e "$_ro_resolved" ]]; then
-                FIREJAIL_ARGS+=(--read-only="$_ro_resolved")
-            fi
-        fi
-    done < <(_resolve_writable_tree_ro_paths "$project_dir" "${EXTRA_WRITABLE_PATHS[@]}")
-
     # Agent-specific file hiding (e.g., CLAUDE.md, AGENTS.md) is handled
     # by BLOCKED_FILES, populated from agents/*/config.conf by _apply_agent_profiles().
 
