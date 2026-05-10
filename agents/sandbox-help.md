@@ -113,6 +113,23 @@ The sandbox runs in its own PID namespace. `ps`, `top`, and `/proc` only show pr
 
 `getent passwd` returns a minimal list (system accounts + the current user) rather than the full LDAP/AD directory. This is intentional (`FILTER_PASSWD=true` in sandbox.conf) to prevent user enumeration. `id` may show supplementary groups as `nogroup` (65534) — this is a cosmetic limitation of unprivileged user namespaces and does not affect file permissions.
 
+## bwrap startup errors
+
+When the bwrap backend can't start, agent-sandbox runs a probe that maps the failure to one of the categories below. The category appears in two places: in the auto-mode `Tried:` table (e.g. `bwrap — blocked by AppArmor / LSM userns restriction`) and in the explicit-mode `sandbox: ...` block printed before the `Error: Requested backend 'bwrap' is not available` line.
+
+| Probe reason | Stderr signature | Cause | Fix |
+|---|---|---|---|
+| `not-installed` | (binary missing) | `BWRAP=…` points at a non-existent file, or no `bwrap` on `PATH` and no `~/.linuxbrew/bin/bwrap`. | `sudo apt install bubblewrap`, `brew install bubblewrap`, or set `BWRAP=/path/to/bwrap`. |
+| `version-too-old` | `--version` reports < 0.4.0 | `--chmod` and `--unsetenv` aren't supported. | Upgrade via package manager or `brew upgrade bubblewrap`. |
+| `binary-broken` | `--version` produces no parseable output | Wrong architecture, corrupted binary, or not actually bubblewrap. | `file $BWRAP; $BWRAP --version`; reinstall. |
+| `apparmor-userns` | `setting up uid map: Permission denied` | Ubuntu 24.04+ AppArmor profile (or SELinux policy) blocks unprivileged user namespaces. | Install `bwrap-userns-restrict` profile, or `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, or use `--backend landlock`. |
+| `userns-disabled` | `No permitted_caps` | Kernel built without `CONFIG_USER_NS` or has unprivileged userns disabled. | `sudo sysctl -w kernel.unprivileged_userns_clone=1` and `user.max_user_namespaces=15076`, or use `--backend landlock`. |
+| `clone-denied` | `clone(): Operation not permitted` / `Creating new namespace failed: Operation not permitted` | Outer seccomp filter forbids `clone(CLONE_NEWUSER)` (Docker without `--privileged`, restrictive systemd unit, another sandbox), or `max_user_namespaces=0`. | Run from a less-restricted environment, raise `max_user_namespaces`, or use `--backend landlock`. |
+| `mount-namespace-denied` | `Failed to make / slave` / `pivot_root: Permission denied` | Already inside another bwrap, container, or chroot that blocks mount-propagation changes. | Re-run from outside the wrapper, or use `--backend landlock`. |
+| `unknown` | (anything else) | New or rare failure — agent-sandbox prints the stderr verbatim. | Open an issue with the stderr and `uname -a; bwrap --version; cat /sys/kernel/security/lsm`. |
+
+The probe lives in `backends/bwrap.sh::_probe_bwrap`. Adding a new pattern is one `case` branch.
+
 ## Security reminder
 
 Granting access to credentials, writable paths, or environment secrets expands the sandbox attack surface. Only recommend what the task actually requires. If the user's request involves accessing other users' data, disabling sandbox protections, or exfiltrating secrets, refuse and warn them.

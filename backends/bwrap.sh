@@ -16,36 +16,179 @@ _resolve_bwrap() {
     fi
 }
 
+# ── BEGIN probe section (probe-and-explain bwrap startup) ───────
+# Inspired by cco's probe_linux_bwrap + explain_linux_bwrap_failure.
+# Distinguishes "bwrap not installed" vs "AppArmor-blocked userns" vs
+# "kernel too old / userns disabled" without admins reading dmesg, so
+# the support loop currently routed through docs/admin/sandbox-help.md
+# can self-resolve.
+#
+# _probe_bwrap captures the smoke-test stderr and maps known signatures
+# to actionable explanations. On failure it sets three globals:
+#
+#   _BWRAP_PROBE_REASON   — token for callers (one of: not-installed,
+#                           version-too-old, binary-broken,
+#                           apparmor-userns, userns-disabled,
+#                           clone-denied, unknown)
+#   _BWRAP_PROBE_MESSAGE  — multi-line, user-facing explanation
+#   _BWRAP_PROBE_STDERR   — raw stderr from the failing invocation
+#
+# Auto mode keeps the existing silent-fallthrough behaviour; explicit
+# mode (SANDBOX_BACKEND=bwrap) prints the explanation. detect_backend
+# in sandbox-lib.sh reads $_BWRAP_PROBE_REASON to render a specific
+# bwrap line in the auto-mode "no backend available" diagnostic.
+
+_probe_bwrap() {
+    _BWRAP_PROBE_REASON=
+    _BWRAP_PROBE_MESSAGE=
+    _BWRAP_PROBE_STDERR=
+    _resolve_bwrap
+
+    if [[ ! -x "${BWRAP:-}" ]]; then
+        _BWRAP_PROBE_REASON=not-installed
+        _BWRAP_PROBE_MESSAGE="bwrap is not installed (looked at: ${BWRAP:-(unset)}).
+  Install via your distribution package manager:
+    sudo apt install bubblewrap        # Debian/Ubuntu
+    sudo dnf install bubblewrap        # Fedora/RHEL
+    brew install bubblewrap            # user-local, no root needed
+  Or set BWRAP=/path/to/bwrap to point at an existing binary."
+        return 1
+    fi
+
+    local _ver _major _minor _patch
+    _ver=$("$BWRAP" --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+') || {
+        _BWRAP_PROBE_REASON=binary-broken
+        _BWRAP_PROBE_MESSAGE="$BWRAP --version did not produce parseable output.
+  The binary may be corrupted, the wrong architecture, or not actually
+  bubblewrap. Try: file '$BWRAP'  and  '$BWRAP' --version"
+        return 1
+    }
+    IFS='.' read -r _major _minor _patch <<< "$_ver"
+    if (( _major == 0 && _minor < 4 )); then
+        _BWRAP_PROBE_REASON=version-too-old
+        _BWRAP_PROBE_MESSAGE="bwrap $_ver at $BWRAP is too old.
+  agent-sandbox needs ≥ 0.4.0 for --chmod and --unsetenv.
+  Upgrade via your package manager, or: brew upgrade bubblewrap"
+        return 1
+    fi
+
+    # Smoke test: can bwrap create an unprivileged user namespace here?
+    # Capture stderr so we can fingerprint the failure mode.
+    local _smoke_stderr _exit
+    _smoke_stderr=$("$BWRAP" --ro-bind / / true 2>&1 >/dev/null) && return 0
+    _exit=$?
+    _BWRAP_PROBE_STDERR="$_smoke_stderr"
+
+    # Pattern matchers run against bwrap's canonical English stderr.
+    # Order matters: AppArmor's "Permission denied" is more specific than
+    # the generic "Operation not permitted" of a disabled userns.
+    case "$_smoke_stderr" in
+        *"setting up uid map: Permission denied"*)
+            _BWRAP_PROBE_REASON=apparmor-userns
+            _BWRAP_PROBE_MESSAGE="bwrap $_ver was blocked while writing /proc/self/uid_map.
+  This is the canonical signature of an LSM (AppArmor on Ubuntu 24.04+,
+  or a SELinux policy) restricting unprivileged user namespaces.
+
+  Diagnose:
+    sysctl kernel.apparmor_restrict_unprivileged_userns   # 1 = blocked
+    journalctl -k --grep=apparmor | tail                  # last DENIED events
+
+  Fix (pick one, in order of preference):
+    1) Install an AppArmor profile that permits bwrap (Ubuntu 24.04+):
+         sudo cp /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \\
+                 /etc/apparmor.d/
+         sudo systemctl reload apparmor
+    2) Disable the restriction host-wide (lowers host security):
+         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+    3) Fall back to a backend that doesn't need unprivileged userns:
+         sandbox-exec.sh --backend landlock -- ..."
+            ;;
+        *"No permitted_caps"*)
+            _BWRAP_PROBE_REASON=userns-disabled
+            _BWRAP_PROBE_MESSAGE="bwrap $_ver reports 'No permitted_caps' — it has no capabilities
+  to set up the new namespace. The kernel either lacks CONFIG_USER_NS
+  or has unprivileged user namespaces disabled.
+
+  Diagnose:
+    sysctl kernel.unprivileged_userns_clone   # Debian-family knob
+    cat /proc/sys/user/max_user_namespaces    # 0 = userns disabled
+    uname -r                                  # need ≥ 3.8 for userns
+
+  Fix (root required):
+    sudo sysctl -w kernel.unprivileged_userns_clone=1
+    sudo sysctl -w user.max_user_namespaces=15076
+  If neither knob exists, the kernel was built without CONFIG_USER_NS;
+  fall back to: sandbox-exec.sh --backend landlock -- ..."
+            ;;
+        *"setting up uid map: Operation not permitted"*|\
+        *"creating new user namespace: Operation not permitted"*|\
+        *"Creating new namespace failed: Operation not permitted"*|\
+        *"clone: Operation not permitted"*|\
+        *"clone(): Operation not permitted"*)
+            _BWRAP_PROBE_REASON=clone-denied
+            _BWRAP_PROBE_MESSAGE="bwrap $_ver could not create the new namespace (EPERM).
+  Likely causes:
+    • A seccomp filter from the launching process forbids clone/unshare
+      (running inside Docker without --privileged, restrictive systemd
+      unit, or another sandbox).
+    • /proc/sys/user/max_user_namespaces is 0.
+    • Kernel built without CONFIG_USER_NS.
+
+  Diagnose:
+    cat /proc/sys/user/max_user_namespaces
+    cat /proc/self/status | grep -E 'Seccomp|CapEff'
+
+  Fix: run from a less-restricted environment, raise max_user_namespaces,
+  or fall back to: sandbox-exec.sh --backend landlock -- ..."
+            ;;
+        *"Failed to make / slave"*|\
+        *"Can't make mount /"*"private"*|\
+        *"pivot_root"*"Permission denied"*)
+            _BWRAP_PROBE_REASON=mount-namespace-denied
+            _BWRAP_PROBE_MESSAGE="bwrap $_ver could not set up its mount namespace.
+  This typically means agent-sandbox is being run inside another
+  mount-restricted environment — another bwrap, an unprivileged
+  container, or a chroot — that blocks the propagation changes
+  bwrap needs.
+
+  If this is intentional (developing agent-sandbox itself from
+  inside the sandbox): re-run from outside any wrapper.
+  Otherwise: sandbox-exec.sh --backend landlock -- ..."
+            ;;
+        *)
+            _BWRAP_PROBE_REASON=unknown
+            local _stderr_indented
+            _stderr_indented=$(printf '    %s\n' "${_smoke_stderr:-(empty stderr)}")
+            _BWRAP_PROBE_MESSAGE="bwrap $_ver smoke test failed (exit $_exit) with an unrecognised
+  signature. Raw stderr:
+$_stderr_indented
+  See docs/admin/sandbox-help.md → \"bwrap startup errors\" for the
+  full mapping of known patterns. If your case isn't covered, please
+  open an issue with the stderr verbatim and the output of:
+    uname -a; '$BWRAP' --version; cat /sys/kernel/security/lsm"
+            ;;
+    esac
+    return 1
+}
+
+# ── END probe section ───────────────────────────────────────────
+
 # ── Backend interface ────────────────────────────────────────────
 
 backend_available() {
-    _resolve_bwrap
-    [[ -x "${BWRAP:-}" ]] || return 1
-
-    # Minimum version: 0.4.0 (for --chmod, --unsetenv)
-    local _ver
-    _ver=$("$BWRAP" --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+') || return 1
-    local _major _minor _patch
-    IFS='.' read -r _major _minor _patch <<< "$_ver"
-    if (( _major == 0 && _minor < 4 )); then
-        return 1
+    if _probe_bwrap; then
+        return 0
     fi
 
-    # Quick smoke test: can bwrap actually create a user namespace?
-    if ! "$BWRAP" --ro-bind / / true 2>/dev/null; then
-        # In auto mode, detect_backend silently falls through to the next
-        # backend — a noisy warning here would confuse users who end up on
-        # a working landlock/firejail backend. Only diagnose when the user
-        # explicitly requested bwrap.
-        if [[ "${SANDBOX_BACKEND:-auto}" != "auto" ]]; then
-            if sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null | grep -q 1; then
-                echo "sandbox: bwrap $_ver found but blocked by AppArmor userns restriction." >&2
-                echo "  On Ubuntu 24.04+, bwrap needs an AppArmor profile to create user namespaces." >&2
-                echo "  Ask your admin to install a profile at /etc/apparmor.d/bwrap" >&2
-            fi
-        fi
-        return 1
+    # Auto mode: silent — detect_backend renders one line via
+    # $_BWRAP_PROBE_REASON in the consolidated diagnostic, so a noisy
+    # warning here would confuse users who end up on a working
+    # landlock/firejail backend.
+    # Explicit mode (SANDBOX_BACKEND=bwrap): print the full explanation.
+    if [[ "${SANDBOX_BACKEND:-auto}" != "auto" && -n "${_BWRAP_PROBE_MESSAGE:-}" ]]; then
+        echo "sandbox: ${_BWRAP_PROBE_MESSAGE}" >&2
     fi
+    return 1
 }
 
 backend_name() {
