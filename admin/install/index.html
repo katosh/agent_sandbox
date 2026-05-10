@@ -1934,6 +1934,9 @@
 <li>
 <p><strong>Defense-in-depth set</strong> — <code>bpf</code>, <code>mount</code>, <code>umount2</code>, <code>pivot_root</code>, <code>reboot</code>, <code>swapon</code>/<code>swapoff</code>, <code>personality</code>, <code>acct</code>, <code>quotactl</code>, <code>kcmp</code>. Each of these is already rejected at the capability layer for an unprivileged sandboxed process; denying them at the seccomp layer too is belt-and-suspenders in case a kernel bug or misconfiguration ever leaks the gating capability. Zero observable effect on HPC/ML workloads — see <a href="../../reference/security/#seccomp-filter">SECURITY.md §Seccomp Filter</a> for the per-syscall justification.</p>
 </li>
+<li>
+<p><strong>Argument-filtered ioctl denials (bwrap)</strong> — <code>ioctl(TIOCSTI)</code> and <code>ioctl(TIOCLINUX)</code>. The BPF program inspects the ioctl <code>cmd</code> argument and returns <code>EPERM</code> for the keystroke-injection requests that drove CVE-2017-5226 (bwrap) and CVE-2023-1523 (Snap). Other ioctl requests (<code>TIOCGWINSZ</code>, <code>FIONBIO</code>, GPU ioctls, …) are unaffected. See <a href="../../reference/security/#argument-filtered-ioctl-denials-bwrap">SECURITY.md §Argument-filtered ioctl denials</a> for detail.</p>
+</li>
 </ol>
 <p>The Landlock backend additionally denies <code>ptrace</code> and <code>process_vm_readv</code>/<code>writev</code> because it has no PID namespace to prevent sibling-process inspection. bwrap and firejail rely on PID namespacing for that.</p>
 <table>
@@ -2027,6 +2030,11 @@
 <td><code>kexec_load</code> / <code>kexec_file_load</code></td>
 <td><code>no_new_privs</code> (requires <code>CAP_SYS_BOOT</code>)</td>
 <td>None — already ineffective without capabilities</td>
+</tr>
+<tr>
+<td><code>ioctl(TIOCSTI)</code> / <code>ioctl(TIOCLINUX)</code></td>
+<td>Kernel <code>CONFIG_LEGACY_TIOCSTI=n</code> (6.2+) or <code>dev.tty.legacy_tiocsti=0</code> — but only on opted-in hosts; LTS HPC kernels (5.4, 5.15) leave it open</td>
+<td>None — no legitimate workload simulates terminal input or pastes from the Linux console</td>
 </tr>
 </tbody>
 </table>

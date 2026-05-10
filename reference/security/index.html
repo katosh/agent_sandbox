@@ -825,6 +825,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#argument-filtered-ioctl-denials-bwrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Argument-filtered ioctl denials (bwrap)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#landlock-only-denials" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1236,6 +1247,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#argument-filtered-ioctl-denials-bwrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Argument-filtered ioctl denials (bwrap)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#landlock-only-denials" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1478,6 +1500,27 @@
 </tr>
 </tbody>
 </table>
+<h3 id="argument-filtered-ioctl-denials-bwrap">Argument-filtered ioctl denials (bwrap)<a class="headerlink" href="#argument-filtered-ioctl-denials-bwrap" title="Permanent link">&para;</a></h3>
+<p>Two <code>ioctl()</code> requests are denied via argument inspection in the BPF program — the syscall itself is essential, but these specific commands are an unbounded escape primitive on hosts that don't disable them at the kernel.</p>
+<table>
+<thead>
+<tr>
+<th>Request</th>
+<th>Why denied</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TIOCSTI</code> (<code>0x5412</code>) — "terminal ioctl simulate input"</td>
+<td>Pushes a byte into the input queue of any tty the caller controls. Inside the sandbox the controlling tty is typically the user's outer shell, so a sandboxed agent can type commands that the outer shell will execute at host privilege as soon as the agent exits or the user touches the terminal. CVE-2017-5226 (bwrap) and CVE-2023-1523 (Snap) both pivot on this. The kernel disables it under <code>CONFIG_LEGACY_TIOCSTI=n</code> (default in 6.2+) or <code>dev.tty.legacy_tiocsti=0</code>, but HPC sites commonly run older LTS kernels (5.4, 5.15) where it is unconditionally allowed.</td>
+</tr>
+<tr>
+<td><code>TIOCLINUX</code> (<code>0x541C</code>) — Linux text-console multiplexer</td>
+<td>Subcommand 12 ("paste selection") writes attacker-controlled bytes into the console's input queue, the same primitive as TIOCSTI but reachable through a different ioctl number. Seccomp cannot inspect the user-pointer subcommand argument, so the entire ioctl is denied. Cost: zero legitimate sandbox workload uses console-paste.</td>
+</tr>
+</tbody>
+</table>
+<p>The bwrap backend's BPF filter compares the low 32 bits of <code>args[1]</code> (the ioctl <code>cmd</code>) against the two request constants and returns <code>EPERM</code>. Other ioctl requests (e.g. <code>TIOCGWINSZ</code>, <code>FIONBIO</code>, GPU ioctls) are unaffected. The landlock and firejail backends rely on their respective vendor seccomp profiles, which on recent versions also deny TIOCSTI; this filter ensures the bwrap backend matches that posture regardless of host kernel config.</p>
 <h3 id="landlock-only-denials">Landlock-only denials<a class="headerlink" href="#landlock-only-denials" title="Permanent link">&para;</a></h3>
 <p>Because the Landlock backend has no PID namespace, two additional syscalls are denied so that a sandboxed agent cannot read or inject into sibling processes:</p>
 <ul>
@@ -1592,7 +1635,7 @@
 </tr>
 <tr>
 <td>Agent uses dangerous syscalls</td>
-<td>All backends block <code>io_uring</code>, <code>userfaultfd</code>, <code>kexec</code>, plus a defense-in-depth set (<code>bpf</code>, <code>mount</code>, <code>umount2</code>, <code>pivot_root</code>, <code>reboot</code>, <code>swapon</code>/<code>swapoff</code>, <code>personality</code>, <code>acct</code>, <code>quotactl</code>, <code>kcmp</code>) via seccomp-bpf. See the <a href="#seccomp-filter">Seccomp Filter</a> section above.</td>
+<td>All backends block <code>io_uring</code>, <code>userfaultfd</code>, <code>kexec</code>, plus a defense-in-depth set (<code>bpf</code>, <code>mount</code>, <code>umount2</code>, <code>pivot_root</code>, <code>reboot</code>, <code>swapon</code>/<code>swapoff</code>, <code>personality</code>, <code>acct</code>, <code>quotactl</code>, <code>kcmp</code>) via seccomp-bpf. Bwrap also denies <code>ioctl(TIOCSTI)</code> and <code>ioctl(TIOCLINUX)</code> via argument inspection — closes CVE-2017-5226 / CVE-2023-1523 keystroke-injection on the user's outer terminal. See the <a href="#seccomp-filter">Seccomp Filter</a> section above.</td>
 <td><strong>Hard</strong> — all backends</td>
 </tr>
 <tr>
