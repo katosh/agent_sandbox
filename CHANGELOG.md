@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Probe-and-explain bwrap startup** — when the bwrap backend
+  cannot start, agent-sandbox now classifies the failure (missing
+  binary, version-too-old, AppArmor/LSM userns block,
+  `No permitted_caps`, clone EPERM, mount-namespace denial, or
+  unknown) by parsing bwrap's stderr and prints an actionable
+  explanation alongside the existing host/kernel/LSM diagnostic.
+  The reason token also feeds the auto-mode `Tried:` table so a
+  user staring at "no sandbox backend available" sees, for
+  example, `bwrap — blocked by AppArmor / LSM userns restriction`
+  rather than a generic `failed (check user namespace support)`.
+  Inspired by cco's `probe_linux_bwrap` /
+  `explain_linux_bwrap_failure` — closes the support loop today
+  routed through `docs/admin/sandbox-help.md` for users who can't
+  read dmesg. New section "bwrap startup errors" in the help doc
+  cross-references each pattern.
+
 ### Changed
 
 - **Breaking (admin-mode only):** `ALLOWED_PROJECT_PARENTS` admin/user
