@@ -2161,11 +2161,9 @@ detect_backend() {
             echo "  Host:   $(hostname 2>/dev/null || echo unknown)" >&2
             echo "  Kernel: $(uname -r 2>/dev/null || echo unknown)" >&2
             echo "  LSMs:   $(cat /sys/kernel/security/lsm 2>/dev/null || echo unknown)" >&2
-            if [[ "$SANDBOX_BACKEND" == "bwrap" ]] && command -v bwrap &>/dev/null; then
-                local _bv
-                _bv=$(bwrap --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "unknown")
-                echo "  bwrap:  $_bv (need ≥ 0.4.0 for --chmod, --unsetenv)" >&2
-            fi
+            # bwrap-specific: backend_available already printed the
+            # probe-resolved explanation when it failed; no extra version
+            # echo needed because the probe reports it inline.
             exit 1
         fi
         return
@@ -2214,8 +2212,33 @@ detect_backend() {
     echo "  firejail:   $_firejail_path" >&2
     echo "  userns max: $_userns" >&2
     echo "" >&2
+    # Render bwrap line from the probe outcome (set by backends/bwrap.sh
+    # during its backend_available() call above), falling back to
+    # heuristics when the probe didn't run or didn't classify.
+    local _bwrap_summary
+    case "${_BWRAP_PROBE_REASON:-}" in
+        not-installed)    _bwrap_summary="binary not found" ;;
+        version-too-old)  _bwrap_summary="installed but too old (need ≥ 0.4.0)" ;;
+        binary-broken)    _bwrap_summary="binary present but unusable (--version failed)" ;;
+        apparmor-userns)  _bwrap_summary="blocked by AppArmor / LSM userns restriction" ;;
+        userns-disabled)  _bwrap_summary="kernel reports No permitted_caps (userns disabled)" ;;
+        clone-denied)     _bwrap_summary="clone(CLONE_NEWUSER) denied (outer seccomp / max_user_namespaces=0)" ;;
+        mount-namespace-denied) _bwrap_summary="mount-namespace setup denied (running inside another sandbox?)" ;;
+        unknown)          _bwrap_summary="failed with unrecognised stderr (see message below)" ;;
+        "")
+            # Probe never ran (e.g., backends/bwrap.sh not sourced) —
+            # fall back to coarse heuristics.
+            if [[ "$_bwrap_path" == "not found" ]]; then
+                _bwrap_summary="binary not found"
+            elif echo "$_lsm" | grep -q apparmor && sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null | grep -q 1; then
+                _bwrap_summary="blocked by AppArmor userns restriction"
+            else
+                _bwrap_summary="failed (check user namespace support)"
+            fi ;;
+        *)                _bwrap_summary="failed (${_BWRAP_PROBE_REASON})" ;;
+    esac
     echo "  Tried:" >&2
-    echo "    bwrap    — $(if [[ "$_bwrap_path" == "not found" ]]; then echo "binary not found"; elif echo "$_lsm" | grep -q apparmor && sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null | grep -q 1; then echo "blocked by AppArmor userns restriction"; else echo "failed (check user namespace support)"; fi)" >&2
+    echo "    bwrap    — $_bwrap_summary" >&2
     echo "    firejail — $(if [[ "$_firejail_path" == "not found" ]]; then echo "binary not found"; else echo "failed (check setuid bit or seccomp support)"; fi)" >&2
     echo "    landlock — $(
         local _kmaj _kmin
@@ -2235,6 +2258,14 @@ detect_backend() {
     echo "                         brew install bubblewrap  (user-local, no root)" >&2
     echo "    Install firejail:    sudo apt install firejail" >&2
     echo "    Or ensure kernel ≥ 5.13 with Landlock enabled." >&2
+    # Surface the bwrap probe's actionable explanation, when one was
+    # captured. Skip for "not-installed" — the generic Fix block above
+    # already covers that case.
+    if [[ -n "${_BWRAP_PROBE_MESSAGE:-}" && "${_BWRAP_PROBE_REASON:-}" != "not-installed" ]]; then
+        echo "" >&2
+        echo "  bwrap details:" >&2
+        echo "    ${_BWRAP_PROBE_MESSAGE}" >&2
+    fi
     exit 1
 }
 
