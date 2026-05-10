@@ -3612,6 +3612,78 @@ print('BLOCKED' if ctypes.get_errno() == 1 else 'ALLOWED')
         skip "Could not test userfaultfd"
     fi
 
+    # ioctl(TIOCSTI) / ioctl(TIOCLINUX) — argument-filtered denial.
+    # Bwrap is the only backend whose seccomp filter we generate ourselves
+    # (landlock backend uses a different generator; firejail uses its own
+    # --seccomp.drop set), so the assertion is bwrap-scoped.
+    #
+    # The reproducer mirrors the CVE-2017-5226 / CVE-2023-1523 attack
+    # primitive: setsid + TIOCSCTTY to make a freshly-allocated pty the
+    # caller's controlling tty, then ioctl(TIOCSTI) to inject a byte. The
+    # kernel permits TIOCSTI on a tty the caller controls — without the
+    # seccomp filter the byte gets queued.  With the filter it returns
+    # EPERM before the kernel handler runs.
+    if is_bwrap; then
+        if sandbox python3 -c "
+import os, fcntl, pty
+master, slave = pty.openpty()
+pid = os.fork()
+if pid == 0:
+    try:
+        os.setsid()
+        fcntl.ioctl(slave, 0x540E, 0)  # TIOCSCTTY
+    except Exception as e:
+        print('SETUP_FAIL:' + str(e)); os._exit(3)
+    try:
+        fcntl.ioctl(slave, 0x5412, b'X')  # TIOCSTI
+        print('TIOCSTI_SUCCEEDED')
+    except OSError as e:
+        print('TIOCSTI_BLOCKED:errno=' + str(e.errno))
+    os._exit(0)
+os.close(slave)
+os.waitpid(pid, 0)
+" 2>&1; then
+            if echo "$OUTPUT" | grep -q "TIOCSTI_BLOCKED:errno=1"; then
+                pass "ioctl(TIOCSTI) blocked by seccomp (EPERM)"
+            elif echo "$OUTPUT" | grep -q "TIOCSTI_SUCCEEDED"; then
+                fail "ioctl(TIOCSTI) succeeded — seccomp filter missing the rule" "$OUTPUT"
+            elif echo "$OUTPUT" | grep -q "SETUP_FAIL"; then
+                skip "ioctl(TIOCSTI): could not establish controlling tty in sandbox ($OUTPUT)"
+            else
+                skip "ioctl(TIOCSTI): inconclusive ($OUTPUT)"
+            fi
+        else
+            skip "Could not test ioctl(TIOCSTI)"
+        fi
+
+        # ioctl(TIOCLINUX) — denied outright. seccomp returns EPERM (errno=1)
+        # whereas the kernel handler returns ENOTTY (errno=25) when the fd
+        # is not a Linux text console.
+        if sandbox python3 -c "
+import os, fcntl
+try:
+    fd = os.open('/dev/tty', os.O_RDWR)
+except OSError:
+    fd = 0
+try:
+    fcntl.ioctl(fd, 0x541C, b'\\x0c\\x00')  # TIOCLINUX, subcmd 12 (paste)
+    print('TIOCLINUX_SUCCEEDED')
+except OSError as e:
+    print('TIOCLINUX_RC:errno=' + str(e.errno))
+" 2>&1; then
+            if echo "$OUTPUT" | grep -q "TIOCLINUX_RC:errno=1"; then
+                pass "ioctl(TIOCLINUX) blocked by seccomp (EPERM)"
+            elif echo "$OUTPUT" | grep -q "TIOCLINUX_SUCCEEDED"; then
+                fail "ioctl(TIOCLINUX) succeeded — seccomp filter missing the rule" "$OUTPUT"
+            else
+                # ENOTTY (25) and friends mean kernel handler reached → filter not applied
+                fail "ioctl(TIOCLINUX) reached kernel handler instead of being filtered" "$OUTPUT"
+            fi
+        else
+            skip "Could not test ioctl(TIOCLINUX)"
+        fi
+    fi
+
     # Verify the seccomp filter is what blocks io_uring — not something else.
     # Temporarily hide generate-seccomp.py so bwrap runs without a filter,
     # then confirm io_uring_setup returns EFAULT (reachable) not EPERM (blocked).

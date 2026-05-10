@@ -308,6 +308,8 @@ The filters block two groups of syscalls:
 
 2. **Defense-in-depth set** — `bpf`, `mount`, `umount2`, `pivot_root`, `reboot`, `swapon`/`swapoff`, `personality`, `acct`, `quotactl`, `kcmp`. Each of these is already rejected at the capability layer for an unprivileged sandboxed process; denying them at the seccomp layer too is belt-and-suspenders in case a kernel bug or misconfiguration ever leaks the gating capability. Zero observable effect on HPC/ML workloads — see [SECURITY.md §Seccomp Filter](../reference/security.md#seccomp-filter) for the per-syscall justification.
 
+3. **Argument-filtered ioctl denials (bwrap)** — `ioctl(TIOCSTI)` and `ioctl(TIOCLINUX)`. The BPF program inspects the ioctl `cmd` argument and returns `EPERM` for the keystroke-injection requests that drove CVE-2017-5226 (bwrap) and CVE-2023-1523 (Snap). Other ioctl requests (`TIOCGWINSZ`, `FIONBIO`, GPU ioctls, …) are unaffected. See [SECURITY.md §Argument-filtered ioctl denials](../reference/security.md#argument-filtered-ioctl-denials-bwrap) for detail.
+
 The Landlock backend additionally denies `ptrace` and `process_vm_readv`/`writev` because it has no PID namespace to prevent sibling-process inspection. bwrap and firejail rely on PID namespacing for that.
 
 | Tool | Uses `io_uring` | When blocked | Impact |
@@ -338,6 +340,7 @@ bwrap's mount namespace + PID namespace + `no_new_privs` already provide strong 
 | `io_uring_setup` / `io_uring_enter` | Nothing — real attack surface reduction | Node.js falls back to epoll, RocksDB falls back to `pread`. tokio-uring (Rust) would fail, but standard tokio is unaffected |
 | `userfaultfd` | Kernel restricts unprivileged use since 5.11, but user-mode faults still allowed | No HPC tools use it |
 | `kexec_load` / `kexec_file_load` | `no_new_privs` (requires `CAP_SYS_BOOT`) | None — already ineffective without capabilities |
+| `ioctl(TIOCSTI)` / `ioctl(TIOCLINUX)` | Kernel `CONFIG_LEGACY_TIOCSTI=n` (6.2+) or `dev.tty.legacy_tiocsti=0` — but only on opted-in hosts; LTS HPC kernels (5.4, 5.15) leave it open | None — no legitimate workload simulates terminal input or pastes from the Linux console |
 
 Adding a seccomp filter to bwrap is reasonable and aligns with Docker's precedent.
 
