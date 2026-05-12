@@ -206,6 +206,30 @@ backend_prepare() {
     _SEED_TMPFILES=()
     _SEED_DESTS=()
 
+    # --- Network filter ---
+    # Resolve mode (open|filtered|isolated) given backend + fallback policy.
+    # Sets _NETWORK_FILTER_RESOLVED, _NETWORK_FILTER_REASON,
+    # _NETWORK_FILTER_HELPER. May exit on irrecoverable mismatch (strict
+    # policy, or stricter with no stricter mode available).
+    resolve_network_filter_mode bwrap
+    case "$_NETWORK_FILTER_RESOLVED" in
+        isolated)
+            BWRAP_ARGS+=(--unshare-net)
+            ;;
+        filtered)
+            # bwrap unshares net; the pasta helper provisions a tap inside
+            # the new netns so the agent retains general outbound TCP/UDP
+            # MINUS the blocklist. The actual pasta-wrap of bwrap is set
+            # up in backend_exec() so we can compose at exec time. Mark
+            # filtered with a sentinel for backend_exec to pick up.
+            BWRAP_ARGS+=(--unshare-net)
+            _NETWORK_FILTER_BWRAP_PENDING=1
+            ;;
+        open)
+            : # share host network (default; no args added)
+            ;;
+    esac
+
     # --- Kernel filesystems ---
     BWRAP_ARGS+=(--proc /proc)
 

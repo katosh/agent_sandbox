@@ -32,6 +32,19 @@ PROJECT_DIR=""
 export SANDBOX_CONF="$SCRIPT_DIR/sandbox.conf"
 export SANDBOX_QUIET=true
 
+# The shipped sandbox.conf defaults to NETWORK_FILTER_FALLBACK=stricter,
+# which is correct for production but refuses to launch on the landlock
+# backend (no mount/network namespace means no mode is stricter than
+# `open` available, so stricter has nowhere to fall back). The test
+# suite exercises every backend including landlock; override the
+# fallback policy to `open` here so the suite can boot regardless of
+# backend. Backends that support stricter modes (bwrap, firejail)
+# still pick them: with policy=open the resolver tries stricter
+# alternatives first and only degrades to host network as the last
+# resort. Section 11.4's resolver tests set their own NETWORK_FILTER_*
+# env vars in subshells, so they remain untouched by this default.
+export NETWORK_FILTER_FALLBACK="${NETWORK_FILTER_FALLBACK:-open}"
+
 VERBOSE=false
 BACKEND_FLAG=""
 QUICK_MODE=false
@@ -4458,6 +4471,387 @@ elif is_firejail; then
 else
     skip "FILTER_PASSWD: not supported on Landlock (no mount namespace)"
 fi
+
+# ── 11.4 Network filter ───────────────────────────────────────────
+#
+# v1.0 ships isolated mode + the config plumbing + the fallback
+# resolver. Real 'filtered' mode (bwrap + pasta + nft) is v1.1; v1.0's
+# default 'filtered + stricter' falls back to isolated with a loud
+# warning. These tests assert each piece independently.
+
+echo "11.4. Network filter"
+
+# Mode-resolver unit tests via _SANDBOX_LIB_NO_INIT=1 harness — pure
+# function tests, no sandbox spawn needed. The resolver and its helpers
+# live above the test-harness early return in sandbox-lib.sh.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+
+    # Test 1: defaults
+    [[ "$NETWORK_FILTER_MODE" == "filtered" ]] || { echo "default mode wrong"; exit 1; }
+    [[ "$NETWORK_FILTER_FALLBACK" == "stricter" ]] || { echo "default fallback wrong"; exit 1; }
+    # _NETWORK_BLOCKLIST_DEFAULTS is now empty (sentinel); the floor
+    # lives in the shipped sandbox.conf so an operator editing their
+    # config sees the policy table directly. Load the shipped
+    # sandbox.conf to populate NETWORK_BLOCKLIST for the floor checks
+    # below.
+    [[ "${#_NETWORK_BLOCKLIST_DEFAULTS[@]}" -eq 0 ]] || { echo "lib floor sentinel non-empty"; exit 1; }
+    _load_untrusted_config "$SCRIPT_DIR/sandbox.conf" "Test default sandbox.conf load"
+    [[ "${#NETWORK_BLOCKLIST[@]}" -ge 20 ]] || { echo "shipped sandbox.conf NETWORK_BLOCKLIST too short"; exit 1; }
+
+    # Test 2: bwrap + filtered + stricter → isolated (v1.0: helper gated)
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=stricter
+    resolve_network_filter_mode bwrap 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || { echo "expected fallback to isolated, got $_NETWORK_FILTER_RESOLVED"; exit 1; }
+
+    # Test 3: bwrap + isolated + stricter → isolated (no fallback needed)
+    NETWORK_FILTER_MODE=isolated NETWORK_FILTER_FALLBACK=stricter
+    resolve_network_filter_mode bwrap 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || exit 1
+
+    # Test 4: bwrap + open + any → open
+    NETWORK_FILTER_MODE=open NETWORK_FILTER_FALLBACK=stricter
+    resolve_network_filter_mode bwrap 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || exit 1
+
+    # Test 5: filtered + open + landlock → open (less-strict only)
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=open
+    resolve_network_filter_mode landlock 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || exit 1
+
+    # Test 5b: filtered + open on bwrap-no-helper must NOT go stricter
+    # (to isolated). The `open` policy is "less restrictive only".
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=open
+    resolve_network_filter_mode bwrap 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || { echo "open policy went stricter ($_NETWORK_FILTER_RESOLVED) — regression"; exit 1; }
+
+    # Test 5c: isolated + open + landlock → open (less-strict only)
+    NETWORK_FILTER_MODE=isolated NETWORK_FILTER_FALLBACK=open
+    resolve_network_filter_mode landlock 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || exit 1
+
+    # Test 6: effective blocklist (after loading shipped sandbox.conf
+    # in Test 1) contains the universal entries. Site-specific entries
+    # are commented out by default in the skel and so must NOT appear.
+    # Mail submission (universal):
+    effective_network_blocklist 2>/dev/null | grep -q "^127.0.0.1:24\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^127.0.0.1:25\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^0.0.0.0/0:25\$" || exit 1
+    # Site-specific Fred Hutch CIDR — commented out by default → MUST
+    # NOT be present:
+    effective_network_blocklist 2>/dev/null | grep -q "^140.107.0.0/16:25\$" && exit 1
+    # Transactional-email HTTPS APIs (universal):
+    effective_network_blocklist 2>/dev/null | grep -q "^api.mailgun.net\$" || exit 1
+    # Webhooks (universal):
+    effective_network_blocklist 2>/dev/null | grep -q "^hooks.slack.com\$" || exit 1
+    # File drops + paste (universal):
+    effective_network_blocklist 2>/dev/null | grep -q "^transfer.sh\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^pastebin.com\$" || exit 1
+    # DoH / DoT (universal):
+    effective_network_blocklist 2>/dev/null | grep -q "^cloudflare-dns.com\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^853\$" || exit 1
+    # SMB / RDP / VNC — site-specific (commented out) → MUST NOT be
+    # present:
+    effective_network_blocklist 2>/dev/null | grep -q "^445\$" && exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^3389\$" && exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^5900\$" && exit 1
+    # Legacy r-services (universal):
+    effective_network_blocklist 2>/dev/null | grep -q "^23\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^514\$" || exit 1
+    # Site-specific LDAP / Kerberos — commented out by default → MUST
+    # NOT be present:
+    effective_network_blocklist 2>/dev/null | grep -q "^389\$" && exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^88\$" && exit 1
+    # Site-specific Slurm / munge — commented out by default → MUST
+    # NOT be present:
+    effective_network_blocklist 2>/dev/null | grep -q "^6817\$" && exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^904\$" && exit 1
+
+    exit 0
+); then
+    pass "Network filter: resolver unit tests (defaults, fallback, effective blocklist)"
+else
+    fail "Network filter: resolver unit tests failed (rc=$?)"
+fi
+
+# Mode resolution failure paths exit the parent process via _network_filter_fail.
+# Exercise the strict-fails path in a subshell.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=strict
+    resolve_network_filter_mode bwrap 2>/dev/null
+) ; then
+    fail "Network filter: strict policy on unavailable filtered should have exited"
+else
+    pass "Network filter: strict policy fails loudly when requested mode unavailable"
+fi
+
+# Landlock + filtered + stricter must fail (no stricter mode possible).
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=stricter
+    resolve_network_filter_mode landlock 2>/dev/null
+) ; then
+    fail "Network filter: stricter on landlock should have exited"
+else
+    pass "Network filter: stricter policy on landlock fails (no stricter mode available)"
+fi
+
+# Integration test: 'isolated' mode actually kills the network.
+# Requires a mount-namespace backend (bwrap or firejail). Skip on
+# landlock where isolated is unavailable.
+if has_mount_ns; then
+    # Build a conf snippet that pins isolated mode.
+    _net_isolated_conf="$HOME/.config/agent-sandbox/conf.d/test-net-isolated-$$.conf"
+    _TEST_TEMP_FILES+=("$_net_isolated_conf")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    echo 'NETWORK_FILTER_MODE=isolated' > "$_net_isolated_conf"
+    echo 'NETWORK_FILTER_FALLBACK=strict' >> "$_net_isolated_conf"
+
+    # The empirical bypass that defeats binary-only blocks:
+    # bash /dev/tcp/127.0.0.1/25. In isolated mode this must fail with
+    # ENETUNREACH because there is no listener inside the empty netns.
+    if sandbox bash -c '
+        exec 3<>/dev/tcp/127.0.0.1/25 2>&1 && echo CONNECTED || echo BLOCKED
+    '; then
+        if [[ "$OUTPUT" == *"BLOCKED"* ]]; then
+            pass "Network filter: isolated mode blocks bash /dev/tcp/127.0.0.1/25"
+        else
+            fail "Network filter: isolated mode left 127.0.0.1:25 reachable" "$OUTPUT"
+        fi
+    fi
+
+    # Same for Python smtplib — the other empirical bypass class.
+    if command -v python3 &>/dev/null && sandbox bash -c '
+        python3 -c "
+import smtplib, sys
+try:
+    s = smtplib.SMTP(\"127.0.0.1\", 25, timeout=3)
+    print(\"CONNECTED\")
+    s.quit()
+except Exception as e:
+    print(\"BLOCKED:\", type(e).__name__)
+"
+    '; then
+        if [[ "$OUTPUT" == *"BLOCKED"* ]]; then
+            pass "Network filter: isolated mode blocks Python smtplib to 127.0.0.1:25"
+        else
+            fail "Network filter: isolated mode left smtplib path reachable" "$OUTPUT"
+        fi
+    fi
+
+    rm -f "$_net_isolated_conf"
+else
+    skip "Network filter: integration tests need bwrap or firejail (landlock has no netns)"
+fi
+
+# sandbox-notify carve-out: must continue to work even in isolated mode
+# because it uses /dev/tty + tmux IPC, not the network.
+if has_mount_ns && [[ -x "$SCRIPT_DIR/bin/sandbox-notify" ]]; then
+    _net_isolated_conf2="$HOME/.config/agent-sandbox/conf.d/test-net-notify-$$.conf"
+    _TEST_TEMP_FILES+=("$_net_isolated_conf2")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    echo 'NETWORK_FILTER_MODE=isolated' > "$_net_isolated_conf2"
+    echo 'NETWORK_FILTER_FALLBACK=open' >> "$_net_isolated_conf2"
+    if sandbox bash -c 'command -v sandbox-notify && echo CALLABLE || echo MISSING'; then
+        if [[ "$OUTPUT" == *"CALLABLE"* ]]; then
+            pass "Network filter: sandbox-notify carve-out preserved in isolated mode"
+        else
+            fail "Network filter: sandbox-notify unexpectedly missing in isolated mode" "$OUTPUT"
+        fi
+    fi
+    rm -f "$_net_isolated_conf2"
+fi
+
+# Positive-path reachability: in 'open' mode, ordinary outbound network
+# must keep working. Pairs with the negative isolated-mode assertions
+# above so a future regression in either direction shows up.
+_net_open_conf="$HOME/.config/agent-sandbox/conf.d/test-net-open-$$.conf"
+_TEST_TEMP_FILES+=("$_net_open_conf")
+mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+echo 'NETWORK_FILTER_MODE=open' > "$_net_open_conf"
+
+# DNS resolution — the most fundamental positive check. If 'open' mode
+# breaks DNS, every other outbound test would also fail.
+if sandbox bash -c '
+    if getent hosts github.com >/dev/null 2>&1; then echo RESOLVED
+    elif command -v host >/dev/null && host -W 5 github.com >/dev/null 2>&1; then echo RESOLVED
+    elif command -v nslookup >/dev/null && nslookup github.com >/dev/null 2>&1; then echo RESOLVED
+    else echo UNRESOLVED; fi
+'; then
+    if [[ "$OUTPUT" == "RESOLVED" ]]; then
+        pass "Network filter (open): DNS resolution works"
+    else
+        fail "Network filter (open): DNS resolution failed in open mode" "$OUTPUT"
+    fi
+fi
+
+# HTTPS reachability — github.com is a stable, near-universally-allowed
+# 443 endpoint. The fail-mode would suggest the open-mode bypass is
+# broken. 10s connect timeout to avoid hanging CI on transient flakes.
+if command -v curl >/dev/null 2>&1 && sandbox bash -c '
+    if curl -fsS --max-time 10 -o /dev/null -w "%{http_code}" https://github.com/ 2>/dev/null | grep -qE "^(200|301|302)$"; then
+        echo REACHABLE
+    else
+        echo UNREACHABLE
+    fi
+'; then
+    if [[ "$OUTPUT" == "REACHABLE" ]]; then
+        pass "Network filter (open): HTTPS to github.com reachable"
+    else
+        # Could be a transient CI/runner network issue; treat as a warn
+        # to avoid flakes blocking unrelated changes. If consistently
+        # unreachable we'd want to know.
+        warn "Network filter (open): HTTPS to github.com not reachable from CI runner" "$OUTPUT"
+    fi
+fi
+
+# Non-blocklisted arbitrary egress — pypi.org is another canonical
+# 443 endpoint. Same rationale as above.
+if command -v curl >/dev/null 2>&1 && sandbox bash -c '
+    if curl -fsS --max-time 10 -o /dev/null -w "%{http_code}" https://pypi.org/ 2>/dev/null | grep -qE "^(200|301|302)$"; then
+        echo REACHABLE
+    else
+        echo UNREACHABLE
+    fi
+'; then
+    if [[ "$OUTPUT" == "REACHABLE" ]]; then
+        pass "Network filter (open): HTTPS to pypi.org reachable"
+    else
+        warn "Network filter (open): HTTPS to pypi.org not reachable from CI runner" "$OUTPUT"
+    fi
+fi
+
+rm -f "$_net_open_conf"
+unset _net_open_conf
+
+# conf.d-safety: a user's conf.d/*.conf using `NETWORK_BLOCKLIST+=()`
+# (the canonical extension pattern) must load cleanly under `set -u`
+# without triggering an unbound-variable error. The new vars must be
+# initialised in sandbox-lib.sh's defaults BEFORE any conf.d file
+# runs. Regression guard: if a future refactor drops
+# `NETWORK_BLOCKLIST=()` from the lib defaults (or drops the var from
+# `_CONFIG_ARRAYS` so the parent state isn't serialised), every
+# conf.d file using the documented `+=` syntax would silently fail
+# under `set -u`. This test catches that.
+#
+# The test runs in the `_SANDBOX_LIB_NO_INIT=1` harness so it
+# exercises the pure config-loading primitive (`_load_untrusted_config`,
+# defined above the early return) directly — the same primitive
+# `load_project_config` wraps per-file in production. We don't need
+# `load_project_config` itself; what matters is that the
+# parent-state serialisation seeds `NETWORK_BLOCKLIST` as a declared
+# array before the conf.d file's `+=` executes in the subprocess.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    _confd_file="$(mktemp "${TMPDIR:-/tmp}/test-confd-init.XXXXXX.conf")"
+    trap 'rm -f "$_confd_file"' EXIT
+    cat > "$_confd_file" <<'CONF'
+NETWORK_BLOCKLIST+=("test.example.com:443")
+NETWORK_FILTER_MODE="filtered"
+CONF
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    _load_untrusted_config "$_confd_file" "conf.d init-safety probe"
+    # The new entry must be in the user-extension array AND the
+    # effective blocklist union must include it.
+    [[ "${#NETWORK_BLOCKLIST[@]}" -ge 1 ]] || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^test.example.com:443\$" || exit 1
+    exit 0
+); then
+    pass "Network filter: conf.d/*.conf NETWORK_BLOCKLIST+=() loads under set -u"
+else
+    fail "Network filter: conf.d/*.conf += pattern failed (rc=$?); init regression"
+fi
+
+# Wildcard pattern matching — bash-glob covers the expected cases.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    # *.example.com matches subdomains but not the bare domain.
+    _network_rule_matches "*.example.com" "api.example.com" || exit 1
+    _network_rule_matches "*.example.com" "deep.foo.example.com" || exit 1
+    _network_rule_matches "*.example.com" "example.com" && exit 1  # MUST NOT match
+    # exact host
+    _network_rule_matches "example.com" "example.com" || exit 1
+    _network_rule_matches "example.com" "api.example.com" && exit 1  # MUST NOT match
+    # wildcard *
+    _network_rule_matches "*" "anything.example.com" || exit 1
+    _network_rule_matches "*" "10.0.0.1" || exit 1
+    exit 0
+); then
+    pass "Network filter: wildcard pattern matching (*.suffix / exact / *) behaves as documented"
+else
+    fail "Network filter: wildcard pattern matching regressed (rc=$?)"
+fi
+
+# Admin-precedence: user NETWORK_BLOCKLIST_EXCEPT entries covered by
+# admin NETWORK_BLOCKLIST are stripped at config-load with a loud
+# warning. The user cannot carve exceptions out of admin policy.
+#
+# Note: _strip_user_exceptions_covered_by_admin mutates
+# NETWORK_BLOCKLIST_EXCEPT in the calling shell, so we must NOT
+# invoke it inside `$(...)` — that would run it in a subshell and
+# the mutation would be lost. Stderr capture happens via a temp file.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    _stderr_file="$(mktemp "${TMPDIR:-/tmp}/test-admin-prec.XXXXXX")"
+    trap 'rm -f "$_stderr_file"' EXIT
+    # Simulate admin snapshot + user exception list.
+    _ADMIN_NETWORK_BLOCKLIST=("*.example.com" "hooks.slack.com")
+    NETWORK_BLOCKLIST_EXCEPT=("api.example.com" "github.com" "hooks.slack.com")
+    # Run in the current shell; capture stderr via redirection to a file.
+    _strip_user_exceptions_covered_by_admin "Test admin-precedence probe" 2>"$_stderr_file"
+    # github.com is not covered → stays.
+    # api.example.com covered by *.example.com → stripped + warning.
+    # hooks.slack.com exact-covered → stripped + warning.
+    [[ "${#NETWORK_BLOCKLIST_EXCEPT[@]}" -eq 1 ]] || { echo "post-strip count=${#NETWORK_BLOCKLIST_EXCEPT[@]}"; exit 1; }
+    [[ "${NETWORK_BLOCKLIST_EXCEPT[0]}" == "github.com" ]] || { echo "remaining=${NETWORK_BLOCKLIST_EXCEPT[0]}"; exit 1; }
+    grep -q "attempted to except 'api.example.com'.*\*.example.com" "$_stderr_file" || { echo "missing api.example.com warning"; exit 1; }
+    grep -q "attempted to except 'hooks.slack.com'" "$_stderr_file" || { echo "missing hooks.slack.com warning"; exit 1; }
+    exit 0
+); then
+    pass "Network filter: admin-pinned BLOCKLIST overrides user EXCEPT (admin policy absolute)"
+else
+    fail "Network filter: admin-precedence enforcement regressed (rc=$?)"
+fi
+
+# effective_network_exception_list emits the carved-out user
+# exceptions (admin-covered entries already stripped).
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    NETWORK_BLOCKLIST+=("*.amazonaws.com")
+    NETWORK_BLOCKLIST_EXCEPT+=("mybucket.s3.amazonaws.com" "github.com")
+    # The except list must include both user entries (no admin to
+    # strip them).
+    _list="$(effective_network_exception_list)"
+    grep -q "^mybucket.s3.amazonaws.com\$" <<< "$_list" || exit 1
+    grep -q "^github.com\$" <<< "$_list" || exit 1
+    exit 0
+); then
+    pass "Network filter: effective_network_exception_list emits the merged exceptions"
+else
+    fail "Network filter: exception-list helper regressed (rc=$?)"
+fi
+
 
 # ── 11.5 Device passthrough (bwrap only) ──────────────────────────
 

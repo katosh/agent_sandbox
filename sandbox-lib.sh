@@ -183,6 +183,8 @@ DENIED_WRITABLE_PATHS=()
 _PRIVATE_TMP_OVERRIDE="${PRIVATE_TMP:-}"
 _PRIVATE_IPC_OVERRIDE="${PRIVATE_IPC:-}"
 _FILTER_PASSWD_OVERRIDE="${FILTER_PASSWD:-}"
+_NETWORK_FILTER_MODE_OVERRIDE="${NETWORK_FILTER_MODE:-}"
+_NETWORK_FILTER_FALLBACK_OVERRIDE="${NETWORK_FILTER_FALLBACK:-}"
 
 PRIVATE_TMP=true
 
@@ -199,6 +201,86 @@ PRIVATE_IPC=true
 # firejail: blocks NSS daemon sockets (nscd, nslcd, sssd).
 # landlock: not supported (no mount namespace).
 FILTER_PASSWD=true
+
+# ── Network filter ──────────────────────────────────────────────
+#
+# Default-deny outbound network policy applied to the sandbox.
+# Closes the local-MTA identity-hijack class and adjacent lateral-
+# movement surface. Full rationale + per-backend matrix + the fallback
+# semantics live in docs/reference/network-filter.md.
+#
+#   NETWORK_FILTER_MODE — open | filtered | isolated  (default: filtered)
+#     open:     share the host network namespace; no isolation. Legacy
+#               behaviour. Use only when the workload explicitly needs
+#               host-equivalent network reach AND host-side mail policy
+#               already covers identity-hijack.
+#     filtered: new netns + helper (pasta or slirp4netns); applies the
+#               default-deny floor below plus user/admin NETWORK_BLOCKLIST
+#               additions. The agent retains general outbound TCP/UDP/DNS
+#               but loses the threat-class ports.
+#     isolated: new netns with no network at all. DNS / pip / git inside
+#               the sandbox break; use for offline-only workloads or as
+#               the strictest fallback target.
+#
+#   NETWORK_FILTER_FALLBACK — strict | stricter | open  (default: stricter)
+#     strict:   the requested mode must be deliverable on this host; the
+#               sandbox refuses to launch otherwise.
+#     stricter: fall back ONLY to a more-restrictive mode if the requested
+#               mode is unavailable. Falls back loudly. If no stricter mode
+#               is possible (landlock has no netns at all), refuses to
+#               launch with an explicit fix-path enumeration.
+#     open:     fall back to ANY available mode, preferring stricter first.
+#               Will silently degrade to host-network if no isolated mode
+#               is available. Loud startup warning on any fallback.
+#
+# Admin enforcement: an admin baseline can pin NETWORK_FILTER_MODE and
+# NETWORK_FILTER_FALLBACK; user config can request stricter values but
+# cannot weaken admin-set ones (same model as PRIVATE_TMP, FILTER_PASSWD).
+NETWORK_FILTER_MODE="filtered"
+NETWORK_FILTER_FALLBACK="stricter"
+
+# Sentinel for any future "always-on, not user-removable" floor
+# entries. Currently empty — the full identity-bound exfil + lateral-
+# movement surface lives in `sandbox.conf::NETWORK_BLOCKLIST` so an
+# operator editing their config sees the policy and can comment-out
+# entries that don't apply to their deployment. See
+# docs/reference/network-filter.md for the rationale + the full
+# enumerated default set.
+#
+# Pattern syntax (when entries do live here): host[:port] | CIDR[:port]
+# | port | "*.suffix" wildcard | "*" deny-all.
+_NETWORK_BLOCKLIST_DEFAULTS=(
+)
+
+# User/admin block extensions. Format identical to the floor above.
+# Each entry is appended; the floor cannot be removed via this list.
+# Wildcard patterns (`*.example.com`, `*.example.com:443`) are supported
+# under bash glob semantics. CIDR ranges (`10.0.0.0/8[:port]`) and bare
+# ports (`853`) are also accepted.
+NETWORK_BLOCKLIST=()
+
+# Exception list — entries that carve a hole in the blocklist using
+# the precedence model documented in docs/reference/network-filter.md.
+# Format identical to NETWORK_BLOCKLIST. An exception applies when a
+# more-specific entry here matches a candidate destination that an
+# enclosing wildcard / CIDR / bare-port entry in NETWORK_BLOCKLIST
+# would otherwise block.
+#
+# Examples:
+#   NETWORK_BLOCKLIST+=("*.amazonaws.com")
+#   NETWORK_BLOCKLIST_EXCEPT+=("s3.amazonaws.com")
+#     → s3.amazonaws.com allowed; *.amazonaws.com still blocked.
+#
+#   NETWORK_BLOCKLIST+=("*")
+#   NETWORK_BLOCKLIST_EXCEPT+=("github.com" "api.openai.com")
+#     → implicit-allowlist idiom: block everything except the named
+#       hosts (deny-by-default).
+#
+# Admin precedence: an admin-set NETWORK_BLOCKLIST entry CANNOT be
+# overridden by a user NETWORK_BLOCKLIST_EXCEPT — the user's entry is
+# stripped at config-load with a loud warning. The admin can carve
+# their own exceptions in their own NETWORK_BLOCKLIST_EXCEPT.
+NETWORK_BLOCKLIST_EXCEPT=()
 
 # Bind host /dev into the sandbox instead of bwrap's minimal devtmpfs.
 # DEPRECATED: kept as a kernel-aware shim. On kernel < 5.4 it appends
@@ -529,15 +611,17 @@ _CONFIG_ARRAYS=(
     EXTRA_BLOCKED_PATHS EXTRA_WRITABLE_PATHS DENIED_WRITABLE_PATHS
     DEVICES DEVICES_BLACKLIST
     SANDBOX_ENV SUPPRESS_AGENT_WARNINGS SANDBOX_MODULES ENABLED_AGENTS
+    NETWORK_BLOCKLIST NETWORK_BLOCKLIST_EXCEPT
 )
 _CONFIG_SCALARS=(
     SANDBOX_BACKEND PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD BIND_DEV_PTS
+    NETWORK_FILTER_MODE NETWORK_FILTER_FALLBACK
     SLURM_SCOPE HOME_ACCESS SANDBOX_QUIET SANDBOX_NPROC_LIMIT
     CHAPERON_LOG_LEVEL CHAPERON_LOG_RETAIN_DAYS
     LANDLOCK_REQUIRED_ABI LANDLOCK_HARD_REQUIREMENT
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
-_ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS EXTRA_BLOCKED_PATHS DEVICES_BLACKLIST)
+_ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS EXTRA_BLOCKED_PATHS DEVICES_BLACKLIST NETWORK_BLOCKLIST NETWORK_BLOCKLIST_EXCEPT)
 
 # --- Load an untrusted config file in an isolated subprocess ---
 #
@@ -871,6 +955,20 @@ _enforce_admin_policy() {
         for _item in "${DEVICES_BLACKLIST[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
         $_found || echo "WARNING: ${_label} removed admin-enforced DEVICES_BLACKLIST entry '${_a}' — restored." >&2
     done
+    for _a in "${_ADMIN_NETWORK_BLOCKLIST[@]+"${_ADMIN_NETWORK_BLOCKLIST[@]}"}"; do
+        _found=false
+        for _item in "${NETWORK_BLOCKLIST[@]+"${NETWORK_BLOCKLIST[@]}"}"; do
+            [[ "$_item" == "$_a" ]] && { _found=true; break; }
+        done
+        $_found || echo "WARNING: ${_label} removed admin-enforced NETWORK_BLOCKLIST entry '${_a}' — restored." >&2
+    done
+    for _a in "${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]+"${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
+        _found=false
+        for _item in "${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
+            [[ "$_item" == "$_a" ]] && { _found=true; break; }
+        done
+        $_found || echo "WARNING: ${_label} removed admin-enforced NETWORK_BLOCKLIST_EXCEPT entry '${_a}' — restored." >&2
+    done
 
     # HOME_READONLY → HOME_WRITABLE escalation
     for _aro in "${_ADMIN_HOME_READONLY[@]}"; do
@@ -891,6 +989,30 @@ _enforce_admin_policy() {
         fi
     done
 
+    # Network filter mode (tri-valued): user can only request a STRICTER
+    # mode than the admin-pinned baseline. Ordering: open < filtered < isolated.
+    if [[ -n "${_ADMIN_NETWORK_FILTER_MODE:-}" ]]; then
+        local _admin_idx _user_idx
+        _admin_idx="$(_network_mode_strictness_idx "$_ADMIN_NETWORK_FILTER_MODE")"
+        _user_idx="$(_network_mode_strictness_idx "${NETWORK_FILTER_MODE:-filtered}")"
+        if [[ "$_user_idx" -lt "$_admin_idx" ]]; then
+            echo "WARNING: ${_label} weakened admin-enforced NETWORK_FILTER_MODE='${_ADMIN_NETWORK_FILTER_MODE}' to '${NETWORK_FILTER_MODE}' — restored." >&2
+            NETWORK_FILTER_MODE="$_ADMIN_NETWORK_FILTER_MODE"
+        fi
+    fi
+
+    # Network filter fallback (tri-valued): user can only request a STRICTER
+    # policy than the admin-pinned baseline. Ordering: open < stricter < strict.
+    if [[ -n "${_ADMIN_NETWORK_FILTER_FALLBACK:-}" ]]; then
+        local _admin_pidx _user_pidx
+        _admin_pidx="$(_network_fallback_strictness_idx "$_ADMIN_NETWORK_FILTER_FALLBACK")"
+        _user_pidx="$(_network_fallback_strictness_idx "${NETWORK_FILTER_FALLBACK:-stricter}")"
+        if [[ "$_user_pidx" -lt "$_admin_pidx" ]]; then
+            echo "WARNING: ${_label} weakened admin-enforced NETWORK_FILTER_FALLBACK='${_ADMIN_NETWORK_FILTER_FALLBACK}' to '${NETWORK_FILTER_FALLBACK}' — restored." >&2
+            NETWORK_FILTER_FALLBACK="$_ADMIN_NETWORK_FILTER_FALLBACK"
+        fi
+    fi
+
     # --- Collect user-only additions (items not in admin snapshot) ---
     # Save the user's arrays before restoring admin values.
     local _user_bf=("${BLOCKED_FILES[@]}")
@@ -905,6 +1027,8 @@ _enforce_admin_policy() {
     local _user_hsf=("${HOME_SEEDED_FILES[@]}")
     local _user_app=("${ALLOWED_PROJECT_PARENTS[@]}")
     local _user_dbl=("${DEVICES_BLACKLIST[@]}")
+    local _user_nbl=("${NETWORK_BLOCKLIST[@]+"${NETWORK_BLOCKLIST[@]}"}")
+    local _user_nbx=("${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}")
 
     # --- Restore admin base values ---
     BLOCKED_FILES=("${_ADMIN_BLOCKED_FILES[@]}")
@@ -925,6 +1049,8 @@ _enforce_admin_policy() {
     HOME_WRITABLE=("${_ADMIN_HOME_WRITABLE[@]}")
     DENIED_WRITABLE_PATHS=("${_ADMIN_DENIED_WRITABLE_PATHS[@]}")
     DEVICES_BLACKLIST=("${_ADMIN_DEVICES_BLACKLIST[@]}")
+    NETWORK_BLOCKLIST=("${_ADMIN_NETWORK_BLOCKLIST[@]+"${_ADMIN_NETWORK_BLOCKLIST[@]}"}")
+    NETWORK_BLOCKLIST_EXCEPT=("${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]+"${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]}"}")
 
     # --- Merge: admin base + user-only additions ---
     local _in_admin
@@ -951,6 +1077,13 @@ _enforce_admin_policy() {
     _merge_additions _user_hsf  _ADMIN_HOME_SEEDED_FILES      HOME_SEEDED_FILES
     _narrow_allowed_project_parents _user_app "$_label"
     _merge_additions _user_dbl  _ADMIN_DEVICES_BLACKLIST       DEVICES_BLACKLIST
+    _merge_additions _user_nbl  _ADMIN_NETWORK_BLOCKLIST       NETWORK_BLOCKLIST
+    # NETWORK_BLOCKLIST_EXCEPT merges similarly, but with an
+    # additional cover-check: user-exception entries that match (under
+    # bash glob semantics) any admin-set NETWORK_BLOCKLIST entry are
+    # stripped + warned. Admin entries cannot be carved out by users.
+    _merge_additions _user_nbx  _ADMIN_NETWORK_BLOCKLIST_EXCEPT  NETWORK_BLOCKLIST_EXCEPT
+    _strip_user_exceptions_covered_by_admin "$_label"
 
     # HOME_WRITABLE: merge user additions, but strip admin HOME_READONLY items
     for _item in "${_user_hw[@]}"; do
@@ -1145,11 +1278,344 @@ _snapshot_admin_config() {
         _ADMIN_ALLOWED_PROJECT_PARENTS=("/")
     fi
     _ADMIN_DEVICES_BLACKLIST=("${DEVICES_BLACKLIST[@]}")
+    _ADMIN_NETWORK_BLOCKLIST=("${NETWORK_BLOCKLIST[@]+"${NETWORK_BLOCKLIST[@]}"}")
+    _ADMIN_NETWORK_BLOCKLIST_EXCEPT=("${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}")
 
     # Security-critical booleans: snapshot so users cannot weaken them.
     _ADMIN_PRIVATE_TMP="${PRIVATE_TMP:-true}"
     _ADMIN_PRIVATE_IPC="${PRIVATE_IPC:-true}"
     _ADMIN_FILTER_PASSWD="${FILTER_PASSWD:-true}"
+    # Network-filter scalars: snapshot only when the admin file set them
+    # explicitly. Absent value → empty string → no admin enforcement (user
+    # config / built-in defaults apply).
+    _ADMIN_NETWORK_FILTER_MODE="${NETWORK_FILTER_MODE:-}"
+    _ADMIN_NETWORK_FILTER_FALLBACK="${NETWORK_FILTER_FALLBACK:-}"
+}
+
+# ── Network filter — mode resolution + helper detection ──────────
+#
+# Modes (ordered by strictness): open < filtered < isolated. Fallback
+# policies (ordered by strictness): open < stricter < strict.
+#
+# The resolver picks the actual mode to apply given the requested mode,
+# the fallback policy, and the backend's capability matrix. Loud warnings
+# are emitted on any fallback path; explicit fix-path enumerations are
+# emitted on the fail path.
+#
+# Backend capability matrix:
+#   bwrap    — open ✓ ; filtered ✓ if helper present (pasta or
+#              slirp4netns on PATH, or the shipped tools/pasta/pasta) ;
+#              isolated ✓ (native --unshare-net flag)
+#   firejail — open ✓ ; filtered ✓ (--netfilter, needs nft on PATH) ;
+#              isolated ✓ (--net=none)
+#   landlock — open ✓ ; filtered ✗ ; isolated ✗ (no mount/net namespace)
+#
+# See docs/reference/network-filter.md for the full design.
+
+_network_mode_strictness_idx() {
+    case "$1" in
+        open) echo 0 ;;
+        filtered) echo 1 ;;
+        isolated) echo 2 ;;
+        *) echo 0 ;;
+    esac
+}
+
+_network_fallback_strictness_idx() {
+    case "$1" in
+        open) echo 0 ;;
+        stricter) echo 1 ;;
+        strict) echo 2 ;;
+        *) echo 0 ;;
+    esac
+}
+
+# Returns 0 if a network helper is available AND v1's bwrap backend can
+# integrate it for a real filtered-mode delivery. Stdout: helper path.
+#
+# v1 implementation status: the helper-probe scaffolding is in place but
+# the bwrap+pasta+nft chain (spawn pasta in parent, install netns nft
+# rules from the resolved blocklist) is intentionally deferred to v1.1.
+# Until v1.1 ships that integration, this function returns 1 even when
+# pasta is on PATH, so the resolver falls back per policy (default
+# 'stricter' → isolated; loud warning naming the exact gap).
+#
+# To activate filtered-mode probing in a dev tree before the upstream
+# integration lands, set NETWORK_FILTER_ENABLE_HELPER_PROBE=1 in the
+# environment. Production callers MUST NOT set this — the integration
+# is incomplete and the resulting state silently misses the blocklist.
+_resolve_network_helper() {
+    if [[ "${NETWORK_FILTER_ENABLE_HELPER_PROBE:-0}" != "1" ]]; then
+        return 1
+    fi
+    if command -v pasta &>/dev/null; then
+        command -v pasta
+        return 0
+    fi
+    if [[ -x "$SANDBOX_DIR/tools/pasta/pasta" ]]; then
+        echo "$SANDBOX_DIR/tools/pasta/pasta"
+        return 0
+    fi
+    if command -v slirp4netns &>/dev/null; then
+        command -v slirp4netns
+        return 0
+    fi
+    return 1
+}
+
+# Backend-capability probe. Stdout: space-separated list of supported
+# modes for the given backend.
+_network_modes_supported_by_backend() {
+    local _backend="$1"
+    case "$_backend" in
+        bwrap)
+            local _modes="open isolated"
+            if _resolve_network_helper >/dev/null 2>&1; then
+                _modes="open filtered isolated"
+            fi
+            echo "$_modes"
+            ;;
+        firejail)
+            # firejail can deliver isolated (--net=none); the filtered-mode
+            # integration via --netfilter from a generated iptables ruleset
+            # is v1.1 work (see NETWORK_FILTER_ENABLE_HELPER_PROBE gate).
+            echo "open isolated"
+            ;;
+        landlock)
+            # No mount/network namespace — only open.
+            echo "open"
+            ;;
+        *)
+            echo "open"
+            ;;
+    esac
+}
+
+# Pretty-print the fix-path block. Used by both warn-fallback and fail
+# paths. Centralizes the message text so docs and runtime stay in sync.
+_network_filter_print_fixpaths() {
+    local _requested="$1" _backend="$2"
+    cat >&2 <<EOF
+  Fix paths (pick whichever fits):
+    1. Install a network helper on PATH so 'filtered' mode works.
+         apt install passt          # Debian / Ubuntu 22.10+
+         dnf install passt          # RHEL 9+ / Fedora
+         brew install passt         # Homebrew
+       Or fetch the static binary shipped with agent-sandbox:
+         $SANDBOX_DIR/tools/pasta/fetch.sh
+    2. Pin NETWORK_FILTER_MODE='isolated' to accept the kill-network
+       fallback intentionally (no warning, full block).
+    3. Set NETWORK_FILTER_FALLBACK='open' to also accept dropping to
+       host network when no isolated mode is available. ACCEPTS
+       WEAKENING.
+    4. Set NETWORK_FILTER_FALLBACK='strict' to refuse to launch
+       instead of falling back (what 'strict' gives you).
+    5. Set NETWORK_FILTER_MODE='open' to disable the layer entirely.
+  See docs/reference/network-filter.md for the full mode + fallback
+  matrix and per-backend support.
+EOF
+}
+
+_network_filter_warn_fallback() {
+    local _from="$1" _to="$2" _why="$3" _backend="$4"
+    cat >&2 <<EOF
+sandbox: WARNING — network filter fell back from '$_from' to '$_to'.
+  Reason: $_why
+  Active backend: $_backend
+EOF
+    _network_filter_print_fixpaths "$_from" "$_backend"
+}
+
+_network_filter_fail() {
+    local _why="$1" _requested="$2" _backend="$3"
+    cat >&2 <<EOF
+Error: sandbox cannot deliver NETWORK_FILTER_MODE='$_requested' on backend '$_backend'.
+  Reason: $_why
+EOF
+    _network_filter_print_fixpaths "$_requested" "$_backend"
+    exit 1
+}
+
+# Resolve the actual network mode to apply. Side effects:
+#   _NETWORK_FILTER_RESOLVED  — one of open|filtered|isolated
+#   _NETWORK_FILTER_REASON    — human-readable rationale (for logging)
+#   _NETWORK_FILTER_HELPER    — for filtered mode, the resolved helper
+#                               binary path (empty otherwise)
+# Exits with diagnostic on irrecoverable mismatch.
+resolve_network_filter_mode() {
+    local _backend="$1"
+    local _requested="${NETWORK_FILTER_MODE:-filtered}"
+    local _policy="${NETWORK_FILTER_FALLBACK:-stricter}"
+
+    case "$_requested" in
+        open|filtered|isolated) ;;
+        *) echo "Error: NETWORK_FILTER_MODE='$_requested' invalid (open|filtered|isolated)." >&2; exit 1 ;;
+    esac
+    case "$_policy" in
+        strict|stricter|open) ;;
+        *) echo "Error: NETWORK_FILTER_FALLBACK='$_policy' invalid (strict|stricter|open)." >&2; exit 1 ;;
+    esac
+
+    local _supported
+    _supported=" $(_network_modes_supported_by_backend "$_backend") "
+
+    if [[ "$_supported" == *" $_requested "* ]]; then
+        _NETWORK_FILTER_RESOLVED="$_requested"
+        _NETWORK_FILTER_REASON="$_requested (requested; supported on backend '$_backend')"
+        _NETWORK_FILTER_HELPER=""
+        if [[ "$_requested" == "filtered" && "$_backend" == "bwrap" ]]; then
+            _NETWORK_FILTER_HELPER="$(_resolve_network_helper)"
+        fi
+        return 0
+    fi
+
+    local _why
+    case "$_requested:$_backend" in
+        filtered:bwrap)    _why="filtered mode requires a network helper (pasta or slirp4netns); none found on PATH and tools/pasta/pasta is not shipped." ;;
+        filtered:firejail) _why="filtered mode requires 'nft' on PATH for the --netfilter ruleset; not found." ;;
+        filtered:landlock) _why="filtered mode requires a mount/network namespace; landlock has neither." ;;
+        isolated:landlock) _why="isolated mode requires a network namespace; landlock has none." ;;
+        *)                 _why="mode '$_requested' not supported on backend '$_backend' (supported: $_supported)." ;;
+    esac
+
+    case "$_policy" in
+        strict)
+            _network_filter_fail "$_why" "$_requested" "$_backend"
+            ;;
+        stricter)
+            local _req_idx _try _try_idx
+            _req_idx="$(_network_mode_strictness_idx "$_requested")"
+            for _try in isolated filtered; do
+                _try_idx="$(_network_mode_strictness_idx "$_try")"
+                if [[ "$_try_idx" -gt "$_req_idx" && "$_supported" == *" $_try "* ]]; then
+                    _NETWORK_FILTER_RESOLVED="$_try"
+                    _NETWORK_FILTER_REASON="$_try (fallback from '$_requested'; policy=stricter)"
+                    _NETWORK_FILTER_HELPER=""
+                    if [[ "$_try" == "filtered" && "$_backend" == "bwrap" ]]; then
+                        _NETWORK_FILTER_HELPER="$(_resolve_network_helper)"
+                    fi
+                    _network_filter_warn_fallback "$_requested" "$_try" "$_why" "$_backend"
+                    return 0
+                fi
+            done
+            _network_filter_fail "$_why (no stricter mode available on backend '$_backend'; policy=stricter)" "$_requested" "$_backend"
+            ;;
+        open)
+            # `open` policy falls back ONLY to a LESS-restrictive mode
+            # than requested — never to a stricter one. The user's
+            # request named a target level of isolation; if that level
+            # can't be delivered, `open` says "weaken, don't strengthen".
+            # The probe order is most-strict-of-the-less-strict first so
+            # we degrade as little as necessary.
+            local _req_idx _try _try_idx
+            _req_idx="$(_network_mode_strictness_idx "$_requested")"
+            for _try in filtered open; do
+                _try_idx="$(_network_mode_strictness_idx "$_try")"
+                if [[ "$_try_idx" -lt "$_req_idx" && "$_supported" == *" $_try "* ]]; then
+                    _NETWORK_FILTER_RESOLVED="$_try"
+                    _NETWORK_FILTER_REASON="$_try (fallback from '$_requested'; policy=open, less-restrictive)"
+                    _NETWORK_FILTER_HELPER=""
+                    if [[ "$_try" == "filtered" && "$_backend" == "bwrap" ]]; then
+                        _NETWORK_FILTER_HELPER="$(_resolve_network_helper)"
+                    fi
+                    _network_filter_warn_fallback "$_requested" "$_try" "$_why" "$_backend"
+                    return 0
+                fi
+            done
+            # `open` is always available — if we got here the requested
+            # mode was 'open' (which means it was supported and we'd have
+            # taken the happy path above). Belt-and-suspenders.
+            _NETWORK_FILTER_RESOLVED="open"
+            _NETWORK_FILTER_REASON="open (last-resort fallback from '$_requested'; policy=open)"
+            _NETWORK_FILTER_HELPER=""
+            _network_filter_warn_fallback "$_requested" "open" "$_why" "$_backend"
+            return 0
+            ;;
+    esac
+}
+
+# ── Precedence model — wildcard / exception / admin pin ──────────
+#
+# Policy entries (NETWORK_BLOCKLIST and NETWORK_BLOCKLIST_EXCEPT)
+# support bash-glob wildcards in the host part. Examples:
+#   *.amazonaws.com          # any subdomain
+#   *.example.com:443        # any subdomain on port 443
+#   *                        # everything (deny-all pattern)
+#   10.0.0.0/8               # CIDR (string-equal match for now;
+#                            #   future v1.1 enforcement parses)
+#   853                      # bare port (all destinations)
+#
+# Matching semantics (v1.0 policy-table level):
+#
+#   `_network_rule_matches PATTERN CANDIDATE` returns 0 iff PATTERN
+#   matches CANDIDATE under bash glob semantics. Used to detect when
+#   an admin BLOCKLIST entry covers a user EXCEPT entry (and so the
+#   user's exception is meaningless and must be stripped). The full
+#   per-connection enforcement (CIDR + port + hostname tuple
+#   evaluation) is the v1.1 helper's job — at v1.0 the resolver
+#   computes and exports the policy table; this glob-cover check is
+#   the only pattern-match the lib itself performs at config-load.
+#
+# Specificity / precedence (documented for v1.1 enforcement):
+#   exact host:port  >  exact host  >  CIDR with smaller mask  >
+#   CIDR with larger mask  >  wildcard host pattern  >  bare port
+# Among same-specificity rules, BLOCKLIST wins over BLOCKLIST_EXCEPT
+# (safer default). Admin rules always win over user rules.
+
+_network_rule_matches() {
+    # shellcheck disable=SC2053 # pattern matching is intentional
+    [[ "$2" == $1 ]]
+}
+
+# Strip user-added NETWORK_BLOCKLIST_EXCEPT entries that are covered
+# by any admin-set NETWORK_BLOCKLIST entry (under bash-glob semantics).
+# Admin policy is absolute — users cannot carve exceptions out of
+# admin blocks. Emits a loud warning per stripped entry.
+_strip_user_exceptions_covered_by_admin() {
+    local _label="${1:-Config}"
+    # Bail when either array isn't set (test harnesses, no-admin runs).
+    declare -p _ADMIN_NETWORK_BLOCKLIST &>/dev/null || return 0
+    declare -p NETWORK_BLOCKLIST_EXCEPT &>/dev/null || return 0
+    local _filtered=() _exc _admin _covered
+    for _exc in "${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
+        _covered=false
+        for _admin in "${_ADMIN_NETWORK_BLOCKLIST[@]+"${_ADMIN_NETWORK_BLOCKLIST[@]}"}"; do
+            if _network_rule_matches "$_admin" "$_exc"; then
+                _covered=true
+                echo "WARNING: ${_label} attempted to except '${_exc}' but admin NETWORK_BLOCKLIST has '${_admin}' which covers it — exception stripped (admin policy is absolute)." >&2
+                break
+            fi
+        done
+        $_covered || _filtered+=("$_exc")
+    done
+    NETWORK_BLOCKLIST_EXCEPT=("${_filtered[@]+"${_filtered[@]}"}")
+}
+
+# Compute the effective blocklist as the union of:
+#   _NETWORK_BLOCKLIST_DEFAULTS (built-in floor; always applied)
+#   NETWORK_BLOCKLIST           (admin + user merged after _enforce_admin_policy)
+# Duplicates collapse; order is floor → merged-config, preserved for the
+# emitted ruleset (later rules can shadow but the floor is enforced).
+# Result printed one entry per line to stdout.
+effective_network_blocklist() {
+    local _entry
+    for _entry in "${_NETWORK_BLOCKLIST_DEFAULTS[@]}"; do
+        echo "$_entry"
+    done
+    for _entry in "${NETWORK_BLOCKLIST[@]+"${NETWORK_BLOCKLIST[@]}"}"; do
+        echo "$_entry"
+    done
+}
+
+# Compute the effective exception list — admin + user merged, with
+# user entries covered by admin BLOCKLIST already stripped (by
+# `_strip_user_exceptions_covered_by_admin` at config-load time).
+# Result printed one entry per line to stdout.
+effective_network_exception_list() {
+    local _entry
+    for _entry in "${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
+        echo "$_entry"
+    done
 }
 
 # ── Test-harness early-return ────────────────────────────────────
@@ -1233,6 +1699,39 @@ if [[ -n "$_ADMIN_CONF" ]]; then
         fi
     done
     unset _bvar _admin_val
+fi
+
+# Restore env overrides for network-filter scalars (env wins over config;
+# admin enforcement re-applied below).
+if [[ -n "${_NETWORK_FILTER_MODE_OVERRIDE:-}" ]]; then
+    NETWORK_FILTER_MODE="$_NETWORK_FILTER_MODE_OVERRIDE"
+fi
+if [[ -n "${_NETWORK_FILTER_FALLBACK_OVERRIDE:-}" ]]; then
+    NETWORK_FILTER_FALLBACK="$_NETWORK_FILTER_FALLBACK_OVERRIDE"
+fi
+unset _NETWORK_FILTER_MODE_OVERRIDE _NETWORK_FILTER_FALLBACK_OVERRIDE
+
+# Re-apply admin enforcement on network-filter scalars: env can loosen
+# user config but cannot weaken admin-set values.
+if [[ -n "$_ADMIN_CONF" ]]; then
+    if [[ -n "${_ADMIN_NETWORK_FILTER_MODE:-}" ]]; then
+        _admin_idx="$(_network_mode_strictness_idx "$_ADMIN_NETWORK_FILTER_MODE")"
+        _user_idx="$(_network_mode_strictness_idx "${NETWORK_FILTER_MODE:-filtered}")"
+        if [[ "$_user_idx" -lt "$_admin_idx" ]]; then
+            echo "WARNING: env override NETWORK_FILTER_MODE='${NETWORK_FILTER_MODE}' weaker than admin '${_ADMIN_NETWORK_FILTER_MODE}' — restored." >&2
+            NETWORK_FILTER_MODE="$_ADMIN_NETWORK_FILTER_MODE"
+        fi
+        unset _admin_idx _user_idx
+    fi
+    if [[ -n "${_ADMIN_NETWORK_FILTER_FALLBACK:-}" ]]; then
+        _admin_pidx="$(_network_fallback_strictness_idx "$_ADMIN_NETWORK_FILTER_FALLBACK")"
+        _user_pidx="$(_network_fallback_strictness_idx "${NETWORK_FILTER_FALLBACK:-stricter}")"
+        if [[ "$_user_pidx" -lt "$_admin_pidx" ]]; then
+            echo "WARNING: env override NETWORK_FILTER_FALLBACK='${NETWORK_FILTER_FALLBACK}' weaker than admin '${_ADMIN_NETWORK_FILTER_FALLBACK}' — restored." >&2
+            NETWORK_FILTER_FALLBACK="$_ADMIN_NETWORK_FILTER_FALLBACK"
+        fi
+        unset _admin_pidx _user_pidx
+    fi
 fi
 
 # ── Validate config ──────────────────────────────────────────────
@@ -2139,6 +2638,7 @@ _load_sandbox_modules() {
         fi
     done
 }
+
 
 # ── Backend detection ───────────────────────────────────────────
 

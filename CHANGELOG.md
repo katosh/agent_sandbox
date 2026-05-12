@@ -7,6 +7,191 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **Network filter — optional default-deny outbound network layer
+  with strict-mode enforcement.** Closes the local-MTA identity-hijack
+  class that filesystem-level binary blocks cannot reach. The
+  abandoned `BLOCK_USER_MAIL` binary-overlay approach is gone — a
+  motivated agent inside the sandbox can speak SMTP from any
+  TCP-capable language (`bash /dev/tcp/127.0.0.1/25`, Python
+  `smtplib`, `nc`, …) and bypass the binary block trivially;
+  empirically verified on a shared-HPC compute node where the local
+  MTA accepts unauthenticated submission. The fix is to deny the
+  TCP path itself at a layer the agent cannot escape.
+
+  **Configuration surface (new):**
+  - `NETWORK_FILTER_MODE` (default `filtered`) — `open` | `filtered`
+    | `isolated`. `open` = current behaviour (host network shared);
+    `filtered` = netns (Linux network namespace — a per-process
+    isolated network stack) + helper applying the default-deny floor
+    plus user/admin `NETWORK_BLOCKLIST`; `isolated` = netns with no
+    network at all.
+  - `NETWORK_FILTER_FALLBACK` (default `stricter`) — `strict`
+    | `stricter` | `open`. Picks what happens when the requested
+    mode can't be delivered on the host (helper missing, kernel too
+    old, landlock-only environment). `strict` fails loudly;
+    `stricter` falls back ONLY to a MORE-restrictive mode (fails if
+    none possible); `open` falls back ONLY to a LESS-restrictive
+    mode (never strengthens against user intent — see the
+    "less-strict only" sub-bullet below for the rationale).
+  - `NETWORK_BLOCKLIST` — host:port / CIDR:port / port / wildcard
+    (`*.example.com`, `*`) patterns, additive to the shipped
+    `sandbox.conf` floor. Admin entries become a floor user config
+    cannot remove.
+  - `NETWORK_BLOCKLIST_EXCEPT` — exception list that carves holes in
+    `NETWORK_BLOCKLIST` under most-specific-rule-wins precedence
+    (see "Wildcard patterns + exception list" sub-bullet). User
+    entries covered by any admin-set `NETWORK_BLOCKLIST` are
+    stripped at config-load with a loud warning (admin policy is
+    absolute).
+  - **Floor lives in `sandbox.conf` skel, not `sandbox-lib.sh`.**
+    The full identity-bound exfil + lateral-movement surface ships
+    as the default `NETWORK_BLOCKLIST=(…)` in the shipped
+    `sandbox.conf` so an operator editing their config sees the
+    policy directly and can comment-out entries that don't apply.
+    `sandbox-lib.sh::_NETWORK_BLOCKLIST_DEFAULTS=()` is now an empty
+    sentinel; the floor is just user config. Categories:
+      * mail submission ports (24/25/465/587/2525) on loopback and
+        outbound to any external MTA (universal — uncommented);
+      * Fred Hutch campus mail-relay CIDR `140.107.0.0/16` on the
+        same ports (site-specific — **commented out by default**;
+        uncomment for FH gizmo and similar campus-trust networks);
+      * transactional-email HTTPS APIs (Mailgun, SendGrid, Postmark,
+        Resend, Amazon SES) (universal);
+      * webhook-as-mail surfaces (Slack, Discord, Teams via Power
+        Automate, IFTTT Maker, request-inspecting endpoints)
+        (universal);
+      * anonymous file-drop endpoints (transfer.sh, file.io, 0x0.st,
+        catbox.moe, bashupload.com) (universal);
+      * public paste services (pastebin.com, 0bin.net) (universal);
+      * DoH resolvers (cloudflare-dns.com, dns.google, dns.quad9.net,
+        mozilla.cloudflare-dns.com) + DoT port 853 (universal);
+      * legacy r-services (telnet 23, finger 79, ident 113, rexec
+        512, rlogin 513, rsh/syslog 514) (universal);
+      * SMB/CIFS (139, 445), RDP (3389), VNC (5900–5905)
+        (site-specific — **commented out by default**; uncomment
+        if no legitimate sandboxed workload needs these);
+      * LDAP (389, 636, 3268, 3269) and Kerberos (88, 464)
+        (site-specific — commented out by default);
+      * Slurm controller/d/dbd (6817–6819) and munge TCP (904)
+        (site-specific — commented out by default).
+    Each entry carries a one-line rationale comment. Site-specific
+    entries are commented by default and clearly annotated; an
+    operator on a matching deployment uncomments what applies.
+
+  - **Wildcard patterns + exception list (`NETWORK_BLOCKLIST_EXCEPT`).**
+    Blocklist entries can be bash-glob wildcards (`*.example.com`,
+    `*`) or CIDR ranges or bare ports. A companion
+    `NETWORK_BLOCKLIST_EXCEPT` list carves holes in the blocklist
+    under a most-specific-rule-wins precedence model: exact host
+    overrides wildcard, more-specific CIDR overrides broader CIDR,
+    etc. The "implicit-allowlist" idiom `NETWORK_BLOCKLIST=("*")` +
+    `NETWORK_BLOCKLIST_EXCEPT=("github.com" "api.openai.com" …)`
+    gives deny-by-default semantics for power users; the default
+    deployment remains deny-by-blocklist (no allowlist required).
+
+  - **Admin precedence absolute.** User
+    `NETWORK_BLOCKLIST_EXCEPT` entries covered by any admin-set
+    `NETWORK_BLOCKLIST` entry (under bash-glob semantics) are
+    stripped at config-load with a loud warning. Admin policy
+    cannot be carved out by users — same precedence model as
+    `PRIVATE_TMP` / `FILTER_PASSWD`. Both admin and user can have
+    `NETWORK_BLOCKLIST_EXCEPT` entries; only admin's are absolute.
+
+  - **`NETWORK_FILTER_FALLBACK=open` semantics — less-strict only.**
+    The `open` policy now falls back ONLY to a less-restrictive
+    mode than requested (never to a stricter one — that's what
+    `stricter` is for). Probe order: most-strict-of-the-less-strict
+    first (`isolated` requested + `open` policy + bwrap-with-helper
+    → falls to `filtered`; same configuration without helper →
+    falls to `open` directly). Names match user intent:
+    `strict`=never fall, `stricter`=OK to strengthen,
+    `open`=OK to weaken.
+
+  - **Resolver pinning is not needed.** Empirically verified on a
+    representative HPC node: `/etc/resolv.conf` is a 644 symlink to
+    a root-owned target, RO to unprivileged users; `/etc/hosts` and
+    `/etc/nsswitch.conf` same. Inside the sandbox `/etc` is
+    bind-mounted read-only via `READONLY_MOUNTS`. The
+    application-level resolver-evasion surface (Python `dnspython`,
+    Go `net.Resolver`, Rust `hickory-dns`, etc.) is what matters,
+    and is covered by the DoH-hostname + DoT-port (853) block in
+    the default floor.
+  - **Initialisation safety:** `NETWORK_BLOCKLIST=()` ships as a
+    declared empty indexed array in the lib defaults, and the var
+    is registered in `_CONFIG_ARRAYS` so `_load_untrusted_config`
+    serialises the parent's empty array into the subprocess before
+    any conf.d/*.conf runs. A user's `NETWORK_BLOCKLIST+=("foo:25")`
+    in `conf.d/` loads cleanly under `set -u` and the entry lands in
+    `effective_network_blocklist`. New regression test in section
+    11.4 exercises this end-to-end.
+
+  **Per-backend support in this release:**
+  - **bwrap** — `open` and `isolated` (via native `--unshare-net`)
+    deliver fully; `filtered` is gated behind
+    `NETWORK_FILTER_ENABLE_HELPER_PROBE=1` because the bwrap + pasta
+    + nft chain that wires real per-port filtering is reserved for
+    v1.1. Default `filtered + stricter` therefore falls back to
+    `isolated` with a loud startup warning enumerating every fix
+    path.
+  - **firejail** — `open` and `isolated` (via `--net=none`); the
+    `--netfilter` integration for `filtered` is v1.1.
+  - **landlock** — `open` only; no mount or network namespace
+    available. `stricter` fallback fails with the explicit
+    fix-path enumeration; `open` policy falls back to host network
+    with the same loud warning.
+
+  Admin enforcement: `NETWORK_FILTER_MODE`, `NETWORK_FILTER_FALLBACK`,
+  `NETWORK_BLOCKLIST`, and `NETWORK_BLOCKLIST_EXCEPT` follow the
+  existing admin-vs-user precedence model (`PRIVATE_TMP`,
+  `FILTER_PASSWD`, etc.) — admins can pin; users can only request
+  equal or stricter values; users cannot remove admin-set blocklist
+  entries, and any user exception covered by an admin blocklist
+  entry (under bash-glob semantics) is stripped at config-load with
+  a loud warning.
+
+  Helper distribution: `tools/pasta/fetch.sh` ships a build-from-
+  source recipe for `pasta` (passt project, BSD-3-Clause arm — no
+  source-offer obligation, no third-party deps beyond libc, single
+  ~1–1.5 MB musl-static binary). PATH-detected `pasta` /
+  `tools/pasta/pasta` / `slirp4netns` is the resolved priority order
+  once the helper-probe gate flips in v1.1.
+
+  Documentation: new `docs/reference/network-filter.md` covering the
+  threat model, mode + fallback matrix, configuration syntax, helper
+  install paths, per-backend support table, and troubleshooting.
+  Cross-linked from the Reference nav.
+
+  Tests: new `test.sh` section 11.4 covering every directive
+  shipped in this PR:
+  - resolver unit tests (defaults, all fallback policies on every
+    backend, the strict-fails path, the stricter-has-no-stricter-
+    on-landlock path);
+  - the `open` policy never falls to a stricter mode than requested
+    (regression guard for the less-strict-only rule);
+  - the shipped `sandbox.conf` floor — every universal category is
+    asserted PRESENT in `effective_network_blocklist`, every
+    site-specific category is asserted ABSENT (regression guard
+    against accidental uncomment-in-skel);
+  - integration: `isolated` mode blocks `bash /dev/tcp/127.0.0.1/25`
+    and Python `smtplib`;
+  - positive-path: `open` mode keeps DNS resolution + HTTPS to
+    `github.com` / `pypi.org` reachable;
+  - `sandbox-notify` carve-out verified (uses `/dev/tty` + tmux
+    IPC, unaffected by netns isolation);
+  - conf.d/*.conf safety: `NETWORK_BLOCKLIST+=()` loads cleanly
+    under `set -u` with the new vars properly initialised
+    upstream of project-config load;
+  - wildcard pattern matching (`*.suffix` / exact / `*`) behaves
+    as documented;
+  - admin-precedence: user exceptions covered by admin blocklist
+    are stripped with the expected warning;
+  - `effective_network_exception_list` emits the merged exceptions.
+
+  Tracking: settylab/dotto-nexus#117. Previous binary-only PR closed
+  per user direction; this layer is the actual fix.
+
 ## [0.9.0] - 2026-05-10
 
 ### Security
