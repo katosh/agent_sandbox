@@ -36,43 +36,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `NETWORK_BLOCKLIST` — host:port / CIDR:port / port patterns,
     additive to the built-in floor. Admin entries become a floor
     user config cannot remove.
-  - `_NETWORK_BLOCKLIST_DEFAULTS` — built-in floor encoding the
-    full identity-bound exfil + lateral-movement surface:
+  - **Floor lives in `sandbox.conf` skel, not `sandbox-lib.sh`.**
+    The full identity-bound exfil + lateral-movement surface ships
+    as the default `NETWORK_BLOCKLIST=(…)` in the shipped
+    `sandbox.conf` so an operator editing their config sees the
+    policy directly and can comment-out entries that don't apply.
+    `sandbox-lib.sh::_NETWORK_BLOCKLIST_DEFAULTS=()` is now an empty
+    sentinel; the floor is just user config. Categories:
       * mail submission ports (24/25/465/587/2525) on loopback and
-        outbound to any external MTA (universal);
+        outbound to any external MTA (universal — uncommented);
       * Fred Hutch campus mail-relay CIDR `140.107.0.0/16` on the
-        same ports (site-specific; annotated removable for
-        deployments without that network);
+        same ports (site-specific — **commented out by default**;
+        uncomment for FH gizmo and similar campus-trust networks);
       * transactional-email HTTPS APIs (Mailgun, SendGrid, Postmark,
-        Resend, Amazon SES);
-      * webhook-as-mail surfaces (Slack hooks, Discord webhooks,
-        Teams via Power Automate, IFTTT Maker, request-inspecting
-        endpoints);
+        Resend, Amazon SES) (universal);
+      * webhook-as-mail surfaces (Slack, Discord, Teams via Power
+        Automate, IFTTT Maker, request-inspecting endpoints)
+        (universal);
       * anonymous file-drop endpoints (transfer.sh, file.io, 0x0.st,
-        catbox.moe, bashupload.com);
-      * public paste services (pastebin.com, 0bin.net);
+        catbox.moe, bashupload.com) (universal);
+      * public paste services (pastebin.com, 0bin.net) (universal);
       * DoH resolvers (cloudflare-dns.com, dns.google, dns.quad9.net,
-        mozilla.cloudflare-dns.com) plus DoT port 853 — closes the
-        resolver-evasion paths that would defeat DNS pinning;
-      * SMB / CIFS (139, 445), RDP (3389), VNC (5900–5905) —
-        universal lateral-movement gates;
+        mozilla.cloudflare-dns.com) + DoT port 853 (universal);
       * legacy r-services (telnet 23, finger 79, ident 113, rexec
-        512, rlogin 513, rsh/syslog 514) — universal;
-      * site-specific: LDAP (389, 636, 3268, 3269) and Kerberos
-        (88, 464) — annotated removable for deployments where a
-        workload legitimately needs directory/auth contact from
-        inside the sandbox;
-      * site-specific: Slurm controller/d/dbd (6817, 6818, 6819) and
-        munge TCP (904) — annotated removable for deployments
-        without Slurm or those that need direct, non-chaperon Slurm
-        access.
-    Each entry carries a one-line rationale and (where applicable) a
-    "site-specific; review before deploying elsewhere" annotation in
-    `sandbox-lib.sh`. Under v1.0 the floor describes the policy
-    table only — `effective_network_blocklist` computes it and the
-    test suite asserts every category remains present (regression
-    guard); per-entry enforcement waits on the helper integration
-    (see v1.0 vs v1.1 note below).
+        512, rlogin 513, rsh/syslog 514) (universal);
+      * SMB/CIFS (139, 445), RDP (3389), VNC (5900–5905)
+        (site-specific — **commented out by default**; uncomment
+        if no legitimate sandboxed workload needs these);
+      * LDAP (389, 636, 3268, 3269) and Kerberos (88, 464)
+        (site-specific — commented out by default);
+      * Slurm controller/d/dbd (6817–6819) and munge TCP (904)
+        (site-specific — commented out by default).
+    Each entry carries a one-line rationale comment. Site-specific
+    entries are commented by default and clearly annotated; an
+    operator on a matching deployment uncomments what applies.
+
+  - **Wildcard patterns + exception list (`NETWORK_BLOCKLIST_EXCEPT`).**
+    Blocklist entries can be bash-glob wildcards (`*.example.com`,
+    `*`) or CIDR ranges or bare ports. A companion
+    `NETWORK_BLOCKLIST_EXCEPT` list carves holes in the blocklist
+    under a most-specific-rule-wins precedence model: exact host
+    overrides wildcard, more-specific CIDR overrides broader CIDR,
+    etc. The "implicit-allowlist" idiom `NETWORK_BLOCKLIST=("*")` +
+    `NETWORK_BLOCKLIST_EXCEPT=("github.com" "api.openai.com" …)`
+    gives deny-by-default semantics for power users; the default
+    deployment remains deny-by-blocklist (no allowlist required).
+
+  - **Admin precedence absolute.** User
+    `NETWORK_BLOCKLIST_EXCEPT` entries covered by any admin-set
+    `NETWORK_BLOCKLIST` entry (under bash-glob semantics) are
+    stripped at config-load with a loud warning. Admin policy
+    cannot be carved out by users — same precedence model as
+    `PRIVATE_TMP` / `FILTER_PASSWD`. Both admin and user can have
+    `NETWORK_BLOCKLIST_EXCEPT` entries; only admin's are absolute.
+
+  - **`NETWORK_FILTER_FALLBACK=open` semantics — less-strict only.**
+    The `open` policy now falls back ONLY to a less-restrictive
+    mode than requested (never to a stricter one — that's what
+    `stricter` is for). Probe order: most-strict-of-the-less-strict
+    first (`isolated` requested + `open` policy + bwrap-with-helper
+    → falls to `filtered`; same configuration without helper →
+    falls to `open` directly). Names match user intent:
+    `strict`=never fall, `stricter`=OK to strengthen,
+    `open`=OK to weaken.
+
+  - **Resolver pinning is not needed.** Empirically verified on a
+    representative HPC node: `/etc/resolv.conf` is a 644 symlink to
+    a root-owned target, RO to unprivileged users; `/etc/hosts` and
+    `/etc/nsswitch.conf` same. Inside the sandbox `/etc` is
+    bind-mounted read-only via `READONLY_MOUNTS`. The
+    application-level resolver-evasion surface (Python `dnspython`,
+    Go `net.Resolver`, Rust `hickory-dns`, etc.) is what matters,
+    and is covered by the DoH-hostname + DoT-port (853) block in
+    the default floor.
   - **Initialisation safety:** `NETWORK_BLOCKLIST=()` ships as a
     declared empty indexed array in the lib defaults, and the var
     is registered in `_CONFIG_ARRAYS` so `_load_untrusted_config`

@@ -4493,7 +4493,14 @@ if (
     # Test 1: defaults
     [[ "$NETWORK_FILTER_MODE" == "filtered" ]] || { echo "default mode wrong"; exit 1; }
     [[ "$NETWORK_FILTER_FALLBACK" == "stricter" ]] || { echo "default fallback wrong"; exit 1; }
-    [[ "${#_NETWORK_BLOCKLIST_DEFAULTS[@]}" -ge 20 ]] || { echo "default blocklist too short"; exit 1; }
+    # _NETWORK_BLOCKLIST_DEFAULTS is now empty (sentinel); the floor
+    # lives in the shipped sandbox.conf so an operator editing their
+    # config sees the policy table directly. Load the shipped
+    # sandbox.conf to populate NETWORK_BLOCKLIST for the floor checks
+    # below.
+    [[ "${#_NETWORK_BLOCKLIST_DEFAULTS[@]}" -eq 0 ]] || { echo "lib floor sentinel non-empty"; exit 1; }
+    _load_untrusted_config "$SCRIPT_DIR/sandbox.conf" "Test default sandbox.conf load"
+    [[ "${#NETWORK_BLOCKLIST[@]}" -ge 20 ]] || { echo "shipped sandbox.conf NETWORK_BLOCKLIST too short"; exit 1; }
 
     # Test 2: bwrap + filtered + stricter → isolated (v1.0: helper gated)
     NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=stricter
@@ -4510,46 +4517,58 @@ if (
     resolve_network_filter_mode bwrap 2>/dev/null
     [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || exit 1
 
-    # Test 5: landlock + filtered + open → open (no stricter possible)
+    # Test 5: filtered + open + landlock → open (less-strict only)
     NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=open
     resolve_network_filter_mode landlock 2>/dev/null
     [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || exit 1
 
-    # Test 6: effective blocklist contains the full identity-bound
-    # floor. Each category is sampled once; the assertion fails fast
-    # if any category was dropped from the baked-in defaults. Under
-    # v1.0 these describe the policy table; per-entry enforcement
-    # waits on the v1.1 helper integration.
-    #
+    # Test 5b: filtered + open on bwrap-no-helper must NOT go stricter
+    # (to isolated). The `open` policy is "less restrictive only".
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=open
+    resolve_network_filter_mode bwrap 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || { echo "open policy went stricter ($_NETWORK_FILTER_RESOLVED) — regression"; exit 1; }
+
+    # Test 5c: isolated + open + landlock → open (less-strict only)
+    NETWORK_FILTER_MODE=isolated NETWORK_FILTER_FALLBACK=open
+    resolve_network_filter_mode landlock 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || exit 1
+
+    # Test 6: effective blocklist (after loading shipped sandbox.conf
+    # in Test 1) contains the universal entries. Site-specific entries
+    # are commented out by default in the skel and so must NOT appear.
     # Mail submission (universal):
     effective_network_blocklist 2>/dev/null | grep -q "^127.0.0.1:24\$" || exit 1
     effective_network_blocklist 2>/dev/null | grep -q "^127.0.0.1:25\$" || exit 1
     effective_network_blocklist 2>/dev/null | grep -q "^0.0.0.0/0:25\$" || exit 1
-    # Site-specific Fred Hutch campus CIDR (annotated removable in lib):
-    effective_network_blocklist 2>/dev/null | grep -q "^140.107.0.0/16:25\$" || exit 1
-    # Transactional-email HTTPS APIs:
+    # Site-specific Fred Hutch CIDR — commented out by default → MUST
+    # NOT be present:
+    effective_network_blocklist 2>/dev/null | grep -q "^140.107.0.0/16:25\$" && exit 1
+    # Transactional-email HTTPS APIs (universal):
     effective_network_blocklist 2>/dev/null | grep -q "^api.mailgun.net\$" || exit 1
-    # Webhooks:
+    # Webhooks (universal):
     effective_network_blocklist 2>/dev/null | grep -q "^hooks.slack.com\$" || exit 1
-    # File drops + paste:
+    # File drops + paste (universal):
     effective_network_blocklist 2>/dev/null | grep -q "^transfer.sh\$" || exit 1
     effective_network_blocklist 2>/dev/null | grep -q "^pastebin.com\$" || exit 1
-    # DoH / DoT:
+    # DoH / DoT (universal):
     effective_network_blocklist 2>/dev/null | grep -q "^cloudflare-dns.com\$" || exit 1
     effective_network_blocklist 2>/dev/null | grep -q "^853\$" || exit 1
-    # SMB / RDP / VNC:
-    effective_network_blocklist 2>/dev/null | grep -q "^445\$" || exit 1
-    effective_network_blocklist 2>/dev/null | grep -q "^3389\$" || exit 1
-    effective_network_blocklist 2>/dev/null | grep -q "^5900\$" || exit 1
-    # Legacy r-services:
+    # SMB / RDP / VNC — site-specific (commented out) → MUST NOT be
+    # present:
+    effective_network_blocklist 2>/dev/null | grep -q "^445\$" && exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^3389\$" && exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^5900\$" && exit 1
+    # Legacy r-services (universal):
     effective_network_blocklist 2>/dev/null | grep -q "^23\$" || exit 1
     effective_network_blocklist 2>/dev/null | grep -q "^514\$" || exit 1
-    # Site-specific directory / Kerberos:
-    effective_network_blocklist 2>/dev/null | grep -q "^389\$" || exit 1
-    effective_network_blocklist 2>/dev/null | grep -q "^88\$" || exit 1
-    # Site-specific Slurm / munge:
-    effective_network_blocklist 2>/dev/null | grep -q "^6817\$" || exit 1
-    effective_network_blocklist 2>/dev/null | grep -q "^904\$" || exit 1
+    # Site-specific LDAP / Kerberos — commented out by default → MUST
+    # NOT be present:
+    effective_network_blocklist 2>/dev/null | grep -q "^389\$" && exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^88\$" && exit 1
+    # Site-specific Slurm / munge — commented out by default → MUST
+    # NOT be present:
+    effective_network_blocklist 2>/dev/null | grep -q "^6817\$" && exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^904\$" && exit 1
 
     exit 0
 ); then
@@ -4753,6 +4772,77 @@ CONF
     pass "Network filter: conf.d/*.conf NETWORK_BLOCKLIST+=() loads under set -u"
 else
     fail "Network filter: conf.d/*.conf += pattern failed (rc=$?); init regression"
+fi
+
+# Wildcard pattern matching — bash-glob covers the expected cases.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    # *.example.com matches subdomains but not the bare domain.
+    _network_rule_matches "*.example.com" "api.example.com" || exit 1
+    _network_rule_matches "*.example.com" "deep.foo.example.com" || exit 1
+    _network_rule_matches "*.example.com" "example.com" && exit 1  # MUST NOT match
+    # exact host
+    _network_rule_matches "example.com" "example.com" || exit 1
+    _network_rule_matches "example.com" "api.example.com" && exit 1  # MUST NOT match
+    # wildcard *
+    _network_rule_matches "*" "anything.example.com" || exit 1
+    _network_rule_matches "*" "10.0.0.1" || exit 1
+    exit 0
+); then
+    pass "Network filter: wildcard pattern matching (*.suffix / exact / *) behaves as documented"
+else
+    fail "Network filter: wildcard pattern matching regressed (rc=$?)"
+fi
+
+# Admin-precedence: user NETWORK_BLOCKLIST_EXCEPT entries covered by
+# admin NETWORK_BLOCKLIST are stripped at config-load with a loud
+# warning. The user cannot carve exceptions out of admin policy.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    # Simulate admin snapshot + user exception list.
+    _ADMIN_NETWORK_BLOCKLIST=("*.example.com" "hooks.slack.com")
+    NETWORK_BLOCKLIST_EXCEPT=("api.example.com" "github.com" "hooks.slack.com")
+    # Capture stderr so we can verify the warnings fire.
+    _stderr="$(_strip_user_exceptions_covered_by_admin "Test admin-precedence probe" 2>&1 1>/dev/null)"
+    # github.com is not covered → stays.
+    # api.example.com covered by *.example.com → stripped + warning.
+    # hooks.slack.com exact-covered → stripped + warning.
+    [[ "${#NETWORK_BLOCKLIST_EXCEPT[@]}" -eq 1 ]] || exit 1
+    [[ "${NETWORK_BLOCKLIST_EXCEPT[0]}" == "github.com" ]] || exit 1
+    grep -q "attempted to except 'api.example.com'.*\*.example.com" <<< "$_stderr" || exit 1
+    grep -q "attempted to except 'hooks.slack.com'" <<< "$_stderr" || exit 1
+    exit 0
+); then
+    pass "Network filter: admin-pinned BLOCKLIST overrides user EXCEPT (admin policy absolute)"
+else
+    fail "Network filter: admin-precedence enforcement regressed (rc=$?)"
+fi
+
+# effective_network_exception_list emits the carved-out user
+# exceptions (admin-covered entries already stripped).
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    NETWORK_BLOCKLIST+=("*.amazonaws.com")
+    NETWORK_BLOCKLIST_EXCEPT+=("mybucket.s3.amazonaws.com" "github.com")
+    # The except list must include both user entries (no admin to
+    # strip them).
+    _list="$(effective_network_exception_list)"
+    grep -q "^mybucket.s3.amazonaws.com\$" <<< "$_list" || exit 1
+    grep -q "^github.com\$" <<< "$_list" || exit 1
+    exit 0
+); then
+    pass "Network filter: effective_network_exception_list emits the merged exceptions"
+else
+    fail "Network filter: exception-list helper regressed (rc=$?)"
 fi
 
 

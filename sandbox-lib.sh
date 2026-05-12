@@ -239,170 +239,48 @@ FILTER_PASSWD=true
 NETWORK_FILTER_MODE="filtered"
 NETWORK_FILTER_FALLBACK="stricter"
 
-# Always-on floor for outbound block patterns. User and admin additions
-# extend this; the floor itself cannot be removed via config — it
-# encodes the identity-hijack surface this layer exists to close.
-# Pattern syntax: host[:port] | CIDR[:port] | port. See
-# docs/reference/network-filter.md for the full grammar.
+# Sentinel for any future "always-on, not user-removable" floor
+# entries. Currently empty — the full identity-bound exfil + lateral-
+# movement surface lives in `sandbox.conf::NETWORK_BLOCKLIST` so an
+# operator editing their config sees the policy and can comment-out
+# entries that don't apply to their deployment. See
+# docs/reference/network-filter.md for the rationale + the full
+# enumerated default set.
 #
-# Caveat for the v1.0 release: the bwrap+pasta+nft chain that delivers
-# real per-entry enforcement is gated behind v1.1 (see
-# `NETWORK_FILTER_ENABLE_HELPER_PROBE` below). Until that lands, the
-# entries below describe the policy table — once the helper integration
-# ships, these become live without any config change. v1.0's `filtered`
-# default still falls back to `isolated` (full network kill) which closes
-# the identity-hijack threat by a stricter means than enumeration.
+# Pattern syntax (when entries do live here): host[:port] | CIDR[:port]
+# | port | "*.suffix" wildcard | "*" deny-all.
 _NETWORK_BLOCKLIST_DEFAULTS=(
-    # ── Local mail submission (MTA = Mail Transfer Agent — the
-    # daemon, e.g. Postfix or sendmail, that accepts mail for
-    # delivery). On most shared hosts the local MTA listens on
-    # 127.0.0.1:25 and accepts mail without authentication, relaying
-    # under whichever user submits it. Closing the loopback path
-    # closes the dominant identity-hijack route.
-    "127.0.0.1:24"        # LMTP (Local Mail Transport Protocol — MTA↔MDA)
-    "127.0.0.1:25"        # SMTP, plaintext local-submission
-    "127.0.0.1:465"       # SMTPS (TLS-wrapped SMTP)
-    "127.0.0.1:587"       # submission (authenticated MUA → MSA)
-    "127.0.0.1:2525"      # alt-submission (Mailgun/SendGrid; ISP-25-block dodge)
-    "[::1]:24"            # IPv6 loopback equivalents
-    "[::1]:25"
-    "[::1]:465"
-    "[::1]:587"
-    "[::1]:2525"
-
-    # ── Outbound to any external MTA on the canonical mail ports.
-    # Closes direct-to-relay submission (Gmail/O365/external MTAs)
-    # regardless of the host's mail-relay topology.
-    "0.0.0.0/0:24"
-    "0.0.0.0/0:25"
-    "0.0.0.0/0:465"
-    "0.0.0.0/0:587"
-    "0.0.0.0/0:2525"
-    "[::]/0:24"
-    "[::]/0:25"
-    "[::]/0:465"
-    "[::]/0:587"
-    "[::]/0:2525"
-
-    # ── Site-specific: Fred Hutch campus mail relays.
-    # Postfix's `mynetworks` on Fred Hutch gizmo trusts the campus
-    # 140.107.0.0/16 range without authentication, so an agent can
-    # speak SMTP directly to mx.fhcrc.org (140.107.{43,52,116}.*) and
-    # be relayed under the operator's identity. Other deployments
-    # without this network may safely remove these entries; the
-    # 0.0.0.0/0:<port> entries above already cover any external relay
-    # that's reachable via the public internet — the FH entries here
-    # only matter on networks where a campus-trust topology makes a
-    # specific RFC-1918 or routed CIDR special.
-    "140.107.0.0/16:24"
-    "140.107.0.0/16:25"
-    "140.107.0.0/16:465"
-    "140.107.0.0/16:587"
-    "140.107.0.0/16:2525"
-
-    # ── Transactional-email HTTPS APIs. Same threat as SMTP relay
-    # (identity-bound mail submission) but layered over HTTPS so a
-    # port block alone misses them.
-    "api.mailgun.net"            # Mailgun send API
-    "api.sendgrid.com"           # SendGrid send API
-    "api.postmarkapp.com"        # Postmark send API
-    "api.resend.com"             # Resend send API
-    "email.*.amazonaws.com"      # Amazon SES (per-region endpoints)
-
-    # ── Webhook-as-mail surfaces. Indistinguishable from legitimate
-    # HTTPS at the TLS layer; an attacker can use any of these to
-    # exfiltrate or impersonate under the operator's authenticated
-    # identity if the operator has connected webhooks for the
-    # workspace.
-    "hooks.slack.com"            # Slack incoming webhooks
-    "discord.com/api/webhooks"   # Discord webhooks
-    "*.webhook.office.com"       # Teams (Microsoft Power Automate) webhooks
-    "outlook.office.com/webhook" # Outlook actionable-message webhook
-    "webhook.site"               # request-inspecting endpoint (exfil-friendly)
-    "*.requestbin.com"           # request-inspecting endpoints
-    "maker.ifttt.com"            # IFTTT Maker triggers
-
-    # ── Anonymous file-drop endpoints. Public unauthenticated POST
-    # surfaces — single-request exfil channels indistinguishable
-    # from legitimate uploads.
-    "transfer.sh"                # ephemeral file host
-    "file.io"                    # ephemeral file host
-    "0x0.st"                     # null-pointer file host
-    "catbox.moe"                 # file host
-    "bashupload.com"             # curl-friendly file host
-
-    # ── Public paste services. Public-by-default text/code drops.
-    "pastebin.com"               # paste service
-    "0bin.net"                   # encrypted paste service
-
-    # ── DoH (DNS-over-HTTPS — bypasses standard resolver pinning).
-    # If the layer pins DNS to a vetted resolver, an attacker can
-    # still resolve arbitrary names by pointing at one of these
-    # well-known DoH endpoints, defeating the pin. Blocking them
-    # closes the resolver-evasion path.
-    "cloudflare-dns.com"
-    "dns.google"
-    "dns.quad9.net"
-    "mozilla.cloudflare-dns.com"
-
-    # ── DoT (DNS-over-TLS) — companion to the DoH block above. Fixed
-    # well-known port; block universally.
-    "853"
-
-    # ── SMB / CIFS — lateral file-share access; cross-host NTLM
-    # relay; mass-exfil channel. No legitimate sandboxed-agent use.
-    "139"                        # NetBIOS session service
-    "445"                        # SMB direct over TCP
-
-    # ── RDP / VNC — remote-desktop pivots to other hosts. No
-    # legitimate sandboxed-agent use.
-    "3389"                       # Microsoft RDP
-    "5900"                       # VNC display :0
-    "5901"                       # VNC display :1
-    "5902"                       # VNC display :2
-    "5903"                       # VNC display :3
-    "5904"                       # VNC display :4
-    "5905"                       # VNC display :5
-
-    # ── Legacy r-services and clear-text auth protocols. Universal
-    # blocks — no modern workload needs these and they each carry
-    # historic credential-leak baggage.
-    "23"                         # telnet
-    "79"                         # finger
-    "113"                        # ident / auth
-    "512"                        # rexec
-    "513"                        # rlogin
-    "514"                        # rsh / syslog (UDP)
-
-    # ── Site-specific: directory / auth protocols (LDAP, Kerberos).
-    # The host is already authenticated; the sandbox should not need
-    # to mint fresh tickets or enumerate the directory. Deployments
-    # where a workload legitimately needs LDAP/Kerberos inside the
-    # sandbox may remove these entries. On most setups they're a
-    # paranoia-level lateral-movement gate.
-    "389"                        # LDAP (site-specific)
-    "636"                        # LDAPS (site-specific)
-    "3268"                       # AD global catalog (site-specific)
-    "3269"                       # AD global catalog SSL (site-specific)
-    "88"                         # Kerberos KDC (site-specific)
-    "464"                        # Kerberos kpasswd (site-specific)
-
-    # ── Site-specific: Slurm controller / accounting / munge.
-    # Direct TCP to slurmctld/slurmd/slurmdbd bypasses the chaperon
-    # proxy (chaperon/) which is the legitimate Slurm-submission
-    # path. Munge socket is over Unix domain (not TCP) but munge has
-    # historically also exposed a TCP listener on 904. Deployments
-    # without Slurm may remove these entries; deployments that need
-    # direct (non-chaperon) Slurm contact may also remove.
-    "6817"                       # slurmctld (site-specific)
-    "6818"                       # slurmd (site-specific)
-    "6819"                       # slurmdbd (site-specific)
-    "904"                        # munge TCP (site-specific)
 )
 
 # User/admin block extensions. Format identical to the floor above.
 # Each entry is appended; the floor cannot be removed via this list.
+# Wildcard patterns (`*.example.com`, `*.example.com:443`) are supported
+# under bash glob semantics. CIDR ranges (`10.0.0.0/8[:port]`) and bare
+# ports (`853`) are also accepted.
 NETWORK_BLOCKLIST=()
+
+# Exception list — entries that carve a hole in the blocklist using
+# the precedence model documented in docs/reference/network-filter.md.
+# Format identical to NETWORK_BLOCKLIST. An exception applies when a
+# more-specific entry here matches a candidate destination that an
+# enclosing wildcard / CIDR / bare-port entry in NETWORK_BLOCKLIST
+# would otherwise block.
+#
+# Examples:
+#   NETWORK_BLOCKLIST+=("*.amazonaws.com")
+#   NETWORK_BLOCKLIST_EXCEPT+=("s3.amazonaws.com")
+#     → s3.amazonaws.com allowed; *.amazonaws.com still blocked.
+#
+#   NETWORK_BLOCKLIST+=("*")
+#   NETWORK_BLOCKLIST_EXCEPT+=("github.com" "api.openai.com")
+#     → implicit-allowlist idiom: block everything except the named
+#       hosts (deny-by-default).
+#
+# Admin precedence: an admin-set NETWORK_BLOCKLIST entry CANNOT be
+# overridden by a user NETWORK_BLOCKLIST_EXCEPT — the user's entry is
+# stripped at config-load with a loud warning. The admin can carve
+# their own exceptions in their own NETWORK_BLOCKLIST_EXCEPT.
+NETWORK_BLOCKLIST_EXCEPT=()
 
 # Bind host /dev into the sandbox instead of bwrap's minimal devtmpfs.
 # DEPRECATED: kept as a kernel-aware shim. On kernel < 5.4 it appends
@@ -733,7 +611,7 @@ _CONFIG_ARRAYS=(
     EXTRA_BLOCKED_PATHS EXTRA_WRITABLE_PATHS DENIED_WRITABLE_PATHS
     DEVICES DEVICES_BLACKLIST
     SANDBOX_ENV SUPPRESS_AGENT_WARNINGS SANDBOX_MODULES ENABLED_AGENTS
-    NETWORK_BLOCKLIST
+    NETWORK_BLOCKLIST NETWORK_BLOCKLIST_EXCEPT
 )
 _CONFIG_SCALARS=(
     SANDBOX_BACKEND PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD BIND_DEV_PTS
@@ -743,7 +621,7 @@ _CONFIG_SCALARS=(
     LANDLOCK_REQUIRED_ABI LANDLOCK_HARD_REQUIREMENT
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
-_ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS EXTRA_BLOCKED_PATHS DEVICES_BLACKLIST NETWORK_BLOCKLIST)
+_ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS EXTRA_BLOCKED_PATHS DEVICES_BLACKLIST NETWORK_BLOCKLIST NETWORK_BLOCKLIST_EXCEPT)
 
 # --- Load an untrusted config file in an isolated subprocess ---
 #
@@ -1084,6 +962,13 @@ _enforce_admin_policy() {
         done
         $_found || echo "WARNING: ${_label} removed admin-enforced NETWORK_BLOCKLIST entry '${_a}' — restored." >&2
     done
+    for _a in "${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]+"${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
+        _found=false
+        for _item in "${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
+            [[ "$_item" == "$_a" ]] && { _found=true; break; }
+        done
+        $_found || echo "WARNING: ${_label} removed admin-enforced NETWORK_BLOCKLIST_EXCEPT entry '${_a}' — restored." >&2
+    done
 
     # HOME_READONLY → HOME_WRITABLE escalation
     for _aro in "${_ADMIN_HOME_READONLY[@]}"; do
@@ -1143,6 +1028,7 @@ _enforce_admin_policy() {
     local _user_app=("${ALLOWED_PROJECT_PARENTS[@]}")
     local _user_dbl=("${DEVICES_BLACKLIST[@]}")
     local _user_nbl=("${NETWORK_BLOCKLIST[@]+"${NETWORK_BLOCKLIST[@]}"}")
+    local _user_nbx=("${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}")
 
     # --- Restore admin base values ---
     BLOCKED_FILES=("${_ADMIN_BLOCKED_FILES[@]}")
@@ -1164,6 +1050,7 @@ _enforce_admin_policy() {
     DENIED_WRITABLE_PATHS=("${_ADMIN_DENIED_WRITABLE_PATHS[@]}")
     DEVICES_BLACKLIST=("${_ADMIN_DEVICES_BLACKLIST[@]}")
     NETWORK_BLOCKLIST=("${_ADMIN_NETWORK_BLOCKLIST[@]+"${_ADMIN_NETWORK_BLOCKLIST[@]}"}")
+    NETWORK_BLOCKLIST_EXCEPT=("${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]+"${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]}"}")
 
     # --- Merge: admin base + user-only additions ---
     local _in_admin
@@ -1191,6 +1078,12 @@ _enforce_admin_policy() {
     _narrow_allowed_project_parents _user_app "$_label"
     _merge_additions _user_dbl  _ADMIN_DEVICES_BLACKLIST       DEVICES_BLACKLIST
     _merge_additions _user_nbl  _ADMIN_NETWORK_BLOCKLIST       NETWORK_BLOCKLIST
+    # NETWORK_BLOCKLIST_EXCEPT merges similarly, but with an
+    # additional cover-check: user-exception entries that match (under
+    # bash glob semantics) any admin-set NETWORK_BLOCKLIST entry are
+    # stripped + warned. Admin entries cannot be carved out by users.
+    _merge_additions _user_nbx  _ADMIN_NETWORK_BLOCKLIST_EXCEPT  NETWORK_BLOCKLIST_EXCEPT
+    _strip_user_exceptions_covered_by_admin "$_label"
 
     # HOME_WRITABLE: merge user additions, but strip admin HOME_READONLY items
     for _item in "${_user_hw[@]}"; do
@@ -1386,6 +1279,7 @@ _snapshot_admin_config() {
     fi
     _ADMIN_DEVICES_BLACKLIST=("${DEVICES_BLACKLIST[@]}")
     _ADMIN_NETWORK_BLOCKLIST=("${NETWORK_BLOCKLIST[@]+"${NETWORK_BLOCKLIST[@]}"}")
+    _ADMIN_NETWORK_BLOCKLIST_EXCEPT=("${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}")
 
     # Security-critical booleans: snapshot so users cannot weaken them.
     _ADMIN_PRIVATE_TMP="${PRIVATE_TMP:-true}"
@@ -1607,13 +1501,19 @@ resolve_network_filter_mode() {
             _network_filter_fail "$_why (no stricter mode available on backend '$_backend'; policy=stricter)" "$_requested" "$_backend"
             ;;
         open)
+            # `open` policy falls back ONLY to a LESS-restrictive mode
+            # than requested — never to a stricter one. The user's
+            # request named a target level of isolation; if that level
+            # can't be delivered, `open` says "weaken, don't strengthen".
+            # The probe order is most-strict-of-the-less-strict first so
+            # we degrade as little as necessary.
             local _req_idx _try _try_idx
             _req_idx="$(_network_mode_strictness_idx "$_requested")"
-            for _try in isolated filtered open; do
+            for _try in filtered open; do
                 _try_idx="$(_network_mode_strictness_idx "$_try")"
-                if [[ "$_try_idx" -gt "$_req_idx" && "$_supported" == *" $_try "* ]]; then
+                if [[ "$_try_idx" -lt "$_req_idx" && "$_supported" == *" $_try "* ]]; then
                     _NETWORK_FILTER_RESOLVED="$_try"
-                    _NETWORK_FILTER_REASON="$_try (fallback from '$_requested'; policy=open, prefer-stricter)"
+                    _NETWORK_FILTER_REASON="$_try (fallback from '$_requested'; policy=open, less-restrictive)"
                     _NETWORK_FILTER_HELPER=""
                     if [[ "$_try" == "filtered" && "$_backend" == "bwrap" ]]; then
                         _NETWORK_FILTER_HELPER="$(_resolve_network_helper)"
@@ -1622,6 +1522,9 @@ resolve_network_filter_mode() {
                     return 0
                 fi
             done
+            # `open` is always available — if we got here the requested
+            # mode was 'open' (which means it was supported and we'd have
+            # taken the happy path above). Belt-and-suspenders.
             _NETWORK_FILTER_RESOLVED="open"
             _NETWORK_FILTER_REASON="open (last-resort fallback from '$_requested'; policy=open)"
             _NETWORK_FILTER_HELPER=""
@@ -1629,6 +1532,63 @@ resolve_network_filter_mode() {
             return 0
             ;;
     esac
+}
+
+# ── Precedence model — wildcard / exception / admin pin ──────────
+#
+# Policy entries (NETWORK_BLOCKLIST and NETWORK_BLOCKLIST_EXCEPT)
+# support bash-glob wildcards in the host part. Examples:
+#   *.amazonaws.com          # any subdomain
+#   *.example.com:443        # any subdomain on port 443
+#   *                        # everything (deny-all pattern)
+#   10.0.0.0/8               # CIDR (string-equal match for now;
+#                            #   future v1.1 enforcement parses)
+#   853                      # bare port (all destinations)
+#
+# Matching semantics (v1.0 policy-table level):
+#
+#   `_network_rule_matches PATTERN CANDIDATE` returns 0 iff PATTERN
+#   matches CANDIDATE under bash glob semantics. Used to detect when
+#   an admin BLOCKLIST entry covers a user EXCEPT entry (and so the
+#   user's exception is meaningless and must be stripped). The full
+#   per-connection enforcement (CIDR + port + hostname tuple
+#   evaluation) is the v1.1 helper's job — at v1.0 the resolver
+#   computes and exports the policy table; this glob-cover check is
+#   the only pattern-match the lib itself performs at config-load.
+#
+# Specificity / precedence (documented for v1.1 enforcement):
+#   exact host:port  >  exact host  >  CIDR with smaller mask  >
+#   CIDR with larger mask  >  wildcard host pattern  >  bare port
+# Among same-specificity rules, BLOCKLIST wins over BLOCKLIST_EXCEPT
+# (safer default). Admin rules always win over user rules.
+
+_network_rule_matches() {
+    # shellcheck disable=SC2053 # pattern matching is intentional
+    [[ "$2" == $1 ]]
+}
+
+# Strip user-added NETWORK_BLOCKLIST_EXCEPT entries that are covered
+# by any admin-set NETWORK_BLOCKLIST entry (under bash-glob semantics).
+# Admin policy is absolute — users cannot carve exceptions out of
+# admin blocks. Emits a loud warning per stripped entry.
+_strip_user_exceptions_covered_by_admin() {
+    local _label="${1:-Config}"
+    # Bail when either array isn't set (test harnesses, no-admin runs).
+    declare -p _ADMIN_NETWORK_BLOCKLIST &>/dev/null || return 0
+    declare -p NETWORK_BLOCKLIST_EXCEPT &>/dev/null || return 0
+    local _filtered=() _exc _admin _covered
+    for _exc in "${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
+        _covered=false
+        for _admin in "${_ADMIN_NETWORK_BLOCKLIST[@]+"${_ADMIN_NETWORK_BLOCKLIST[@]}"}"; do
+            if _network_rule_matches "$_admin" "$_exc"; then
+                _covered=true
+                echo "WARNING: ${_label} attempted to except '${_exc}' but admin NETWORK_BLOCKLIST has '${_admin}' which covers it — exception stripped (admin policy is absolute)." >&2
+                break
+            fi
+        done
+        $_covered || _filtered+=("$_exc")
+    done
+    NETWORK_BLOCKLIST_EXCEPT=("${_filtered[@]+"${_filtered[@]}"}")
 }
 
 # Compute the effective blocklist as the union of:
@@ -1643,6 +1603,17 @@ effective_network_blocklist() {
         echo "$_entry"
     done
     for _entry in "${NETWORK_BLOCKLIST[@]+"${NETWORK_BLOCKLIST[@]}"}"; do
+        echo "$_entry"
+    done
+}
+
+# Compute the effective exception list — admin + user merged, with
+# user entries covered by admin BLOCKLIST already stripped (by
+# `_strip_user_exceptions_covered_by_admin` at config-load time).
+# Result printed one entry per line to stdout.
+effective_network_exception_list() {
+    local _entry
+    for _entry in "${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
         echo "$_entry"
     done
 }
