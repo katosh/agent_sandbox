@@ -31,11 +31,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     | `stricter` | `open`. Picks what happens when the requested
     mode can't be delivered on the host (helper missing, kernel too
     old, landlock-only environment). `strict` fails loudly;
-    `stricter` falls back ONLY to a more-restrictive mode (fails if
-    none possible); `open` falls back to anything.
-  - `NETWORK_BLOCKLIST` — host:port / CIDR:port / port patterns,
-    additive to the built-in floor. Admin entries become a floor
-    user config cannot remove.
+    `stricter` falls back ONLY to a MORE-restrictive mode (fails if
+    none possible); `open` falls back ONLY to a LESS-restrictive
+    mode (never strengthens against user intent — see the
+    "less-strict only" sub-bullet below for the rationale).
+  - `NETWORK_BLOCKLIST` — host:port / CIDR:port / port / wildcard
+    (`*.example.com`, `*`) patterns, additive to the shipped
+    `sandbox.conf` floor. Admin entries become a floor user config
+    cannot remove.
+  - `NETWORK_BLOCKLIST_EXCEPT` — exception list that carves holes in
+    `NETWORK_BLOCKLIST` under most-specific-rule-wins precedence
+    (see "Wildcard patterns + exception list" sub-bullet). User
+    entries covered by any admin-set `NETWORK_BLOCKLIST` are
+    stripped at config-load with a loud warning (admin policy is
+    absolute).
   - **Floor lives in `sandbox.conf` skel, not `sandbox-lib.sh`.**
     The full identity-bound exfil + lateral-movement surface ships
     as the default `NETWORK_BLOCKLIST=(…)` in the shipped
@@ -134,10 +143,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     with the same loud warning.
 
   Admin enforcement: `NETWORK_FILTER_MODE`, `NETWORK_FILTER_FALLBACK`,
-  and `NETWORK_BLOCKLIST` follow the existing admin-vs-user
-  precedence model (`PRIVATE_TMP`, `FILTER_PASSWD`, etc.) — admins
-  can pin; users can only request equal or stricter values; users
-  cannot remove admin-set blocklist entries.
+  `NETWORK_BLOCKLIST`, and `NETWORK_BLOCKLIST_EXCEPT` follow the
+  existing admin-vs-user precedence model (`PRIVATE_TMP`,
+  `FILTER_PASSWD`, etc.) — admins can pin; users can only request
+  equal or stricter values; users cannot remove admin-set blocklist
+  entries, and any user exception covered by an admin blocklist
+  entry (under bash-glob semantics) is stripped at config-load with
+  a loud warning.
 
   Helper distribution: `tools/pasta/fetch.sh` ships a build-from-
   source recipe for `pasta` (passt project, BSD-3-Clause arm — no
@@ -151,11 +163,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   install paths, per-backend support table, and troubleshooting.
   Cross-linked from the Reference nav.
 
-  Tests: new `test.sh` section 11.4 — pure-function resolver unit
-  tests via `_SANDBOX_LIB_NO_INIT=1`; integration tests asserting
-  `isolated` mode blocks `bash /dev/tcp/127.0.0.1/25` and Python
-  `smtplib`; sandbox-notify carve-out verified (uses `/dev/tty` +
-  tmux IPC, unaffected by netns isolation).
+  Tests: new `test.sh` section 11.4 covering every directive
+  shipped in this PR:
+  - resolver unit tests (defaults, all fallback policies on every
+    backend, the strict-fails path, the stricter-has-no-stricter-
+    on-landlock path);
+  - the `open` policy never falls to a stricter mode than requested
+    (regression guard for the less-strict-only rule);
+  - the shipped `sandbox.conf` floor — every universal category is
+    asserted PRESENT in `effective_network_blocklist`, every
+    site-specific category is asserted ABSENT (regression guard
+    against accidental uncomment-in-skel);
+  - integration: `isolated` mode blocks `bash /dev/tcp/127.0.0.1/25`
+    and Python `smtplib`;
+  - positive-path: `open` mode keeps DNS resolution + HTTPS to
+    `github.com` / `pypi.org` reachable;
+  - `sandbox-notify` carve-out verified (uses `/dev/tty` + tmux
+    IPC, unaffected by netns isolation);
+  - conf.d/*.conf safety: `NETWORK_BLOCKLIST+=()` loads cleanly
+    under `set -u` with the new vars properly initialised
+    upstream of project-config load;
+  - wildcard pattern matching (`*.suffix` / exact / `*`) behaves
+    as documented;
+  - admin-precedence: user exceptions covered by admin blocklist
+    are stripped with the expected warning;
+  - `effective_network_exception_list` emits the merged exceptions.
 
   Tracking: settylab/dotto-nexus#117. Previous binary-only PR closed
   per user direction; this layer is the actual fix.
