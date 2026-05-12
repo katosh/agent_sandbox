@@ -4718,24 +4718,32 @@ unset _net_open_conf
 # conf.d-safety: a user's conf.d/*.conf using `NETWORK_BLOCKLIST+=()`
 # (the canonical extension pattern) must load cleanly under `set -u`
 # without triggering an unbound-variable error. The new vars must be
-# initialised in sandbox-lib.sh's defaults BEFORE `load_project_config`
-# runs. Regression guard: if a future refactor drops `NETWORK_BLOCKLIST=()`
-# from the lib defaults, every conf.d file using the documented `+=`
-# syntax would silently fail under `set -u`. This test catches that.
+# initialised in sandbox-lib.sh's defaults BEFORE any conf.d file
+# runs. Regression guard: if a future refactor drops
+# `NETWORK_BLOCKLIST=()` from the lib defaults (or drops the var from
+# `_CONFIG_ARRAYS` so the parent state isn't serialised), every
+# conf.d file using the documented `+=` syntax would silently fail
+# under `set -u`. This test catches that.
+#
+# The test runs in the `_SANDBOX_LIB_NO_INIT=1` harness so it
+# exercises the pure config-loading primitive (`_load_untrusted_config`,
+# defined above the early return) directly — the same primitive
+# `load_project_config` wraps per-file in production. We don't need
+# `load_project_config` itself; what matters is that the
+# parent-state serialisation seeds `NETWORK_BLOCKLIST` as a declared
+# array before the conf.d file's `+=` executes in the subprocess.
 if (
     set -uo pipefail
     export _SANDBOX_LIB_NO_INIT=1
     export SANDBOX_QUIET=true
-    _confd_root="$(mktemp -d "${TMPDIR:-/tmp}/test-confd-init.XXXXXX")"
-    trap 'rm -rf "$_confd_root"' EXIT
-    mkdir -p "$_confd_root/conf.d"
-    cat > "$_confd_root/conf.d/test-confd-init.conf" <<'CONF'
+    _confd_file="$(mktemp "${TMPDIR:-/tmp}/test-confd-init.XXXXXX.conf")"
+    trap 'rm -f "$_confd_file"' EXIT
+    cat > "$_confd_file" <<'CONF'
 NETWORK_BLOCKLIST+=("test.example.com:443")
 NETWORK_FILTER_MODE="filtered"
 CONF
     source "$SCRIPT_DIR/sandbox-lib.sh"
-    _USER_DATA_DIR="$_confd_root"
-    load_project_config "$PWD"
+    _load_untrusted_config "$_confd_file" "conf.d init-safety probe"
     # The new entry must be in the user-extension array AND the
     # effective blocklist union must include it.
     [[ "${#NETWORK_BLOCKLIST[@]}" -ge 1 ]] || exit 1
