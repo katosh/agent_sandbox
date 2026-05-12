@@ -4515,17 +4515,41 @@ if (
     resolve_network_filter_mode landlock 2>/dev/null
     [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || exit 1
 
-    # Test 6: effective blocklist contains the universal floor — loopback
-    # mail submission + outbound-to-any-MTA + the broader exfil surface
-    # (transactional-email HTTPS APIs, webhooks, file drops, paste sites,
-    # DoH resolvers). Under v1.0 these describe the policy table; per-
-    # entry enforcement waits on the v1.1 helper integration.
+    # Test 6: effective blocklist contains the full identity-bound
+    # floor. Each category is sampled once; the assertion fails fast
+    # if any category was dropped from the baked-in defaults. Under
+    # v1.0 these describe the policy table; per-entry enforcement
+    # waits on the v1.1 helper integration.
+    #
+    # Mail submission (universal):
+    effective_network_blocklist 2>/dev/null | grep -q "^127.0.0.1:24\$" || exit 1
     effective_network_blocklist 2>/dev/null | grep -q "^127.0.0.1:25\$" || exit 1
     effective_network_blocklist 2>/dev/null | grep -q "^0.0.0.0/0:25\$" || exit 1
-    effective_network_blocklist 2>/dev/null | grep -q "^hooks.slack.com\$" || exit 1
+    # Site-specific Fred Hutch campus CIDR (annotated removable in lib):
+    effective_network_blocklist 2>/dev/null | grep -q "^140.107.0.0/16:25\$" || exit 1
+    # Transactional-email HTTPS APIs:
     effective_network_blocklist 2>/dev/null | grep -q "^api.mailgun.net\$" || exit 1
+    # Webhooks:
+    effective_network_blocklist 2>/dev/null | grep -q "^hooks.slack.com\$" || exit 1
+    # File drops + paste:
+    effective_network_blocklist 2>/dev/null | grep -q "^transfer.sh\$" || exit 1
     effective_network_blocklist 2>/dev/null | grep -q "^pastebin.com\$" || exit 1
+    # DoH / DoT:
     effective_network_blocklist 2>/dev/null | grep -q "^cloudflare-dns.com\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^853\$" || exit 1
+    # SMB / RDP / VNC:
+    effective_network_blocklist 2>/dev/null | grep -q "^445\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^3389\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^5900\$" || exit 1
+    # Legacy r-services:
+    effective_network_blocklist 2>/dev/null | grep -q "^23\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^514\$" || exit 1
+    # Site-specific directory / Kerberos:
+    effective_network_blocklist 2>/dev/null | grep -q "^389\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^88\$" || exit 1
+    # Site-specific Slurm / munge:
+    effective_network_blocklist 2>/dev/null | grep -q "^6817\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^904\$" || exit 1
 
     exit 0
 ); then
@@ -4690,6 +4714,38 @@ fi
 
 rm -f "$_net_open_conf"
 unset _net_open_conf
+
+# conf.d-safety: a user's conf.d/*.conf using `NETWORK_BLOCKLIST+=()`
+# (the canonical extension pattern) must load cleanly under `set -u`
+# without triggering an unbound-variable error. The new vars must be
+# initialised in sandbox-lib.sh's defaults BEFORE `load_project_config`
+# runs. Regression guard: if a future refactor drops `NETWORK_BLOCKLIST=()`
+# from the lib defaults, every conf.d file using the documented `+=`
+# syntax would silently fail under `set -u`. This test catches that.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    _confd_root="$(mktemp -d "${TMPDIR:-/tmp}/test-confd-init.XXXXXX")"
+    trap 'rm -rf "$_confd_root"' EXIT
+    mkdir -p "$_confd_root/conf.d"
+    cat > "$_confd_root/conf.d/test-confd-init.conf" <<'CONF'
+NETWORK_BLOCKLIST+=("test.example.com:443")
+NETWORK_FILTER_MODE="filtered"
+CONF
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    _USER_DATA_DIR="$_confd_root"
+    load_project_config "$PWD"
+    # The new entry must be in the user-extension array AND the
+    # effective blocklist union must include it.
+    [[ "${#NETWORK_BLOCKLIST[@]}" -ge 1 ]] || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^test.example.com:443\$" || exit 1
+    exit 0
+); then
+    pass "Network filter: conf.d/*.conf NETWORK_BLOCKLIST+=() loads under set -u"
+else
+    fail "Network filter: conf.d/*.conf += pattern failed (rc=$?); init regression"
+fi
 
 
 # ── 11.5 Device passthrough (bwrap only) ──────────────────────────

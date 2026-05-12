@@ -259,11 +259,13 @@ _NETWORK_BLOCKLIST_DEFAULTS=(
     # 127.0.0.1:25 and accepts mail without authentication, relaying
     # under whichever user submits it. Closing the loopback path
     # closes the dominant identity-hijack route.
+    "127.0.0.1:24"        # LMTP (Local Mail Transport Protocol — MTA↔MDA)
     "127.0.0.1:25"        # SMTP, plaintext local-submission
     "127.0.0.1:465"       # SMTPS (TLS-wrapped SMTP)
     "127.0.0.1:587"       # submission (authenticated MUA → MSA)
     "127.0.0.1:2525"      # alt-submission (Mailgun/SendGrid; ISP-25-block dodge)
-    "[::1]:25"            # IPv6 loopback equivalents
+    "[::1]:24"            # IPv6 loopback equivalents
+    "[::1]:25"
     "[::1]:465"
     "[::1]:587"
     "[::1]:2525"
@@ -271,14 +273,32 @@ _NETWORK_BLOCKLIST_DEFAULTS=(
     # ── Outbound to any external MTA on the canonical mail ports.
     # Closes direct-to-relay submission (Gmail/O365/external MTAs)
     # regardless of the host's mail-relay topology.
+    "0.0.0.0/0:24"
     "0.0.0.0/0:25"
     "0.0.0.0/0:465"
     "0.0.0.0/0:587"
     "0.0.0.0/0:2525"
+    "[::]/0:24"
     "[::]/0:25"
     "[::]/0:465"
     "[::]/0:587"
     "[::]/0:2525"
+
+    # ── Site-specific: Fred Hutch campus mail relays.
+    # Postfix's `mynetworks` on Fred Hutch gizmo trusts the campus
+    # 140.107.0.0/16 range without authentication, so an agent can
+    # speak SMTP directly to mx.fhcrc.org (140.107.{43,52,116}.*) and
+    # be relayed under the operator's identity. Other deployments
+    # without this network may safely remove these entries; the
+    # 0.0.0.0/0:<port> entries above already cover any external relay
+    # that's reachable via the public internet — the FH entries here
+    # only matter on networks where a campus-trust topology makes a
+    # specific RFC-1918 or routed CIDR special.
+    "140.107.0.0/16:24"
+    "140.107.0.0/16:25"
+    "140.107.0.0/16:465"
+    "140.107.0.0/16:587"
+    "140.107.0.0/16:2525"
 
     # ── Transactional-email HTTPS APIs. Same threat as SMTP relay
     # (identity-bound mail submission) but layered over HTTPS so a
@@ -324,6 +344,60 @@ _NETWORK_BLOCKLIST_DEFAULTS=(
     "dns.google"
     "dns.quad9.net"
     "mozilla.cloudflare-dns.com"
+
+    # ── DoT (DNS-over-TLS) — companion to the DoH block above. Fixed
+    # well-known port; block universally.
+    "853"
+
+    # ── SMB / CIFS — lateral file-share access; cross-host NTLM
+    # relay; mass-exfil channel. No legitimate sandboxed-agent use.
+    "139"                        # NetBIOS session service
+    "445"                        # SMB direct over TCP
+
+    # ── RDP / VNC — remote-desktop pivots to other hosts. No
+    # legitimate sandboxed-agent use.
+    "3389"                       # Microsoft RDP
+    "5900"                       # VNC display :0
+    "5901"                       # VNC display :1
+    "5902"                       # VNC display :2
+    "5903"                       # VNC display :3
+    "5904"                       # VNC display :4
+    "5905"                       # VNC display :5
+
+    # ── Legacy r-services and clear-text auth protocols. Universal
+    # blocks — no modern workload needs these and they each carry
+    # historic credential-leak baggage.
+    "23"                         # telnet
+    "79"                         # finger
+    "113"                        # ident / auth
+    "512"                        # rexec
+    "513"                        # rlogin
+    "514"                        # rsh / syslog (UDP)
+
+    # ── Site-specific: directory / auth protocols (LDAP, Kerberos).
+    # The host is already authenticated; the sandbox should not need
+    # to mint fresh tickets or enumerate the directory. Deployments
+    # where a workload legitimately needs LDAP/Kerberos inside the
+    # sandbox may remove these entries. On most setups they're a
+    # paranoia-level lateral-movement gate.
+    "389"                        # LDAP (site-specific)
+    "636"                        # LDAPS (site-specific)
+    "3268"                       # AD global catalog (site-specific)
+    "3269"                       # AD global catalog SSL (site-specific)
+    "88"                         # Kerberos KDC (site-specific)
+    "464"                        # Kerberos kpasswd (site-specific)
+
+    # ── Site-specific: Slurm controller / accounting / munge.
+    # Direct TCP to slurmctld/slurmd/slurmdbd bypasses the chaperon
+    # proxy (chaperon/) which is the legitimate Slurm-submission
+    # path. Munge socket is over Unix domain (not TCP) but munge has
+    # historically also exposed a TCP listener on 904. Deployments
+    # without Slurm may remove these entries; deployments that need
+    # direct (non-chaperon) Slurm contact may also remove.
+    "6817"                       # slurmctld (site-specific)
+    "6818"                       # slurmd (site-specific)
+    "6819"                       # slurmdbd (site-specific)
+    "904"                        # munge TCP (site-specific)
 )
 
 # User/admin block extensions. Format identical to the floor above.

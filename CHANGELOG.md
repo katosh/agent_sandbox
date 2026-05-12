@@ -37,20 +37,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     additive to the built-in floor. Admin entries become a floor
     user config cannot remove.
   - `_NETWORK_BLOCKLIST_DEFAULTS` — built-in floor encoding the
-    full identity-bound exfil surface: mail submission ports
-    (25/465/587/2525) on loopback and outbound to any external MTA;
-    transactional-email HTTPS APIs (Mailgun, SendGrid, Postmark,
-    Resend, Amazon SES); webhook-as-mail surfaces (Slack, Discord,
-    Teams, IFTTT, request-inspecting endpoints); anonymous file-drop
-    endpoints (transfer.sh, file.io, 0x0.st, catbox.moe,
-    bashupload.com); public paste services (pastebin.com, 0bin.net);
-    and DoH (DNS-over-HTTPS) resolvers that would otherwise let an
-    attacker bypass a pinned resolver. Each entry carries a one-line
-    rationale in `sandbox-lib.sh`. Under v1.0 the floor describes the
-    policy table only — `effective_network_blocklist` computes and
-    the test suite asserts these entries are present; per-entry
-    enforcement waits on the helper integration (see v1.0 vs v1.1
-    note below).
+    full identity-bound exfil + lateral-movement surface:
+      * mail submission ports (24/25/465/587/2525) on loopback and
+        outbound to any external MTA (universal);
+      * Fred Hutch campus mail-relay CIDR `140.107.0.0/16` on the
+        same ports (site-specific; annotated removable for
+        deployments without that network);
+      * transactional-email HTTPS APIs (Mailgun, SendGrid, Postmark,
+        Resend, Amazon SES);
+      * webhook-as-mail surfaces (Slack hooks, Discord webhooks,
+        Teams via Power Automate, IFTTT Maker, request-inspecting
+        endpoints);
+      * anonymous file-drop endpoints (transfer.sh, file.io, 0x0.st,
+        catbox.moe, bashupload.com);
+      * public paste services (pastebin.com, 0bin.net);
+      * DoH resolvers (cloudflare-dns.com, dns.google, dns.quad9.net,
+        mozilla.cloudflare-dns.com) plus DoT port 853 — closes the
+        resolver-evasion paths that would defeat DNS pinning;
+      * SMB / CIFS (139, 445), RDP (3389), VNC (5900–5905) —
+        universal lateral-movement gates;
+      * legacy r-services (telnet 23, finger 79, ident 113, rexec
+        512, rlogin 513, rsh/syslog 514) — universal;
+      * site-specific: LDAP (389, 636, 3268, 3269) and Kerberos
+        (88, 464) — annotated removable for deployments where a
+        workload legitimately needs directory/auth contact from
+        inside the sandbox;
+      * site-specific: Slurm controller/d/dbd (6817, 6818, 6819) and
+        munge TCP (904) — annotated removable for deployments
+        without Slurm or those that need direct, non-chaperon Slurm
+        access.
+    Each entry carries a one-line rationale and (where applicable) a
+    "site-specific; review before deploying elsewhere" annotation in
+    `sandbox-lib.sh`. Under v1.0 the floor describes the policy
+    table only — `effective_network_blocklist` computes it and the
+    test suite asserts every category remains present (regression
+    guard); per-entry enforcement waits on the helper integration
+    (see v1.0 vs v1.1 note below).
+  - **Initialisation safety:** `NETWORK_BLOCKLIST=()` ships as a
+    declared empty indexed array in the lib defaults, and the var
+    is registered in `_CONFIG_ARRAYS` so `_load_untrusted_config`
+    serialises the parent's empty array into the subprocess before
+    any conf.d/*.conf runs. A user's `NETWORK_BLOCKLIST+=("foo:25")`
+    in `conf.d/` loads cleanly under `set -u` and the entry lands in
+    `effective_network_blocklist`. New regression test in section
+    11.4 exercises this end-to-end.
 
   **Per-backend support in this release:**
   - **bwrap** — `open` and `isolated` (via native `--unshare-net`)
