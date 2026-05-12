@@ -8,32 +8,37 @@ exfiltration surface).
 
 ## Threat model
 
-On a typical HPC compute node the local MTA (Postfix or
-sendmail-compat) listens on `127.0.0.1:25` and accepts unauthenticated
-mail submission from any local user, then relays under that user's
-`From:` header. The `mynetworks` directive frequently extends that
-trust to the whole campus IP range (`140.107.216.0/21` on Fred Hutch
-gizmo, for example), so an adversary controlling a sandboxed agent
-can spoof the operator's identity in **two** ways:
+On a typical HPC compute node (or any shared multi-tenant host) the
+local MTA — Mail Transfer Agent, the daemon (e.g. Postfix or
+sendmail) that accepts mail for delivery — listens on `127.0.0.1:25`
+and accepts the standard local mail-submission protocol (ports
+25/465/587/2525) from any local user without authentication, then
+relays under that user's `From:` header. Postfix's `mynetworks`
+directive frequently extends that trust to a wider organizational
+CIDR (lab subnet, campus /16, etc.), so an adversary controlling a
+sandboxed agent can spoof the operator's identity in **two** ways:
 
 1. Speak SMTP directly to `127.0.0.1:25` from any TCP-capable
    language (`bash /dev/tcp/127.0.0.1/25`, Python `smtplib`, …).
-2. Speak SMTP directly to the campus relay (`mx.fhcrc.org:25`) — the
-   relay trusts any IP in `mynetworks`, again unauthenticated.
+2. Speak SMTP directly to a nearby relay whose IP is trusted by
+   `mynetworks` — the relay accepts unauthenticated submission for
+   any sender, again under the operator's identity.
 
 Both bypass any filesystem-level binary block. The fix is to deny the
 TCP path itself at a layer the agent cannot escape.
 
 **Non-goals.** This layer does NOT defend against:
 
-- Covert L7 channels over allowed 443 hostnames (a determined agent
-  with `pip install requests` can POST to any HTTPS endpoint the
-  allowlist permits — webhooks-as-mail, paste sites, transactional-
-  email HTTPS APIs). SNI-level filtering is a future layer.
+- Covert L7 channels over allowed 443 hostnames the policy admits (a
+  determined agent with `pip install requests` can POST to any HTTPS
+  endpoint the policy permits). The default blocklist closes the
+  obvious universal exfil channels (webhooks-as-mail, paste sites,
+  transactional-email HTTPS APIs); SNI-level filtering of arbitrary
+  HTTPS destinations is a future layer.
 - Host-side mail policy bypass via mechanisms outside the sandbox's
   control (a privileged user on the host with mail-spool access).
-  Negotiate host-side policy with site SciComp as the Layer 3
-  complement.
+  Negotiate host-side mail policy with your site's operations team
+  as the Layer 3 complement.
 
 ## Modes
 
@@ -42,13 +47,14 @@ TCP path itself at a layer the agent cannot escape.
 | Mode | Mechanism | Network reach |
 | --- | --- | --- |
 | `open` | share the host network namespace; no isolation | full host network (legacy behaviour) |
-| `filtered` | new netns + helper (pasta or slirp4netns); apply default-deny floor + user/admin blocklist | general outbound TCP/UDP/DNS minus the threat ports |
+| `filtered` | new netns (Linux network namespace — a per-process isolated network stack) + helper (pasta or slirp4netns); apply default-deny floor + user/admin blocklist | general outbound TCP/UDP/DNS minus the threat ports |
 | `isolated` | new netns with no network at all | none (DNS / pip / git break) |
 
 **v1.0 implementation status.** The configuration surface, mode
 resolution, and fallback machinery ship in v1.0. The bwrap +
-pasta + nft chain that delivers a real `filtered` mode is reserved
-for v1.1 — the helper-detection function in `sandbox-lib.sh`
+pasta + `nft` (nftables — the Linux kernel packet-filter framework,
+successor to iptables) chain that delivers a real `filtered` mode is
+reserved for v1.1 — the helper-detection function in `sandbox-lib.sh`
 (`_resolve_network_helper`) is gated by `NETWORK_FILTER_ENABLE_HELPER_PROBE=1`
 and returns "no helper" by default in v1.0. The practical effect
 on v1.0 deployments:
@@ -64,6 +70,20 @@ When v1.1 ships the integration, deployments running with `filtered +
 stricter` will silently start using real filtered mode the moment
 the helper is on PATH (or `tools/pasta/pasta` is installed via
 `tools/pasta/fetch.sh`). No config change is required to flip over.
+
+The default blocklist already enumerates the full identity-bound
+exfil surface (mail submission ports, transactional-email HTTPS
+APIs, webhook-as-mail surfaces, anonymous file-drop endpoints,
+public paste services, DoH resolvers (DoH = DNS-over-HTTPS, which
+bypasses standard DNS resolver pinning by tunnelling lookups over
+443) — see "Default blocklist" below for the full list with one-line
+rationales). Under v1.0 these
+entries describe the policy table only — the resolver still computes
+them via `effective_network_blocklist`, the test suite asserts they
+are present, but the helper that actually enforces them per-entry
+is gated until v1.1. The v1.0 `isolated`-fallback path closes the
+threat by stricter means (full network kill) rather than per-entry
+enforcement.
 
 ## Fallback policies
 
@@ -154,9 +174,9 @@ Install paths, in order of preference:
    upstream source tarball, builds a static binary for the host
    architecture, installs at `tools/pasta/pasta`.
 3. **lmod (site-specific)**: `SANDBOX_MODULES+=("passt/<version>")`
-   when the site provides a module. A
-   `FredHutch/easybuild-life-sciences` request has been filed for
-   Fred Hutch.
+   when the site provides a module. Sites with an EasyBuild pipeline
+   can request the upstream `passt` recipe; the easyconfig is a small
+   addition (the binary has no third-party deps).
 
 The helper-detection function probes in PATH-first order:
 distro/Homebrew `pasta`, then the shipped binary, then `slirp4netns`

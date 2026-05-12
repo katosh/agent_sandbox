@@ -244,36 +244,33 @@ NETWORK_FILTER_FALLBACK="stricter"
 # encodes the identity-hijack surface this layer exists to close.
 # Pattern syntax: host[:port] | CIDR[:port] | port. See
 # docs/reference/network-filter.md for the full grammar.
+#
+# Caveat for the v1.0 release: the bwrap+pasta+nft chain that delivers
+# real per-entry enforcement is gated behind v1.1 (see
+# `NETWORK_FILTER_ENABLE_HELPER_PROBE` below). Until that lands, the
+# entries below describe the policy table — once the helper integration
+# ships, these become live without any config change. v1.0's `filtered`
+# default still falls back to `isolated` (full network kill) which closes
+# the identity-hijack threat by a stricter means than enumeration.
 _NETWORK_BLOCKLIST_DEFAULTS=(
-    # Local Postfix submission — listening on every HPC compute node
-    # we've examined (ss -tln confirms 127.0.0.1:25 on gizmo). The
-    # local MTA accepts unauthenticated submission and relays under
-    # the operator's identity; this is the dominant identity-hijack
-    # path that motivates the entire layer.
-    "127.0.0.1:25"
-    "127.0.0.1:465"
-    "127.0.0.1:587"
-    "127.0.0.1:2525"
-    # IPv6 loopback equivalents.
-    "[::1]:25"
+    # ── Local mail submission (MTA = Mail Transfer Agent — the
+    # daemon, e.g. Postfix or sendmail, that accepts mail for
+    # delivery). On most shared hosts the local MTA listens on
+    # 127.0.0.1:25 and accepts mail without authentication, relaying
+    # under whichever user submits it. Closing the loopback path
+    # closes the dominant identity-hijack route.
+    "127.0.0.1:25"        # SMTP, plaintext local-submission
+    "127.0.0.1:465"       # SMTPS (TLS-wrapped SMTP)
+    "127.0.0.1:587"       # submission (authenticated MUA → MSA)
+    "127.0.0.1:2525"      # alt-submission (Mailgun/SendGrid; ISP-25-block dodge)
+    "[::1]:25"            # IPv6 loopback equivalents
     "[::1]:465"
     "[::1]:587"
     "[::1]:2525"
-    # Campus mail relays trusted by Postfix's mynetworks. On Fred Hutch
-    # gizmo, /etc/postfix/main.cf::mynetworks = 140.107.216.0/21 means
-    # every campus Postfix trusts every campus IP without authentication.
-    # Loopback-only block alone would miss this path; the broader /16
-    # covers 140.107.{43,52,116}.* where mx.fhcrc.org resolves and is
-    # representative of similar HPC trust models on other campuses.
-    # Operators on a different network may override this entry.
-    "140.107.0.0/16:25"
-    "140.107.0.0/16:465"
-    "140.107.0.0/16:587"
-    "140.107.0.0/16:2525"
-    # Outbound to any external MTA on the canonical mail ports. Closes
-    # direct-to-relay submission (Gmail/O365/SendGrid/Mailgun) and the
-    # alternate-port dodge (2525 — Mailgun + SendGrid expose this
-    # explicitly to bypass ISP filters on 25).
+
+    # ── Outbound to any external MTA on the canonical mail ports.
+    # Closes direct-to-relay submission (Gmail/O365/external MTAs)
+    # regardless of the host's mail-relay topology.
     "0.0.0.0/0:25"
     "0.0.0.0/0:465"
     "0.0.0.0/0:587"
@@ -282,6 +279,51 @@ _NETWORK_BLOCKLIST_DEFAULTS=(
     "[::]/0:465"
     "[::]/0:587"
     "[::]/0:2525"
+
+    # ── Transactional-email HTTPS APIs. Same threat as SMTP relay
+    # (identity-bound mail submission) but layered over HTTPS so a
+    # port block alone misses them.
+    "api.mailgun.net"            # Mailgun send API
+    "api.sendgrid.com"           # SendGrid send API
+    "api.postmarkapp.com"        # Postmark send API
+    "api.resend.com"             # Resend send API
+    "email.*.amazonaws.com"      # Amazon SES (per-region endpoints)
+
+    # ── Webhook-as-mail surfaces. Indistinguishable from legitimate
+    # HTTPS at the TLS layer; an attacker can use any of these to
+    # exfiltrate or impersonate under the operator's authenticated
+    # identity if the operator has connected webhooks for the
+    # workspace.
+    "hooks.slack.com"            # Slack incoming webhooks
+    "discord.com/api/webhooks"   # Discord webhooks
+    "*.webhook.office.com"       # Teams (Microsoft Power Automate) webhooks
+    "outlook.office.com/webhook" # Outlook actionable-message webhook
+    "webhook.site"               # request-inspecting endpoint (exfil-friendly)
+    "*.requestbin.com"           # request-inspecting endpoints
+    "maker.ifttt.com"            # IFTTT Maker triggers
+
+    # ── Anonymous file-drop endpoints. Public unauthenticated POST
+    # surfaces — single-request exfil channels indistinguishable
+    # from legitimate uploads.
+    "transfer.sh"                # ephemeral file host
+    "file.io"                    # ephemeral file host
+    "0x0.st"                     # null-pointer file host
+    "catbox.moe"                 # file host
+    "bashupload.com"             # curl-friendly file host
+
+    # ── Public paste services. Public-by-default text/code drops.
+    "pastebin.com"               # paste service
+    "0bin.net"                   # encrypted paste service
+
+    # ── DoH (DNS-over-HTTPS — bypasses standard resolver pinning).
+    # If the layer pins DNS to a vetted resolver, an attacker can
+    # still resolve arbitrary names by pointing at one of these
+    # well-known DoH endpoints, defeating the pin. Blocking them
+    # closes the resolver-evasion path.
+    "cloudflare-dns.com"
+    "dns.google"
+    "dns.quad9.net"
+    "mozilla.cloudflare-dns.com"
 )
 
 # User/admin block extensions. Format identical to the floor above.

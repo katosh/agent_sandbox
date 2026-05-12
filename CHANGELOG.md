@@ -16,14 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   motivated agent inside the sandbox can speak SMTP from any
   TCP-capable language (`bash /dev/tcp/127.0.0.1/25`, Python
   `smtplib`, `nc`, …) and bypass the binary block trivially;
-  empirically verified on Fred Hutch gizmo. The fix is to deny the
+  empirically verified on a shared-HPC compute node where the local
+  MTA accepts unauthenticated submission. The fix is to deny the
   TCP path itself at a layer the agent cannot escape.
 
   **Configuration surface (new):**
   - `NETWORK_FILTER_MODE` (default `filtered`) — `open` | `filtered`
     | `isolated`. `open` = current behaviour (host network shared);
-    `filtered` = netns + helper applying the default-deny floor plus
-    user/admin `NETWORK_BLOCKLIST`; `isolated` = netns with no
+    `filtered` = netns (Linux network namespace — a per-process
+    isolated network stack) + helper applying the default-deny floor
+    plus user/admin `NETWORK_BLOCKLIST`; `isolated` = netns with no
     network at all.
   - `NETWORK_FILTER_FALLBACK` (default `stricter`) — `strict`
     | `stricter` | `open`. Picks what happens when the requested
@@ -34,11 +36,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `NETWORK_BLOCKLIST` — host:port / CIDR:port / port patterns,
     additive to the built-in floor. Admin entries become a floor
     user config cannot remove.
-  - `_NETWORK_BLOCKLIST_DEFAULTS` — built-in floor encoding mail
-    submission (25/465/587/2525) on loopback, on the campus mail-
-    relay /16 (`140.107.0.0/16` — Fred Hutch trust topology, also
-    representative of similar shared-HPC patterns), and outbound to
-    any external MTA on the canonical mail ports.
+  - `_NETWORK_BLOCKLIST_DEFAULTS` — built-in floor encoding the
+    full identity-bound exfil surface: mail submission ports
+    (25/465/587/2525) on loopback and outbound to any external MTA;
+    transactional-email HTTPS APIs (Mailgun, SendGrid, Postmark,
+    Resend, Amazon SES); webhook-as-mail surfaces (Slack, Discord,
+    Teams, IFTTT, request-inspecting endpoints); anonymous file-drop
+    endpoints (transfer.sh, file.io, 0x0.st, catbox.moe,
+    bashupload.com); public paste services (pastebin.com, 0bin.net);
+    and DoH (DNS-over-HTTPS) resolvers that would otherwise let an
+    attacker bypass a pinned resolver. Each entry carries a one-line
+    rationale in `sandbox-lib.sh`. Under v1.0 the floor describes the
+    policy table only — `effective_network_blocklist` computes and
+    the test suite asserts these entries are present; per-entry
+    enforcement waits on the helper integration (see v1.0 vs v1.1
+    note below).
 
   **Per-backend support in this release:**
   - **bwrap** — `open` and `isolated` (via native `--unshare-net`)

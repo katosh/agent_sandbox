@@ -41,9 +41,10 @@ probes for `pasta` in this order:
 - **Distro packages**: `apt install passt` (Ubuntu 22.10+, Debian
   Bookworm+), `dnf install passt` (Fedora 36+, RHEL 9+).
 - **Homebrew**: `brew install passt`.
-- **lmod (Fred Hutch)**: a `passt` module-request has been filed on
-  `FredHutch/easybuild-life-sciences`; once built, sites can pin via
-  `SANDBOX_MODULES+=("passt/<version>")` and skip `fetch.sh`.
+- **lmod (site-specific)**: when the site provides a `passt` module,
+  pin via `SANDBOX_MODULES+=("passt/<version>")` and skip `fetch.sh`.
+  The upstream easyconfig is small (no third-party deps); sites with
+  an EasyBuild pipeline can submit a recipe request.
 
 ## License
 

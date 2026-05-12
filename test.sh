@@ -32,6 +32,19 @@ PROJECT_DIR=""
 export SANDBOX_CONF="$SCRIPT_DIR/sandbox.conf"
 export SANDBOX_QUIET=true
 
+# The shipped sandbox.conf defaults to NETWORK_FILTER_FALLBACK=stricter,
+# which is correct for production but refuses to launch on the landlock
+# backend (no mount/network namespace means no mode is stricter than
+# `open` available, so stricter has nowhere to fall back). The test
+# suite exercises every backend including landlock; override the
+# fallback policy to `open` here so the suite can boot regardless of
+# backend. Backends that support stricter modes (bwrap, firejail)
+# still pick them: with policy=open the resolver tries stricter
+# alternatives first and only degrades to host network as the last
+# resort. Section 11.4's resolver tests set their own NETWORK_FILTER_*
+# env vars in subshells, so they remain untouched by this default.
+export NETWORK_FILTER_FALLBACK="${NETWORK_FILTER_FALLBACK:-open}"
+
 VERBOSE=false
 BACKEND_FLAG=""
 QUICK_MODE=false
@@ -4502,9 +4515,17 @@ if (
     resolve_network_filter_mode landlock 2>/dev/null
     [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || exit 1
 
-    # Test 6: effective blocklist contains the loopback floor
+    # Test 6: effective blocklist contains the universal floor — loopback
+    # mail submission + outbound-to-any-MTA + the broader exfil surface
+    # (transactional-email HTTPS APIs, webhooks, file drops, paste sites,
+    # DoH resolvers). Under v1.0 these describe the policy table; per-
+    # entry enforcement waits on the v1.1 helper integration.
     effective_network_blocklist 2>/dev/null | grep -q "^127.0.0.1:25\$" || exit 1
-    effective_network_blocklist 2>/dev/null | grep -q "^140.107.0.0/16:25\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^0.0.0.0/0:25\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^hooks.slack.com\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^api.mailgun.net\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^pastebin.com\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^cloudflare-dns.com\$" || exit 1
 
     exit 0
 ); then
@@ -4607,6 +4628,68 @@ if has_mount_ns && [[ -x "$SCRIPT_DIR/bin/sandbox-notify" ]]; then
     fi
     rm -f "$_net_isolated_conf2"
 fi
+
+# Positive-path reachability: in 'open' mode, ordinary outbound network
+# must keep working. Pairs with the negative isolated-mode assertions
+# above so a future regression in either direction shows up.
+_net_open_conf="$HOME/.config/agent-sandbox/conf.d/test-net-open-$$.conf"
+_TEST_TEMP_FILES+=("$_net_open_conf")
+mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+echo 'NETWORK_FILTER_MODE=open' > "$_net_open_conf"
+
+# DNS resolution — the most fundamental positive check. If 'open' mode
+# breaks DNS, every other outbound test would also fail.
+if sandbox bash -c '
+    if getent hosts github.com >/dev/null 2>&1; then echo RESOLVED
+    elif command -v host >/dev/null && host -W 5 github.com >/dev/null 2>&1; then echo RESOLVED
+    elif command -v nslookup >/dev/null && nslookup github.com >/dev/null 2>&1; then echo RESOLVED
+    else echo UNRESOLVED; fi
+'; then
+    if [[ "$OUTPUT" == "RESOLVED" ]]; then
+        pass "Network filter (open): DNS resolution works"
+    else
+        fail "Network filter (open): DNS resolution failed in open mode" "$OUTPUT"
+    fi
+fi
+
+# HTTPS reachability — github.com is a stable, near-universally-allowed
+# 443 endpoint. The fail-mode would suggest the open-mode bypass is
+# broken. 10s connect timeout to avoid hanging CI on transient flakes.
+if command -v curl >/dev/null 2>&1 && sandbox bash -c '
+    if curl -fsS --max-time 10 -o /dev/null -w "%{http_code}" https://github.com/ 2>/dev/null | grep -qE "^(200|301|302)$"; then
+        echo REACHABLE
+    else
+        echo UNREACHABLE
+    fi
+'; then
+    if [[ "$OUTPUT" == "REACHABLE" ]]; then
+        pass "Network filter (open): HTTPS to github.com reachable"
+    else
+        # Could be a transient CI/runner network issue; treat as a warn
+        # to avoid flakes blocking unrelated changes. If consistently
+        # unreachable we'd want to know.
+        warn "Network filter (open): HTTPS to github.com not reachable from CI runner" "$OUTPUT"
+    fi
+fi
+
+# Non-blocklisted arbitrary egress — pypi.org is another canonical
+# 443 endpoint. Same rationale as above.
+if command -v curl >/dev/null 2>&1 && sandbox bash -c '
+    if curl -fsS --max-time 10 -o /dev/null -w "%{http_code}" https://pypi.org/ 2>/dev/null | grep -qE "^(200|301|302)$"; then
+        echo REACHABLE
+    else
+        echo UNREACHABLE
+    fi
+'; then
+    if [[ "$OUTPUT" == "REACHABLE" ]]; then
+        pass "Network filter (open): HTTPS to pypi.org reachable"
+    else
+        warn "Network filter (open): HTTPS to pypi.org not reachable from CI runner" "$OUTPUT"
+    fi
+fi
+
+rm -f "$_net_open_conf"
+unset _net_open_conf
 
 
 # ── 11.5 Device passthrough (bwrap only) ──────────────────────────
