@@ -71,6 +71,14 @@ backend_prepare() {
 
     # Agent config overlays are handled by prepare_agent_configs() in sandbox-lib.sh.
 
+    # --- Network filter ---
+    # Landlock has neither a mount nor a network namespace, so the only
+    # mode it can actually deliver is 'open'. The resolver applies the
+    # configured fallback policy: 'stricter' fails (nothing stricter than
+    # 'open' is possible on landlock); 'open' falls back silently to open
+    # with a loud warning; 'strict' fails. The user picks the policy.
+    resolve_network_filter_mode landlock
+
     # --- Build landlock-sandbox.py arguments ---
     LANDLOCK_ARGS=()
 

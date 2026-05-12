@@ -65,6 +65,22 @@ backend_prepare() {
 
     # Agent config overlays are handled by prepare_agent_configs() in sandbox-lib.sh.
 
+    # --- Network filter ---
+    # Resolve mode given firejail's capability matrix (open/isolated only
+    # in v1; filtered falls back per policy). May exit on strict mismatch.
+    resolve_network_filter_mode firejail
+    local _NETWORK_FIREJAIL_FLAG=""
+    case "$_NETWORK_FILTER_RESOLVED" in
+        isolated)
+            _NETWORK_FIREJAIL_FLAG="--net=none"
+            ;;
+        filtered|open)
+            : # nothing to add — share host net (filtered v1.0 is unreachable
+              # here because the resolver downgrades it via fallback; left
+              # as a defensive no-op for the v1.1 --netfilter integration).
+            ;;
+    esac
+
     # --- Build firejail arguments ---
     FIREJAIL_ARGS=(
         --noprofile
@@ -89,6 +105,11 @@ backend_prepare() {
         # on supplementary group membership (e.g., lab groups for /fh/fast/).
         # Dropping groups would silently break access to group-owned data.
     )
+
+    # Network filter mode → firejail flag (resolved by backend_prepare top).
+    if [[ -n "${_NETWORK_FIREJAIL_FLAG:-}" ]]; then
+        FIREJAIL_ARGS+=("$_NETWORK_FIREJAIL_FLAG")
+    fi
 
     # --private-tmp: isolate /tmp with a clean tmpfs.
     # Enabled by default for security (prevents cross-session /tmp leakage).

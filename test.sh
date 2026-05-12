@@ -4459,6 +4459,156 @@ else
     skip "FILTER_PASSWD: not supported on Landlock (no mount namespace)"
 fi
 
+# ── 11.4 Network filter ───────────────────────────────────────────
+#
+# v1.0 ships isolated mode + the config plumbing + the fallback
+# resolver. Real 'filtered' mode (bwrap + pasta + nft) is v1.1; v1.0's
+# default 'filtered + stricter' falls back to isolated with a loud
+# warning. These tests assert each piece independently.
+
+echo "11.4. Network filter"
+
+# Mode-resolver unit tests via _SANDBOX_LIB_NO_INIT=1 harness — pure
+# function tests, no sandbox spawn needed. The resolver and its helpers
+# live above the test-harness early return in sandbox-lib.sh.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+
+    # Test 1: defaults
+    [[ "$NETWORK_FILTER_MODE" == "filtered" ]] || { echo "default mode wrong"; exit 1; }
+    [[ "$NETWORK_FILTER_FALLBACK" == "stricter" ]] || { echo "default fallback wrong"; exit 1; }
+    [[ "${#_NETWORK_BLOCKLIST_DEFAULTS[@]}" -ge 20 ]] || { echo "default blocklist too short"; exit 1; }
+
+    # Test 2: bwrap + filtered + stricter → isolated (v1.0: helper gated)
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=stricter
+    resolve_network_filter_mode bwrap 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || { echo "expected fallback to isolated, got $_NETWORK_FILTER_RESOLVED"; exit 1; }
+
+    # Test 3: bwrap + isolated + stricter → isolated (no fallback needed)
+    NETWORK_FILTER_MODE=isolated NETWORK_FILTER_FALLBACK=stricter
+    resolve_network_filter_mode bwrap 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || exit 1
+
+    # Test 4: bwrap + open + any → open
+    NETWORK_FILTER_MODE=open NETWORK_FILTER_FALLBACK=stricter
+    resolve_network_filter_mode bwrap 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || exit 1
+
+    # Test 5: landlock + filtered + open → open (no stricter possible)
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=open
+    resolve_network_filter_mode landlock 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || exit 1
+
+    # Test 6: effective blocklist contains the loopback floor
+    effective_network_blocklist 2>/dev/null | grep -q "^127.0.0.1:25\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^140.107.0.0/16:25\$" || exit 1
+
+    exit 0
+); then
+    pass "Network filter: resolver unit tests (defaults, fallback, effective blocklist)"
+else
+    fail "Network filter: resolver unit tests failed (rc=$?)"
+fi
+
+# Mode resolution failure paths exit the parent process via _network_filter_fail.
+# Exercise the strict-fails path in a subshell.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=strict
+    resolve_network_filter_mode bwrap 2>/dev/null
+) ; then
+    fail "Network filter: strict policy on unavailable filtered should have exited"
+else
+    pass "Network filter: strict policy fails loudly when requested mode unavailable"
+fi
+
+# Landlock + filtered + stricter must fail (no stricter mode possible).
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=stricter
+    resolve_network_filter_mode landlock 2>/dev/null
+) ; then
+    fail "Network filter: stricter on landlock should have exited"
+else
+    pass "Network filter: stricter policy on landlock fails (no stricter mode available)"
+fi
+
+# Integration test: 'isolated' mode actually kills the network.
+# Requires a mount-namespace backend (bwrap or firejail). Skip on
+# landlock where isolated is unavailable.
+if has_mount_ns; then
+    # Build a conf snippet that pins isolated mode.
+    _net_isolated_conf="$HOME/.config/agent-sandbox/conf.d/test-net-isolated-$$.conf"
+    _TEST_TEMP_FILES+=("$_net_isolated_conf")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    echo 'NETWORK_FILTER_MODE=isolated' > "$_net_isolated_conf"
+    echo 'NETWORK_FILTER_FALLBACK=strict' >> "$_net_isolated_conf"
+
+    # The empirical bypass that defeats binary-only blocks:
+    # bash /dev/tcp/127.0.0.1/25. In isolated mode this must fail with
+    # ENETUNREACH because there is no listener inside the empty netns.
+    if sandbox bash -c '
+        exec 3<>/dev/tcp/127.0.0.1/25 2>&1 && echo CONNECTED || echo BLOCKED
+    '; then
+        if [[ "$OUTPUT" == *"BLOCKED"* ]]; then
+            pass "Network filter: isolated mode blocks bash /dev/tcp/127.0.0.1/25"
+        else
+            fail "Network filter: isolated mode left 127.0.0.1:25 reachable" "$OUTPUT"
+        fi
+    fi
+
+    # Same for Python smtplib — the other empirical bypass class.
+    if command -v python3 &>/dev/null && sandbox bash -c '
+        python3 -c "
+import smtplib, sys
+try:
+    s = smtplib.SMTP(\"127.0.0.1\", 25, timeout=3)
+    print(\"CONNECTED\")
+    s.quit()
+except Exception as e:
+    print(\"BLOCKED:\", type(e).__name__)
+"
+    '; then
+        if [[ "$OUTPUT" == *"BLOCKED"* ]]; then
+            pass "Network filter: isolated mode blocks Python smtplib to 127.0.0.1:25"
+        else
+            fail "Network filter: isolated mode left smtplib path reachable" "$OUTPUT"
+        fi
+    fi
+
+    rm -f "$_net_isolated_conf"
+else
+    skip "Network filter: integration tests need bwrap or firejail (landlock has no netns)"
+fi
+
+# sandbox-notify carve-out: must continue to work even in isolated mode
+# because it uses /dev/tty + tmux IPC, not the network.
+if has_mount_ns && [[ -x "$SCRIPT_DIR/bin/sandbox-notify" ]]; then
+    _net_isolated_conf2="$HOME/.config/agent-sandbox/conf.d/test-net-notify-$$.conf"
+    _TEST_TEMP_FILES+=("$_net_isolated_conf2")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    echo 'NETWORK_FILTER_MODE=isolated' > "$_net_isolated_conf2"
+    echo 'NETWORK_FILTER_FALLBACK=open' >> "$_net_isolated_conf2"
+    if sandbox bash -c 'command -v sandbox-notify && echo CALLABLE || echo MISSING'; then
+        if [[ "$OUTPUT" == *"CALLABLE"* ]]; then
+            pass "Network filter: sandbox-notify carve-out preserved in isolated mode"
+        else
+            fail "Network filter: sandbox-notify unexpectedly missing in isolated mode" "$OUTPUT"
+        fi
+    fi
+    rm -f "$_net_isolated_conf2"
+fi
+
+
 # ── 11.5 Device passthrough (bwrap only) ──────────────────────────
 
 echo "11.5. Device passthrough"

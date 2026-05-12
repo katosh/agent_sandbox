@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **Network filter — optional default-deny outbound network layer
+  with strict-mode enforcement.** Closes the local-MTA identity-hijack
+  class that filesystem-level binary blocks cannot reach. The
+  abandoned `BLOCK_USER_MAIL` binary-overlay approach is gone — a
+  motivated agent inside the sandbox can speak SMTP from any
+  TCP-capable language (`bash /dev/tcp/127.0.0.1/25`, Python
+  `smtplib`, `nc`, …) and bypass the binary block trivially;
+  empirically verified on Fred Hutch gizmo. The fix is to deny the
+  TCP path itself at a layer the agent cannot escape.
+
+  **Configuration surface (new):**
+  - `NETWORK_FILTER_MODE` (default `filtered`) — `open` | `filtered`
+    | `isolated`. `open` = current behaviour (host network shared);
+    `filtered` = netns + helper applying the default-deny floor plus
+    user/admin `NETWORK_BLOCKLIST`; `isolated` = netns with no
+    network at all.
+  - `NETWORK_FILTER_FALLBACK` (default `stricter`) — `strict`
+    | `stricter` | `open`. Picks what happens when the requested
+    mode can't be delivered on the host (helper missing, kernel too
+    old, landlock-only environment). `strict` fails loudly;
+    `stricter` falls back ONLY to a more-restrictive mode (fails if
+    none possible); `open` falls back to anything.
+  - `NETWORK_BLOCKLIST` — host:port / CIDR:port / port patterns,
+    additive to the built-in floor. Admin entries become a floor
+    user config cannot remove.
+  - `_NETWORK_BLOCKLIST_DEFAULTS` — built-in floor encoding mail
+    submission (25/465/587/2525) on loopback, on the campus mail-
+    relay /16 (`140.107.0.0/16` — Fred Hutch trust topology, also
+    representative of similar shared-HPC patterns), and outbound to
+    any external MTA on the canonical mail ports.
+
+  **Per-backend support in this release:**
+  - **bwrap** — `open` and `isolated` (via native `--unshare-net`)
+    deliver fully; `filtered` is gated behind
+    `NETWORK_FILTER_ENABLE_HELPER_PROBE=1` because the bwrap + pasta
+    + nft chain that wires real per-port filtering is reserved for
+    v1.1. Default `filtered + stricter` therefore falls back to
+    `isolated` with a loud startup warning enumerating every fix
+    path.
+  - **firejail** — `open` and `isolated` (via `--net=none`); the
+    `--netfilter` integration for `filtered` is v1.1.
+  - **landlock** — `open` only; no mount or network namespace
+    available. `stricter` fallback fails with the explicit
+    fix-path enumeration; `open` policy falls back to host network
+    with the same loud warning.
+
+  Admin enforcement: `NETWORK_FILTER_MODE`, `NETWORK_FILTER_FALLBACK`,
+  and `NETWORK_BLOCKLIST` follow the existing admin-vs-user
+  precedence model (`PRIVATE_TMP`, `FILTER_PASSWD`, etc.) — admins
+  can pin; users can only request equal or stricter values; users
+  cannot remove admin-set blocklist entries.
+
+  Helper distribution: `tools/pasta/fetch.sh` ships a build-from-
+  source recipe for `pasta` (passt project, BSD-3-Clause arm — no
+  source-offer obligation, no third-party deps beyond libc, single
+  ~1–1.5 MB musl-static binary). PATH-detected `pasta` /
+  `tools/pasta/pasta` / `slirp4netns` is the resolved priority order
+  once the helper-probe gate flips in v1.1.
+
+  Documentation: new `docs/reference/network-filter.md` covering the
+  threat model, mode + fallback matrix, configuration syntax, helper
+  install paths, per-backend support table, and troubleshooting.
+  Cross-linked from the Reference nav.
+
+  Tests: new `test.sh` section 11.4 — pure-function resolver unit
+  tests via `_SANDBOX_LIB_NO_INIT=1`; integration tests asserting
+  `isolated` mode blocks `bash /dev/tcp/127.0.0.1/25` and Python
+  `smtplib`; sandbox-notify carve-out verified (uses `/dev/tty` +
+  tmux IPC, unaffected by netns isolation).
+
+  Tracking: settylab/dotto-nexus#117. Previous binary-only PR closed
+  per user direction; this layer is the actual fix.
+
 ## [0.9.0] - 2026-05-10
 
 ### Security

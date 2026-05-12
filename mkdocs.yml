@@ -75,6 +75,7 @@ nav:
       - Agents: reference/agents.md
       - Chaperon (Slurm proxy): reference/chaperon.md
       - Device passthrough: reference/device-passthrough.md
+      - Network filter: reference/network-filter.md
       - Sandbox vs. Apptainer: reference/apptainer-comparison.md
       - Agent-sandboxing landscape: reference/landscape-comparison.md
       - Security model: reference/security.md
