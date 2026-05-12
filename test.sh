@@ -4800,23 +4800,30 @@ fi
 # Admin-precedence: user NETWORK_BLOCKLIST_EXCEPT entries covered by
 # admin NETWORK_BLOCKLIST are stripped at config-load with a loud
 # warning. The user cannot carve exceptions out of admin policy.
+#
+# Note: _strip_user_exceptions_covered_by_admin mutates
+# NETWORK_BLOCKLIST_EXCEPT in the calling shell, so we must NOT
+# invoke it inside `$(...)` — that would run it in a subshell and
+# the mutation would be lost. Stderr capture happens via a temp file.
 if (
     set -uo pipefail
     export _SANDBOX_LIB_NO_INIT=1
     export SANDBOX_QUIET=true
     source "$SCRIPT_DIR/sandbox-lib.sh"
+    _stderr_file="$(mktemp "${TMPDIR:-/tmp}/test-admin-prec.XXXXXX")"
+    trap 'rm -f "$_stderr_file"' EXIT
     # Simulate admin snapshot + user exception list.
     _ADMIN_NETWORK_BLOCKLIST=("*.example.com" "hooks.slack.com")
     NETWORK_BLOCKLIST_EXCEPT=("api.example.com" "github.com" "hooks.slack.com")
-    # Capture stderr so we can verify the warnings fire.
-    _stderr="$(_strip_user_exceptions_covered_by_admin "Test admin-precedence probe" 2>&1 1>/dev/null)"
+    # Run in the current shell; capture stderr via redirection to a file.
+    _strip_user_exceptions_covered_by_admin "Test admin-precedence probe" 2>"$_stderr_file"
     # github.com is not covered → stays.
     # api.example.com covered by *.example.com → stripped + warning.
     # hooks.slack.com exact-covered → stripped + warning.
-    [[ "${#NETWORK_BLOCKLIST_EXCEPT[@]}" -eq 1 ]] || exit 1
-    [[ "${NETWORK_BLOCKLIST_EXCEPT[0]}" == "github.com" ]] || exit 1
-    grep -q "attempted to except 'api.example.com'.*\*.example.com" <<< "$_stderr" || exit 1
-    grep -q "attempted to except 'hooks.slack.com'" <<< "$_stderr" || exit 1
+    [[ "${#NETWORK_BLOCKLIST_EXCEPT[@]}" -eq 1 ]] || { echo "post-strip count=${#NETWORK_BLOCKLIST_EXCEPT[@]}"; exit 1; }
+    [[ "${NETWORK_BLOCKLIST_EXCEPT[0]}" == "github.com" ]] || { echo "remaining=${NETWORK_BLOCKLIST_EXCEPT[0]}"; exit 1; }
+    grep -q "attempted to except 'api.example.com'.*\*.example.com" "$_stderr_file" || { echo "missing api.example.com warning"; exit 1; }
+    grep -q "attempted to except 'hooks.slack.com'" "$_stderr_file" || { echo "missing hooks.slack.com warning"; exit 1; }
     exit 0
 ); then
     pass "Network filter: admin-pinned BLOCKLIST overrides user EXCEPT (admin policy absolute)"
