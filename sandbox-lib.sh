@@ -183,6 +183,7 @@ DENIED_WRITABLE_PATHS=()
 _PRIVATE_TMP_OVERRIDE="${PRIVATE_TMP:-}"
 _PRIVATE_IPC_OVERRIDE="${PRIVATE_IPC:-}"
 _FILTER_PASSWD_OVERRIDE="${FILTER_PASSWD:-}"
+_BLOCK_USER_MAIL_OVERRIDE="${BLOCK_USER_MAIL:-}"
 
 PRIVATE_TMP=true
 
@@ -199,6 +200,57 @@ PRIVATE_IPC=true
 # firejail: blocks NSS daemon sockets (nscd, nslcd, sssd).
 # landlock: not supported (no mount namespace).
 FILTER_PASSWD=true
+
+# Block user-identity email send from inside the sandbox.
+# When true, the canonical local mail submission binaries
+# (sendmail, mail, mailx, mutt, postfix submission helpers, light MTAs)
+# are overlaid with /dev/null inside the sandbox so an agent cannot
+# hand a message to the host MTA under the operator's identity.
+# Rationale + opt-out path documented in sandbox.conf alongside the
+# user-facing knob. See _USER_MAIL_BLOCKED_BINARIES below for the list.
+# bwrap/firejail: full block via --ro-bind /dev/null (or --blacklist).
+# landlock: same documented limitation as the Slurm-binary block —
+# the host binaries remain reachable on disk; PATH shadowing in
+# agent-launching shells is the available mitigation.
+BLOCK_USER_MAIL=true
+
+# Canonical local mail-submission binaries we overlay when
+# BLOCK_USER_MAIL=true. Entries that don't exist on the host are
+# silently skipped at apply time (same pattern as
+# CHAPERON_BLOCKED_BINARIES). Covers Postfix/sendmail-compat
+# submission, the BSD/heirloom mail family, mutt and forks, and the
+# common light MTAs. Both literal and resolved paths are blocked to
+# defeat the alternatives-symlink bypass class.
+_USER_MAIL_BLOCKED_BINARIES=(
+    # sendmail-compat submission interface — the universal pipeline
+    # to any local MTA (Postfix, Exim, sendmail, ssmtp, msmtp-mta).
+    "/usr/sbin/sendmail"
+    "/usr/lib/sendmail"
+    # BSD/heirloom mail family — typically /etc/alternatives symlinks
+    # pointing to /usr/bin/bsd-mailx, /usr/bin/s-nail, or
+    # /usr/bin/heirloom-mailx. We block both the well-known entry
+    # points and the canonical targets so the symlink chain has
+    # nowhere to land.
+    "/usr/bin/mail"
+    "/usr/bin/mailx"
+    "/usr/bin/bsd-mailx"
+    "/usr/bin/s-nail"
+    "/usr/bin/heirloom-mailx"
+    # mutt and its forks.
+    "/usr/bin/mutt"
+    "/usr/bin/mutt-ng"
+    "/usr/bin/neomutt"
+    # Postfix submission helpers (postdrop is setuid; both call into
+    # the local MTA without going through sendmail-compat).
+    "/usr/sbin/postdrop"
+    "/usr/sbin/postqueue"
+    # Light MTAs and direct-submit clients.
+    "/usr/sbin/ssmtp"
+    "/usr/bin/msmtp"
+    "/usr/bin/msmtp-mta"
+    "/usr/sbin/exim"
+    "/usr/sbin/exim4"
+)
 
 # Bind host /dev into the sandbox instead of bwrap's minimal devtmpfs.
 # DEPRECATED: kept as a kernel-aware shim. On kernel < 5.4 it appends
@@ -532,6 +584,7 @@ _CONFIG_ARRAYS=(
 )
 _CONFIG_SCALARS=(
     SANDBOX_BACKEND PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD BIND_DEV_PTS
+    BLOCK_USER_MAIL
     SLURM_SCOPE HOME_ACCESS SANDBOX_QUIET SANDBOX_NPROC_LIMIT
     CHAPERON_LOG_LEVEL CHAPERON_LOG_RETAIN_DAYS
     LANDLOCK_REQUIRED_ABI LANDLOCK_HARD_REQUIREMENT
@@ -882,7 +935,7 @@ _enforce_admin_policy() {
     # Security-critical booleans: user can harden (false→true) but not
     # weaken (true→false) an admin-set value.
     local _bool_name _admin_val _user_val
-    for _bool_name in PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD; do
+    for _bool_name in PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD BLOCK_USER_MAIL; do
         eval "_admin_val=\"\${_ADMIN_${_bool_name}:-}\""
         eval "_user_val=\"\${${_bool_name}:-}\""
         if _is_true "$_admin_val" && ! _is_true "$_user_val"; then
@@ -1150,6 +1203,7 @@ _snapshot_admin_config() {
     _ADMIN_PRIVATE_TMP="${PRIVATE_TMP:-true}"
     _ADMIN_PRIVATE_IPC="${PRIVATE_IPC:-true}"
     _ADMIN_FILTER_PASSWD="${FILTER_PASSWD:-true}"
+    _ADMIN_BLOCK_USER_MAIL="${BLOCK_USER_MAIL:-true}"
 }
 
 # ── Test-harness early-return ────────────────────────────────────
@@ -1214,7 +1268,7 @@ unset _SANDBOX_BACKEND_OVERRIDE
 
 # Restore env overrides for security booleans (env takes precedence over
 # config, but admin enforcement still wins — checked below).
-for _bvar in PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD; do
+for _bvar in PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD BLOCK_USER_MAIL; do
     _override_var="_${_bvar}_OVERRIDE"
     if [[ -n "${!_override_var}" ]]; then
         eval "${_bvar}=\"${!_override_var}\""
@@ -1225,7 +1279,7 @@ unset _bvar _override_var
 # Re-enforce admin policy on the env-overridden values: env can loosen
 # user config but cannot weaken admin-set security booleans.
 if [[ -n "$_ADMIN_CONF" ]]; then
-    for _bvar in PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD; do
+    for _bvar in PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD BLOCK_USER_MAIL; do
         eval "_admin_val=\"\${_ADMIN_${_bvar}:-}\""
         if _is_true "$_admin_val" && ! _is_true "${!_bvar}"; then
             echo "WARNING: env override ${_bvar}=false blocked by admin policy — restored to true." >&2
@@ -1340,6 +1394,13 @@ if [[ "${SANDBOX_BACKEND:-auto}" == "landlock" ]]; then
     if [[ ${#BLOCKED_FILES[@]} -gt 0 ]]; then
         echo "WARNING: BLOCKED_FILES has no effect with the Landlock backend." >&2
         echo "  Individual file blocking requires bwrap or firejail." >&2
+    fi
+    if _is_true "${BLOCK_USER_MAIL:-true}"; then
+        echo "WARNING: BLOCK_USER_MAIL=true has no effect with the Landlock backend." >&2
+        echo "  Mail-binary overlay requires bwrap or firejail; on Landlock the" >&2
+        echo "  host MTA submission binaries (sendmail, mail, mailx, mutt, …)" >&2
+        echo "  remain reachable. PATH shadowing or a host-level mail policy is" >&2
+        echo "  the available mitigation." >&2
     fi
     if [[ -e /run/munge/munge.socket.2 ]]; then
         echo "WARNING: Landlock cannot block AF_UNIX connect() — the munge socket is reachable." >&2

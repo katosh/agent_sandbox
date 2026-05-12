@@ -248,6 +248,28 @@ backend_prepare() {
         fi
     done
 
+    # --- User-identity mail binary blocking ---
+    # See BLOCK_USER_MAIL + _USER_MAIL_BLOCKED_BINARIES in sandbox-lib.sh
+    # for rationale and the canonical list. We overlay both the literal
+    # path (alternatives-symlink entry points like /usr/bin/mail) and
+    # its readlink-resolved target (bsd-mailx, s-nail, …) so the
+    # symlink-chain bypass class is closed, matching the BLOCKED_FILES
+    # dual-bind pattern below. -x is the gate (skip absent or
+    # non-executable entries silently — list is intentionally broad).
+    if _is_true "${BLOCK_USER_MAIL:-true}"; then
+        local _mail_bin _mail_resolved
+        for _mail_bin in "${_USER_MAIL_BLOCKED_BINARIES[@]}"; do
+            [[ -e "$_mail_bin" ]] || continue
+            if [[ ! -L "$_mail_bin" ]]; then
+                BWRAP_ARGS+=(--ro-bind /dev/null "$_mail_bin")
+            fi
+            _mail_resolved="$(readlink -f "$_mail_bin")"
+            if [[ -n "$_mail_resolved" && "$_mail_resolved" != "$_mail_bin" && -e "$_mail_resolved" ]]; then
+                BWRAP_ARGS+=(--ro-bind /dev/null "$_mail_resolved")
+            fi
+        done
+    fi
+
 
     # Block Slurm config (leaks controller address)
     for _slurm_conf in /etc/slurm /etc/slurm-llnl; do

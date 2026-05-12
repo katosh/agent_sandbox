@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **Default-block user-identity email send.** Adds `BLOCK_USER_MAIL`
+  (default `true`) — a backend overlay that ro-binds `/dev/null` over
+  the canonical local mail-submission binaries (`sendmail`, `mail`,
+  `mailx`, `bsd-mailx`, `s-nail`, `heirloom-mailx`, `mutt`, `mutt-ng`,
+  `neomutt`, `postdrop`, `postqueue`, `ssmtp`, `msmtp`, `msmtp-mta`,
+  `exim`, `exim4`) inside the sandbox, both at the literal path and
+  its readlink-resolved target. Closes the easy path by which an
+  agent could hand a message to the host MTA under the operator's
+  `From:` header — a credible threat on shared-HPC nodes where the
+  local MTA (Postfix / sendmail-compat) accepts mail from any local
+  user without authentication. **Mechanism:** mirrors the
+  Slurm-chaperon binary block. **Coverage:** bwrap full, firejail
+  full, Landlock not enforced (documented limitation; sandbox warns
+  at startup, suggests PATH shadowing or host-level mail policy as
+  the mitigation). **Carve-out:** `sandbox-notify` is unaffected —
+  it uses `/dev/tty` + tmux IPC, never the MTA. **Opt-out path:**
+  set `BLOCK_USER_MAIL=false` in `sandbox.conf`, per-launch via env,
+  or in a `conf.d/*.conf` per-project override. Comment block in
+  `sandbox.conf` documents the HPC-mail conditional, the scope of
+  the block (NOT a substitute for host-side mail policy or network
+  blocking of SMTP from inside the sandbox), and the override
+  guidance.
+
 ## [0.9.0] - 2026-05-10
 
 ### Security

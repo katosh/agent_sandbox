@@ -171,6 +171,23 @@ backend_prepare() {
         fi
     done
 
+    # User-identity mail binaries: BLOCKED inside sandbox by default.
+    # See BLOCK_USER_MAIL + _USER_MAIL_BLOCKED_BINARIES in sandbox-lib.sh
+    # for rationale. Firejail --blacklist may not follow symlinks
+    # reliably (cf. BLOCKED_FILES handling below), so we blacklist both
+    # the literal path and the readlink-resolved target.
+    if _is_true "${BLOCK_USER_MAIL:-true}"; then
+        local _mail_bin _mail_resolved
+        for _mail_bin in "${_USER_MAIL_BLOCKED_BINARIES[@]}"; do
+            [[ -e "$_mail_bin" ]] || continue
+            FIREJAIL_ARGS+=(--blacklist="$_mail_bin")
+            _mail_resolved="$(readlink -f "$_mail_bin")"
+            if [[ -n "$_mail_resolved" && "$_mail_resolved" != "$_mail_bin" && -e "$_mail_resolved" ]]; then
+                FIREJAIL_ARGS+=(--blacklist="$_mail_resolved")
+            fi
+        done
+    fi
+
     # Slurm config (leaks controller address, enables direct Slurm access)
     for _slurm_conf in /etc/slurm /etc/slurm-llnl; do
         if [[ -d "$_slurm_conf" ]]; then

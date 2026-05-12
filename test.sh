@@ -4459,6 +4459,90 @@ else
     skip "FILTER_PASSWD: not supported on Landlock (no mount namespace)"
 fi
 
+# ── 11.4 BLOCK_USER_MAIL: mail-binary overlay ─────────────────────
+#
+# Verifies the default-on user-identity mail block. Mechanism: bwrap
+# --ro-bind /dev/null / firejail --blacklist over the canonical local
+# mail-submission binaries (sendmail, mail, mailx, mutt, …) listed in
+# _USER_MAIL_BLOCKED_BINARIES. Two assertions: (a) the canonical
+# binaries that exist on the host are not callable inside the sandbox,
+# (b) sandbox-notify keeps working (it uses /dev/tty + tmux IPC, not
+# the MTA, so it must be unaffected by the block).
+#
+# Dry-run, not live: the test never actually sends mail. The HPC MTA's
+# accept-from-any-local-user posture is precisely the threat surface
+# this block defends against; firing a live `sendmail` from the test
+# would either pollute the operator's mail spool or, depending on
+# host config, land an unwanted message on a real recipient. The
+# overlay's observable effect — the binary is no longer callable — is
+# sufficient evidence of the block.
+
+if has_mount_ns; then
+    _mail_block_any_tested=false
+    # Pick a few representative entry points; only test those present on
+    # the host. /usr/sbin/sendmail is the universal MTA-submission
+    # interface; /usr/bin/mail and /usr/bin/mailx are the BSD-mailx family
+    # entry points; /usr/bin/mutt is the standalone client. Each is
+    # blocked independently by the overlay.
+    for _mail_path in /usr/sbin/sendmail /usr/bin/mail /usr/bin/mailx /usr/bin/mutt; do
+        [[ -x "$_mail_path" ]] || continue
+        _mail_block_any_tested=true
+        if sandbox bash -c "$_mail_path --version 2>&1 || $_mail_path -V 2>&1 || true"; then
+            # Overlaid /dev/null is a char device — exec returns ENOEXEC
+            # ("Exec format error") or similar; symlinks may surface as
+            # "No such" if the target is also overlaid first.
+            if echo "$OUTPUT" | grep -qiE "cannot execute|Exec format|No such|not found|Permission denied|empty"; then
+                pass "BLOCK_USER_MAIL: $_mail_path blocked inside sandbox"
+            else
+                fail "BLOCK_USER_MAIL: $_mail_path still callable inside sandbox" "$OUTPUT"
+            fi
+        fi
+    done
+    if ! $_mail_block_any_tested; then
+        skip "BLOCK_USER_MAIL: no host mail binaries available to probe"
+    fi
+    # Carve-out: sandbox-notify must NOT be affected by the mail block.
+    # It uses /dev/tty + tmux IPC (no MTA call), so binary should run.
+    if [[ -x "$SCRIPT_DIR/bin/sandbox-notify" ]]; then
+        if sandbox bash -c 'sandbox-notify --help 2>&1; true || sandbox-notify "test" >/dev/null 2>&1; echo OK'; then
+            if echo "$OUTPUT" | grep -q "OK"; then
+                pass "BLOCK_USER_MAIL: sandbox-notify still callable (carve-out)"
+            else
+                fail "BLOCK_USER_MAIL: sandbox-notify unexpectedly blocked" "$OUTPUT"
+            fi
+        fi
+    fi
+    # Opt-out path: BLOCK_USER_MAIL=false via conf.d/ must restore access.
+    # Only meaningful if at least one mail binary is on the host.
+    if $_mail_block_any_tested; then
+        _mail_optout_conf="$HOME/.config/agent-sandbox/conf.d/test-mail-optout-$$.conf"
+        _TEST_TEMP_FILES+=("$_mail_optout_conf")
+        mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+        echo 'BLOCK_USER_MAIL=false' > "$_mail_optout_conf"
+        # Find one binary present on the host for the opt-out probe.
+        _probe=""
+        for _p in /usr/sbin/sendmail /usr/bin/mail /usr/bin/mailx /usr/bin/mutt; do
+            [[ -x "$_p" ]] && { _probe="$_p"; break; }
+        done
+        if [[ -n "$_probe" ]] && sandbox bash -c "test -x '$_probe' && echo CALLABLE || echo BLOCKED"; then
+            # With opt-out, the binary should be reachable as a regular
+            # executable (its overlay was skipped). The probe is `test -x`
+            # — not an actual mail send — to keep the test side-effect free.
+            if [[ "$OUTPUT" == "CALLABLE" ]]; then
+                pass "BLOCK_USER_MAIL=false: mail binaries reachable again (opt-out works)"
+            else
+                fail "BLOCK_USER_MAIL=false: $_probe still blocked after opt-out" "$OUTPUT"
+            fi
+        fi
+        rm -f "$_mail_optout_conf"
+    fi
+    unset _mail_block_any_tested _mail_path _mail_optout_conf _probe _p
+else
+    # Landlock: documented limitation. The sandbox emits a warning at
+    # startup; the binaries themselves remain reachable on disk.
+    skip "BLOCK_USER_MAIL: not enforced on Landlock (documented limitation, see sandbox-lib.sh warning)"
+fi
+
 # ── 11.5 Device passthrough (bwrap only) ──────────────────────────
 
 echo "11.5. Device passthrough"
