@@ -1,0 +1,2107 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Kernel-enforced filesystem isolation for AI coding agents on Linux.">
+      
+      
+      
+        <link rel="canonical" href="https://katosh.github.io/agent_sandbox/reference/network-filter/">
+      
+      
+        <link rel="prev" href="../device-passthrough/">
+      
+      
+        <link rel="next" href="../apptainer-comparison/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Network filter - agent-sandbox</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#network-filter" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="agent-sandbox" class="md-header__button md-logo" aria-label="agent-sandbox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            agent-sandbox
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Network filter
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/katosh/agent_sandbox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    katosh/agent_sandbox
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../configure/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Configure
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../architecture/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../admin/install/" class="md-tabs__link">
+          
+  
+  
+  Admin
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../troubleshooting/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Troubleshooting
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="agent-sandbox" class="md-nav__button md-logo" aria-label="agent-sandbox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    agent-sandbox
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/katosh/agent_sandbox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    katosh/agent_sandbox
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../configure/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../chaperon/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chaperon (Slurm proxy)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../device-passthrough/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Device passthrough
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Network filter
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Network filter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#threat-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Threat model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fallback-policies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fallback policies
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Fallback policies">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fallback-decision-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fallback decision matrix
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#pattern-syntax-for-network_blocklist-and-network_blocklist_except" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pattern syntax for NETWORK_BLOCKLIST and NETWORK_BLOCKLIST_EXCEPT
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#precedence-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Precedence model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Precedence model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#admin-precedence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin precedence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#implicit-allowlist-idiom-exact-hosts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implicit-allowlist idiom (* + exact hosts)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#resolver-pinning-is-it-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resolver pinning — is it needed?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#helper-binary-pasta" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Helper binary (pasta)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Troubleshooting">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#filtered-fell-back-to-isolated-on-startup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        "filtered fell back to isolated" on startup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#no-stricter-mode-available-failure-on-landlock" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        "no stricter mode available" failure on landlock
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sandbox-notify-carve-out" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sandbox-notify carve-out
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pre-existing-tests-fail-with-enetunreach" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pre-existing tests fail with "ENETUNREACH"
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#admin-enforcement-sandbox-adminconf" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin enforcement (sandbox-admin.conf)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See also
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../apptainer-comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox vs. Apptainer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../landscape-comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent-sandboxing landscape
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Admin
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Admin
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../admin/install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../admin/hardening/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hardening
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../admin/sandbox-help/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox config guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#threat-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Threat model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fallback-policies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fallback policies
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Fallback policies">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fallback-decision-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fallback decision matrix
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#pattern-syntax-for-network_blocklist-and-network_blocklist_except" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pattern syntax for NETWORK_BLOCKLIST and NETWORK_BLOCKLIST_EXCEPT
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#precedence-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Precedence model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Precedence model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#admin-precedence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin precedence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#implicit-allowlist-idiom-exact-hosts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implicit-allowlist idiom (* + exact hosts)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#resolver-pinning-is-it-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resolver pinning — is it needed?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#helper-binary-pasta" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Helper binary (pasta)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Troubleshooting">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#filtered-fell-back-to-isolated-on-startup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        "filtered fell back to isolated" on startup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#no-stricter-mode-available-failure-on-landlock" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        "no stricter mode available" failure on landlock
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sandbox-notify-carve-out" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sandbox-notify carve-out
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pre-existing-tests-fail-with-enetunreach" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pre-existing tests fail with "ENETUNREACH"
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#admin-enforcement-sandbox-adminconf" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin enforcement (sandbox-admin.conf)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See also
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/katosh/agent_sandbox/edit/main/docs/reference/network-filter.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="network-filter">Network filter<a class="headerlink" href="#network-filter" title="Permanent link">&para;</a></h1>
+<p>The network filter is an optional layer that restricts the sandboxed
+agent's outbound network access. It exists to close one specific
+threat: a compromised agent abusing the host's network to spoof mail
+under the operator's identity (and adjacent lateral-movement /
+exfiltration surface).</p>
+<h2 id="threat-model">Threat model<a class="headerlink" href="#threat-model" title="Permanent link">&para;</a></h2>
+<p>On a typical HPC compute node (or any shared multi-tenant host) the
+local MTA — Mail Transfer Agent, the daemon (e.g. Postfix or
+sendmail) that accepts mail for delivery — listens on <code>127.0.0.1:25</code>
+and accepts the standard local mail-submission protocol (ports
+25/465/587/2525) from any local user without authentication, then
+relays under that user's <code>From:</code> header. Postfix's <code>mynetworks</code>
+directive frequently extends that trust to a wider organizational
+CIDR (lab subnet, campus /16, etc.), so an adversary controlling a
+sandboxed agent can spoof the operator's identity in <strong>two</strong> ways:</p>
+<ol>
+<li>Speak SMTP directly to <code>127.0.0.1:25</code> from any TCP-capable
+   language (<code>bash /dev/tcp/127.0.0.1/25</code>, Python <code>smtplib</code>, …).</li>
+<li>Speak SMTP directly to a nearby relay whose IP is trusted by
+   <code>mynetworks</code> — the relay accepts unauthenticated submission for
+   any sender, again under the operator's identity.</li>
+</ol>
+<p>Both bypass any filesystem-level binary block. The fix is to deny the
+TCP path itself at a layer the agent cannot escape.</p>
+<p><strong>Non-goals.</strong> This layer does NOT defend against:</p>
+<ul>
+<li>Covert L7 channels over allowed 443 hostnames the policy admits (a
+  determined agent with <code>pip install requests</code> can POST to any HTTPS
+  endpoint the policy permits). The default blocklist closes the
+  obvious universal exfil channels (webhooks-as-mail, paste sites,
+  transactional-email HTTPS APIs); SNI-level filtering of arbitrary
+  HTTPS destinations is a future layer.</li>
+<li>Host-side mail policy bypass via mechanisms outside the sandbox's
+  control (a privileged user on the host with mail-spool access).
+  Negotiate host-side mail policy with your site's operations team
+  as the Layer 3 complement.</li>
+</ul>
+<h2 id="modes">Modes<a class="headerlink" href="#modes" title="Permanent link">&para;</a></h2>
+<p><code>NETWORK_FILTER_MODE</code> (default: <code>filtered</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Mechanism</th>
+<th>Network reach</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>open</code></td>
+<td>share the host network namespace; no isolation</td>
+<td>full host network (legacy behaviour)</td>
+</tr>
+<tr>
+<td><code>filtered</code></td>
+<td>new netns (Linux network namespace — a per-process isolated network stack) + helper (pasta or slirp4netns); apply default-deny floor + user/admin blocklist</td>
+<td>general outbound TCP/UDP/DNS minus the threat ports</td>
+</tr>
+<tr>
+<td><code>isolated</code></td>
+<td>new netns with no network at all</td>
+<td>none (DNS / pip / git break)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>v1.0 implementation status.</strong> The configuration surface, mode
+resolution, and fallback machinery ship in v1.0. The bwrap +
+pasta + <code>nft</code> (nftables — the Linux kernel packet-filter framework,
+successor to iptables) chain that delivers a real <code>filtered</code> mode is
+reserved for v1.1 — the helper-detection function in <code>sandbox-lib.sh</code>
+(<code>_resolve_network_helper</code>) is gated by <code>NETWORK_FILTER_ENABLE_HELPER_PROBE=1</code>
+and returns "no helper" by default in v1.0. The practical effect
+on v1.0 deployments:</p>
+<ul>
+<li><code>NETWORK_FILTER_MODE=open</code> — unchanged.</li>
+<li><code>NETWORK_FILTER_MODE=filtered</code> — falls back to <code>isolated</code> per the
+  default <code>stricter</code> policy. Loud startup warning names every fix
+  path.</li>
+<li><code>NETWORK_FILTER_MODE=isolated</code> — works as documented; full
+  network kill via <code>bwrap --unshare-net</code> / <code>firejail --net=none</code>.</li>
+</ul>
+<p>When v1.1 ships the integration, deployments running with <code>filtered +
+stricter</code> will silently start using real filtered mode the moment
+the helper is on PATH (or <code>tools/pasta/pasta</code> is installed via
+<code>tools/pasta/fetch.sh</code>). No config change is required to flip over.</p>
+<p>The default blocklist already enumerates the full identity-bound
+exfil surface (mail submission ports, transactional-email HTTPS
+APIs, webhook-as-mail surfaces, anonymous file-drop endpoints,
+public paste services, DoH resolvers (DoH = DNS-over-HTTPS, which
+bypasses standard DNS resolver pinning by tunnelling lookups over
+443) — see "Default blocklist" below for the full list with one-line
+rationales). Under v1.0 these
+entries describe the policy table only — the resolver still computes
+them via <code>effective_network_blocklist</code>, the test suite asserts they
+are present, but the helper that actually enforces them per-entry
+is gated until v1.1. The v1.0 <code>isolated</code>-fallback path closes the
+threat by stricter means (full network kill) rather than per-entry
+enforcement.</p>
+<h2 id="fallback-policies">Fallback policies<a class="headerlink" href="#fallback-policies" title="Permanent link">&para;</a></h2>
+<p><code>NETWORK_FILTER_FALLBACK</code> (default: <code>stricter</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Policy</th>
+<th>If requested mode is unavailable on the backend</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>strict</code></td>
+<td>Sandbox refuses to launch. Loud error with fix-paths.</td>
+</tr>
+<tr>
+<td><code>stricter</code></td>
+<td>Fall back ONLY to a STRICTER (more restrictive) mode. Loud warning. If no stricter mode is possible (e.g. landlock has no netns), the sandbox refuses to launch with an explicit fix-path enumeration.</td>
+</tr>
+<tr>
+<td><code>open</code></td>
+<td>Fall back ONLY to a LESS restrictive mode (loud warning). NEVER falls to a stricter mode than requested — the policy name reflects user intent ("OK to weaken, but don't strengthen against my wishes"). Probe order: most-strict-of-the-less-strict first (e.g. <code>isolated</code> requested → try <code>filtered</code> before <code>open</code>).</td>
+</tr>
+</tbody>
+</table>
+<p>Per-backend support, v1.0:</p>
+<table>
+<thead>
+<tr>
+<th>Backend</th>
+<th><code>open</code></th>
+<th><code>filtered</code></th>
+<th><code>isolated</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>bwrap</strong></td>
+<td>✓</td>
+<td>helper-probe gated (v1.1 ships the integration); v1.0 falls back per policy</td>
+<td>✓ (<code>--unshare-net</code>)</td>
+</tr>
+<tr>
+<td><strong>firejail</strong></td>
+<td>✓</td>
+<td>gated for v1.1 (<code>--netfilter</code> with generated iptables ruleset)</td>
+<td>✓ (<code>--net=none</code>)</td>
+</tr>
+<tr>
+<td><strong>landlock</strong></td>
+<td>✓</td>
+<td>✗ (no mount/network namespace)</td>
+<td>✗ (no network namespace)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="fallback-decision-matrix">Fallback decision matrix<a class="headerlink" href="#fallback-decision-matrix" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Requested</th>
+<th>Backend supports it?</th>
+<th>Policy <code>strict</code></th>
+<th>Policy <code>stricter</code></th>
+<th>Policy <code>open</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>filtered</code></td>
+<td>yes</td>
+<td>filtered</td>
+<td>filtered</td>
+<td>filtered</td>
+</tr>
+<tr>
+<td><code>filtered</code></td>
+<td>no (bwrap/firejail; no helper)</td>
+<td><strong>FAIL</strong></td>
+<td>isolated (loud warning)</td>
+<td>open (loud warning)</td>
+</tr>
+<tr>
+<td><code>filtered</code></td>
+<td>no (landlock; no netns)</td>
+<td><strong>FAIL</strong></td>
+<td><strong>FAIL</strong> (no stricter mode possible)</td>
+<td>open (loud warning)</td>
+</tr>
+<tr>
+<td><code>isolated</code></td>
+<td>yes</td>
+<td>isolated</td>
+<td>isolated</td>
+<td>isolated</td>
+</tr>
+<tr>
+<td><code>isolated</code></td>
+<td>no (landlock; no netns)</td>
+<td><strong>FAIL</strong></td>
+<td><strong>FAIL</strong> (no stricter mode possible)</td>
+<td>open (loud warning; only available less-strict mode on landlock)</td>
+</tr>
+<tr>
+<td><code>isolated</code></td>
+<td>no (bwrap, helper present)</td>
+<td><strong>FAIL</strong></td>
+<td><strong>FAIL</strong></td>
+<td>filtered (loud warning; the most-strict less-strict option available)</td>
+</tr>
+<tr>
+<td><code>open</code></td>
+<td>(always)</td>
+<td>open</td>
+<td>open</td>
+<td>open</td>
+</tr>
+</tbody>
+</table>
+<p>Note for the <code>open</code> policy row: <code>open</code> never falls to a stricter
+mode than requested. If you want <code>filtered</code> but want to accept
+<code>isolated</code> as a fallback when no helper is available, use
+<code>stricter</code> (not <code>open</code>).</p>
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># sandbox.conf</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nv">NETWORK_FILTER_MODE</span><span class="o">=</span><span class="s2">&quot;filtered&quot;</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nv">NETWORK_FILTER_FALLBACK</span><span class="o">=</span><span class="s2">&quot;stricter&quot;</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">=(</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="s2">&quot;*.untrusted-vendor.com&quot;</span><span class="w">   </span><span class="c1"># wildcard host block</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="s2">&quot;10.0.0.0/8:25&quot;</span><span class="w">            </span><span class="c1"># site-specific CIDR + port</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="c1"># … see sandbox.conf for additional examples</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="o">)</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="nv">NETWORK_BLOCKLIST_EXCEPT</span><span class="o">=(</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">    </span><span class="s2">&quot;mybucket.s3.amazonaws.com&quot;</span><span class="w">  </span><span class="c1"># carve out a specific bucket</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">    </span><span class="c1"># … see &quot;Precedence model&quot; below</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="o">)</span>
+</span></code></pre></div>
+<h3 id="pattern-syntax-for-network_blocklist-and-network_blocklist_except">Pattern syntax for <code>NETWORK_BLOCKLIST</code> and <code>NETWORK_BLOCKLIST_EXCEPT</code><a class="headerlink" href="#pattern-syntax-for-network_blocklist-and-network_blocklist_except" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"host"</code></td>
+<td>block all ports on this hostname/IP</td>
+</tr>
+<tr>
+<td><code>"host:port"</code></td>
+<td>block specific port</td>
+</tr>
+<tr>
+<td><code>"CIDR"</code></td>
+<td>block all ports on this CIDR range</td>
+</tr>
+<tr>
+<td><code>"CIDR:port"</code></td>
+<td>block specific port on this range</td>
+</tr>
+<tr>
+<td><code>"port"</code> (numeric)</td>
+<td>block this port outbound on every destination</td>
+</tr>
+<tr>
+<td><code>"[ipv6]:port"</code></td>
+<td>IPv6 form</td>
+</tr>
+<tr>
+<td><code>"*.suffix"</code></td>
+<td>bash-glob wildcard on the host part (matches any subdomain prefix)</td>
+</tr>
+<tr>
+<td><code>"*"</code></td>
+<td>matches every destination (deny-all base for the implicit-allowlist idiom)</td>
+</tr>
+</tbody>
+</table>
+<p>The runtime applies the union of:</p>
+<ol>
+<li><code>_NETWORK_BLOCKLIST_DEFAULTS</code> (built-in floor in <code>sandbox-lib.sh</code>;
+   always enforced) — covers the identity-bound exfil + lateral-
+   movement surface enumerated in "Default blocklist".</li>
+<li>Admin baseline <code>NETWORK_BLOCKLIST</code> (set in <code>sandbox-admin.conf</code>;
+   user cannot remove).</li>
+<li>User <code>NETWORK_BLOCKLIST</code> extensions (additive only).</li>
+<li>Exception list <code>NETWORK_BLOCKLIST_EXCEPT</code> (admin + user merged;
+   user entries covered by admin BLOCKLIST are stripped at config-
+   load — see "Precedence model" below).</li>
+</ol>
+<p>Inspect the effective lists at runtime:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># From a test harness or sandbox-aware tool</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nb">source</span><span class="w"> </span>sandbox-lib.sh
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>effective_network_blocklist<span class="w">       </span><span class="c1"># block entries (floor + admin + user)</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>effective_network_exception_list<span class="w">  </span><span class="c1"># allowed exceptions (admin + user, post-strip)</span>
+</span></code></pre></div>
+<h2 id="precedence-model">Precedence model<a class="headerlink" href="#precedence-model" title="Permanent link">&para;</a></h2>
+<p>Policy resolution under v1.1 enforcement (gated for v1.0; v1.0 ships
+the policy table but the per-connection evaluation is the v1.1
+helper's job):</p>
+<p><strong>Specificity (most → least specific):</strong></p>
+<ol>
+<li>exact <code>host:port</code></li>
+<li>exact <code>host</code> (no port)</li>
+<li>CIDR with smaller prefix (e.g. <code>/32</code> highest)</li>
+<li>CIDR with larger prefix (e.g. <code>/0</code> lowest)</li>
+<li>wildcard host pattern (<code>*.example.com</code>)</li>
+<li>wildcard <code>*</code></li>
+<li>bare <code>port</code></li>
+</ol>
+<p><strong>Decision rules:</strong></p>
+<ul>
+<li>The most-specific matching rule wins.</li>
+<li>Among same-specificity rules, <code>NETWORK_BLOCKLIST</code> wins over
+  <code>NETWORK_BLOCKLIST_EXCEPT</code> (safer default).</li>
+<li>Admin-set rules win over user-set rules at every specificity level.</li>
+</ul>
+<p><strong>Worked examples:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Blocklist</th>
+<th>Except list</th>
+<th>Connection</th>
+<th>Outcome</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>*.example.com</code></td>
+<td>—</td>
+<td><code>api.example.com</code></td>
+<td>block (wildcard match)</td>
+</tr>
+<tr>
+<td><code>*.example.com</code></td>
+<td><code>api.example.com</code></td>
+<td><code>api.example.com</code></td>
+<td><strong>allow</strong> (exception more specific)</td>
+</tr>
+<tr>
+<td><code>*.example.com</code></td>
+<td><code>api.example.com</code></td>
+<td><code>foo.example.com</code></td>
+<td>block (no matching exception)</td>
+</tr>
+<tr>
+<td><code>*.amazonaws.com</code></td>
+<td><code>s3.amazonaws.com</code></td>
+<td><code>s3.amazonaws.com</code></td>
+<td>allow</td>
+</tr>
+<tr>
+<td><code>*</code></td>
+<td><code>github.com</code>, <code>api.openai.com</code></td>
+<td><code>github.com</code></td>
+<td>allow (implicit-allowlist idiom)</td>
+</tr>
+<tr>
+<td><code>*</code></td>
+<td><code>github.com</code>, <code>api.openai.com</code></td>
+<td><code>pastebin.com</code></td>
+<td>block (no exception)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="admin-precedence">Admin precedence<a class="headerlink" href="#admin-precedence" title="Permanent link">&para;</a></h3>
+<p>A <code>NETWORK_BLOCKLIST</code> entry set in <code>sandbox-admin.conf</code> cannot be
+carved out by a user <code>NETWORK_BLOCKLIST_EXCEPT</code>. The check runs at
+config-load time under bash-glob semantics:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># admin sandbox-admin.conf</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">+=(</span><span class="s2">&quot;*.example.com&quot;</span><span class="o">)</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># user sandbox.conf</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="nv">NETWORK_BLOCKLIST_EXCEPT</span><span class="o">+=(</span><span class="s2">&quot;api.example.com&quot;</span><span class="o">)</span><span class="w">   </span><span class="c1"># stripped at load!</span>
+</span></code></pre></div>
+<p>The user's <code>api.example.com</code> exception is removed and a warning is
+emitted:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>WARNING: User config attempted to except &#39;api.example.com&#39; but
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>admin NETWORK_BLOCKLIST has &#39;*.example.com&#39; which covers it —
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>exception stripped (admin policy is absolute).
+</span></code></pre></div>
+<p>Admins can carve their own exceptions in their own
+<code>NETWORK_BLOCKLIST_EXCEPT</code> (admin policy is the floor for both
+arrays).</p>
+<h3 id="implicit-allowlist-idiom-exact-hosts">Implicit-allowlist idiom (<code>*</code> + exact hosts)<a class="headerlink" href="#implicit-allowlist-idiom-exact-hosts" title="Permanent link">&para;</a></h3>
+<p>For deployments that want deny-by-default semantics, the canonical
+pattern is:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">+=(</span><span class="s2">&quot;*&quot;</span><span class="o">)</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nv">NETWORK_BLOCKLIST_EXCEPT</span><span class="o">+=(</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="s2">&quot;github.com&quot;</span><span class="w"> </span><span class="s2">&quot;api.github.com&quot;</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="s2">&quot;api.anthropic.com&quot;</span><span class="w"> </span><span class="s2">&quot;api.openai.com&quot;</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="s2">&quot;pypi.org&quot;</span><span class="w"> </span><span class="s2">&quot;files.pythonhosted.org&quot;</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="s2">&quot;conda.anaconda.org&quot;</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span><span class="c1"># … your minimal essential set</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="o">)</span>
+</span></code></pre></div>
+<p>The <code>*</code> rule has the lowest specificity, so any exact-host exception
+overrides it. Future-deferred: a curated default-allowlist preset
+(survey reference R3) would package this pattern with sensible
+defaults; the user direction in
+<a href="https://github.com/settylab/dotto-nexus/issues/117#issuecomment-4435142136">settylab/dotto-nexus#117</a>
+deferred R3 in favour of the blocklist-not-allowlist model — the
+idiom above remains available for power users who want the inverse
+shape.</p>
+<h2 id="resolver-pinning-is-it-needed">Resolver pinning — is it needed?<a class="headerlink" href="#resolver-pinning-is-it-needed" title="Permanent link">&para;</a></h2>
+<p>Empirically verified on a representative HPC node (<code>gizmok87</code>,
+Ubuntu 18.04, kernel 5.4):</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>$ stat -c &#39;%a %F %N&#39; /etc/resolv.conf
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>777 symbolic link &#39;/etc/resolv.conf&#39; -&gt; &#39;../run/systemd/resolve/stub-resolv.conf&#39;
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>$ ls -lL /etc/resolv.conf
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>-rw-r--r-- 1 nobody 732 May 12 14:54 /etc/resolv.conf
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>$ [[ -w /etc/resolv.conf ]] &amp;&amp; echo writable || echo RO
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>RO
+</span></code></pre></div>
+<p><code>/etc/resolv.conf</code> is RO to unprivileged users on the host, and
+inside the sandbox <code>/etc</code> is bind-mounted read-only via
+<code>READONLY_MOUNTS</code>. The same is true for <code>/etc/hosts</code> (644 root-owned)
+and <code>/etc/nsswitch.conf</code> (660 root-owned). <strong>No resolver-rewrite
+step is needed</strong>; the existing read-only bind-mount of <code>/etc</code>
+already pins these files inside the sandbox.</p>
+<p>The resolver-evasion surface that actually matters for the threat
+model is <strong>application-level</strong>: Python <code>dnspython</code>, Go's
+<code>net.Resolver</code>, Rust's <code>hickory-dns</code>, and similar libraries can open
+their own TCP/UDP sockets to a DoH/DoT endpoint, bypassing
+<code>/etc/resolv.conf</code> entirely. The network-filter floor blocks this
+class:</p>
+<ul>
+<li>DoH hostnames (<code>cloudflare-dns.com</code>, <code>dns.google</code>, <code>dns.quad9.net</code>,
+  <code>mozilla.cloudflare-dns.com</code>) — closes the HTTPS-tunnelled lookup.</li>
+<li>DoT port 853 (universal port block) — closes the TLS-wrapped
+  lookup.</li>
+</ul>
+<p>Other resolver-mutation surfaces, evaluated:</p>
+<table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Matters?</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/etc/resolv.conf</code> rewrite</td>
+<td>no</td>
+<td>RO via <code>READONLY_MOUNTS</code> on <code>/etc</code></td>
+</tr>
+<tr>
+<td><code>/etc/hosts</code> mutation</td>
+<td>no</td>
+<td>same RO bind-mount</td>
+</tr>
+<tr>
+<td><code>/etc/nsswitch.conf</code> re-order</td>
+<td>no</td>
+<td>same RO bind-mount</td>
+</tr>
+<tr>
+<td><code>LD_PRELOAD</code> intercepting <code>getaddrinfo</code></td>
+<td>no</td>
+<td>the attacker isn't using the system resolver; they'd skip the libc path entirely</td>
+</tr>
+<tr>
+<td><code>RES_OPTIONS</code> env var</td>
+<td>no</td>
+<td>glibc-resolver only; attacker routes around</td>
+</tr>
+<tr>
+<td>Application DoH/DoT clients</td>
+<td><strong>yes</strong></td>
+<td>covered by the DoH-hostname + DoT-port block in the floor</td>
+</tr>
+</tbody>
+</table>
+<p>So the practical defense is the network-layer block of the DoH
+hostnames + DoT port (already in the floor), not an in-sandbox
+resolver pin.</p>
+<h2 id="helper-binary-pasta">Helper binary (pasta)<a class="headerlink" href="#helper-binary-pasta" title="Permanent link">&para;</a></h2>
+<p><code>pasta</code> is the userspace TCP/IP stack from the
+<a href="https://passt.top/">passt</a> project (BSD-3-Clause arm of the dual
+license). When v1.1 wires the integration, <code>pasta</code> provisions a tap
+device inside the sandbox's network namespace, forwards general
+outbound traffic to the host's network, and pairs with <code>nft</code> rules
+inside the netns to enforce the blocklist.</p>
+<p>Install paths, in order of preference:</p>
+<ol>
+<li><strong>System package</strong>: <code>apt install passt</code> (Ubuntu 22.10+, Debian
+   Bookworm+), <code>dnf install passt</code> (Fedora 36+, RHEL 9+),
+   <code>brew install passt</code>.</li>
+<li><strong>Shipped fetch</strong>: <code>./tools/pasta/fetch.sh</code> — downloads the pinned
+   upstream source tarball, builds a static binary for the host
+   architecture, installs at <code>tools/pasta/pasta</code>.</li>
+<li><strong>lmod (site-specific)</strong>: <code>SANDBOX_MODULES+=("passt/&lt;version&gt;")</code>
+   when the site provides a module. Sites with an EasyBuild pipeline
+   can request the upstream <code>passt</code> recipe; the easyconfig is a small
+   addition (the binary has no third-party deps).</li>
+</ol>
+<p>The helper-detection function probes in PATH-first order:
+distro/Homebrew <code>pasta</code>, then the shipped binary, then <code>slirp4netns</code>
+as a fallback (older, slower, GPL-2.0+ source-offer obligation).</p>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<h3 id="filtered-fell-back-to-isolated-on-startup">"filtered fell back to isolated" on startup<a class="headerlink" href="#filtered-fell-back-to-isolated-on-startup" title="Permanent link">&para;</a></h3>
+<p>The most common cause in v1.0: the bwrap+pasta integration is gated.
+The fix-path enumeration printed by the sandbox names the choices —
+the practical ones are:</p>
+<ul>
+<li>Accept <code>isolated</code> mode (no network at all): pin
+  <code>NETWORK_FILTER_MODE=isolated</code> so the fallback is silent and
+  intentional. The threat is still closed.</li>
+<li>Accept <code>open</code> mode (no isolation): pin <code>NETWORK_FILTER_MODE=open</code>.
+  <strong>Re-opens the threat.</strong> Use only when host-side mail policy is
+  already locked down.</li>
+<li>Wait for v1.1: the integration will ship without a config change.</li>
+</ul>
+<h3 id="no-stricter-mode-available-failure-on-landlock">"no stricter mode available" failure on landlock<a class="headerlink" href="#no-stricter-mode-available-failure-on-landlock" title="Permanent link">&para;</a></h3>
+<p>Landlock has neither a mount namespace nor a network namespace, so it
+cannot deliver <code>filtered</code> or <code>isolated</code>. Choices:</p>
+<ul>
+<li>Switch to a bwrap or firejail backend (<code>SANDBOX_BACKEND=bwrap</code>).</li>
+<li>Pin <code>NETWORK_FILTER_MODE=open</code> on landlock-only hosts.</li>
+<li>Set <code>NETWORK_FILTER_FALLBACK=open</code> to accept the silent degrade.</li>
+</ul>
+<h3 id="sandbox-notify-carve-out"><code>sandbox-notify</code> carve-out<a class="headerlink" href="#sandbox-notify-carve-out" title="Permanent link">&para;</a></h3>
+<p><code>bin/sandbox-notify</code> uses <code>/dev/tty</code> + tmux IPC (<code>tmux new-window</code>)
+and does NOT speak SMTP or any other network protocol. It continues
+to function in all three modes including <code>isolated</code>. No carve-out
+required at the configuration level.</p>
+<h3 id="pre-existing-tests-fail-with-enetunreach">Pre-existing tests fail with "ENETUNREACH"<a class="headerlink" href="#pre-existing-tests-fail-with-enetunreach" title="Permanent link">&para;</a></h3>
+<p><code>NETWORK_FILTER_MODE=filtered</code> (default) falls back to <code>isolated</code> in
+v1.0, which kills the sandbox's network. CI / local test runs that
+expect network access need either <code>NETWORK_FILTER_MODE=open</code> for the
+duration of the test or a host-side <code>pasta</code> install plus the v1.1
+integration. The test suite gates its network-dependent sections on
+the resolved mode (see <code>test.sh</code> section "Network filter").</p>
+<h2 id="admin-enforcement-sandbox-adminconf">Admin enforcement (sandbox-admin.conf)<a class="headerlink" href="#admin-enforcement-sandbox-adminconf" title="Permanent link">&para;</a></h2>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># /etc/agent-sandbox/sandbox-admin.conf</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="nv">NETWORK_FILTER_MODE</span><span class="o">=</span><span class="s2">&quot;filtered&quot;</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="nv">NETWORK_FILTER_FALLBACK</span><span class="o">=</span><span class="s2">&quot;strict&quot;</span><span class="w">      </span><span class="c1"># admins typically pin strict</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">=(</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span><span class="s2">&quot;hooks.slack.com&quot;</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">    </span><span class="s2">&quot;api.mailgun.net&quot;</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">    </span><span class="c1"># … site-specific must-blocks</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="o">)</span>
+</span></code></pre></div>
+<p>User config can only request:</p>
+<ul>
+<li>A mode <code>&gt;=</code> the admin pin in the strictness ordering
+  (<code>open</code> &lt; <code>filtered</code> &lt; <code>isolated</code>).</li>
+<li>A fallback policy <code>&gt;=</code> the admin pin
+  (<code>open</code> &lt; <code>stricter</code> &lt; <code>strict</code>).</li>
+<li>A <code>NETWORK_BLOCKLIST</code> that is a superset of the admin's (entries
+  the admin set cannot be removed).</li>
+</ul>
+<p>Violations are restored at config-load time with a warning naming the
+offending entry.</p>
+<h2 id="see-also">See also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../security/">Security model</a> — overall sandbox threat model and
+  layering.</li>
+<li><a href="../../admin/hardening/">Hardening</a> — admin's view of the
+  defense-in-depth stack.</li>
+<li><a href="https://passt.top/"><code>passt.top</code></a> — upstream documentation for
+  pasta.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../device-passthrough/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Device passthrough">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Device passthrough
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../apptainer-comparison/" class="md-footer__link md-footer__link--next" aria-label="Next: Sandbox vs. Apptainer">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Sandbox vs. Apptainer
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/katosh/agent_sandbox" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.footer", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.action.edit", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
