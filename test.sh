@@ -4474,10 +4474,29 @@ fi
 
 # ── 11.4 Network filter ───────────────────────────────────────────
 #
-# v1.0 ships isolated mode + the config plumbing + the fallback
-# resolver. Real 'filtered' mode (bwrap + pasta + nft) is v1.1; v1.0's
-# default 'filtered + stricter' falls back to isolated with a loud
-# warning. These tests assert each piece independently.
+# v1.0 shipped isolated mode + the config plumbing + the fallback
+# resolver. v1.1 wires real 'filtered' mode (bwrap + pasta + nft):
+# the NETWORK_FILTER_ENABLE_HELPER_PROBE gate is gone, the shipped
+# tools/pasta/<arch>/pasta is auto-detected, and the bwrap backend
+# wraps itself in pasta + nft when both helpers are available. These
+# tests assert each piece independently; the empirical filtered-mode
+# tests skip cleanly when the runner lacks pasta or nft.
+
+# Detect helpers ONCE so the conditional tests below stay readable.
+_test_has_pasta=false
+_test_has_nft=false
+_test_pasta_path=""
+_test_nft_path=""
+if command -v pasta >/dev/null 2>&1; then
+    _test_has_pasta=true
+    _test_pasta_path="$(command -v pasta)"
+elif [[ -x "$SCRIPT_DIR/tools/pasta/$(uname -m)/pasta" ]]; then
+    _test_has_pasta=true
+    _test_pasta_path="$SCRIPT_DIR/tools/pasta/$(uname -m)/pasta"
+fi
+command -v nft >/dev/null 2>&1 && { _test_has_nft=true; _test_nft_path="$(command -v nft)"; }
+_test_filtered_supported=false
+$_test_has_pasta && $_test_has_nft && _test_filtered_supported=true
 
 echo "11.4. Network filter"
 
@@ -4502,10 +4521,19 @@ if (
     _load_untrusted_config "$SCRIPT_DIR/sandbox.conf" "Test default sandbox.conf load"
     [[ "${#NETWORK_BLOCKLIST[@]}" -ge 20 ]] || { echo "shipped sandbox.conf NETWORK_BLOCKLIST too short"; exit 1; }
 
-    # Test 2: bwrap + filtered + stricter → isolated (v1.0: helper gated)
+    # Test 2: bwrap + filtered + stricter — v1.1 outcome depends on
+    # whether pasta AND nft are both available on the runner.
+    #   both available  → resolves to 'filtered' (the v1.1 happy path)
+    #   either missing  → falls back to 'isolated' (stricter policy)
     NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=stricter
     resolve_network_filter_mode bwrap 2>/dev/null
-    [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || { echo "expected fallback to isolated, got $_NETWORK_FILTER_RESOLVED"; exit 1; }
+    if '"$_test_filtered_supported"'; then
+        [[ "$_NETWORK_FILTER_RESOLVED" == "filtered" ]] || { echo "v1.1: expected filtered (pasta+nft both present), got $_NETWORK_FILTER_RESOLVED"; exit 1; }
+        [[ -n "$_NETWORK_FILTER_HELPER" ]] || { echo "v1.1: helper path empty"; exit 1; }
+        [[ -n "$_NETWORK_FILTER_NFT" ]] || { echo "v1.1: nft path empty"; exit 1; }
+    else
+        [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || { echo "expected fallback to isolated (no pasta+nft on runner), got $_NETWORK_FILTER_RESOLVED"; exit 1; }
+    fi
 
     # Test 3: bwrap + isolated + stricter → isolated (no fallback needed)
     NETWORK_FILTER_MODE=isolated NETWORK_FILTER_FALLBACK=stricter
@@ -4851,6 +4879,180 @@ if (
 else
     fail "Network filter: exception-list helper regressed (rc=$?)"
 fi
+
+# ── 11.4.v1.1 nft ruleset generator (pure-function unit tests) ────
+#
+# generate_nft_ruleset translates effective_network_blocklist +
+# effective_network_exception_list into an nftables ruleset. Pure
+# function — no kernel state required, runs on every CI runner.
+
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    NETWORK_BLOCKLIST=(
+        "25"                  # bare port
+        "853"                 # DoT port
+        "127.0.0.1:25"        # host:port
+        "10.0.0.0/8:25"       # CIDR:port
+        "0.0.0.0/0:25"        # universal CIDR:port
+    )
+    NETWORK_BLOCKLIST_EXCEPT=("github.com")  # hostname exception
+    _r="$(generate_nft_ruleset 2>/dev/null)"
+    # Header structure
+    grep -q "table inet sandbox_filter" <<< "$_r" || { echo "FAIL: table header missing"; exit 1; }
+    grep -q "policy accept" <<< "$_r" || { echo "FAIL: policy accept missing"; exit 1; }
+    # Bare port → tcp + udp drop
+    grep -q "^[[:space:]]*tcp dport 25 drop" <<< "$_r" || { echo "FAIL: tcp dport 25 drop"; exit 1; }
+    grep -q "^[[:space:]]*udp dport 25 drop" <<< "$_r" || { echo "FAIL: udp dport 25 drop"; exit 1; }
+    grep -q "^[[:space:]]*tcp dport 853 drop" <<< "$_r" || { echo "FAIL: tcp dport 853 (DoT)"; exit 1; }
+    # host:port → ip daddr rule
+    grep -q "ip daddr 127.0.0.1 tcp dport 25 drop" <<< "$_r" || { echo "FAIL: 127.0.0.1:25 rule"; exit 1; }
+    # CIDR:port → ip daddr CIDR rule
+    grep -q "ip daddr 10.0.0.0/8 tcp dport 25 drop" <<< "$_r" || { echo "FAIL: 10.0.0.0/8:25 rule"; exit 1; }
+    grep -q "ip daddr 0.0.0.0/0 tcp dport 25 drop" <<< "$_r" || { echo "FAIL: 0.0.0.0/0:25 rule"; exit 1; }
+    exit 0
+); then
+    pass "Network filter (v1.1): nft generator emits port / host:port / CIDR rules"
+else
+    fail "Network filter (v1.1): nft generator regressed (rc=$?)"
+fi
+
+# Wildcard hostnames and '*' deny-all are NOT enforceable at the nft
+# layer; the generator skips them (with a stderr note when not quiet).
+# Verify both: the entry is absent from the ruleset, and the stderr
+# note names the entry.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    NETWORK_BLOCKLIST=("*" "*.cloudflare-dns.com" "25")
+    NETWORK_BLOCKLIST_EXCEPT=()
+    _stderr="$(mktemp "${TMPDIR:-/tmp}/test-nft-skip.XXXXXX")"
+    trap 'rm -f "$_stderr"' EXIT
+    _r="$(generate_nft_ruleset 2>"$_stderr")"
+    # '*' and wildcard hosts must not produce daddr rules.
+    grep -q "cloudflare-dns.com" <<< "$_r" && { echo "FAIL: wildcard host leaked into ruleset"; exit 1; }
+    grep -q "daddr [^[:space:]]*[*]" <<< "$_r" && { echo "FAIL: '*' produced a rule"; exit 1; }
+    # The port-25 entry should be present (validates the wildcard
+    # skip didn't crash the whole generator).
+    grep -q "tcp dport 25 drop" <<< "$_r" || { echo "FAIL: port 25 missing after wildcards"; exit 1; }
+    # stderr should name the skipped entries.
+    grep -q "'[*]' cannot be enforced" "$_stderr" || { echo "FAIL: '*' skip note missing"; exit 1; }
+    grep -q "'[*]\.cloudflare-dns.com'" "$_stderr" || { echo "FAIL: wildcard skip note missing"; exit 1; }
+    exit 0
+); then
+    pass "Network filter (v1.1): nft generator skips '*' + wildcard hosts (v1.2 L7 scope)"
+else
+    fail "Network filter (v1.1): nft generator wildcard handling regressed (rc=$?)"
+fi
+
+# Exception accept rules emitted BEFORE drop rules so the
+# specificity-first semantics hold (worked example: "*.example.com +
+# EXCEPT api.example.com" → api.example.com gets accept, then drops
+# everything else matching the blocklist; ordering matters for nft's
+# rule-chain semantics).
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    NETWORK_BLOCKLIST=("127.0.0.1")
+    NETWORK_BLOCKLIST_EXCEPT=("127.0.0.1")
+    _r="$(generate_nft_ruleset 2>/dev/null)"
+    # Both rules should exist; accept must come BEFORE drop.
+    _accept_line="$(grep -n 'ip daddr 127.0.0.1 accept' <<< "$_r" | head -1 | cut -d: -f1)"
+    _drop_line="$(grep -n 'ip daddr 127.0.0.1 drop' <<< "$_r" | head -1 | cut -d: -f1)"
+    [[ -n "$_accept_line" && -n "$_drop_line" ]] || { echo "FAIL: missing accept or drop line"; exit 1; }
+    [[ "$_accept_line" -lt "$_drop_line" ]] || { echo "FAIL: accept (line $_accept_line) not before drop (line $_drop_line)"; exit 1; }
+    exit 0
+); then
+    pass "Network filter (v1.1): exception accept rules emitted before drop rules"
+else
+    fail "Network filter (v1.1): exception-ordering regressed (rc=$?)"
+fi
+
+# Unresolvable hostname → skipped with stderr note, ruleset still loads
+# the rest. Use a TLD that doesn't exist so getent fails fast.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    NETWORK_BLOCKLIST=("definitely-not-a-real-host.invalid" "25")
+    NETWORK_BLOCKLIST_EXCEPT=()
+    _stderr="$(mktemp "${TMPDIR:-/tmp}/test-nft-resolve.XXXXXX")"
+    trap 'rm -f "$_stderr"' EXIT
+    _r="$(generate_nft_ruleset 2>"$_stderr")"
+    grep -q "tcp dport 25 drop" <<< "$_r" || { echo "FAIL: port 25 missing"; exit 1; }
+    grep -q "could not resolve" "$_stderr" || { echo "FAIL: resolve-failure note missing"; exit 1; }
+    exit 0
+); then
+    pass "Network filter (v1.1): unresolvable host skipped, ruleset still loads"
+else
+    fail "Network filter (v1.1): resolve-failure handling regressed (rc=$?)"
+fi
+
+# Empirical filtered-mode integration: requires pasta + nft AND a
+# bwrap-capable runner. Skip cleanly when either dependency is
+# missing — we'd rather skip than fake-pass.
+if [[ -x "$SCRIPT_DIR/tools/pasta/$(uname -m)/pasta" ]] || command -v pasta >/dev/null 2>&1; then
+    _has_pasta=true
+else
+    _has_pasta=false
+fi
+command -v nft >/dev/null 2>&1 && _has_nft=true || _has_nft=false
+
+if has_mount_ns && $_has_pasta && $_has_nft; then
+    # Pin filtered mode + strict policy so any fallback fails the
+    # test loudly instead of silently degrading to isolated/open.
+    _net_filt_conf="$HOME/.config/agent-sandbox/conf.d/test-net-filtered-$$.conf"
+    _TEST_TEMP_FILES+=("$_net_filt_conf")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    cat > "$_net_filt_conf" <<CONF
+NETWORK_FILTER_MODE=filtered
+NETWORK_FILTER_FALLBACK=strict
+CONF
+
+    # Negative path: port 25 must be unreachable inside the sandbox.
+    if sandbox bash -c '
+        exec 3<>/dev/tcp/127.0.0.1/25 2>&1 && echo CONNECTED || echo BLOCKED
+    '; then
+        if [[ "$OUTPUT" == *"BLOCKED"* ]]; then
+            pass "Network filter (v1.1, filtered): port 25 blocked at nft layer"
+        else
+            fail "Network filter (v1.1, filtered): port 25 reachable — nft drop not applied" "$OUTPUT"
+        fi
+    fi
+
+    # Positive path: github.com:443 must remain reachable through the
+    # pasta tap. Treat transient runner network flakes as warn.
+    if command -v curl >/dev/null 2>&1 && sandbox bash -c '
+        if curl -fsS --max-time 10 -o /dev/null -w "%{http_code}" https://github.com/ 2>/dev/null | grep -qE "^(200|301|302)$"; then
+            echo REACHABLE
+        else
+            echo UNREACHABLE
+        fi
+    '; then
+        if [[ "$OUTPUT" == "REACHABLE" ]]; then
+            pass "Network filter (v1.1, filtered): non-blocklisted egress (github.com:443) reachable"
+        else
+            warn "Network filter (v1.1, filtered): github.com:443 unreachable from CI runner" "$OUTPUT"
+        fi
+    fi
+
+    rm -f "$_net_filt_conf"
+    unset _net_filt_conf
+else
+    if ! has_mount_ns; then
+        skip "Network filter (v1.1, filtered): empirical tests need a mount-ns backend"
+    elif ! $_has_pasta; then
+        skip "Network filter (v1.1, filtered): empirical tests need pasta (apt install passt / brew install passt / tools/pasta/fetch.sh)"
+    else
+        skip "Network filter (v1.1, filtered): empirical tests need nftables (apt install nftables / dnf install nftables)"
+    fi
+fi
+unset _has_pasta _has_nft
 
 
 # ── 11.5 Device passthrough (bwrap only) ──────────────────────────
