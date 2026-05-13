@@ -239,17 +239,24 @@ FILTER_PASSWD=true
 NETWORK_FILTER_MODE="filtered"
 NETWORK_FILTER_FALLBACK="stricter"
 
-# Always-on, not-user-removable port floor. v1.1 moved the universally-
-# enforceable ports here (was previously sandbox.conf-only) so that an
-# operator upgrading from v1.0 — whose `~/.config/agent-sandbox/sandbox.conf`
-# predates v1.1 and never gets overwritten by `install.sh` — still picks
-# up the new enforcement on the first session after upgrade. Every entry
-# here is enforceable at pasta's `-T ~N` outbound port-exclusion layer.
+# Always-on port floor. v1.1 moved the universally-enforceable ports
+# here (was previously sandbox.conf-only) so that an operator upgrading
+# from v1.0 — whose `~/.config/agent-sandbox/sandbox.conf` predates v1.1
+# and never gets overwritten by `install.sh` — still picks up enforcement
+# on the first session after upgrade. Every entry here is enforceable at
+# pasta's `-T ~N` outbound port-exclusion layer.
 #
-# Sites that need to REMOVE an entry (e.g., a lab pipeline legitimately
-# needs port 25) must do it via `NETWORK_BLOCKLIST_EXCEPT+=("25")` in the
-# user config; admin policy can still pin the floor via its own
-# `NETWORK_BLOCKLIST` entries.
+# How users + admins interact with the floor:
+#   - Users CAN lift any entry via `NETWORK_BLOCKLIST_EXCEPT+=("25")` in
+#     their own config. The floor is "always-on" for the convenience-
+#     of-default case; not "absolute" against a user opting out.
+#   - Admins who want the floor LOCKED against user opt-out must duplicate
+#     the relevant entry in `sandbox-admin.conf::NETWORK_BLOCKLIST`. That
+#     admin entry covers any matching user EXCEPT under the existing
+#     `_strip_user_exceptions_covered_by_admin` machinery, so the user's
+#     opt-out attempt is stripped with a loud warning. See
+#     docs/reference/network-filter.md "Admin enforcement" for the
+#     worked example.
 #
 # Site-specific entries (campus mail-relay CIDR, LDAP/Kerberos/SMB ports
 # that depend on deployment topology) stay in sandbox.conf where the
@@ -1765,12 +1772,15 @@ _classify_pasta_port_entry() {
     local -n _tcp="$2" _udp="$3"
     local _port
 
-    # "*" deny-all — pasta's `-T` exclusion syntax has no "exclude all
-    # ports" form short of an explicit allow-list; operators wanting
-    # deny-all should use isolated mode.
+    # "*" deny-all — pasta DOES have `-T none` for deny-all forwarding,
+    # but v1.1 wires only the `-T ~N` exclusion model (the bare-port
+    # blocklist surface). Genuine deny-all is delivered by
+    # NETWORK_FILTER_MODE=isolated (which uses bwrap --unshare-net
+    # directly, no pasta tap at all). Honest user-facing message:
+    # "isolated" is the supported deny-all knob.
     if [[ "$_entry" == "*" ]]; then
         [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" ]] && \
-            echo "sandbox: NOTE — network-filter entry '*' has no pasta -T form for deny-all (the syntax models exclusions, not allow-lists); use NETWORK_FILTER_MODE=isolated for deny-all semantics. Skipping." >&2
+            echo "sandbox: NOTE — network-filter entry '*' is not wired at the pasta-exclusion layer; use NETWORK_FILTER_MODE=isolated for deny-all semantics. Skipping." >&2
         return 0
     fi
 

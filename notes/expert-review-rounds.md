@@ -47,8 +47,47 @@ expert pool, collect issues, apply fixes, repeat until convergence
 
 ## Round 2 — output
 
-_(filled in after round-2 expert pool)_
+### Pool (3, focused on round-1 fixes)
+- security
+- consistency
+- ux-onboarding
+
+### Consolidated MUST findings (applied this round)
+
+| Source | Finding | Fix applied |
+|---|---|---|
+| security | Lib floor isn't admin-locked against user `_EXCEPT` — `_strip_user_exceptions_covered_by_admin` only checks `_ADMIN_NETWORK_BLOCKLIST`, not `_NETWORK_BLOCKLIST_DEFAULTS`. A user `EXCEPT+=("25")` lifts port 25 from the floor even on a managed install. The lib comment oversold the floor as "not-user-removable" | Rewrote the lib comment + added an "Locking the lib floor against user opt-out" subsection to `network-filter.md::Admin enforcement`: floor is always-on by default but not absolute; admins lock it by duplicating the entry in `sandbox-admin.conf::NETWORK_BLOCKLIST` (the existing strip machinery then covers user EXCEPT). Verified empirically that the strip pattern strips and warns as documented. |
+| consistency | index.md + network-filter.md hedged "(and agent-sandbox ships pasta in-tree, so the 'available' condition is almost always met)" — after the lib-floor fix every x86_64 install enforces from first session | Replaced with "always met on x86_64 Linux hosts; aarch64 falls back per `NETWORK_FILTER_FALLBACK` until a shipped binary lands." |
+
+### Consolidated SHOULD findings (applied)
+
+| Source | Finding | Fix applied |
+|---|---|---|
+| security | `*` rationale was inaccurate — pasta DOES have `-T none` for deny-all; v1.1 just doesn't wire it. The "no exclude-all form" claim was over-broad. | Rewrote the skip note: "v1.1 wires only the `-T ~N` exclusion model; isolated mode is the supported deny-all knob (uses `bwrap --unshare-net` directly)." |
+| ux | DoT / L7 / netns unglossed on first appearance in configure.md | Glossed inline: "DoT (DNS-over-TLS, port 853)", "L7 (Layer 7, application layer)", "netns (Linux network namespace — a per-process isolated network stack)". |
+| consistency | Three stale `netfilter` references survived round 1 cleanup (network-filter.md:34, :305, :321) | All replaced with "pasta's port-exclusion layer". |
+
+### Deferred (NIT / scope)
+
+- CIDR:port WARN regex misses bare unbracketed IPv6 loopback `::1:443`: rare edge case; v1.2 IPv6-canonicalization scope.
+- "Helper sourcing (pasta — no nft)" heading parenthetical reads draft-like but isn't wrong; flagged for editorial polish post-merge.
+- "Unprivileged-eBPF availability" jargon in tools/pasta/README.md:5: harmless side-mention; deferred.
+- CHANGELOG re-emits the port list that lives in network-filter.md: drift-prone duplication; harmless for one release, flagged in `notes/` for cleanup post-merge.
+- Standardizing "ungates the probe" / "removes the gate" phrasing across CHANGELOG / network-filter.md / pasta README: cosmetic.
+- "WIDENS" vs. "CAUTION" label mismatch between sandbox.conf and configure.md: cosmetic.
+
+### Disagreements / judged moot
+
+- security NIT on `--map-host-loopback` future-proofing: pasta's loopback isolation is the documented default; doc says port-class closure is the primary defense (which is now correct after the lib-floor fix), pasta's empty loopback is named as defense-in-depth in the prose. No code change needed.
+- ux NIT about `⚠` (U+26A0) glyph rendering in some terminals: cosmetic; MkDocs renders fine.
 
 ## Convergence note
 
-_(filled in at end)_
+After two rounds:
+- 6 MUST findings across both rounds — all applied.
+- 6 SHOULD findings — all applied.
+- ~10 NITs deferred to a docs-polish follow-up; documented above.
+- Two reviews of "CONFIRMED" status on the round-1 fixes (cross-link integrity, hostname-removal narrative, CHANGELOG behaviour-change banner, pattern-table reorder, CIDR:port WARN, sandbox.conf prose trim).
+
+Stopping here per the 3-round cap. Remaining items are NIT-class and
+appropriate for editorial cleanup post-merge.

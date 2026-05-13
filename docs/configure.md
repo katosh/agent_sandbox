@@ -78,7 +78,7 @@ Without an admin baseline, `~/.config/agent-sandbox/sandbox.conf` is the only co
 | [`SANDBOX_QUIET`](#sandbox_quiet) | scalar | no | `false` |
 | [`NETWORK_FILTER_MODE`](#network_filter_mode) | scalar | **harden-only** (user can only request stricter) | `filtered` |
 | [`NETWORK_FILTER_FALLBACK`](#network_filter_fallback) | scalar | **harden-only** (user can only request stricter) | `stricter` |
-| [`NETWORK_BLOCKLIST`](#network_blocklist) | array | **yes** (admin entries restored; users can append) | mail-submission + DoT + r-services ports (see [`sandbox.conf`](../sandbox.conf)) |
+| [`NETWORK_BLOCKLIST`](#network_blocklist) | array | **yes** (admin entries restored; users can append) | mail-submission + DoT (DNS-over-TLS, port 853) + legacy r-services ports (see [`sandbox.conf`](../sandbox.conf)) |
 | [`NETWORK_BLOCKLIST_EXCEPT`](#network_blocklist_except) | array | additive; admin-covered entries stripped | `()` |
 | [`NETWORK_FILTER_VERBOSE`](#network_filter_verbose) | scalar (env-var) | no | `0` |
 | [`SLURM_SCOPE`](#slurm_scope) | scalar | no | `project` |
@@ -485,7 +485,7 @@ One of `open` | `filtered` | `isolated`.
 | Mode | Effect |
 |---|---|
 | `open` | Sandbox shares the host's network namespace; no isolation. Legacy behaviour. |
-| `filtered` | Sandbox runs in a new netns; pasta provisions a tap to the host network and DNS proxy, AND enforces the `NETWORK_BLOCKLIST` port-level entries at its outbound forwarding boundary (`-T ~N` / `-U ~K`). Falls back per [`NETWORK_FILTER_FALLBACK`](#network_filter_fallback) if pasta is unavailable. |
+| `filtered` | Sandbox runs in a new netns (Linux network namespace — a per-process isolated network stack); pasta provisions a tap to the host network and DNS proxy, AND enforces the `NETWORK_BLOCKLIST` port-level entries at its outbound forwarding boundary (`-T ~N` / `-U ~K`). Falls back per [`NETWORK_FILTER_FALLBACK`](#network_filter_fallback) if pasta is unavailable. |
 | `isolated` | Sandbox runs in a new netns with NO network at all (`bwrap --unshare-net`). DNS / pip / git break inside. |
 
 **Strictness order** `open < filtered < isolated`. Admin pin: user can request a value `>=` admin's; weakening triggers a `WARNING: weakened admin-enforced …` and the admin value is restored.

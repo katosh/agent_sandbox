@@ -29,9 +29,11 @@ TCP path itself at a layer the agent cannot escape.
 
 **Non-goals.** This layer does NOT defend against:
 
-- **Covert L7 channels over 443 to ANY hostname.** A determined
-  agent with `pip install requests` can POST to any HTTPS endpoint;
-  the netfilter layer can't inspect TLS SNI. The threat surface
+- **Covert L7 channels over 443 to ANY hostname.** L7 (Layer 7,
+  the application layer in the OSI stack) carries the destination
+  hostname only inside the TLS handshake, which pasta's port-
+  exclusion layer cannot inspect. A determined agent with `pip
+  install requests` can POST to any HTTPS endpoint. The threat surface
   this fails to cover (webhook-as-mail, transactional-email HTTPS
   APIs, paste sites, DoH resolvers, …) is real, NOT addressed by
   v1.1, and properly closed by a managed egress proxy. See
@@ -78,9 +80,10 @@ helper-probe behind `NETWORK_FILTER_ENABLE_HELPER_PROBE=1` — its
 default `filtered + stricter` fell back silently to `isolated`,
 so the layer was inert in practice. v1.1 ungates the probe.
 Deployments running the v1.0 defaults will START enforcing real
-`filtered` mode the moment v1.1 lands on a host with `pasta`
-available (and agent-sandbox ships pasta in-tree, so the
-"available" condition is almost always met).
+`filtered` mode the moment v1.1 lands. agent-sandbox ships a
+verified static pasta binary in-tree at `tools/pasta/<arch>/pasta`
+— always met on x86_64 Linux hosts; aarch64 falls back per
+`NETWORK_FILTER_FALLBACK` until a shipped binary lands.
 
 If your CI / test harness depended on the v1.0 silent-isolated
 fallback (e.g., needed an outbound port the default blocklist
@@ -301,8 +304,8 @@ addresses this class:
 - **DoH (DNS-over-HTTPS)** — traffic is TLS-on-443. The destination
   hostname (`cloudflare-dns.com`, `dns.google`, `dns.quad9.net`,
   `mozilla.cloudflare-dns.com`, …) is only visible in the SNI.
-  At the netfilter layer this **cannot be filtered** — see the
-  [managed-proxy mitigation](#mitigation--managed-egress-proxy-with-sni-allowlist)
+  At pasta's port-exclusion layer this **cannot be filtered** —
+  see the [managed-proxy mitigation](#mitigation--managed-egress-proxy-with-sni-allowlist)
   for the proper fix.
 
 Other resolver-mutation surfaces, evaluated:
@@ -317,8 +320,9 @@ Other resolver-mutation surfaces, evaluated:
 | Application DoT clients | **yes** | covered by the port-853 floor block |
 | Application DoH clients | partial | DoT path closed; DoH-over-443 needs the managed-proxy mitigation |
 
-So the practical defense at the netfilter layer is the universal
-port-853 (DoT) block; DoH-over-443 requires the managed proxy.
+So the practical defense at pasta's port-exclusion layer is the
+universal port-853 (DoT) block; DoH-over-443 requires the managed
+proxy.
 
 ## Helper sourcing (pasta — no nft)
 
@@ -490,6 +494,36 @@ generator emits an unconditional `WARNING:` for any non-universal
 `CIDR:port` entry; treat it as a config error. Use a managed
 egress proxy (see [Known limitations](#known-limitations)) for
 CIDR-specific port carve-outs.
+
+### Locking the lib floor against user opt-out
+
+The 12-port floor in `_NETWORK_BLOCKLIST_DEFAULTS` is **always-on by
+default** but **not absolute** — a user can write
+`NETWORK_BLOCKLIST_EXCEPT+=("25")` in their own `sandbox.conf` and
+lift port 25 from the floor for their own sessions. That is the
+right default for the convenience-of-default-everyone-gets-it case
+(`install.sh` doesn't overwrite an existing user `sandbox.conf`, so
+the lib floor is what makes the v1.0→v1.1 enforcement flip
+universal).
+
+To make the floor **absolute** for users on a managed install,
+duplicate the entry in `sandbox-admin.conf::NETWORK_BLOCKLIST`:
+
+```bash
+# /etc/agent-sandbox/sandbox-admin.conf
+NETWORK_BLOCKLIST+=("25")        # locks the lib-floor port 25 against user EXCEPT
+NETWORK_BLOCKLIST+=("853")       # locks DoT
+```
+
+After this, a user `NETWORK_BLOCKLIST_EXCEPT+=("25")` is stripped at
+config-load by `_strip_user_exceptions_covered_by_admin` with the
+loud warning:
+
+```
+WARNING: User config attempted to except '25' but admin
+NETWORK_BLOCKLIST has '25' which covers it — exception stripped
+(admin policy is absolute).
+```
 
 User config can only request:
 
