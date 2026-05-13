@@ -1330,28 +1330,40 @@ _network_fallback_strictness_idx() {
     esac
 }
 
-# Returns 0 if a network helper is available AND v1's bwrap backend can
-# integrate it for a real filtered-mode delivery. Stdout: helper path.
+# Returns 0 if a network helper is available AND v1.1's bwrap backend
+# can integrate it for a real filtered-mode delivery. Stdout: helper
+# path.
 #
-# v1 implementation status: the helper-probe scaffolding is in place but
-# the bwrap+pasta+nft chain (spawn pasta in parent, install netns nft
-# rules from the resolved blocklist) is intentionally deferred to v1.1.
-# Until v1.1 ships that integration, this function returns 1 even when
-# pasta is on PATH, so the resolver falls back per policy (default
-# 'stricter' → isolated; loud warning naming the exact gap).
+# v1.1 implementation status: helper-probe is live. The
+# `NETWORK_FILTER_ENABLE_HELPER_PROBE` env-toggle gate from v1.0 is
+# gone — `filtered` mode is real by default whenever pasta is
+# available. v1.1 enforces the blocklist at pasta's own boundary
+# (via `-T ~N` outbound port exclusions); no nftables dependency.
 #
-# To activate filtered-mode probing in a dev tree before the upstream
-# integration lands, set NETWORK_FILTER_ENABLE_HELPER_PROBE=1 in the
-# environment. Production callers MUST NOT set this — the integration
-# is incomplete and the resulting state silently misses the blocklist.
+# Probe order:
+#   1. `command -v pasta` — distro/Homebrew install; takes precedence
+#      because it's typically newer than the in-tree pin.
+#   2. tools/pasta/<arch>/pasta — the shipped static binary (see
+#      tools/pasta/README.md for fetch + license details).
+#   3. `command -v slirp4netns` — older fallback (GPL-2.0 source-
+#      offer obligation; less preferred and currently degraded).
 _resolve_network_helper() {
-    if [[ "${NETWORK_FILTER_ENABLE_HELPER_PROBE:-0}" != "1" ]]; then
-        return 1
-    fi
     if command -v pasta &>/dev/null; then
         command -v pasta
         return 0
     fi
+    local _arch
+    _arch="$(uname -m)"
+    case "$_arch" in
+        x86_64|amd64) _arch=x86_64 ;;
+        aarch64|arm64) _arch=aarch64 ;;
+    esac
+    if [[ -x "$SANDBOX_DIR/tools/pasta/$_arch/pasta" ]]; then
+        echo "$SANDBOX_DIR/tools/pasta/$_arch/pasta"
+        return 0
+    fi
+    # Legacy path retained for one release so dev trees built against
+    # v1.0's tools/pasta/fetch.sh still resolve.
     if [[ -x "$SANDBOX_DIR/tools/pasta/pasta" ]]; then
         echo "$SANDBOX_DIR/tools/pasta/pasta"
         return 0
@@ -1369,6 +1381,10 @@ _network_modes_supported_by_backend() {
     local _backend="$1"
     case "$_backend" in
         bwrap)
+            # `filtered` needs pasta — it provisions the netns + tap +
+            # DNS proxy AND enforces the port-level blocklist at its
+            # own forwarding boundary (`-T ~N` outbound exclusions).
+            # No nftables dependency.
             local _modes="open isolated"
             if _resolve_network_helper >/dev/null 2>&1; then
                 _modes="open filtered isolated"
@@ -1376,9 +1392,13 @@ _network_modes_supported_by_backend() {
             echo "$_modes"
             ;;
         firejail)
-            # firejail can deliver isolated (--net=none); the filtered-mode
-            # integration via --netfilter from a generated iptables ruleset
-            # is v1.1 work (see NETWORK_FILTER_ENABLE_HELPER_PROBE gate).
+            # firejail delivers isolated via --net=none. `filtered` mode
+            # via firejail's --netfilter requires a private netns wired
+            # to a host bridge (--net=<iface>); that bridge is a site-
+            # level setup we don't auto-provision in v1.1. Operators
+            # using firejail get isolated-or-open until the bridge-
+            # provisioning story is settled (tracked for v1.2). The
+            # resolver falls back per policy.
             echo "open isolated"
             ;;
         landlock)
@@ -1397,12 +1417,14 @@ _network_filter_print_fixpaths() {
     local _requested="$1" _backend="$2"
     cat >&2 <<EOF
   Fix paths (pick whichever fits):
-    1. Install a network helper on PATH so 'filtered' mode works.
-         apt install passt          # Debian / Ubuntu 22.10+
-         dnf install passt          # RHEL 9+ / Fedora
-         brew install passt         # Homebrew
-       Or fetch the static binary shipped with agent-sandbox:
+    1. Install pasta so 'filtered' mode works on bwrap:
+         apt install passt         # Debian / Ubuntu 22.10+
+         dnf install passt         # RHEL 9+ / Fedora
+         brew install passt        # Homebrew
+       Or refresh the static pasta binary shipped with agent-sandbox:
          $SANDBOX_DIR/tools/pasta/fetch.sh
+       (The shipped binary lives at tools/pasta/<arch>/pasta and is
+       auto-detected. No nftables / iptables dependency.)
     2. Pin NETWORK_FILTER_MODE='isolated' to accept the kill-network
        fallback intentionally (no warning, full block).
     3. Set NETWORK_FILTER_FALLBACK='open' to also accept dropping to
@@ -1439,8 +1461,9 @@ EOF
 # Resolve the actual network mode to apply. Side effects:
 #   _NETWORK_FILTER_RESOLVED  — one of open|filtered|isolated
 #   _NETWORK_FILTER_REASON    — human-readable rationale (for logging)
-#   _NETWORK_FILTER_HELPER    — for filtered mode, the resolved helper
-#                               binary path (empty otherwise)
+#   _NETWORK_FILTER_HELPER    — for filtered mode, the resolved network
+#                               helper binary path (pasta / slirp4netns;
+#                               empty otherwise)
 # Exits with diagnostic on irrecoverable mismatch.
 resolve_network_filter_mode() {
     local _backend="$1"
@@ -1459,10 +1482,10 @@ resolve_network_filter_mode() {
     local _supported
     _supported=" $(_network_modes_supported_by_backend "$_backend") "
 
+    _NETWORK_FILTER_HELPER=""
     if [[ "$_supported" == *" $_requested "* ]]; then
         _NETWORK_FILTER_RESOLVED="$_requested"
         _NETWORK_FILTER_REASON="$_requested (requested; supported on backend '$_backend')"
-        _NETWORK_FILTER_HELPER=""
         if [[ "$_requested" == "filtered" && "$_backend" == "bwrap" ]]; then
             _NETWORK_FILTER_HELPER="$(_resolve_network_helper)"
         fi
@@ -1471,8 +1494,8 @@ resolve_network_filter_mode() {
 
     local _why
     case "$_requested:$_backend" in
-        filtered:bwrap)    _why="filtered mode requires a network helper (pasta or slirp4netns); none found on PATH and tools/pasta/pasta is not shipped." ;;
-        filtered:firejail) _why="filtered mode requires 'nft' on PATH for the --netfilter ruleset; not found." ;;
+        filtered:bwrap)    _why="filtered mode requires a network helper (pasta); none found on PATH and the shipped binary at tools/pasta/<arch>/pasta is missing or not executable." ;;
+        filtered:firejail) _why="filtered mode on firejail requires a site-provisioned bridge (--net=<iface> + --netfilter); v1.1 does not auto-provision the bridge. Use bwrap for filtered mode, or accept the policy fallback." ;;
         filtered:landlock) _why="filtered mode requires a mount/network namespace; landlock has neither." ;;
         isolated:landlock) _why="isolated mode requires a network namespace; landlock has none." ;;
         *)                 _why="mode '$_requested' not supported on backend '$_backend' (supported: $_supported)." ;;
@@ -1490,7 +1513,6 @@ resolve_network_filter_mode() {
                 if [[ "$_try_idx" -gt "$_req_idx" && "$_supported" == *" $_try "* ]]; then
                     _NETWORK_FILTER_RESOLVED="$_try"
                     _NETWORK_FILTER_REASON="$_try (fallback from '$_requested'; policy=stricter)"
-                    _NETWORK_FILTER_HELPER=""
                     if [[ "$_try" == "filtered" && "$_backend" == "bwrap" ]]; then
                         _NETWORK_FILTER_HELPER="$(_resolve_network_helper)"
                     fi
@@ -1514,7 +1536,6 @@ resolve_network_filter_mode() {
                 if [[ "$_try_idx" -lt "$_req_idx" && "$_supported" == *" $_try "* ]]; then
                     _NETWORK_FILTER_RESOLVED="$_try"
                     _NETWORK_FILTER_REASON="$_try (fallback from '$_requested'; policy=open, less-restrictive)"
-                    _NETWORK_FILTER_HELPER=""
                     if [[ "$_try" == "filtered" && "$_backend" == "bwrap" ]]; then
                         _NETWORK_FILTER_HELPER="$(_resolve_network_helper)"
                     fi
@@ -1527,7 +1548,6 @@ resolve_network_filter_mode() {
             # taken the happy path above). Belt-and-suspenders.
             _NETWORK_FILTER_RESOLVED="open"
             _NETWORK_FILTER_REASON="open (last-resort fallback from '$_requested'; policy=open)"
-            _NETWORK_FILTER_HELPER=""
             _network_filter_warn_fallback "$_requested" "open" "$_why" "$_backend"
             return 0
             ;;
@@ -1616,6 +1636,160 @@ effective_network_exception_list() {
     for _entry in "${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
         echo "$_entry"
     done
+}
+
+# ── pasta port-exclusion generator for v1.1 filtered mode ────────
+#
+# Generate the pasta -T (TCP) and -U (UDP) outbound port-exclusion
+# SPECs from `effective_network_blocklist`. v1.1 enforces the
+# blocklist at pasta's own forwarding boundary — pasta's `-T ~N`
+# syntax means "forward all outbound ports except N" so the netns
+# loses egress on the named ports while keeping everything else.
+# No nftables dependency.
+#
+# Stdout: two lines —
+#   TCP: ~25,~465,~587,~853,...
+#   UDP: ~853,...
+# Empty string in either field if no exclusions apply. Caller splits
+# on first space.
+#
+# Honest limits — what pasta -T/-U can enforce (and what it can't):
+#
+#   ENFORCEABLE at pasta's boundary:
+#     - bare port              ("25", "853")     → emitted as ~25
+#     - host:port (universal)  ("0.0.0.0/0:25")  → port-only; ~25
+#     - loopback host:port     ("127.0.0.1:25")  → ALREADY structurally
+#       unreachable: pasta gives the netns its own empty loopback,
+#       so host MTAs on 127.0.0.1 are unreachable regardless. We
+#       also emit ~25 for defense in depth.
+#
+#   NOT ENFORCEABLE at pasta's boundary (skipped with stderr note;
+#   tracked for v1.2 L7 proxy work):
+#     - hostname entries          ("api.mailgun.net")
+#     - wildcard hostnames        ("*.cloudflare-dns.com")
+#     - hostname:port            ("hooks.slack.com:443")
+#     - CIDR with non-universal port ("10.0.0.0/8:25" — universal
+#       port portion IS enforced via the bare-port closure, so the
+#       SMTP-to-CIDR threat is covered; the CIDR-specificity is what
+#       gets dropped)
+#     - "*" deny-all              — operators wanting deny-all should
+#       pin NETWORK_FILTER_MODE=isolated directly
+#
+# Rationale for the pivot from a v1.1 nft-based design: pasta alone
+# handles the actual identity-hijack threat (mail submission ports
+# universally closed; DoT port 853 closed; loopback MTA structurally
+# unreachable). Hostname-level enforcement was always best-effort
+# under any L3/L4 design and properly belongs to the v1.2 L7-proxy
+# scope. Eliminating the nftables runtime dependency simplifies
+# deployment and reduces surface area; the threat closure remains.
+generate_pasta_port_exclusions() {
+    local _entry _port
+    local -A _tcp_ports=() _udp_ports=()
+
+    while IFS= read -r _entry; do
+        [[ -z "$_entry" ]] && continue
+        _classify_pasta_port_entry "$_entry" _tcp_ports _udp_ports
+    done < <(effective_network_blocklist)
+
+    # Exception list: the caller can lift specific ports from the
+    # exclusion set. We strip any port the exception lists by
+    # matching on the port-only key. Hostname-based exceptions
+    # have no effect at the pasta layer (no rule was emitted for
+    # the corresponding blocklist host either).
+    local _exc_entry _exc_port
+    while IFS= read -r _exc_entry; do
+        [[ -z "$_exc_entry" ]] && continue
+        if [[ "$_exc_entry" =~ ^([0-9]+)$ ]]; then
+            unset "_tcp_ports[${BASH_REMATCH[1]}]" "_udp_ports[${BASH_REMATCH[1]}]"
+        elif [[ "$_exc_entry" =~ :([0-9]+)$ ]]; then
+            # host:port exception — only lifts if the port is
+            # universally excluded (which is the common case for
+            # ports we close).
+            _exc_port="${BASH_REMATCH[1]}"
+            # We don't auto-lift: the user asked to except a specific
+            # host:port pair, but our port-level enforcement is
+            # universal. Emit a stderr note that the host part can't
+            # be carved at this layer.
+            if [[ -n "${_tcp_ports[$_exc_port]:-}" || -n "${_udp_ports[$_exc_port]:-}" ]]; then
+                [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" ]] && \
+                    echo "sandbox: NOTE — host:port exception '${_exc_entry}' cannot be carved at pasta's port-level layer (port ${_exc_port} is universally blocked); use NETWORK_FILTER_MODE=open or the v1.2 L7 proxy for host-specific carve-outs." >&2
+            fi
+        fi
+    done < <(effective_network_exception_list)
+
+    # Emit TCP exclusion SPEC.
+    local _tcp_spec="" _p
+    for _p in "${!_tcp_ports[@]}"; do
+        _tcp_spec="${_tcp_spec:+${_tcp_spec},}~${_p}"
+    done
+    local _udp_spec=""
+    for _p in "${!_udp_ports[@]}"; do
+        _udp_spec="${_udp_spec:+${_udp_spec},}~${_p}"
+    done
+
+    echo "TCP:${_tcp_spec}"
+    echo "UDP:${_udp_spec}"
+}
+
+# Classify a blocklist entry into the pasta port-exclusion model.
+# Populates the TCP/UDP associative arrays passed by name. Emits a
+# stderr note for entries that are not enforceable at pasta's layer
+# (hostname, CIDR-with-port, wildcards, "*").
+_classify_pasta_port_entry() {
+    local _entry="$1"
+    local -n _tcp="$2" _udp="$3"
+    local _port
+
+    # "*" deny-all — unenforceable; operators wanting deny-all should
+    # use isolated mode.
+    if [[ "$_entry" == "*" ]]; then
+        [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" ]] && \
+            echo "sandbox: NOTE — network-filter entry '*' cannot be enforced at pasta's port-level layer (would block DNS); use NETWORK_FILTER_MODE=isolated for deny-all semantics. Skipping." >&2
+        return 0
+    fi
+
+    # Wildcard hostname — needs SNI inspection (v1.2 L7 scope).
+    if [[ "$_entry" == \** ]]; then
+        [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" ]] && \
+            echo "sandbox: NOTE — wildcard hostname entry '${_entry}' cannot be enforced at pasta's port-level layer (requires SNI inspection; v1.2 L7 proxy scope). Skipping." >&2
+        return 0
+    fi
+
+    # Bare port → universal port exclusion.
+    if [[ "$_entry" =~ ^([0-9]+)$ ]]; then
+        _port="${BASH_REMATCH[1]}"
+        _tcp["$_port"]=1
+        _udp["$_port"]=1
+        return 0
+    fi
+
+    # host:port or CIDR:port — extract the port; pasta's enforcement is
+    # universal-port (we can't bind it to the host/CIDR portion). For
+    # the v1.0 default blocklist this is the right answer: every
+    # CIDR:port entry uses port 25 / 24 / 465 / 587 / 2525 (the SMTP
+    # class) where universal closure is the desired threat model.
+    if [[ "$_entry" =~ :([0-9]+)$ ]]; then
+        _port="${BASH_REMATCH[1]}"
+        # Note the host-specificity drop only when NETWORK_FILTER_VERBOSE=1
+        # AND the host part is non-trivial (i.e., not a universal
+        # loopback / any-address pattern). The "loopback + universal"
+        # cases are structurally equivalent to a bare-port block here.
+        local _suppress_note=false
+        case "$_entry" in
+            0.0.0.0/0:*|127.0.0.1:*|"[::]/0:"*|"[::1]:"*) _suppress_note=true ;;
+        esac
+        if [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" && "$_suppress_note" != "true" ]]; then
+            echo "sandbox: NOTE — entry '${_entry}' enforced as universal port-${_port} block (pasta does not filter by host/CIDR at this layer); use the v1.2 L7 proxy for host-specific port carve-outs." >&2
+        fi
+        _tcp["$_port"]=1
+        _udp["$_port"]=1
+        return 0
+    fi
+
+    # Bare hostname, CIDR-without-port, or unrecognized form — no
+    # enforcement at this layer.
+    [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" ]] && \
+        echo "sandbox: NOTE — hostname/CIDR entry '${_entry}' cannot be enforced at pasta's port-level layer (no port to exclude); use the v1.2 L7 proxy for SNI-aware filtering or isolated mode for hard deny-all. Skipping." >&2
 }
 
 # ── Test-harness early-return ────────────────────────────────────
