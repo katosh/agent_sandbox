@@ -1,0 +1,26 @@
+# pasta — third-party binary redistribution notice
+
+The `pasta` binary in this directory is a verbatim copy of the
+official upstream build published at:
+
+  https://passt.top/builds/latest/x86_64/pasta
+
+Upstream project: passt (https://passt.top/)
+Upstream copyright: Red Hat GmbH and contributors
+  (Stefano Brivio <sbrivio@redhat.com> and others; see source files for
+  SPDX-License-Identifier headers and per-file copyright statements.)
+
+Dual-licensed `GPL-2.0-or-later OR BSD-3-Clause`. We redistribute
+this binary under the **BSD-3-Clause** arm of the dual license, which
+imposes no source-offer obligation. The matching license text from
+upstream is in `LICENSE-BSD-3-Clause` (extracted verbatim from
+`passt-2026_05_07.1afd4ed/LICENSES/BSD-3-Clause.txt`).
+
+Build provenance: this binary was fetched from upstream's official
+build endpoint on the publication date of agent-sandbox v1.1, with
+the SHA256 pinned in `SHA256SUMS` for reproducibility.
+
+To re-fetch or re-build from source, run `tools/pasta/fetch.sh`. See
+that script's header for source-build options (set
+`PASTA_BUILD_FROM_SOURCE=1` for sites that prefer source builds over
+binary redistribution).
