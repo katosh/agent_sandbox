@@ -42,13 +42,7 @@ TCP path itself at a layer the agent cannot escape.
 
 ## Modes
 
-`NETWORK_FILTER_MODE` (default: `filtered`):
-
-| Mode | Mechanism | Network reach |
-| --- | --- | --- |
-| `open` | share the host network namespace; no isolation | full host network (legacy behaviour) |
-| `filtered` | new netns (Linux network namespace — a per-process isolated network stack) + helper (pasta or slirp4netns); apply default-deny floor + user/admin blocklist | general outbound TCP/UDP/DNS minus the threat ports |
-| `isolated` | new netns with no network at all | none (DNS / pip / git break) |
+The three values of [`NETWORK_FILTER_MODE`](../configure.md#network_filter_mode) — `open`, `filtered`, `isolated` — and the mechanism each selects (host netns vs. new netns + pasta vs. new netns with no network) are defined on the configure page. This section covers v1.1's *behavioural* detail: what `filtered` actually enforces at runtime, what it skips, and the upgrade flip from v1.0.
 
 **Default state (v1.1).** When `pasta` is available on the host,
 `NETWORK_FILTER_MODE=filtered` delivers port-level outbound
@@ -125,13 +119,7 @@ R3 in survey, deferred — see settylab/dotto-nexus#117).
 
 ## Fallback policies
 
-`NETWORK_FILTER_FALLBACK` (default: `open`):
-
-| Policy | If requested mode is unavailable on the backend |
-| --- | --- |
-| `strict` | Sandbox refuses to launch. Loud error with fix-paths. |
-| `stricter` | Fall back ONLY to a STRICTER (more restrictive) mode. Loud warning. If no stricter mode is possible (e.g. landlock has no netns), the sandbox refuses to launch with an explicit fix-path enumeration. |
-| `open` | Fall back ONLY to a LESS restrictive mode (loud warning). NEVER falls to a stricter mode than requested — the policy name reflects user intent ("OK to weaken, but don't strengthen against my wishes"). Probe order: most-strict-of-the-less-strict first (e.g. `isolated` requested → try `filtered` before `open`). |
+The three values of [`NETWORK_FILTER_FALLBACK`](../configure.md#network_filter_fallback) — `strict`, `stricter`, `open` — and the strictness ordering (`open` < `stricter` < `strict`) live on the configure page. The interesting content here is *which backend can deliver which mode* and *what each fallback policy actually produces per requested-mode × backend-support combination*.
 
 Per-backend support, v1.1:
 
@@ -160,22 +148,7 @@ mode than requested. If you want `filtered` but want to accept
 
 ## Configuration
 
-```bash
-# sandbox.conf
-NETWORK_FILTER_MODE="filtered"
-NETWORK_FILTER_FALLBACK="open"
-
-NETWORK_BLOCKLIST=(
-    "*.untrusted-vendor.com"   # wildcard host block
-    "10.0.0.0/8:25"            # site-specific CIDR + port
-    # … see sandbox.conf for additional examples
-)
-
-NETWORK_BLOCKLIST_EXCEPT=(
-    "mybucket.s3.amazonaws.com"  # carve out a specific bucket
-    # … see "Precedence model" below
-)
-```
+The user-facing knobs — `NETWORK_FILTER_MODE`, `NETWORK_FILTER_FALLBACK`, `NETWORK_BLOCKLIST`, `NETWORK_BLOCKLIST_EXCEPT`, and the `NETWORK_FILTER_SKIP_HELPER_PROBE` env override — are documented per-knob in the [configure page's Network filter section](../configure.md#network-filter). This section covers the syntax of blocklist patterns and the runtime apply order; the precedence model and worked examples follow below.
 
 ### Pattern syntax for `NETWORK_BLOCKLIST` and `NETWORK_BLOCKLIST_EXCEPT`
 
@@ -548,28 +521,14 @@ resolved mode (see `test.sh` section 11.4 "Network filter").
 
 ## Admin enforcement (sandbox-admin.conf)
 
-```bash
-# /etc/agent-sandbox/sandbox-admin.conf
-NETWORK_FILTER_MODE="filtered"
-NETWORK_FILTER_FALLBACK="strict"      # admins typically pin strict
-NETWORK_BLOCKLIST=(
-    "hooks.slack.com"
-    "api.mailgun.net"
-    # … site-specific must-blocks
-)
-```
+An admin baseline pins values that user config cannot weaken. Per-knob admin-enforcement semantics are documented on the configure page (each knob's *Admin-enforced* field); the consolidated view for the network-filter knobs:
 
-User config can only request:
+- `NETWORK_FILTER_MODE` — user can only request a mode `>=` the admin pin in the strictness ordering `open` < `filtered` < `isolated`.
+- `NETWORK_FILTER_FALLBACK` — user can only request a fallback policy `>=` the admin pin in the strictness ordering `open` < `stricter` < `strict`.
+- `NETWORK_BLOCKLIST` — admin entries become a floor; the user's effective list must be a superset (entries the admin set cannot be removed).
+- `NETWORK_BLOCKLIST_EXCEPT` — user exceptions covered by an admin `NETWORK_BLOCKLIST` pattern are stripped at config-load (admin policy is absolute; see [Admin precedence](#admin-precedence) above).
 
-- A mode `>=` the admin pin in the strictness ordering
-  (`open` < `filtered` < `isolated`).
-- A fallback policy `>=` the admin pin
-  (`open` < `stricter` < `strict`).
-- A `NETWORK_BLOCKLIST` that is a superset of the admin's (entries
-  the admin set cannot be removed).
-
-Violations are restored at config-load time with a warning naming the
-offending entry.
+Violations are restored at config-load time with a `WARNING` naming the offending entry. See [`NETWORK_FILTER_MODE`](../configure.md#network_filter_mode) and adjacent entries on the configure page for the knob-level reference.
 
 ## See also
 

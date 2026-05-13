@@ -76,6 +76,11 @@ Without an admin baseline, `~/.config/agent-sandbox/sandbox.conf` is the only co
 | [`FILTER_PASSWD`](#filter_passwd) | scalar | **harden-only** | `true` |
 | [`SANDBOX_NPROC_LIMIT`](#sandbox_nproc_limit) | scalar | no | `""` (unlimited) |
 | [`SANDBOX_QUIET`](#sandbox_quiet) | scalar | no | `false` |
+| [`NETWORK_FILTER_MODE`](#network_filter_mode) | scalar | **harden-only** (user can only request equal or stricter) | `filtered` |
+| [`NETWORK_FILTER_FALLBACK`](#network_filter_fallback) | scalar | **harden-only** | `open` |
+| [`NETWORK_BLOCKLIST`](#network_blocklist) | array | **yes** (admin entries floor) | built-in floor (SMTP submission, webhook/paste/DoH exfil surfaces, legacy r-services) |
+| [`NETWORK_BLOCKLIST_EXCEPT`](#network_blocklist_except) | array | additive; user entries covered by an admin BLOCKLIST pattern are stripped | `()` |
+| [`NETWORK_FILTER_SKIP_HELPER_PROBE`](#network_filter_skip_helper_probe) | env override | no | `0` |
 | [`SLURM_SCOPE`](#slurm_scope) | scalar | no | `project` |
 | [`CHAPERON_LOG_LEVEL`](#chaperon_log_level) | scalar | no | `info` |
 | [`CHAPERON_LOG_RETAIN_DAYS`](#chaperon_log_retain_days) | scalar | no | `7` |
@@ -464,6 +469,104 @@ SANDBOX_NPROC_LIMIT="4096"
 **Type** scalar · **Admin-enforced** no · **Default** `false`
 
 Suppress the one-line startup banner that shows backend, project dir, and home-access mode, plus the count of env vars blocked by pattern. Useful inside scripts and CI where the banner is noise.
+
+---
+
+## Network filter
+
+Restricts the agent's outbound network access. Closes the canonical identity-hijack threat (local-MTA abuse via SMTP submission) and the adjacent lateral-movement / exfiltration surface (webhook-as-mail APIs, paste sites, DoH endpoints, legacy r-services). See the [Network filter reference](reference/network-filter.md) for the threat model, helper sourcing (pasta probe), per-backend support, precedence rules, worked examples, and a verification recipe.
+
+### `NETWORK_FILTER_MODE`
+
+**Type** scalar · **Admin-enforced** **harden-only** (user can only request equal or stricter) · **Default** `filtered`
+
+How the agent's outbound network is isolated.
+
+| Value | Mechanism | Network reach |
+|---|---|---|
+| `open` | share the host network namespace; no isolation | full host network (legacy behaviour) |
+| `filtered` (default) | new Linux network namespace + `pasta` helper; default-deny port floor plus user/admin `NETWORK_BLOCKLIST` | general outbound TCP/UDP/DNS minus the threat-class ports |
+| `isolated` | new netns with no network at all | none (DNS / pip / git break inside the sandbox) |
+
+`filtered` requires `pasta` on the host. agent-sandbox ships a static `pasta` binary at `tools/pasta/<arch>/pasta` (x86_64 in v1.1); install `passt` from your distro (`apt install passt`, `dnf install passt`, `brew install passt`) for a newer system pasta on `PATH`. When `filtered` cannot be delivered (no pasta, kernel < 5.7 without `setcap cap_net_raw+ep`, landlock backend), the resolver falls back per [`NETWORK_FILTER_FALLBACK`](#network_filter_fallback).
+
+**Strictness ordering:** `open` < `filtered` < `isolated`. If the admin baseline pins a value, the user's effective value cannot be weaker; an attempted weakening is restored at config-load with a `WARNING`.
+
+```bash
+NETWORK_FILTER_MODE="filtered"          # default — port-level enforcement
+```
+
+See the [Modes section](reference/network-filter.md#modes) of the reference page for what pasta `-T/-U` actually enforces in v1.1 (port-level entries) versus what is tracked for v1.2 L7-proxy work (hostname-level entries).
+
+### `NETWORK_FILTER_FALLBACK`
+
+**Type** scalar · **Admin-enforced** **harden-only** · **Default** `open`
+
+What happens when the requested [`NETWORK_FILTER_MODE`](#network_filter_mode) is not deliverable on the resolved backend.
+
+| Value | Behaviour |
+|---|---|
+| `strict` | Refuse to launch. Loud error enumerating the fix paths. |
+| `stricter` | Fall back ONLY to a STRICTER mode (e.g. `filtered` → `isolated`). Loud warning. If no stricter mode is possible (landlock has no netns), refuse to launch. |
+| `open` (default) | Fall back ONLY to a LESS restrictive mode, preferring the most-strict less-strict option first. Loud warning. |
+
+**Strictness ordering:** `open` < `stricter` < `strict`. Admin-pinned values cannot be weakened by the user.
+
+The `open` default keeps the sandbox usable on legacy-kernel (< 5.7) deployments where pasta's `SO_BINDTODEVICE` forwarding probe trips and `filtered` becomes unavailable — without it, every such host would refuse to launch. Sites where the stronger posture is mandatory should pin `stricter` (or `strict`) in the admin baseline.
+
+See the [fallback decision matrix](reference/network-filter.md#fallback-decision-matrix) for the per-combination outcome under each policy, and the [per-backend support matrix](reference/network-filter.md#fallback-policies) for which modes each backend can deliver.
+
+### `NETWORK_BLOCKLIST`
+
+**Type** array · **Admin-enforced** **yes** (admin entries become a floor the user cannot remove) · **Default** built-in floor in `sandbox-lib.sh` — SMTP submission ports (24/25/465/587/2525) on loopback and `0.0.0.0/0`, transactional-email HTTPS APIs (`api.mailgun.net`, `api.sendgrid.com`, …), webhook-as-mail surfaces (`hooks.slack.com`, `*.webhook.office.com`, …), anonymous file-drop hosts (`transfer.sh`, `0x0.st`, …), public paste services, DoH endpoints (`cloudflare-dns.com`, `dns.google`, …), DoT port `853`, and legacy r-services ports `23`/`79`/`113`/`512`/`513`/`514`. See `sandbox.conf` for the commented, site-tunable entries (LDAP/Kerberos, Slurm, SMB/RDP/VNC, campus mail-relay CIDR).
+
+Destinations to deny when [`NETWORK_FILTER_MODE`](#network_filter_mode) is `filtered`. Entries are bash-glob-aware patterns over hostnames, IPs, CIDRs, and ports. The default floor is always applied; user `+=` entries are additive; admin `NETWORK_BLOCKLIST` entries become a floor that user config cannot remove.
+
+```bash
+NETWORK_BLOCKLIST+=(
+    "*.untrusted-vendor.com"   # block a DNS suffix
+    "10.0.0.0/8:25"            # site-specific CIDR + port
+    "203.0.113.5"              # single host, all ports
+)
+```
+
+Pattern syntax (host / `host:port` / CIDR / `CIDR:port` / bare port / `*.suffix` / `*`), the runtime apply order, the most-specific-rule-wins precedence model, and worked examples live in the reference page: [Pattern syntax](reference/network-filter.md#pattern-syntax-for-network_blocklist-and-network_blocklist_except) and [Precedence model](reference/network-filter.md#precedence-model).
+
+**v1.1 enforcement scope.** pasta's `-T/-U` port-exclusion enforces port-level entries (bare port `25`, loopback `127.0.0.1:25`, universal `0.0.0.0/0:25`). Hostname and wildcard-hostname entries (e.g. `hooks.slack.com`, `*.s3.amazonaws.com`) are tracked for v1.2 L7-proxy work and are silently skipped at the pasta boundary today (set `NETWORK_FILTER_VERBOSE=1` to see the skip notes). The default port-class closure already shuts the motivating identity-hijack threat. See [Modes — enforcement scope](reference/network-filter.md#modes) for the full list.
+
+### `NETWORK_BLOCKLIST_EXCEPT`
+
+**Type** array · **Admin-enforced** additive; user entries covered by an admin-set `NETWORK_BLOCKLIST` pattern are stripped at config-load with a `WARNING` · **Default** `()`
+
+Exceptions that carve holes in [`NETWORK_BLOCKLIST`](#network_blocklist) under the most-specific-rule-wins precedence model. Use to allow specific destinations that would otherwise be caught by a broader blocklist pattern, or to express deny-by-default via the implicit-allowlist idiom.
+
+```bash
+# Block all of S3 except one bucket
+NETWORK_BLOCKLIST+=("*.s3.amazonaws.com")
+NETWORK_BLOCKLIST_EXCEPT+=("mybucket.s3.amazonaws.com")
+
+# Implicit-allowlist idiom (deny-by-default)
+NETWORK_BLOCKLIST+=("*")
+NETWORK_BLOCKLIST_EXCEPT+=(
+    "github.com" "api.github.com" "codeload.github.com"
+    "api.anthropic.com" "api.openai.com"
+    "pypi.org" "files.pythonhosted.org"
+)
+```
+
+Admin policy is absolute: a user exception covered by an admin-set `NETWORK_BLOCKLIST` pattern is stripped at config-load. See [Admin precedence](reference/network-filter.md#admin-precedence) and [Implicit-allowlist idiom](reference/network-filter.md#implicit-allowlist-idiom-exact-hosts) on the reference page.
+
+### `NETWORK_FILTER_SKIP_HELPER_PROBE`
+
+**Type** env override (scalar `0` / `1`) · **Admin-enforced** no · **Default** `0`
+
+Skip the ~50 ms pasta-forwarding probe that runs at session-start to detect kernels where `SO_BINDTODEVICE` is gated behind `CAP_NET_RAW` (most kernels < 5.7 without the 2020 relaxation backported). Set only after verifying pasta's host-side forwarding actually works in your environment — typically after an admin has run `setcap cap_net_raw+ep` on a system-wide pasta binary, or on kernel ≥ 5.7.
+
+```bash
+NETWORK_FILTER_SKIP_HELPER_PROBE=1 agent-sandbox bash
+```
+
+> **Do not** set this as a workaround for the `pasta degraded to loopback-only` fallback warning. The probe exists precisely to catch that silent-loopback-only failure mode; skipping it re-introduces the gap where `filtered` mode would launch with the agent silently unable to reach anything except `127.0.0.1`. See [Probe escape hatch](reference/network-filter.md#probe-escape-hatch-network_filter_skip_helper_probe1) for the full reasoning.
 
 ---
 
