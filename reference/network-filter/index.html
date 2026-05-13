@@ -1660,7 +1660,7 @@ port-class closure. The hostname-level entries in the default
 blocklist are tracked for v1.2 L7-proxy work (SNI-aware filtering;
 R3 in survey, deferred — see settylab/dotto-nexus#117).</p>
 <h2 id="fallback-policies">Fallback policies<a class="headerlink" href="#fallback-policies" title="Permanent link">&para;</a></h2>
-<p><code>NETWORK_FILTER_FALLBACK</code> (default: <code>stricter</code>):</p>
+<p><code>NETWORK_FILTER_FALLBACK</code> (default: <code>open</code>):</p>
 <table>
 <thead>
 <tr>
@@ -1784,7 +1784,7 @@ mode than requested. If you want <code>filtered</code> but want to accept
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># sandbox.conf</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nv">NETWORK_FILTER_MODE</span><span class="o">=</span><span class="s2">&quot;filtered&quot;</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nv">NETWORK_FILTER_FALLBACK</span><span class="o">=</span><span class="s2">&quot;stricter&quot;</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nv">NETWORK_FILTER_FALLBACK</span><span class="o">=</span><span class="s2">&quot;open&quot;</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">=(</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="s2">&quot;*.untrusted-vendor.com&quot;</span><span class="w">   </span><span class="c1"># wildcard host block</span>
@@ -2074,9 +2074,10 @@ resolver pin.</p>
    reserves slirp4netns support and currently downgrades to isolated
    mode with a warning when only slirp4netns is present.</li>
 </ol>
-<p>If pasta is missing, the resolver falls back per
-<code>NETWORK_FILTER_FALLBACK</code> (default <code>stricter</code> → <code>isolated</code>; loud
-warning naming the gap).</p>
+<p>If pasta is missing or its forwarding probe trips, the resolver
+falls back per <code>NETWORK_FILTER_FALLBACK</code> (default <code>open</code>; loud
+warning naming the gap). Sites that need the stronger default-deny
+posture should pin <code>stricter</code> (or <code>strict</code>) in their admin baseline.</p>
 <h3 id="helper-validation-the-forwarding-probe">Helper validation: the forwarding probe<a class="headerlink" href="#helper-validation-the-forwarding-probe" title="Permanent link">&para;</a></h3>
 <p>Pasta-binary presence is necessary but not sufficient. On kernels
 that still gate <code>SO_BINDTODEVICE</code> behind <code>CAP_NET_RAW</code> (most kernels
