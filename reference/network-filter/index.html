@@ -794,6 +794,40 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Helper sourcing (pasta — no nft)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#helper-validation-the-forwarding-probe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Helper validation: the forwarding probe
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Helper validation: the forwarding probe">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#probe-escape-hatch-network_filter_skip_helper_probe1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Probe escape hatch — NETWORK_FILTER_SKIP_HELPER_PROBE=1
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1322,6 +1356,40 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="Helper sourcing (pasta — no nft)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#helper-validation-the-forwarding-probe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Helper validation: the forwarding probe
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Helper validation: the forwarding probe">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#probe-escape-hatch-network_filter_skip_helper_probe1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Probe escape hatch — NETWORK_FILTER_SKIP_HELPER_PROBE=1
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -2009,28 +2077,67 @@ resolver pin.</p>
 <p>If pasta is missing, the resolver falls back per
 <code>NETWORK_FILTER_FALLBACK</code> (default <code>stricter</code> → <code>isolated</code>; loud
 warning naming the gap).</p>
+<h3 id="helper-validation-the-forwarding-probe">Helper validation: the forwarding probe<a class="headerlink" href="#helper-validation-the-forwarding-probe" title="Permanent link">&para;</a></h3>
+<p>Pasta-binary presence is necessary but not sufficient. On kernels
+that still gate <code>SO_BINDTODEVICE</code> behind <code>CAP_NET_RAW</code> (most kernels
+&lt; 5.7, or any host without the 2020 relaxation backported), an
+unprivileged pasta starts but logs</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>SO_BINDTODEVICE unavailable, forwarding only 127.0.0.1 and ::1 for &#39;-T auto&#39;
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>SO_BINDTODEVICE unavailable, forwarding only 127.0.0.1 and ::1 for &#39;-U auto&#39;
+</span></code></pre></div>
+<p>and silently restricts forwarding to loopback. The sandbox would
+launch with the documented pasta argv, and the agent would lose
+outbound on every port — including ports the blocklist did not
+exclude. Both the threat-model intent (close mail-relay / webhook /
+paste / DoH / legacy-r-services) and the operator's reach
+expectation collapse.</p>
+<p>To close that gap, <code>_pasta_can_forward_outbound</code> runs
+<code>pasta --foreground --quiet -- true</code> after resolving the binary,
+inspects stderr for the <code>forwarding only 127.0.0.1</code> banner, and on
+match flips <code>_NETWORK_HELPER_PROBE_RESULT="degraded"</code>. The resolver
+treats degraded helpers identically to missing helpers — <code>filtered</code>
+is not in the supported-modes set; fallback proceeds per
+<code>NETWORK_FILTER_FALLBACK</code>. The fallback warning quotes the specific
+degradation reason rather than the generic "pasta not found" line so
+the operator knows the path forward:</p>
+<ol>
+<li><strong><code>setcap cap_net_raw+ep &lt;pasta&gt;</code></strong> on a system-wide pasta binary
+   (admin/root needed; cleanest fix; survives upgrades until the
+   pasta package version changes).</li>
+<li><strong>Upgrade to kernel ≥ 5.7</strong> with the SO_BINDTODEVICE relaxation.</li>
+<li><strong>Pin <code>NETWORK_FILTER_MODE=open</code> or <code>isolated</code></strong> to make the
+   reach trade-off explicit.</li>
+</ol>
+<h4 id="probe-escape-hatch-network_filter_skip_helper_probe1">Probe escape hatch — <code>NETWORK_FILTER_SKIP_HELPER_PROBE=1</code><a class="headerlink" href="#probe-escape-hatch-network_filter_skip_helper_probe1" title="Permanent link">&para;</a></h4>
+<p>Operators who have verified their pasta's host-side forwarding works
+(e.g. ran the <code>setcap</code> step above) can set
+<code>NETWORK_FILTER_SKIP_HELPER_PROBE=1</code> to skip the ~50ms probe per
+sandbox start. <strong>Do not set it as a workaround for the degradation
+warning</strong> — setting it on a host where pasta actually degrades
+re-introduces the silent-loopback-only failure mode that the probe
+exists to catch.</p>
 <h2 id="real-world-recipe-verify-filtered-mode-is-enforcing">Real-world recipe — verify filtered mode is enforcing<a class="headerlink" href="#real-world-recipe-verify-filtered-mode-is-enforcing" title="Permanent link">&para;</a></h2>
 <p>After deploying v1.1, an operator can confirm <code>filtered</code> mode is
 actually enforcing inside their sandbox with a handful of one-liners.
 Run each inside a sandbox session:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># (1) DNS + general egress: should resolve + reach github.com.</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>getent<span class="w"> </span>hosts<span class="w"> </span>github.com<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span>curl<span class="w"> </span>-fsS<span class="w"> </span>--max-time<span class="w"> </span><span class="m">5</span><span class="w"> </span>-o<span class="w"> </span>/dev/null<span class="w"> </span>-w<span class="w"> </span><span class="s1">&#39;%{http_code}\n&#39;</span><span class="w"> </span>https://github.com/
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Expected: A/AAAA record + &quot;200&quot; or &quot;301&quot;.</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="c1"># (2) SMTP submission: must fail. The universal port-25 closure plus</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="c1"># pasta&#39;s empty loopback both block the path.</span>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/127.0.0.1/25<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — SMTP closed (expected)&quot;</span>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="c1"># Expected: &quot;BLOCKED&quot; (Connection refused / ENETUNREACH).</span>
-</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>
-</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="c1"># (3) DoT (DNS-over-TLS) evasion port: must fail. Universal port-853</span>
-</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="c1"># closure.</span>
-</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/1.1.1.1/853<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — DoT closed (expected)&quot;</span>
-</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="c1"># Expected: &quot;BLOCKED&quot;.</span>
-</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>
-</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a><span class="c1"># (4) Telnet (legacy r-services): must fail. Port 23 closure.</span>
-</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/127.0.0.1/23<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — telnet closed (expected)&quot;</span>
-</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a><span class="c1"># Expected: &quot;BLOCKED&quot;.</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># (1) DNS + general egress: should resolve + reach github.com.</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>getent<span class="w"> </span>hosts<span class="w"> </span>github.com<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span>curl<span class="w"> </span>-fsS<span class="w"> </span>--max-time<span class="w"> </span><span class="m">5</span><span class="w"> </span>-o<span class="w"> </span>/dev/null<span class="w"> </span>-w<span class="w"> </span><span class="s1">&#39;%{http_code}\n&#39;</span><span class="w"> </span>https://github.com/
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># Expected: A/AAAA record + &quot;200&quot; or &quot;301&quot;.</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="c1"># (2) SMTP submission: must fail. The universal port-25 closure plus</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># pasta&#39;s empty loopback both block the path.</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/127.0.0.1/25<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — SMTP closed (expected)&quot;</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="c1"># Expected: &quot;BLOCKED&quot; (Connection refused / ENETUNREACH).</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="c1"># (3) DoT (DNS-over-TLS) evasion port: must fail. Universal port-853</span>
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="c1"># closure.</span>
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/1.1.1.1/853<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — DoT closed (expected)&quot;</span>
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="c1"># Expected: &quot;BLOCKED&quot;.</span>
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a><span class="c1"># (4) Telnet (legacy r-services): must fail. Port 23 closure.</span>
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/127.0.0.1/23<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — telnet closed (expected)&quot;</span>
+</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a><span class="c1"># Expected: &quot;BLOCKED&quot;.</span>
 </span></code></pre></div>
 <p>Note that v1.1 enforces <em>port-level</em> blocks at pasta's boundary,
 not hostname-level blocks. A request like
@@ -2049,17 +2156,27 @@ isolated</code> because pasta is missing, or <code>filtered → open</code> unde
 <code>NETWORK_FILTER_FALLBACK=open</code> policy).</p>
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
 <h3 id="filtered-fell-back-to-isolated-on-startup-v11">"filtered fell back to isolated" on startup (v1.1)<a class="headerlink" href="#filtered-fell-back-to-isolated-on-startup-v11" title="Permanent link">&para;</a></h3>
-<p><code>filtered</code> requires <code>pasta</code>. Common causes:</p>
+<p><code>filtered</code> requires <code>pasta</code> AND a working <code>SO_BINDTODEVICE</code>. Common
+causes (the fallback warning quotes the specific reason):</p>
 <ul>
 <li><code>pasta</code> not detected: agent-sandbox ships <code>tools/pasta/&lt;arch&gt;/pasta</code>
   by default. If you removed it (or are on an unsupported arch like
   aarch64 in v1.1), install via distro package (<code>apt install passt</code> /
   <code>dnf install passt</code> / <code>brew install passt</code>) or run
-  <code>tools/pasta/fetch.sh</code> to refresh.</li>
+  <code>tools/pasta/fetch.sh</code> to refresh. <code>make install</code> lays the shipped
+  binary down at <code>&lt;prefix&gt;/lib/agent-sandbox/tools/pasta/&lt;arch&gt;/pasta</code>
+  automatically; if you installed via <code>make install</code> and the binary
+  is missing there, re-run <code>make install</code>.</li>
 <li>Custom <code>PATH</code>: the probe uses <code>command -v pasta</code> first; if your
   shell prunes <code>PATH</code> aggressively, ensure <code>/usr/bin</code> (or wherever
   your distro ships <code>pasta</code>) is reachable, or rely on the shipped
   in-tree binary which is path-independent.</li>
+<li><strong><code>pasta</code> present but degraded to loopback-only</strong> (kernel &lt; 5.7 /
+  unprivileged userns / no <code>CAP_NET_RAW</code>). The fallback warning will
+  quote <code>pasta started but degraded to loopback-only forwarding</code>.
+  See "Helper validation: the forwarding probe" above for the
+  three workarounds; the operationally cleanest is an admin running
+  <code>setcap cap_net_raw+ep</code> on a system-wide pasta binary.</li>
 </ul>
 <p>Fallback alternatives, all valid:</p>
 <ul>
@@ -2101,14 +2218,14 @@ runs that need ports the default blocklist closes can either:</p>
 <p>The test suite already gates its network-dependent sections on the
 resolved mode (see <code>test.sh</code> section 11.4 "Network filter").</p>
 <h2 id="admin-enforcement-sandbox-adminconf">Admin enforcement (sandbox-admin.conf)<a class="headerlink" href="#admin-enforcement-sandbox-adminconf" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># /etc/agent-sandbox/sandbox-admin.conf</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="nv">NETWORK_FILTER_MODE</span><span class="o">=</span><span class="s2">&quot;filtered&quot;</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="nv">NETWORK_FILTER_FALLBACK</span><span class="o">=</span><span class="s2">&quot;strict&quot;</span><span class="w">      </span><span class="c1"># admins typically pin strict</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">=(</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="s2">&quot;hooks.slack.com&quot;</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">    </span><span class="s2">&quot;api.mailgun.net&quot;</span>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">    </span><span class="c1"># … site-specific must-blocks</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="o">)</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># /etc/agent-sandbox/sandbox-admin.conf</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="nv">NETWORK_FILTER_MODE</span><span class="o">=</span><span class="s2">&quot;filtered&quot;</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="nv">NETWORK_FILTER_FALLBACK</span><span class="o">=</span><span class="s2">&quot;strict&quot;</span><span class="w">      </span><span class="c1"># admins typically pin strict</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">=(</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">    </span><span class="s2">&quot;hooks.slack.com&quot;</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">    </span><span class="s2">&quot;api.mailgun.net&quot;</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">    </span><span class="c1"># … site-specific must-blocks</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="o">)</span>
 </span></code></pre></div>
 <p>User config can only request:</p>
 <ul>
