@@ -50,40 +50,52 @@ TCP path itself at a layer the agent cannot escape.
 | `filtered` | new netns (Linux network namespace — a per-process isolated network stack) + helper (pasta or slirp4netns); apply default-deny floor + user/admin blocklist | general outbound TCP/UDP/DNS minus the threat ports |
 | `isolated` | new netns with no network at all | none (DNS / pip / git break) |
 
-**v1.0 implementation status.** The configuration surface, mode
-resolution, and fallback machinery ship in v1.0. The bwrap +
-pasta + `nft` (nftables — the Linux kernel packet-filter framework,
-successor to iptables) chain that delivers a real `filtered` mode is
-reserved for v1.1 — the helper-detection function in `sandbox-lib.sh`
-(`_resolve_network_helper`) is gated by `NETWORK_FILTER_ENABLE_HELPER_PROBE=1`
-and returns "no helper" by default in v1.0. The practical effect
-on v1.0 deployments:
+**Default state (v1.1).** When BOTH a network helper (`pasta`) AND
+`nft` (nftables — the Linux kernel packet-filter framework, successor
+to iptables) are available on the host, `NETWORK_FILTER_MODE=filtered`
+delivers real per-entry enforcement: bwrap unshares the network
+namespace into pasta, pasta provisions a tap interface forwarding to
+the host network, and an nftables ruleset generated from
+`effective_network_blocklist` is installed inside the netns *before*
+the workload starts. The default blocklist (50+ entries — see
+"Default blocklist" below) is enforced empirically, not just listed
+in a policy table.
 
-- `NETWORK_FILTER_MODE=open` — unchanged.
-- `NETWORK_FILTER_MODE=filtered` — falls back to `isolated` per the
-  default `stricter` policy. Loud startup warning names every fix
-  path.
-- `NETWORK_FILTER_MODE=isolated` — works as documented; full
-  network kill via `bwrap --unshare-net` / `firejail --net=none`.
+| `NETWORK_FILTER_MODE` | What happens (v1.1) |
+| --- | --- |
+| `open` | shares host network (legacy behaviour; layer disabled) |
+| `filtered` | bwrap + pasta + nft enforcement when both helpers are present; otherwise falls back per `NETWORK_FILTER_FALLBACK` (default `stricter` → `isolated`; loud warning) |
+| `isolated` | full network kill via `bwrap --unshare-net` / `firejail --net=none` |
 
-When v1.1 ships the integration, deployments running with `filtered +
-stricter` will silently start using real filtered mode the moment
-the helper is on PATH (or `tools/pasta/pasta` is installed via
-`tools/pasta/fetch.sh`). No config change is required to flip over.
+agent-sandbox ships a verified static `pasta` binary at
+`tools/pasta/<arch>/pasta` (x86_64 in v1.1); operators only need to
+install `nftables` (`apt install nftables` / `dnf install nftables`)
+to flip the default-deny enforcement on. See "Helper sourcing" below
+for the full probe order and install paths.
 
-The default blocklist already enumerates the full identity-bound
-exfil surface (mail submission ports, transactional-email HTTPS
-APIs, webhook-as-mail surfaces, anonymous file-drop endpoints,
-public paste services, DoH resolvers (DoH = DNS-over-HTTPS, which
-bypasses standard DNS resolver pinning by tunnelling lookups over
-443) — see "Default blocklist" below for the full list with one-line
-rationales). Under v1.0 these
-entries describe the policy table only — the resolver still computes
-them via `effective_network_blocklist`, the test suite asserts they
-are present, but the helper that actually enforces them per-entry
-is gated until v1.1. The v1.0 `isolated`-fallback path closes the
-threat by stricter means (full network kill) rather than per-entry
-enforcement.
+**Upgrade from v1.0 (silent enforcement flip).** v1.0 shipped the
+configuration surface + fallback machinery, gated the helper-probe
+behind `NETWORK_FILTER_ENABLE_HELPER_PROBE=1`, and defaulted
+`filtered + stricter` to fall back to `isolated`. v1.1 removes that
+gate. Deployments running the v1.0 defaults will START enforcing
+real `filtered` mode the moment v1.1 lands on a host with `pasta` +
+`nft` available — no config change is required. If your CI / test
+harness depended on the v1.0 silent-isolated fallback (e.g., used
+`getent` against external resolvers), you may need to add the
+relevant hostnames to `NETWORK_BLOCKLIST_EXCEPT` or pin
+`NETWORK_FILTER_MODE=open` for those runs.
+
+**Enforcement limits (acknowledged v1.2 scope).** nftables cannot
+inspect SNI on TLS-wrapped traffic. Wildcard hostnames
+(`*.cloudflare-dns.com`) and the deny-all `*` pattern are therefore
+not enforceable at the netfilter layer; the generator emits a
+stderr note and skips them. Bare-port entries (`853` blocks DoT;
+`25`/`465`/`587` block SMTP submission) remain fully enforced and
+close the most common evasion paths. Hostname entries are resolved
+to IPs at session-start and the resulting IPs are blocked — this is
+best-effort and may drift if upstream DNS changes mid-session. The
+v1.2 scope (R3 in survey, deferred — see the issue thread) covers a
+small L7 proxy for SNI-aware filtering of the wildcard surface.
 
 ## Fallback policies
 
@@ -95,12 +107,12 @@ enforcement.
 | `stricter` | Fall back ONLY to a STRICTER (more restrictive) mode. Loud warning. If no stricter mode is possible (e.g. landlock has no netns), the sandbox refuses to launch with an explicit fix-path enumeration. |
 | `open` | Fall back ONLY to a LESS restrictive mode (loud warning). NEVER falls to a stricter mode than requested — the policy name reflects user intent ("OK to weaken, but don't strengthen against my wishes"). Probe order: most-strict-of-the-less-strict first (e.g. `isolated` requested → try `filtered` before `open`). |
 
-Per-backend support, v1.0:
+Per-backend support, v1.1:
 
 | Backend | `open` | `filtered` | `isolated` |
 | --- | --- | --- | --- |
-| **bwrap** | ✓ | helper-probe gated (v1.1 ships the integration); v1.0 falls back per policy | ✓ (`--unshare-net`) |
-| **firejail** | ✓ | gated for v1.1 (`--netfilter` with generated iptables ruleset) | ✓ (`--net=none`) |
+| **bwrap** | ✓ | ✓ when `pasta` AND `nft` both available; otherwise falls back per policy | ✓ (`--unshare-net`) |
+| **firejail** | ✓ | ✗ (needs a site-provisioned bridge via `--net=<iface>` + `--netfilter`; v1.1 does not auto-provision the bridge — use bwrap or accept the fallback) | ✓ (`--net=none`) |
 | **landlock** | ✓ | ✗ (no mount/network namespace) | ✗ (no network namespace) |
 
 ### Fallback decision matrix
@@ -175,9 +187,7 @@ effective_network_exception_list  # allowed exceptions (admin + user, post-strip
 
 ## Precedence model
 
-Policy resolution under v1.1 enforcement (gated for v1.0; v1.0 ships
-the policy table but the per-connection evaluation is the v1.1
-helper's job):
+Policy resolution under v1.1 enforcement (bwrap + pasta + nft):
 
 **Specificity (most → least specific):**
 
@@ -307,47 +317,106 @@ So the practical defense is the network-layer block of the DoH
 hostnames + DoT port (already in the floor), not an in-sandbox
 resolver pin.
 
-## Helper binary (pasta)
+## Helper sourcing (pasta + nft)
 
-`pasta` is the userspace TCP/IP stack from the
-[passt](https://passt.top/) project (BSD-3-Clause arm of the dual
-license). When v1.1 wires the integration, `pasta` provisions a tap
-device inside the sandbox's network namespace, forwards general
-outbound traffic to the host's network, and pairs with `nft` rules
-inside the netns to enforce the blocklist.
+`filtered` mode on bwrap needs two helpers on the host:
 
-Install paths, in order of preference:
+- **`pasta`** — userspace TCP/IP stack from the
+  [passt](https://passt.top/) project (BSD-3-Clause arm of the dual
+  license). Provisions a tap interface inside the sandbox's netns
+  and forwards general outbound traffic to the host's network. Also
+  proxies DNS to the host resolver by default, so `getent` / `pip` /
+  `git clone` keep working through pasta.
+- **`nft`** — the nftables CLI. Installs the per-entry blocklist
+  ruleset inside the netns before the workload starts.
 
-1. **System package**: `apt install passt` (Ubuntu 22.10+, Debian
-   Bookworm+), `dnf install passt` (Fedora 36+, RHEL 9+),
-   `brew install passt`.
-2. **Shipped fetch**: `./tools/pasta/fetch.sh` — downloads the pinned
-   upstream source tarball, builds a static binary for the host
-   architecture, installs at `tools/pasta/pasta`.
-3. **lmod (site-specific)**: `SANDBOX_MODULES+=("passt/<version>")`
-   when the site provides a module. Sites with an EasyBuild pipeline
-   can request the upstream `passt` recipe; the easyconfig is a small
-   addition (the binary has no third-party deps).
+agent-sandbox auto-detects both at session-start. The helper-probe
+order for `pasta`:
 
-The helper-detection function probes in PATH-first order:
-distro/Homebrew `pasta`, then the shipped binary, then `slirp4netns`
-as a fallback (older, slower, GPL-2.0+ source-offer obligation).
+1. **`command -v pasta`** — distro / Homebrew install. Takes
+   precedence; typically newer than the in-tree pin.
+   - `apt install passt` (Ubuntu 22.10+, Debian Bookworm+)
+   - `dnf install passt` (Fedora 36+, RHEL 9+)
+   - `brew install passt` (Linux Homebrew)
+2. **`tools/pasta/<arch>/pasta`** — the static binary shipped with
+   agent-sandbox (x86_64 in v1.1). SHA256-pinned; license + provenance
+   in `tools/pasta/<arch>/NOTICE`. Refresh with
+   `./tools/pasta/fetch.sh`; source-build via
+   `PASTA_BUILD_FROM_SOURCE=1 ./tools/pasta/fetch.sh` for sites with
+   binary-redistribution policy constraints.
+3. **lmod (site-specific)** — when the site provides a `passt`
+   module, `SANDBOX_MODULES+=("passt/<version>")` puts it on PATH.
+   Fred Hutch SciComp tracks a `passt` module request at
+   [FredHutch/easybuild-life-sciences#578](https://github.com/FredHutch/easybuild-life-sciences/issues/578)
+   (eventual upgrade path; until then the shipped binary covers FH).
+4. **`command -v slirp4netns`** — older, slower fallback. v1.1
+   reserves slirp4netns support and currently downgrades to isolated
+   mode with a warning when only slirp4netns is present.
+
+For `nft`: `apt install nftables` (Ubuntu/Debian), `dnf install nftables`
+(RHEL/Fedora). macOS has no native nftables — `filtered` mode is
+Linux-only.
+
+If either helper is missing, the resolver falls back per
+`NETWORK_FILTER_FALLBACK` (default `stricter` → `isolated`; loud
+warning naming the gap).
+
+## Real-world recipe — verify filtered mode is enforcing
+
+After deploying v1.1, an operator can confirm `filtered` mode is
+actually enforcing inside their sandbox with a handful of one-liners.
+Run each inside a sandbox session:
+
+```bash
+# (1) DNS + general egress: should resolve + reach github.com.
+getent hosts github.com && \
+    curl -fsS --max-time 5 -o /dev/null -w '%{http_code}\n' https://github.com/
+# Expected: A/AAAA record + "200" or "301"
+
+# (2) SMTP submission: must fail. The local MTA is unreachable.
+exec 3<>/dev/tcp/127.0.0.1/25 2>&1 || echo "BLOCKED — SMTP closed (expected)"
+# Expected: "BLOCKED" (Connection refused / ENETUNREACH).
+
+# (3) DoH evasion port: must fail. Universal port-853 (DoT) drop.
+exec 3<>/dev/tcp/1.1.1.1/853 2>&1 || echo "BLOCKED — DoT closed (expected)"
+# Expected: "BLOCKED".
+
+# (4) Webhook surface (universal): must fail. The transactional-mail
+# floor blocks the hostname at session-start by IP-resolution.
+curl -fsS --max-time 3 https://hooks.slack.com/ 2>&1 || echo "BLOCKED — webhook closed (expected)"
+# Expected: "BLOCKED" or curl exit-code 28 (timeout) / 7 (no route).
+```
+
+If (1) fails: pasta DNS proxy not working — confirm `pasta` is
+running (check the parent process tree).
+
+If (2)/(3)/(4) succeed: the nft ruleset isn't loading. Re-run with
+`SANDBOX_DEBUG=1` to surface the generated ruleset + nft stderr.
 
 ## Troubleshooting
 
-### "filtered fell back to isolated" on startup
+### "filtered fell back to isolated" on startup (v1.1)
 
-The most common cause in v1.0: the bwrap+pasta integration is gated.
-The fix-path enumeration printed by the sandbox names the choices —
-the practical ones are:
+`filtered` requires BOTH `pasta` AND `nft`. Common causes:
+
+- `nftables` not installed: `apt install nftables` /
+  `dnf install nftables`. The package is small and dependency-free.
+- `pasta` not detected: agent-sandbox ships `tools/pasta/<arch>/pasta`
+  by default. If you removed it (or are on an unsupported arch like
+  aarch64 in v1.1), install via distro package (`apt install passt`)
+  or run `tools/pasta/fetch.sh` to refresh.
+- Custom `PATH`: the probe uses `command -v` for both helpers; if
+  your shell prunes `PATH` aggressively, ensure `/usr/sbin` (where
+  `nft` typically lives) is reachable.
+
+Fallback alternatives, all valid:
 
 - Accept `isolated` mode (no network at all): pin
-  `NETWORK_FILTER_MODE=isolated` so the fallback is silent and
-  intentional. The threat is still closed.
+  `NETWORK_FILTER_MODE=isolated` — the fallback is silent and
+  intentional, and the identity-hijack threat is still closed.
 - Accept `open` mode (no isolation): pin `NETWORK_FILTER_MODE=open`.
   **Re-opens the threat.** Use only when host-side mail policy is
-  already locked down.
-- Wait for v1.1: the integration will ship without a config change.
+  already locked down at the MTA layer.
 
 ### "no stricter mode available" failure on landlock
 
@@ -365,14 +434,24 @@ and does NOT speak SMTP or any other network protocol. It continues
 to function in all three modes including `isolated`. No carve-out
 required at the configuration level.
 
-### Pre-existing tests fail with "ENETUNREACH"
+### Pre-existing tests fail with "ENETUNREACH" or per-port blocks
 
-`NETWORK_FILTER_MODE=filtered` (default) falls back to `isolated` in
-v1.0, which kills the sandbox's network. CI / local test runs that
-expect network access need either `NETWORK_FILTER_MODE=open` for the
-duration of the test or a host-side `pasta` install plus the v1.1
-integration. The test suite gates its network-dependent sections on
-the resolved mode (see `test.sh` section "Network filter").
+In v1.1, when `pasta` + `nft` are present on the runner,
+`NETWORK_FILTER_MODE=filtered` (default) enforces the full default
+blocklist — including ports 25/465/587 (SMTP), 853 (DoT), 23/514
+(telnet/rsh), the configured CIDR/host floor, and several DoH
+hostnames resolved to current IPs. CI / local test runs that need
+ports the default blocklist closes can either:
+
+- Pin `NETWORK_FILTER_MODE=open` for the duration of the test (often
+  the right call for CI runners on isolated infrastructure).
+- Add `NETWORK_BLOCKLIST_EXCEPT+=(...)` entries for specific hosts /
+  ports the test legitimately needs.
+- Pin `NETWORK_FILTER_MODE=isolated` for tests that explicitly
+  exercise the no-network path.
+
+The test suite already gates its network-dependent sections on the
+resolved mode (see `test.sh` section 11.4 "Network filter").
 
 ## Admin enforcement (sandbox-admin.conf)
 

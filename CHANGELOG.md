@@ -9,6 +9,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Network filter v1.1 — real `filtered`-mode enforcement (bwrap +
+  pasta + nft).** Builds on the v1.0 configuration surface +
+  fallback resolver. Removes the
+  `NETWORK_FILTER_ENABLE_HELPER_PROBE=1` gate; `filtered` mode is
+  real by default whenever a network helper (`pasta`) AND `nft`
+  (nftables) are both available on the host.
+
+  **Silent enforcement flip — read this before upgrading.** v1.0
+  deployments running the defaults (`NETWORK_FILTER_MODE=filtered`,
+  `NETWORK_FILTER_FALLBACK=stricter`) silently fell back to
+  `isolated` because the helper-probe was gated. v1.1 ungates the
+  probe — those same deployments will START enforcing real
+  `filtered` mode the moment v1.1 lands on a host with `pasta` +
+  `nft` available. No config change is required to flip over. If
+  your CI / test runners depended on the silent-isolated fallback
+  (e.g., needed a specific outbound port the default blocklist
+  closes), add a `NETWORK_BLOCKLIST_EXCEPT+=(...)` entry or pin
+  `NETWORK_FILTER_MODE=open` for those runs. See
+  `docs/reference/network-filter.md` "Upgrade from v1.0" for the
+  rollout note.
+
+  **Phase A — shipped static `pasta` binary.** The repo ships
+  `tools/pasta/x86_64/pasta` (1.2 MiB, statically linked, runnable
+  on glibc ≥ 2.17 hosts including Ubuntu 18.04 / RHEL 7 kernels).
+  Source is the upstream passt project's official build endpoint at
+  https://passt.top/builds/latest/x86_64/pasta. SHA256 is pinned in
+  `tools/pasta/x86_64/SHA256SUMS`; license selection (BSD-3-Clause
+  arm) and copyright provenance are documented in
+  `tools/pasta/x86_64/NOTICE` and `LICENSE-BSD-3-Clause`. Tarball
+  growth: ~1.2 MiB. `tools/pasta/fetch.sh` is rewritten to default
+  to "download pre-built binary + verify SHA256"; source-build is
+  opt-in via `PASTA_BUILD_FROM_SOURCE=1` for sites with strict
+  reproducibility / no-binary-redistribution policy. aarch64 not
+  shipped in v1.1 — operators on aarch64 use distro `passt` or
+  source-build.
+
+  **Phase B — bwrap + pasta + nft integration.** In `filtered`
+  mode, `backends/bwrap.sh::backend_prepare` generates the nft
+  ruleset from `effective_network_blocklist` +
+  `effective_network_exception_list` to a tmpfile, then
+  `backend_exec` wraps the bwrap exec as
+  `pasta --foreground --quiet -- bash -c '<install nft + exec bwrap>'`.
+  pasta owns the netns (bwrap does NOT add `--unshare-net` in this
+  path — that would create a second empty netns and break the tap);
+  pasta provisions a tap interface forwarding to the host network +
+  proxies DNS to the host resolver, then the wrapper script runs
+  `nft -f` to install the per-entry blocklist inside the netns
+  *before* bwrap launches the workload.
+
+  **Phase C — helper-probe ungated.** `_resolve_network_helper` no
+  longer requires `NETWORK_FILTER_ENABLE_HELPER_PROBE=1`. Probe
+  order: PATH `pasta` → `tools/pasta/<arch>/pasta` → legacy
+  `tools/pasta/pasta` (one-release transitional path) → PATH
+  `slirp4netns` (currently downgrades to isolated mode with a
+  warning — slirp4netns CLI shape differs and is reserved for a
+  follow-up). A second resolver `_resolve_nft_helper` probes for
+  `nft` on PATH; both must succeed for `filtered` to resolve.
+
+  **Phase D — empirical test coverage.** `test.sh::11.4` is
+  extended with:
+  - nft ruleset generator unit tests: port / host:port / CIDR /
+    CIDR:port emission; wildcard hostname + `*` deny-all skipped
+    with stderr note (unenforceable at netfilter layer; v1.2 L7
+    scope); exception accept rules emitted before drop rules
+    (specificity-first ordering); unresolvable hostname skipped
+    with stderr note, ruleset still loads.
+  - Empirical `filtered`-mode integration (skips cleanly when
+    pasta or nft missing from the runner): port 25 must drop;
+    github.com:443 must remain reachable through the pasta tap.
+  - v1.0 test 2 ("filtered + stricter → isolated") is rewritten to
+    branch on runner capability — the legacy assertion holds on
+    runners without `nft`, but on a fully-equipped runner it now
+    asserts the v1.1 `filtered` happy path with non-empty helper +
+    nft paths.
+
+  **Phase E — firejail + landlock parity (deferred honestly).**
+  Firejail's `--netfilter` requires a private netns wired to a
+  host bridge (`--net=<iface>`); v1.1 does not auto-provision the
+  bridge, so firejail's `filtered`-mode capability remains "open
+  and isolated only" — the resolver falls back per policy with a
+  more specific error message naming the bridge dependency.
+  Landlock has no netns, unchanged from v1.0.
+
+  **Enforcement limits — honest acknowledgment (v1.2 scope).**
+  nftables cannot inspect SNI on TLS-wrapped traffic. The
+  generator therefore skips:
+  - Wildcard hostname entries (`*.cloudflare-dns.com`) — emits a
+    stderr note; the bare-port-853 (DoT) drop closes the most
+    common DoH/DoT evasion regardless.
+  - The deny-all `*` pattern — would break DNS resolution
+    through pasta's proxy; operators wanting deny-all should use
+    `NETWORK_FILTER_MODE=isolated` directly.
+
+  Hostname entries (e.g., `api.mailgun.net`) are resolved to IPs
+  at session-start and the resulting IP set is blocked; this is
+  best-effort and may drift if upstream DNS changes mid-session.
+  The v1.2 scope (R3 in the network-survey, deferred — see
+  `settylab/dotto-nexus#117`) covers a small L7 proxy for
+  SNI-aware filtering of the wildcard surface.
+
 - **Network filter — optional default-deny outbound network layer
   with strict-mode enforcement.** Closes the local-MTA identity-hijack
   class that filesystem-level binary blocks cannot reach. The
