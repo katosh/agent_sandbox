@@ -209,12 +209,12 @@ backend_prepare() {
     # --- Network filter ---
     # Resolve mode (open|filtered|isolated) given backend + fallback policy.
     # Sets _NETWORK_FILTER_RESOLVED, _NETWORK_FILTER_REASON,
-    # _NETWORK_FILTER_HELPER, _NETWORK_FILTER_NFT. May exit on
-    # irrecoverable mismatch (strict policy, or stricter with no
-    # stricter mode available).
+    # _NETWORK_FILTER_HELPER. May exit on irrecoverable mismatch
+    # (strict policy, or stricter with no stricter mode available).
     resolve_network_filter_mode bwrap
     _NETWORK_FILTER_BWRAP_PENDING=0
-    _NETWORK_FILTER_NFT_RULES_TMPFILE=""
+    _NETWORK_FILTER_PASTA_TCP_SPEC=""
+    _NETWORK_FILTER_PASTA_UDP_SPEC=""
     case "$_NETWORK_FILTER_RESOLVED" in
         isolated)
             BWRAP_ARGS+=(--unshare-net)
@@ -224,17 +224,23 @@ backend_prepare() {
             # provisions a tap inside, and forwards general outbound
             # TCP/UDP/DNS to the host network. bwrap then runs INSIDE
             # pasta's netns (no --unshare-net — that would create a
-            # second, empty netns and break pasta's tap). The per-entry
-            # blocklist is enforced by nftables rules installed in the
-            # netns BEFORE bwrap launches — see backend_exec() for the
-            # composition.
+            # second, empty netns and break pasta's tap). The port-
+            # level blocklist is enforced at pasta's own forwarding
+            # boundary via the -T (TCP) and -U (UDP) flags with the
+            # `~N` exclusion syntax. No nftables dependency.
             #
-            # Generate the nft ruleset NOW (resolution time), while host
-            # DNS is reachable for hostname → IP lookup. The resolved
-            # ruleset is written to a tmpfile; backend_exec installs it
-            # inside the netns via `nft -f`.
-            _NETWORK_FILTER_NFT_RULES_TMPFILE="$(mktemp "${TMPDIR:-/tmp}/agent-sandbox-nft.XXXXXX.nft")"
-            generate_nft_ruleset > "$_NETWORK_FILTER_NFT_RULES_TMPFILE"
+            # Compute the exclusion SPECs NOW so we know the final
+            # pasta argv at exec time. The generator is a pure
+            # function over effective_network_blocklist +
+            # effective_network_exception_list.
+            local _specs _line
+            _specs="$(generate_pasta_port_exclusions)"
+            while IFS= read -r _line; do
+                case "$_line" in
+                    TCP:*) _NETWORK_FILTER_PASTA_TCP_SPEC="${_line#TCP:}" ;;
+                    UDP:*) _NETWORK_FILTER_PASTA_UDP_SPEC="${_line#UDP:}" ;;
+                esac
+            done <<< "$_specs"
             _NETWORK_FILTER_BWRAP_PENDING=1
             ;;
         open)
@@ -645,47 +651,35 @@ backend_exec() {
 
     # ── filtered-mode composition: pasta wraps bwrap ───────────────
     #
-    # When backend_prepare resolved `filtered` mode, it generated the
-    # nft ruleset to a tmpfile. Compose the exec chain so:
-    #
-    #   pasta [opts] -- bash -c 'nft -f $RULES && exec bwrap [args] -- cmd'
-    #
-    # pasta creates the netns+tap, the wrapper installs the nft rules
-    # inside that netns, bwrap inherits the netns (no --unshare-net).
-    # The bash -c hop is cheap and avoids needing a temp wrapper file.
+    # When backend_prepare resolved `filtered` mode, build a pasta
+    # argv that:
+    #   - excludes blocklisted outbound ports via -T ~N,~M / -U ~K
+    #   - forwards DNS to the host resolver (pasta default behaviour)
+    #   - then exec's bwrap inside pasta's netns (no --unshare-net —
+    #     pasta already owns the netns).
     if [[ "${_NETWORK_FILTER_BWRAP_PENDING:-0}" == "1" \
-          && -n "${_NETWORK_FILTER_HELPER:-}" \
-          && -n "${_NETWORK_FILTER_NFT:-}" \
-          && -n "${_NETWORK_FILTER_NFT_RULES_TMPFILE:-}" ]]; then
+          && -n "${_NETWORK_FILTER_HELPER:-}" ]]; then
         local _pasta="$_NETWORK_FILTER_HELPER"
-        local _nft="$_NETWORK_FILTER_NFT"
-        local _rules="$_NETWORK_FILTER_NFT_RULES_TMPFILE"
 
         # slirp4netns has a different CLI shape than pasta. We treat it
-        # as a degraded path: emit a loud warning + skip the nft step
-        # entirely, falling through to plain --unshare-net behaviour
-        # (effectively isolated). pasta is the supported helper for
-        # v1.1; slirp4netns support is left for a future revision.
+        # as a degraded path: emit a loud warning + fall through to
+        # plain --unshare-net (effectively isolated). Full slirp4netns
+        # wiring is reserved for a follow-up.
         if [[ "$(basename -- "$_pasta")" == "slirp4netns"* ]]; then
             echo "sandbox: WARNING — slirp4netns helper detected but v1.1 only wires the pasta path; degrading to isolated mode." >&2
             BWRAP_ARGS+=(--unshare-net)
-            rm -f "$_rules"
             exec "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
         fi
 
-        # Compose: pasta -- bash -c '<install_then_exec_bwrap>' _wrapper $rules $nft $bwrap $args... -- cmd...
-        # We pass arrays through positional parameters of the bash -c
-        # invocation to avoid quoting hazards on rule paths or args.
-        local _wrap_script
-        _wrap_script='set -e
-_rules="$1"; _nft="$2"; _bwrap="$3"; shift 3
-"$_nft" -f "$_rules" >&2
-rm -f "$_rules"
-exec "$_bwrap" "$@"'
-        exec "$_pasta" --foreground --quiet -- \
-            bash -c "$_wrap_script" _pasta_wrap \
-                "$_rules" "$_nft" "$BWRAP" \
-                "${BWRAP_ARGS[@]}" -- "$@"
+        local _pasta_args=(--foreground --quiet)
+        if [[ -n "${_NETWORK_FILTER_PASTA_TCP_SPEC:-}" ]]; then
+            _pasta_args+=(-T "$_NETWORK_FILTER_PASTA_TCP_SPEC")
+        fi
+        if [[ -n "${_NETWORK_FILTER_PASTA_UDP_SPEC:-}" ]]; then
+            _pasta_args+=(-U "$_NETWORK_FILTER_PASTA_UDP_SPEC")
+        fi
+        exec "$_pasta" "${_pasta_args[@]}" -- \
+            "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
     fi
 
     exec "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
@@ -695,17 +689,18 @@ backend_dry_run() {
     echo "# Backend: bubblewrap"
     echo "# Binary: $BWRAP"
     if [[ "${_NETWORK_FILTER_BWRAP_PENDING:-0}" == "1" \
-          && -n "${_NETWORK_FILTER_HELPER:-}" \
-          && -n "${_NETWORK_FILTER_NFT:-}" ]]; then
-        echo "# Network filter: filtered mode (pasta + nft) — wrapping bwrap"
-        echo "# pasta: $_NETWORK_FILTER_HELPER"
-        echo "# nft:   $_NETWORK_FILTER_NFT"
-        echo "# nft ruleset (generated; would be installed inside netns):"
-        sed 's/^/#   /' < "${_NETWORK_FILTER_NFT_RULES_TMPFILE}"
+          && -n "${_NETWORK_FILTER_HELPER:-}" ]]; then
+        echo "# Network filter: filtered mode (pasta -T port-exclusions) — wrapping bwrap"
+        echo "# pasta:    $_NETWORK_FILTER_HELPER"
+        echo "# TCP excl: ${_NETWORK_FILTER_PASTA_TCP_SPEC:-(none)}"
+        echo "# UDP excl: ${_NETWORK_FILTER_PASTA_UDP_SPEC:-(none)}"
         printf '%s \\\n' "$_NETWORK_FILTER_HELPER"
-        printf '  %s \\\n' --foreground --quiet
-        printf '  -- bash -c \\\n'
-        printf '       (install nft + exec bwrap) \\\n'
+        printf '  --foreground --quiet \\\n'
+        [[ -n "${_NETWORK_FILTER_PASTA_TCP_SPEC:-}" ]] && \
+            printf '  -T %s \\\n' "$_NETWORK_FILTER_PASTA_TCP_SPEC"
+        [[ -n "${_NETWORK_FILTER_PASTA_UDP_SPEC:-}" ]] && \
+            printf '  -U %s \\\n' "$_NETWORK_FILTER_PASTA_UDP_SPEC"
+        printf '  -- \\\n'
     fi
     printf '%s \\\n' "$BWRAP"
     for arg in "${BWRAP_ARGS[@]}"; do
@@ -721,7 +716,4 @@ backend_dry_run() {
             rm -f "$_f" 2>/dev/null || true
         done
     fi
-    # Clean up nft ruleset tmpfile if filtered-mode prep ran (dry-run doesn't exec)
-    [[ -n "${_NETWORK_FILTER_NFT_RULES_TMPFILE:-}" ]] && \
-        rm -f "$_NETWORK_FILTER_NFT_RULES_TMPFILE" 2>/dev/null || true
 }

@@ -1336,8 +1336,9 @@ _network_fallback_strictness_idx() {
 #
 # v1.1 implementation status: helper-probe is live. The
 # `NETWORK_FILTER_ENABLE_HELPER_PROBE` env-toggle gate from v1.0 is
-# gone — `filtered` mode is real by default whenever a helper AND
-# `nft` (probed separately via _resolve_nft_helper) are available.
+# gone — `filtered` mode is real by default whenever pasta is
+# available. v1.1 enforces the blocklist at pasta's own boundary
+# (via `-T ~N` outbound port exclusions); no nftables dependency.
 #
 # Probe order:
 #   1. `command -v pasta` — distro/Homebrew install; takes precedence
@@ -1345,7 +1346,7 @@ _network_fallback_strictness_idx() {
 #   2. tools/pasta/<arch>/pasta — the shipped static binary (see
 #      tools/pasta/README.md for fetch + license details).
 #   3. `command -v slirp4netns` — older fallback (GPL-2.0 source-
-#      offer obligation; less preferred).
+#      offer obligation; less preferred and currently degraded).
 _resolve_network_helper() {
     if command -v pasta &>/dev/null; then
         command -v pasta
@@ -1374,29 +1375,18 @@ _resolve_network_helper() {
     return 1
 }
 
-# Returns 0 iff `nft` (nftables CLI) is on PATH. Stdout: nft path.
-# Required alongside the network helper for `filtered` mode — pasta
-# provisions the netns, nft enforces the blocklist inside it.
-_resolve_nft_helper() {
-    if command -v nft &>/dev/null; then
-        command -v nft
-        return 0
-    fi
-    return 1
-}
-
 # Backend-capability probe. Stdout: space-separated list of supported
 # modes for the given backend.
 _network_modes_supported_by_backend() {
     local _backend="$1"
     case "$_backend" in
         bwrap)
-            # `filtered` needs BOTH pasta (provisions netns + tap) AND
-            # nft (enforces per-entry rules inside the netns). Either
-            # missing → fall back per NETWORK_FILTER_FALLBACK policy.
+            # `filtered` needs pasta — it provisions the netns + tap +
+            # DNS proxy AND enforces the port-level blocklist at its
+            # own forwarding boundary (`-T ~N` outbound exclusions).
+            # No nftables dependency.
             local _modes="open isolated"
-            if _resolve_network_helper >/dev/null 2>&1 \
-               && _resolve_nft_helper >/dev/null 2>&1; then
+            if _resolve_network_helper >/dev/null 2>&1; then
                 _modes="open filtered isolated"
             fi
             echo "$_modes"
@@ -1427,15 +1417,14 @@ _network_filter_print_fixpaths() {
     local _requested="$1" _backend="$2"
     cat >&2 <<EOF
   Fix paths (pick whichever fits):
-    1. Install BOTH a network helper AND nftables so 'filtered' mode
-       works on bwrap:
-         apt install passt nftables     # Debian / Ubuntu 22.10+
-         dnf install passt nftables     # RHEL 9+ / Fedora
-         brew install passt             # Homebrew (nftables = Linux-only)
+    1. Install pasta so 'filtered' mode works on bwrap:
+         apt install passt         # Debian / Ubuntu 22.10+
+         dnf install passt         # RHEL 9+ / Fedora
+         brew install passt        # Homebrew
        Or refresh the static pasta binary shipped with agent-sandbox:
          $SANDBOX_DIR/tools/pasta/fetch.sh
        (The shipped binary lives at tools/pasta/<arch>/pasta and is
-       auto-detected.)
+       auto-detected. No nftables / iptables dependency.)
     2. Pin NETWORK_FILTER_MODE='isolated' to accept the kill-network
        fallback intentionally (no warning, full block).
     3. Set NETWORK_FILTER_FALLBACK='open' to also accept dropping to
@@ -1475,8 +1464,6 @@ EOF
 #   _NETWORK_FILTER_HELPER    — for filtered mode, the resolved network
 #                               helper binary path (pasta / slirp4netns;
 #                               empty otherwise)
-#   _NETWORK_FILTER_NFT       — for filtered mode on bwrap, the resolved
-#                               `nft` binary path (empty otherwise)
 # Exits with diagnostic on irrecoverable mismatch.
 resolve_network_filter_mode() {
     local _backend="$1"
@@ -1496,20 +1483,18 @@ resolve_network_filter_mode() {
     _supported=" $(_network_modes_supported_by_backend "$_backend") "
 
     _NETWORK_FILTER_HELPER=""
-    _NETWORK_FILTER_NFT=""
     if [[ "$_supported" == *" $_requested "* ]]; then
         _NETWORK_FILTER_RESOLVED="$_requested"
         _NETWORK_FILTER_REASON="$_requested (requested; supported on backend '$_backend')"
         if [[ "$_requested" == "filtered" && "$_backend" == "bwrap" ]]; then
             _NETWORK_FILTER_HELPER="$(_resolve_network_helper)"
-            _NETWORK_FILTER_NFT="$(_resolve_nft_helper)"
         fi
         return 0
     fi
 
     local _why
     case "$_requested:$_backend" in
-        filtered:bwrap)    _why="filtered mode requires BOTH a network helper (pasta or slirp4netns) AND 'nft' (nftables); one or both not found." ;;
+        filtered:bwrap)    _why="filtered mode requires a network helper (pasta); none found on PATH and the shipped binary at tools/pasta/<arch>/pasta is missing or not executable." ;;
         filtered:firejail) _why="filtered mode on firejail requires a site-provisioned bridge (--net=<iface> + --netfilter); v1.1 does not auto-provision the bridge. Use bwrap for filtered mode, or accept the policy fallback." ;;
         filtered:landlock) _why="filtered mode requires a mount/network namespace; landlock has neither." ;;
         isolated:landlock) _why="isolated mode requires a network namespace; landlock has none." ;;
@@ -1530,7 +1515,6 @@ resolve_network_filter_mode() {
                     _NETWORK_FILTER_REASON="$_try (fallback from '$_requested'; policy=stricter)"
                     if [[ "$_try" == "filtered" && "$_backend" == "bwrap" ]]; then
                         _NETWORK_FILTER_HELPER="$(_resolve_network_helper)"
-                        _NETWORK_FILTER_NFT="$(_resolve_nft_helper)"
                     fi
                     _network_filter_warn_fallback "$_requested" "$_try" "$_why" "$_backend"
                     return 0
@@ -1554,7 +1538,6 @@ resolve_network_filter_mode() {
                     _NETWORK_FILTER_REASON="$_try (fallback from '$_requested'; policy=open, less-restrictive)"
                     if [[ "$_try" == "filtered" && "$_backend" == "bwrap" ]]; then
                         _NETWORK_FILTER_HELPER="$(_resolve_network_helper)"
-                        _NETWORK_FILTER_NFT="$(_resolve_nft_helper)"
                     fi
                     _network_filter_warn_fallback "$_requested" "$_try" "$_why" "$_backend"
                     return 0
@@ -1655,177 +1638,158 @@ effective_network_exception_list() {
     done
 }
 
-# ── nft ruleset generation for v1.1 filtered mode ────────────────
+# ── pasta port-exclusion generator for v1.1 filtered mode ────────
 #
-# Generate an nftables ruleset that enforces `effective_network_blocklist`
-# inside a bwrap/pasta-provisioned netns. Stdout: the ruleset as text
-# (suitable for `nft -f /dev/stdin`).
+# Generate the pasta -T (TCP) and -U (UDP) outbound port-exclusion
+# SPECs from `effective_network_blocklist`. v1.1 enforces the
+# blocklist at pasta's own forwarding boundary — pasta's `-T ~N`
+# syntax means "forward all outbound ports except N" so the netns
+# loses egress on the named ports while keeping everything else.
+# No nftables dependency.
 #
-# Honest limits of what nft can enforce (acknowledged in v1.0 design,
-# tracked for v1.2 L7 work):
+# Stdout: two lines —
+#   TCP: ~25,~465,~587,~853,...
+#   UDP: ~853,...
+# Empty string in either field if no exclusions apply. Caller splits
+# on first space.
 #
-#   ENFORCEABLE at nft layer:
-#     - bare port      (e.g. "25", "853")  → `tcp dport N drop`
-#     - host:port      (e.g. "127.0.0.1:25") → `ip daddr X tcp dport N drop`
-#     - CIDR           (e.g. "10.0.0.0/8")  → `ip daddr X/Y drop`
-#     - CIDR:port      (e.g. "0.0.0.0/0:25") → `ip daddr X/Y tcp dport N drop`
-#     - exact hostname (resolved to IPs at startup; best-effort, may
-#       drift if upstream DNS changes during the session)
+# Honest limits — what pasta -T/-U can enforce (and what it can't):
 #
-#   NOT ENFORCEABLE at nft layer (silently NO-OP — v1.2 L7 work):
-#     - wildcard host patterns (`*.example.com`, `*.cloudflare-dns.com`)
-#       — nft cannot inspect SNI on TLS-wrapped traffic.
-#     - DoH hostnames at the hostname level — but the port-853 DoT
-#       entry IS enforced, so the most common evasion is closed.
-#     - `*` (deny-all) — would block ALL outbound, including DNS
-#       resolution against the host resolver; effectively breaks
-#       `filtered` mode. Operators wanting deny-all should use
-#       `NETWORK_FILTER_MODE=isolated` directly. We log + skip `*`.
+#   ENFORCEABLE at pasta's boundary:
+#     - bare port              ("25", "853")     → emitted as ~25
+#     - host:port (universal)  ("0.0.0.0/0:25")  → port-only; ~25
+#     - loopback host:port     ("127.0.0.1:25")  → ALREADY structurally
+#       unreachable: pasta gives the netns its own empty loopback,
+#       so host MTAs on 127.0.0.1 are unreachable regardless. We
+#       also emit ~25 for defense in depth.
 #
-# The generator emits a single chain `output` with policy=accept,
-# then a `drop` rule per blocklist entry, then an `accept` set of
-# allowlist hosts (exceptions) at higher priority. Most-specific-
-# wins precedence is approximated by emitting entries in increasing
-# specificity (later rules override earlier, so the more-specific
-# wins). nft does NOT natively support specificity-ordering at the
-# rule layer; we get acceptable behaviour by ordering:
+#   NOT ENFORCEABLE at pasta's boundary (skipped with stderr note;
+#   tracked for v1.2 L7 proxy work):
+#     - hostname entries          ("api.mailgun.net")
+#     - wildcard hostnames        ("*.cloudflare-dns.com")
+#     - hostname:port            ("hooks.slack.com:443")
+#     - CIDR with non-universal port ("10.0.0.0/8:25" — universal
+#       port portion IS enforced via the bare-port closure, so the
+#       SMTP-to-CIDR threat is covered; the CIDR-specificity is what
+#       gets dropped)
+#     - "*" deny-all              — operators wanting deny-all should
+#       pin NETWORK_FILTER_MODE=isolated directly
 #
-#   1. exception accepts (highest priority — emitted FIRST, with
-#      `accept` action; if the packet matches we stop processing)
-#   2. blocklist drops  (emitted AFTER; only reached if exceptions
-#      didn't match)
-#
-# This is the "exception-first ACL" pattern. It correctly handles
-# the documented worked example "*.example.com + EXCEPT api.example.com".
-#
-# Unresolvable entries (wildcards we can't enforce, hostnames whose
-# DNS lookup fails) are logged to stderr and skipped — the rest of
-# the ruleset still loads.
-generate_nft_ruleset() {
-    local _entry _host _port _cidr _ip _ips _err
-    # Header: a single inet table+chain. Policy 'accept' so non-matching
-    # traffic flows through pasta to the host network.
-    cat <<'NFT'
-flush ruleset
-table inet sandbox_filter {
-    chain output {
-        type filter hook output priority filter; policy accept;
-NFT
+# Rationale for the pivot from a v1.1 nft-based design: pasta alone
+# handles the actual identity-hijack threat (mail submission ports
+# universally closed; DoT port 853 closed; loopback MTA structurally
+# unreachable). Hostname-level enforcement was always best-effort
+# under any L3/L4 design and properly belongs to the v1.2 L7-proxy
+# scope. Eliminating the nftables runtime dependency simplifies
+# deployment and reduces surface area; the threat closure remains.
+generate_pasta_port_exclusions() {
+    local _entry _port
+    local -A _tcp_ports=() _udp_ports=()
 
-    # First: emit accept rules for the exception list (carve-outs).
     while IFS= read -r _entry; do
         [[ -z "$_entry" ]] && continue
-        _emit_nft_rule "$_entry" "accept"
-    done < <(effective_network_exception_list)
-
-    # Second: emit drop rules for the blocklist.
-    while IFS= read -r _entry; do
-        [[ -z "$_entry" ]] && continue
-        _emit_nft_rule "$_entry" "drop"
+        _classify_pasta_port_entry "$_entry" _tcp_ports _udp_ports
     done < <(effective_network_blocklist)
 
-    cat <<'NFT'
-    }
-}
-NFT
-}
-
-# Emit one nft rule line from a blocklist/exception entry.
-# Args: $1 = entry string, $2 = action ('drop' or 'accept').
-# Silently skips entries that cannot be expressed as nft rules
-# (wildcards, malformed entries) — these get a stderr note unless
-# SANDBOX_QUIET=true.
-_emit_nft_rule() {
-    local _entry="$1" _action="$2"
-    local _host="" _port="" _cidr="" _ip _ips _ipv4 _ipv6
-
-    # `*` (deny-all) is unenforceable at this layer (would break DNS).
-    # Operators wanting deny-all should use isolated mode.
-    if [[ "$_entry" == "*" ]]; then
-        [[ "${SANDBOX_QUIET:-false}" == "true" ]] || \
-            echo "sandbox: NOTE — network-filter entry '*' cannot be enforced at the nft layer (would block DNS); use NETWORK_FILTER_MODE=isolated for deny-all semantics. Skipping." >&2
-        return 0
-    fi
-
-    # Wildcard hostname (`*.foo.com`, `*.foo.com:443`) — not
-    # enforceable without SNI inspection. v1.2 L7 scope.
-    if [[ "$_entry" == \** ]]; then
-        [[ "${SANDBOX_QUIET:-false}" == "true" ]] || \
-            echo "sandbox: NOTE — wildcard hostname entry '${_entry}' cannot be enforced at the nft layer (requires SNI inspection; v1.2 L7 proxy scope). Skipping." >&2
-        return 0
-    fi
-
-    # Split into host/CIDR + optional :port. IPv6 forms `[::1]:N` are
-    # not common in our default blocklist; we handle the simple cases.
-    if [[ "$_entry" =~ ^([0-9]+)$ ]]; then
-        # Bare port (universal).
-        _port="${BASH_REMATCH[1]}"
-        echo "        tcp dport ${_port} ${_action}"
-        echo "        udp dport ${_port} ${_action}"
-        return 0
-    elif [[ "$_entry" =~ ^([0-9.]+/[0-9]+)(:([0-9]+))?$ ]]; then
-        # CIDR or CIDR:port (IPv4).
-        _cidr="${BASH_REMATCH[1]}"
-        _port="${BASH_REMATCH[3]:-}"
-    elif [[ "$_entry" =~ ^([0-9.]+)(:([0-9]+))?$ ]]; then
-        # Bare IPv4 or IPv4:port.
-        _cidr="${BASH_REMATCH[1]}"
-        _port="${BASH_REMATCH[3]:-}"
-    elif [[ "$_entry" =~ ^([A-Za-z0-9._-]+):([0-9]+)$ ]]; then
-        # Hostname:port → resolve hostname to IPs.
-        _host="${BASH_REMATCH[1]}"
-        _port="${BASH_REMATCH[2]}"
-    elif [[ "$_entry" =~ ^([A-Za-z0-9._-]+)$ ]]; then
-        # Bare hostname → resolve to IPs.
-        _host="${BASH_REMATCH[1]}"
-    else
-        [[ "${SANDBOX_QUIET:-false}" == "true" ]] || \
-            echo "sandbox: NOTE — unrecognized network-filter entry '${_entry}'; skipping." >&2
-        return 0
-    fi
-
-    if [[ -n "$_host" ]]; then
-        # Resolve hostname to A + AAAA records, best-effort. getent is
-        # the most portable resolver; falls back silently when DNS
-        # fails (e.g. inside a netns with no resolver yet — but this
-        # function is called BEFORE the netns is established).
-        _ips="$(getent ahosts "$_host" 2>/dev/null | awk '{print $1}' | sort -u)"
-        if [[ -z "$_ips" ]]; then
-            [[ "${SANDBOX_QUIET:-false}" == "true" ]] || \
-                echo "sandbox: NOTE — could not resolve '${_host}' for nft rule; skipping (DNS failure or transient lookup error)." >&2
-            return 0
-        fi
-        local _ip
-        while IFS= read -r _ip; do
-            [[ -z "$_ip" ]] && continue
-            if [[ "$_ip" == *:* ]]; then
-                # IPv6
-                if [[ -n "$_port" ]]; then
-                    echo "        ip6 daddr ${_ip} tcp dport ${_port} ${_action}"
-                    echo "        ip6 daddr ${_ip} udp dport ${_port} ${_action}"
-                else
-                    echo "        ip6 daddr ${_ip} ${_action}"
-                fi
-            else
-                # IPv4
-                if [[ -n "$_port" ]]; then
-                    echo "        ip daddr ${_ip} tcp dport ${_port} ${_action}"
-                    echo "        ip daddr ${_ip} udp dport ${_port} ${_action}"
-                else
-                    echo "        ip daddr ${_ip} ${_action}"
-                fi
+    # Exception list: the caller can lift specific ports from the
+    # exclusion set. We strip any port the exception lists by
+    # matching on the port-only key. Hostname-based exceptions
+    # have no effect at the pasta layer (no rule was emitted for
+    # the corresponding blocklist host either).
+    local _exc_entry _exc_port
+    while IFS= read -r _exc_entry; do
+        [[ -z "$_exc_entry" ]] && continue
+        if [[ "$_exc_entry" =~ ^([0-9]+)$ ]]; then
+            unset "_tcp_ports[${BASH_REMATCH[1]}]" "_udp_ports[${BASH_REMATCH[1]}]"
+        elif [[ "$_exc_entry" =~ :([0-9]+)$ ]]; then
+            # host:port exception — only lifts if the port is
+            # universally excluded (which is the common case for
+            # ports we close).
+            _exc_port="${BASH_REMATCH[1]}"
+            # We don't auto-lift: the user asked to except a specific
+            # host:port pair, but our port-level enforcement is
+            # universal. Emit a stderr note that the host part can't
+            # be carved at this layer.
+            if [[ -n "${_tcp_ports[$_exc_port]:-}" || -n "${_udp_ports[$_exc_port]:-}" ]]; then
+                [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" ]] && \
+                    echo "sandbox: NOTE — host:port exception '${_exc_entry}' cannot be carved at pasta's port-level layer (port ${_exc_port} is universally blocked); use NETWORK_FILTER_MODE=open or the v1.2 L7 proxy for host-specific carve-outs." >&2
             fi
-        done <<< "$_ips"
+        fi
+    done < <(effective_network_exception_list)
+
+    # Emit TCP exclusion SPEC.
+    local _tcp_spec="" _p
+    for _p in "${!_tcp_ports[@]}"; do
+        _tcp_spec="${_tcp_spec:+${_tcp_spec},}~${_p}"
+    done
+    local _udp_spec=""
+    for _p in "${!_udp_ports[@]}"; do
+        _udp_spec="${_udp_spec:+${_udp_spec},}~${_p}"
+    done
+
+    echo "TCP:${_tcp_spec}"
+    echo "UDP:${_udp_spec}"
+}
+
+# Classify a blocklist entry into the pasta port-exclusion model.
+# Populates the TCP/UDP associative arrays passed by name. Emits a
+# stderr note for entries that are not enforceable at pasta's layer
+# (hostname, CIDR-with-port, wildcards, "*").
+_classify_pasta_port_entry() {
+    local _entry="$1"
+    local -n _tcp="$2" _udp="$3"
+    local _port
+
+    # "*" deny-all — unenforceable; operators wanting deny-all should
+    # use isolated mode.
+    if [[ "$_entry" == "*" ]]; then
+        [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" ]] && \
+            echo "sandbox: NOTE — network-filter entry '*' cannot be enforced at pasta's port-level layer (would block DNS); use NETWORK_FILTER_MODE=isolated for deny-all semantics. Skipping." >&2
         return 0
     fi
 
-    # IPv4 (single or CIDR) + optional port.
-    if [[ -n "$_port" ]]; then
-        echo "        ip daddr ${_cidr} tcp dport ${_port} ${_action}"
-        echo "        ip daddr ${_cidr} udp dport ${_port} ${_action}"
-    else
-        echo "        ip daddr ${_cidr} ${_action}"
+    # Wildcard hostname — needs SNI inspection (v1.2 L7 scope).
+    if [[ "$_entry" == \** ]]; then
+        [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" ]] && \
+            echo "sandbox: NOTE — wildcard hostname entry '${_entry}' cannot be enforced at pasta's port-level layer (requires SNI inspection; v1.2 L7 proxy scope). Skipping." >&2
+        return 0
     fi
+
+    # Bare port → universal port exclusion.
+    if [[ "$_entry" =~ ^([0-9]+)$ ]]; then
+        _port="${BASH_REMATCH[1]}"
+        _tcp["$_port"]=1
+        _udp["$_port"]=1
+        return 0
+    fi
+
+    # host:port or CIDR:port — extract the port; pasta's enforcement is
+    # universal-port (we can't bind it to the host/CIDR portion). For
+    # the v1.0 default blocklist this is the right answer: every
+    # CIDR:port entry uses port 25 / 24 / 465 / 587 / 2525 (the SMTP
+    # class) where universal closure is the desired threat model.
+    if [[ "$_entry" =~ :([0-9]+)$ ]]; then
+        _port="${BASH_REMATCH[1]}"
+        # Note the host-specificity drop only when NETWORK_FILTER_VERBOSE=1
+        # AND the host part is non-trivial (i.e., not a universal
+        # loopback / any-address pattern). The "loopback + universal"
+        # cases are structurally equivalent to a bare-port block here.
+        local _suppress_note=false
+        case "$_entry" in
+            0.0.0.0/0:*|127.0.0.1:*|"[::]/0:"*|"[::1]:"*) _suppress_note=true ;;
+        esac
+        if [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" && "$_suppress_note" != "true" ]]; then
+            echo "sandbox: NOTE — entry '${_entry}' enforced as universal port-${_port} block (pasta does not filter by host/CIDR at this layer); use the v1.2 L7 proxy for host-specific port carve-outs." >&2
+        fi
+        _tcp["$_port"]=1
+        _udp["$_port"]=1
+        return 0
+    fi
+
+    # Bare hostname, CIDR-without-port, or unrecognized form — no
+    # enforcement at this layer.
+    [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" ]] && \
+        echo "sandbox: NOTE — hostname/CIDR entry '${_entry}' cannot be enforced at pasta's port-level layer (no port to exclude); use the v1.2 L7 proxy for SNI-aware filtering or isolated mode for hard deny-all. Skipping." >&2
 }
 
 # ── Test-harness early-return ────────────────────────────────────

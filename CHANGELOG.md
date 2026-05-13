@@ -9,35 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
-- **Network filter v1.1 — real `filtered`-mode enforcement (bwrap +
-  pasta + nft).** Builds on the v1.0 configuration surface +
+- **Network filter v1.1 — port-level `filtered`-mode enforcement
+  via bwrap + pasta.** Builds on the v1.0 configuration surface +
   fallback resolver. Removes the
   `NETWORK_FILTER_ENABLE_HELPER_PROBE=1` gate; `filtered` mode is
-  real by default whenever a network helper (`pasta`) AND `nft`
-  (nftables) are both available on the host.
+  real by default whenever `pasta` is available on the host.
+  **No nftables / iptables runtime dependency** — enforcement
+  happens at pasta's own outbound forwarding boundary via the
+  `-T ~N` (TCP) / `-U ~K` (UDP) port-exclusion syntax.
 
-  **Silent enforcement flip — read this before upgrading.** v1.0
+  **Enforcement flip — read this before upgrading.** v1.0
   deployments running the defaults (`NETWORK_FILTER_MODE=filtered`,
   `NETWORK_FILTER_FALLBACK=stricter`) silently fell back to
-  `isolated` because the helper-probe was gated. v1.1 ungates the
-  probe — those same deployments will START enforcing real
-  `filtered` mode the moment v1.1 lands on a host with `pasta` +
-  `nft` available. No config change is required to flip over. If
-  your CI / test runners depended on the silent-isolated fallback
-  (e.g., needed a specific outbound port the default blocklist
-  closes), add a `NETWORK_BLOCKLIST_EXCEPT+=(...)` entry or pin
-  `NETWORK_FILTER_MODE=open` for those runs. See
-  `docs/reference/network-filter.md` "Upgrade from v1.0" for the
-  rollout note.
+  `isolated` because the helper-probe was gated — the layer was
+  inert in practice. v1.1 ungates the probe AND ships an in-tree
+  pasta binary, so those same deployments will START enforcing real
+  `filtered` mode the moment v1.1 lands. If your CI / test runners
+  needed a specific outbound port the default blocklist closes, add
+  `NETWORK_BLOCKLIST_EXCEPT+=(<port>)` for the bare port or pin
+  `NETWORK_FILTER_MODE=open` for those runs.
 
-  **Phase A — shipped static `pasta` binary.** The repo ships
+  **Shipped static `pasta` binary.** The repo ships
   `tools/pasta/x86_64/pasta` (1.2 MiB, statically linked, runnable
   on glibc ≥ 2.17 hosts including Ubuntu 18.04 / RHEL 7 kernels).
   Source is the upstream passt project's official build endpoint at
   https://passt.top/builds/latest/x86_64/pasta. SHA256 is pinned in
   `tools/pasta/x86_64/SHA256SUMS`; license selection (BSD-3-Clause
   arm) and copyright provenance are documented in
-  `tools/pasta/x86_64/NOTICE` and `LICENSE-BSD-3-Clause`. Tarball
+  `tools/pasta/x86_64/NOTICE` + `LICENSE-BSD-3-Clause`. Tarball
   growth: ~1.2 MiB. `tools/pasta/fetch.sh` is rewritten to default
   to "download pre-built binary + verify SHA256"; source-build is
   opt-in via `PASTA_BUILD_FROM_SOURCE=1` for sites with strict
@@ -45,69 +44,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   shipped in v1.1 — operators on aarch64 use distro `passt` or
   source-build.
 
-  **Phase B — bwrap + pasta + nft integration.** In `filtered`
-  mode, `backends/bwrap.sh::backend_prepare` generates the nft
-  ruleset from `effective_network_blocklist` +
-  `effective_network_exception_list` to a tmpfile, then
-  `backend_exec` wraps the bwrap exec as
-  `pasta --foreground --quiet -- bash -c '<install nft + exec bwrap>'`.
-  pasta owns the netns (bwrap does NOT add `--unshare-net` in this
-  path — that would create a second empty netns and break the tap);
-  pasta provisions a tap interface forwarding to the host network +
-  proxies DNS to the host resolver, then the wrapper script runs
-  `nft -f` to install the per-entry blocklist inside the netns
-  *before* bwrap launches the workload.
+  **Composition in `backends/bwrap.sh`.** When `filtered` resolves,
+  `backend_prepare` calls `generate_pasta_port_exclusions` to
+  produce `-T ~N,~M,...` and `-U ~K,...` SPECs from
+  `effective_network_blocklist`; `backend_exec` exec's
+  `pasta --foreground --quiet -T <spec> -U <spec> -- bwrap [args]
+  -- cmd`. pasta owns the netns (bwrap does NOT add `--unshare-net`
+  in this path — that would create a second empty netns and break
+  pasta's tap), provisions a tap forwarding to the host network,
+  proxies DNS to the host resolver, AND gives the netns its own
+  empty loopback so any host MTA on `127.0.0.1` is structurally
+  unreachable.
 
-  **Phase C — helper-probe ungated.** `_resolve_network_helper` no
-  longer requires `NETWORK_FILTER_ENABLE_HELPER_PROBE=1`. Probe
-  order: PATH `pasta` → `tools/pasta/<arch>/pasta` → legacy
-  `tools/pasta/pasta` (one-release transitional path) → PATH
+  **Helper-probe ungated.** `_resolve_network_helper` no longer
+  requires `NETWORK_FILTER_ENABLE_HELPER_PROBE=1`. Probe order:
+  PATH `pasta` → `tools/pasta/<arch>/pasta` → legacy
+  `tools/pasta/pasta` (one-release transitional) → PATH
   `slirp4netns` (currently downgrades to isolated mode with a
-  warning — slirp4netns CLI shape differs and is reserved for a
-  follow-up). A second resolver `_resolve_nft_helper` probes for
-  `nft` on PATH; both must succeed for `filtered` to resolve.
+  warning; slirp4netns CLI shape differs and is follow-up work).
 
-  **Phase D — empirical test coverage.** `test.sh::11.4` is
-  extended with:
-  - nft ruleset generator unit tests: port / host:port / CIDR /
-    CIDR:port emission; wildcard hostname + `*` deny-all skipped
-    with stderr note (unenforceable at netfilter layer; v1.2 L7
-    scope); exception accept rules emitted before drop rules
-    (specificity-first ordering); unresolvable hostname skipped
-    with stderr note, ruleset still loads.
+  **Test coverage.** `test.sh::11.4` is extended with:
+  - pasta port-exclusion generator unit tests: bare-port /
+    universal-CIDR-port / loopback-host-port → `~N` emission;
+    hostname / wildcard / `*` skipped silently by default; verbose
+    notes when `NETWORK_FILTER_VERBOSE=1`; bare-port exception
+    lifts the corresponding `~N` exclusion.
   - Empirical `filtered`-mode integration (skips cleanly when
-    pasta or nft missing from the runner): port 25 must drop;
+    pasta missing from the runner): port 25 must drop;
     github.com:443 must remain reachable through the pasta tap.
-  - v1.0 test 2 ("filtered + stricter → isolated") is rewritten to
-    branch on runner capability — the legacy assertion holds on
-    runners without `nft`, but on a fully-equipped runner it now
-    asserts the v1.1 `filtered` happy path with non-empty helper +
-    nft paths.
+  - v1.0 test 2 (`filtered + stricter`) is rewritten to branch on
+    runner capability (`_test_has_pasta`) — legacy fallback
+    behaviour on no-pasta runners, v1.1 happy path on
+    fully-equipped runners.
+  - The "strict + unavailable-filtered → must exit" assertion is
+    moved from bwrap (which now resolves with the shipped pasta)
+    to landlock (deterministically unsupported on every runner).
 
-  **Phase E — firejail + landlock parity (deferred honestly).**
-  Firejail's `--netfilter` requires a private netns wired to a
-  host bridge (`--net=<iface>`); v1.1 does not auto-provision the
-  bridge, so firejail's `filtered`-mode capability remains "open
-  and isolated only" — the resolver falls back per policy with a
-  more specific error message naming the bridge dependency.
-  Landlock has no netns, unchanged from v1.0.
+  **Firejail + landlock parity (unchanged from v1.0).** Firejail's
+  `--netfilter` requires a private netns wired to a host bridge
+  (`--net=<iface>`); v1.1 does not auto-provision the bridge.
+  Firejail `filtered` remains "open and isolated only"; the
+  resolver's error message names the bridge dependency. Landlock
+  has no netns, unchanged.
 
-  **Enforcement limits — honest acknowledgment (v1.2 scope).**
-  nftables cannot inspect SNI on TLS-wrapped traffic. The
-  generator therefore skips:
-  - Wildcard hostname entries (`*.cloudflare-dns.com`) — emits a
-    stderr note; the bare-port-853 (DoT) drop closes the most
-    common DoH/DoT evasion regardless.
-  - The deny-all `*` pattern — would break DNS resolution
-    through pasta's proxy; operators wanting deny-all should use
-    `NETWORK_FILTER_MODE=isolated` directly.
+  **Enforcement scope — what v1.1 covers, what it doesn't, why
+  that's the right shape.** pasta `-T/-U` filters by destination
+  port at the netns boundary. It does NOT inspect destination
+  hostnames or CIDRs — that's L4-and-up surface, properly handled
+  by an SNI-aware proxy or DNS layer (v1.2 scope; R3 in the
+  network-survey, deferred per settylab/dotto-nexus#117).
 
-  Hostname entries (e.g., `api.mailgun.net`) are resolved to IPs
-  at session-start and the resulting IP set is blocked; this is
-  best-effort and may drift if upstream DNS changes mid-session.
-  The v1.2 scope (R3 in the network-survey, deferred — see
-  `settylab/dotto-nexus#117`) covers a small L7 proxy for
-  SNI-aware filtering of the wildcard surface.
+  - **Enforced**: universal bare-port closures (`25`/`465`/`587`/
+    `2525` SMTP submission; `853` DoT; `23`/`79`/`113`/`512`/
+    `513`/`514` legacy r-services). The identity-hijack threat
+    that motivated this feature is fully closed.
+  - **Enforced (as port-only)**: loopback `127.0.0.1:N` (also
+    structurally unreachable via pasta's empty loopback);
+    universal `0.0.0.0/0:N`; site CIDR `10.0.0.0/8:N` (universal
+    port portion only — CIDR-specificity is dropped at this
+    layer).
+  - **Silently skipped** (notes emit only under
+    `NETWORK_FILTER_VERBOSE=1`): hostname entries
+    (`api.mailgun.net`, `hooks.slack.com`, etc.); wildcard
+    hostnames (`*.cloudflare-dns.com`); the `*` deny-all pattern
+    (would break DNS through pasta's proxy — use
+    `NETWORK_FILTER_MODE=isolated` for hard deny-all).
+
+  **Why no nftables?** An earlier v1.1 draft used a generated
+  nftables ruleset inside the netns to express CIDR + resolved-IP
+  rules. The simpler design — pasta `-T/-U` port exclusions — was
+  picked because (a) the identity-hijack threat is closed by
+  port-class closure alone, (b) hostname-resolution-to-IPs was
+  already best-effort under nft (IPs rotate; v1.2 L7 work is the
+  correct fix), and (c) nft is one runtime dependency we don't
+  need to add for the threat surface we cover. The honest
+  enforcement scope is the same either way.
 
 - **Network filter — optional default-deny outbound network layer
   with strict-mode enforcement.** Closes the local-MTA identity-hijack
