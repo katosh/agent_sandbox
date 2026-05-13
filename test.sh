@@ -32,17 +32,25 @@ PROJECT_DIR=""
 export SANDBOX_CONF="$SCRIPT_DIR/sandbox.conf"
 export SANDBOX_QUIET=true
 
-# The shipped sandbox.conf defaults to NETWORK_FILTER_FALLBACK=stricter,
-# which is correct for production but refuses to launch on the landlock
-# backend (no mount/network namespace means no mode is stricter than
-# `open` available, so stricter has nowhere to fall back). The test
-# suite exercises every backend including landlock; override the
-# fallback policy to `open` here so the suite can boot regardless of
-# backend. Backends that support stricter modes (bwrap, firejail)
-# still pick them: with policy=open the resolver tries stricter
-# alternatives first and only degrades to host network as the last
-# resort. Section 11.4's resolver tests set their own NETWORK_FILTER_*
-# env vars in subshells, so they remain untouched by this default.
+# The shipped sandbox.conf defaults to NETWORK_FILTER_MODE=filtered +
+# NETWORK_FILTER_FALLBACK=stricter, which is correct for production
+# but the test suite (which is NOT exercising the network-filter
+# layer in most of its sections) needs an open network so existing
+# assertions about Slurm reachability, MTA-credential warnings, etc.
+# still hold. Under v1.0 the helper-probe was gated, so default
+# filtered+stricter fell back to isolated and (with the test
+# harness's FALLBACK=open override) ended up as `open` — i.e., the
+# whole suite ran with the network layer effectively disabled. v1.1
+# ungates the probe AND ships pasta in-tree, so filtered actually
+# resolves on every CI runner — and EVERY sandbox call would
+# suddenly run through pasta's netns, which breaks tests that
+# depend on host-network reachability (Slurm controller, etc.).
+#
+# Solution: pin MODE=open at the harness top. The network-filter-
+# specific tests in section 11.4 override this via conf.d/*.conf so
+# they still exercise the real filtered/isolated paths under their
+# own assertions.
+export NETWORK_FILTER_MODE="${NETWORK_FILTER_MODE:-open}"
 export NETWORK_FILTER_FALLBACK="${NETWORK_FILTER_FALLBACK:-open}"
 
 VERBOSE=false
