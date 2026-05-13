@@ -786,10 +786,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#helper-binary-pasta" class="md-nav__link">
+  <a href="#helper-sourcing-pasta-no-nft" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Helper binary (pasta)
+        Helper sourcing (pasta — no nft)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#real-world-recipe-verify-filtered-mode-is-enforcing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real-world recipe — verify filtered mode is enforcing
       
     </span>
   </a>
@@ -809,10 +820,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#filtered-fell-back-to-isolated-on-startup" class="md-nav__link">
+  <a href="#filtered-fell-back-to-isolated-on-startup-v11" class="md-nav__link">
     <span class="md-ellipsis">
       
-        "filtered fell back to isolated" on startup
+        "filtered fell back to isolated" on startup (v1.1)
       
     </span>
   </a>
@@ -842,10 +853,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#pre-existing-tests-fail-with-enetunreach" class="md-nav__link">
+  <a href="#pre-existing-tests-fail-with-enetunreach-or-per-port-blocks" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Pre-existing tests fail with "ENETUNREACH"
+        Pre-existing tests fail with "ENETUNREACH" or per-port blocks
       
     </span>
   </a>
@@ -1304,10 +1315,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#helper-binary-pasta" class="md-nav__link">
+  <a href="#helper-sourcing-pasta-no-nft" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Helper binary (pasta)
+        Helper sourcing (pasta — no nft)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#real-world-recipe-verify-filtered-mode-is-enforcing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real-world recipe — verify filtered mode is enforcing
       
     </span>
   </a>
@@ -1327,10 +1349,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#filtered-fell-back-to-isolated-on-startup" class="md-nav__link">
+  <a href="#filtered-fell-back-to-isolated-on-startup-v11" class="md-nav__link">
     <span class="md-ellipsis">
       
-        "filtered fell back to isolated" on startup
+        "filtered fell back to isolated" on startup (v1.1)
       
     </span>
   </a>
@@ -1360,10 +1382,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#pre-existing-tests-fail-with-enetunreach" class="md-nav__link">
+  <a href="#pre-existing-tests-fail-with-enetunreach-or-per-port-blocks" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Pre-existing tests fail with "ENETUNREACH"
+        Pre-existing tests fail with "ENETUNREACH" or per-port blocks
       
     </span>
   </a>
@@ -1488,39 +1510,87 @@ TCP path itself at a layer the agent cannot escape.</p>
 </tr>
 </tbody>
 </table>
-<p><strong>v1.0 implementation status.</strong> The configuration surface, mode
-resolution, and fallback machinery ship in v1.0. The bwrap +
-pasta + <code>nft</code> (nftables — the Linux kernel packet-filter framework,
-successor to iptables) chain that delivers a real <code>filtered</code> mode is
-reserved for v1.1 — the helper-detection function in <code>sandbox-lib.sh</code>
-(<code>_resolve_network_helper</code>) is gated by <code>NETWORK_FILTER_ENABLE_HELPER_PROBE=1</code>
-and returns "no helper" by default in v1.0. The practical effect
-on v1.0 deployments:</p>
-<ul>
-<li><code>NETWORK_FILTER_MODE=open</code> — unchanged.</li>
-<li><code>NETWORK_FILTER_MODE=filtered</code> — falls back to <code>isolated</code> per the
-  default <code>stricter</code> policy. Loud startup warning names every fix
-  path.</li>
-<li><code>NETWORK_FILTER_MODE=isolated</code> — works as documented; full
-  network kill via <code>bwrap --unshare-net</code> / <code>firejail --net=none</code>.</li>
-</ul>
-<p>When v1.1 ships the integration, deployments running with <code>filtered +
-stricter</code> will silently start using real filtered mode the moment
-the helper is on PATH (or <code>tools/pasta/pasta</code> is installed via
-<code>tools/pasta/fetch.sh</code>). No config change is required to flip over.</p>
-<p>The default blocklist already enumerates the full identity-bound
-exfil surface (mail submission ports, transactional-email HTTPS
-APIs, webhook-as-mail surfaces, anonymous file-drop endpoints,
-public paste services, DoH resolvers (DoH = DNS-over-HTTPS, which
-bypasses standard DNS resolver pinning by tunnelling lookups over
-443) — see "Default blocklist" below for the full list with one-line
-rationales). Under v1.0 these
-entries describe the policy table only — the resolver still computes
-them via <code>effective_network_blocklist</code>, the test suite asserts they
-are present, but the helper that actually enforces them per-entry
-is gated until v1.1. The v1.0 <code>isolated</code>-fallback path closes the
-threat by stricter means (full network kill) rather than per-entry
-enforcement.</p>
+<p><strong>Default state (v1.1).</strong> When <code>pasta</code> is available on the host,
+<code>NETWORK_FILTER_MODE=filtered</code> delivers port-level outbound
+enforcement: pasta provisions a netns with a tap interface
+forwarding to the host network and a private (empty) loopback, and
+the bwrap workload runs inside that netns. The port-level blocklist
+is enforced at pasta's own outbound boundary via <code>-T ~N</code> (TCP) and
+<code>-U ~K</code> (UDP) exclusion flags generated from
+<code>effective_network_blocklist</code>. <strong>No nftables / iptables dependency.</strong></p>
+<table>
+<thead>
+<tr>
+<th><code>NETWORK_FILTER_MODE</code></th>
+<th>What happens (v1.1)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>open</code></td>
+<td>shares host network (legacy behaviour; layer disabled)</td>
+</tr>
+<tr>
+<td><code>filtered</code></td>
+<td>bwrap inside a pasta netns with <code>-T/-U</code> port exclusions enforcing the universal port floor (SMTP submission 24/25/465/587/2525, DoT 853, telnet/finger/rsh/rexec/rsyslog) plus any operator-added bare-port or universal-CIDR-port entries. Falls back per <code>NETWORK_FILTER_FALLBACK</code> when pasta is unavailable.</td>
+</tr>
+<tr>
+<td><code>isolated</code></td>
+<td>full network kill via <code>bwrap --unshare-net</code> / <code>firejail --net=none</code></td>
+</tr>
+</tbody>
+</table>
+<p>agent-sandbox ships a verified static <code>pasta</code> binary at
+<code>tools/pasta/&lt;arch&gt;/pasta</code> (x86_64 in v1.1); on Linux hosts this is
+the only runtime requirement for <code>filtered</code> mode. See "Helper
+sourcing" below for the full probe order and alternative install
+paths.</p>
+<p><strong>Upgrade from v1.0 (enforcement flip).</strong> v1.0 shipped the
+configuration surface + fallback machinery and gated the
+helper-probe behind <code>NETWORK_FILTER_ENABLE_HELPER_PROBE=1</code> — its
+default <code>filtered + stricter</code> fell back silently to <code>isolated</code>,
+so the layer was inert in practice. v1.1 ungates the probe.
+Deployments running the v1.0 defaults will START enforcing real
+<code>filtered</code> mode the moment v1.1 lands on a host with <code>pasta</code>
+available (and agent-sandbox ships pasta in-tree, so the
+"available" condition is almost always met).</p>
+<p>If your CI / test harness depended on the v1.0 silent-isolated
+fallback (e.g., needed an outbound port the default blocklist
+closes), either add <code>NETWORK_BLOCKLIST_EXCEPT+=(&lt;port&gt;)</code> for the
+specific port or pin <code>NETWORK_FILTER_MODE=open</code> for those runs.</p>
+<p><strong>Enforcement scope — what pasta <code>-T/-U</code> covers, and what it
+doesn't.</strong> pasta's port-exclusion syntax filters by destination
+port at the netns boundary. It does NOT inspect destination
+hostnames or CIDRs at this layer (that's L4-and-up, requiring SNI
+inspection or a transparent proxy).</p>
+<p>What v1.1 enforces:
+- Universal bare-port closures: <code>25</code>, <code>465</code>, <code>587</code>, <code>2525</code> (SMTP
+  submission class), <code>853</code> (DoT), <code>23</code>/<code>79</code>/<code>113</code>/<code>512</code>/<code>513</code>/<code>514</code>
+  (telnet/finger/ident/rexec/rlogin/rsh).
+- Loopback host:port entries: <code>127.0.0.1:25</code> etc. — already
+  structurally unreachable because pasta gives the netns its own
+  empty loopback, <em>and</em> the universal port closure double-covers.
+- Universal <code>0.0.0.0/0:N</code> entries — same port-level outcome.
+- Bare-port <code>NETWORK_BLOCKLIST_EXCEPT</code> carve-outs lift the
+  corresponding port closure.</p>
+<p>What v1.1 does NOT enforce (skipped silently; emit notes only when
+<code>NETWORK_FILTER_VERBOSE=1</code>):
+- Hostname entries (<code>api.mailgun.net</code>, <code>hooks.slack.com</code>, etc.) —
+  port-level layer can't resolve hostnames-to-IPs at runtime, and
+  even if it did the IPs rotate.
+- Wildcard hostnames (<code>*.cloudflare-dns.com</code>) — needs SNI
+  inspection.
+- The <code>*</code> deny-all pattern — would break DNS resolution through
+  pasta's proxy; operators wanting deny-all should pin
+  <code>NETWORK_FILTER_MODE=isolated</code> directly.
+- Site CIDR with non-universal port (e.g. <code>10.0.0.0/8:443</code>) —
+  enforced as universal-port closure (port-only); the
+  CIDR-specificity is dropped.</p>
+<p>The identity-hijack threat that motivated this feature (local-MTA
+abuse via SMTP submission) is fully closed by the universal
+port-class closure. The hostname-level entries in the default
+blocklist are tracked for v1.2 L7-proxy work (SNI-aware filtering;
+R3 in survey, deferred — see settylab/dotto-nexus#117).</p>
 <h2 id="fallback-policies">Fallback policies<a class="headerlink" href="#fallback-policies" title="Permanent link">&para;</a></h2>
 <p><code>NETWORK_FILTER_FALLBACK</code> (default: <code>stricter</code>):</p>
 <table>
@@ -1545,7 +1615,7 @@ enforcement.</p>
 </tr>
 </tbody>
 </table>
-<p>Per-backend support, v1.0:</p>
+<p>Per-backend support, v1.1:</p>
 <table>
 <thead>
 <tr>
@@ -1559,13 +1629,13 @@ enforcement.</p>
 <tr>
 <td><strong>bwrap</strong></td>
 <td>✓</td>
-<td>helper-probe gated (v1.1 ships the integration); v1.0 falls back per policy</td>
+<td>✓ when <code>pasta</code> is available (shipped in-tree at <code>tools/pasta/&lt;arch&gt;/pasta</code>, or via distro <code>passt</code> package); otherwise falls back per policy</td>
 <td>✓ (<code>--unshare-net</code>)</td>
 </tr>
 <tr>
 <td><strong>firejail</strong></td>
 <td>✓</td>
-<td>gated for v1.1 (<code>--netfilter</code> with generated iptables ruleset)</td>
+<td>✗ (needs a site-provisioned bridge via <code>--net=&lt;iface&gt;</code> + <code>--netfilter</code>; v1.1 does not auto-provision the bridge — use bwrap or accept the fallback)</td>
 <td>✓ (<code>--net=none</code>)</td>
 </tr>
 <tr>
@@ -1721,9 +1791,7 @@ mode than requested. If you want <code>filtered</code> but want to accept
 </span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>effective_network_exception_list<span class="w">  </span><span class="c1"># allowed exceptions (admin + user, post-strip)</span>
 </span></code></pre></div>
 <h2 id="precedence-model">Precedence model<a class="headerlink" href="#precedence-model" title="Permanent link">&para;</a></h2>
-<p>Policy resolution under v1.1 enforcement (gated for v1.0; v1.0 ships
-the policy table but the per-connection evaluation is the v1.1
-helper's job):</p>
+<p>Policy resolution under v1.1 enforcement (bwrap + pasta + nft):</p>
 <p><strong>Specificity (most → least specific):</strong></p>
 <ol>
 <li>exact <code>host:port</code></li>
@@ -1902,42 +1970,105 @@ class:</p>
 <p>So the practical defense is the network-layer block of the DoH
 hostnames + DoT port (already in the floor), not an in-sandbox
 resolver pin.</p>
-<h2 id="helper-binary-pasta">Helper binary (pasta)<a class="headerlink" href="#helper-binary-pasta" title="Permanent link">&para;</a></h2>
-<p><code>pasta</code> is the userspace TCP/IP stack from the
-<a href="https://passt.top/">passt</a> project (BSD-3-Clause arm of the dual
-license). When v1.1 wires the integration, <code>pasta</code> provisions a tap
-device inside the sandbox's network namespace, forwards general
-outbound traffic to the host's network, and pairs with <code>nft</code> rules
-inside the netns to enforce the blocklist.</p>
-<p>Install paths, in order of preference:</p>
+<h2 id="helper-sourcing-pasta-no-nft">Helper sourcing (pasta — no nft)<a class="headerlink" href="#helper-sourcing-pasta-no-nft" title="Permanent link">&para;</a></h2>
+<p><code>filtered</code> mode on bwrap needs only one helper:</p>
+<ul>
+<li><strong><code>pasta</code></strong> — userspace TCP/IP stack from the
+  <a href="https://passt.top/">passt</a> project (BSD-3-Clause arm of the dual
+  license). Provisions a tap interface inside the sandbox's netns
+  and forwards general outbound traffic to the host's network. Also
+  proxies DNS to the host resolver by default (so <code>getent</code> / <code>pip</code> /
+  <code>git clone</code> keep working) and gives the netns its own empty
+  loopback (so any host MTA on <code>127.0.0.1</code> is structurally
+  unreachable). The blocklist is enforced at pasta's own outbound
+  forwarding boundary via the <code>-T ~N</code> (TCP) and <code>-U ~K</code> (UDP)
+  exclusion flags — no <code>iptables</code> / <code>nft</code> dependency.</li>
+</ul>
+<p>agent-sandbox auto-detects <code>pasta</code> at session-start. Probe order:</p>
 <ol>
-<li><strong>System package</strong>: <code>apt install passt</code> (Ubuntu 22.10+, Debian
-   Bookworm+), <code>dnf install passt</code> (Fedora 36+, RHEL 9+),
-   <code>brew install passt</code>.</li>
-<li><strong>Shipped fetch</strong>: <code>./tools/pasta/fetch.sh</code> — downloads the pinned
-   upstream source tarball, builds a static binary for the host
-   architecture, installs at <code>tools/pasta/pasta</code>.</li>
-<li><strong>lmod (site-specific)</strong>: <code>SANDBOX_MODULES+=("passt/&lt;version&gt;")</code>
-   when the site provides a module. Sites with an EasyBuild pipeline
-   can request the upstream <code>passt</code> recipe; the easyconfig is a small
-   addition (the binary has no third-party deps).</li>
+<li><strong><code>command -v pasta</code></strong> — distro / Homebrew install. Takes
+   precedence; typically newer than the in-tree pin.</li>
+<li><code>apt install passt</code> (Ubuntu 22.10+, Debian Bookworm+)</li>
+<li><code>dnf install passt</code> (Fedora 36+, RHEL 9+)</li>
+<li><code>brew install passt</code> (Linux Homebrew)</li>
+<li><strong><code>tools/pasta/&lt;arch&gt;/pasta</code></strong> — the static binary shipped with
+   agent-sandbox (x86_64 in v1.1). SHA256-pinned; license + provenance
+   in <code>tools/pasta/&lt;arch&gt;/NOTICE</code>. Refresh with
+   <code>./tools/pasta/fetch.sh</code>; source-build via
+   <code>PASTA_BUILD_FROM_SOURCE=1 ./tools/pasta/fetch.sh</code> for sites with
+   binary-redistribution policy constraints.</li>
+<li><strong>lmod (site-specific)</strong> — when the site provides a <code>passt</code>
+   module, <code>SANDBOX_MODULES+=("passt/&lt;version&gt;")</code> puts it on PATH.
+   Fred Hutch SciComp tracks a <code>passt</code> module request at
+   <a href="https://github.com/FredHutch/easybuild-life-sciences/issues/578">FredHutch/easybuild-life-sciences#578</a>
+   (eventual upgrade path; until then the shipped binary covers FH).</li>
+<li><strong><code>command -v slirp4netns</code></strong> — older, slower fallback. v1.1
+   reserves slirp4netns support and currently downgrades to isolated
+   mode with a warning when only slirp4netns is present.</li>
 </ol>
-<p>The helper-detection function probes in PATH-first order:
-distro/Homebrew <code>pasta</code>, then the shipped binary, then <code>slirp4netns</code>
-as a fallback (older, slower, GPL-2.0+ source-offer obligation).</p>
+<p>If pasta is missing, the resolver falls back per
+<code>NETWORK_FILTER_FALLBACK</code> (default <code>stricter</code> → <code>isolated</code>; loud
+warning naming the gap).</p>
+<h2 id="real-world-recipe-verify-filtered-mode-is-enforcing">Real-world recipe — verify filtered mode is enforcing<a class="headerlink" href="#real-world-recipe-verify-filtered-mode-is-enforcing" title="Permanent link">&para;</a></h2>
+<p>After deploying v1.1, an operator can confirm <code>filtered</code> mode is
+actually enforcing inside their sandbox with a handful of one-liners.
+Run each inside a sandbox session:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># (1) DNS + general egress: should resolve + reach github.com.</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>getent<span class="w"> </span>hosts<span class="w"> </span>github.com<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span>curl<span class="w"> </span>-fsS<span class="w"> </span>--max-time<span class="w"> </span><span class="m">5</span><span class="w"> </span>-o<span class="w"> </span>/dev/null<span class="w"> </span>-w<span class="w"> </span><span class="s1">&#39;%{http_code}\n&#39;</span><span class="w"> </span>https://github.com/
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Expected: A/AAAA record + &quot;200&quot; or &quot;301&quot;.</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="c1"># (2) SMTP submission: must fail. The universal port-25 closure plus</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="c1"># pasta&#39;s empty loopback both block the path.</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/127.0.0.1/25<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — SMTP closed (expected)&quot;</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="c1"># Expected: &quot;BLOCKED&quot; (Connection refused / ENETUNREACH).</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="c1"># (3) DoT (DNS-over-TLS) evasion port: must fail. Universal port-853</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="c1"># closure.</span>
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/1.1.1.1/853<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — DoT closed (expected)&quot;</span>
+</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="c1"># Expected: &quot;BLOCKED&quot;.</span>
+</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>
+</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a><span class="c1"># (4) Telnet (legacy r-services): must fail. Port 23 closure.</span>
+</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/127.0.0.1/23<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — telnet closed (expected)&quot;</span>
+</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a><span class="c1"># Expected: &quot;BLOCKED&quot;.</span>
+</span></code></pre></div>
+<p>Note that v1.1 enforces <em>port-level</em> blocks at pasta's boundary,
+not hostname-level blocks. A request like
+<code>curl https://hooks.slack.com/</code> (a hostname entry in the default
+blocklist) will <strong>not</strong> fail in v1.1 — hostname-level filtering is
+v1.2 L7-proxy scope. Plan defense-in-depth accordingly: the
+universal port-class closure shuts the identity-hijack threat (the
+motivating concern); hostname surfaces are best handled at the
+egress proxy or DNS layer.</p>
+<p>If (1) fails: pasta is not on PATH and the in-tree binary is
+missing or not executable. Re-run with <code>NETWORK_FILTER_VERBOSE=1</code>
+to surface the helper-probe trail.</p>
+<p>If (2)/(3)/(4) succeed: <code>filtered</code> did not resolve. Check the
+startup output for the fallback-warning (most likely <code>filtered →
+isolated</code> because pasta is missing, or <code>filtered → open</code> under a
+<code>NETWORK_FILTER_FALLBACK=open</code> policy).</p>
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
-<h3 id="filtered-fell-back-to-isolated-on-startup">"filtered fell back to isolated" on startup<a class="headerlink" href="#filtered-fell-back-to-isolated-on-startup" title="Permanent link">&para;</a></h3>
-<p>The most common cause in v1.0: the bwrap+pasta integration is gated.
-The fix-path enumeration printed by the sandbox names the choices —
-the practical ones are:</p>
+<h3 id="filtered-fell-back-to-isolated-on-startup-v11">"filtered fell back to isolated" on startup (v1.1)<a class="headerlink" href="#filtered-fell-back-to-isolated-on-startup-v11" title="Permanent link">&para;</a></h3>
+<p><code>filtered</code> requires <code>pasta</code>. Common causes:</p>
+<ul>
+<li><code>pasta</code> not detected: agent-sandbox ships <code>tools/pasta/&lt;arch&gt;/pasta</code>
+  by default. If you removed it (or are on an unsupported arch like
+  aarch64 in v1.1), install via distro package (<code>apt install passt</code> /
+  <code>dnf install passt</code> / <code>brew install passt</code>) or run
+  <code>tools/pasta/fetch.sh</code> to refresh.</li>
+<li>Custom <code>PATH</code>: the probe uses <code>command -v pasta</code> first; if your
+  shell prunes <code>PATH</code> aggressively, ensure <code>/usr/bin</code> (or wherever
+  your distro ships <code>pasta</code>) is reachable, or rely on the shipped
+  in-tree binary which is path-independent.</li>
+</ul>
+<p>Fallback alternatives, all valid:</p>
 <ul>
 <li>Accept <code>isolated</code> mode (no network at all): pin
-  <code>NETWORK_FILTER_MODE=isolated</code> so the fallback is silent and
-  intentional. The threat is still closed.</li>
+  <code>NETWORK_FILTER_MODE=isolated</code> — the fallback is silent and
+  intentional, and the identity-hijack threat is still closed.</li>
 <li>Accept <code>open</code> mode (no isolation): pin <code>NETWORK_FILTER_MODE=open</code>.
   <strong>Re-opens the threat.</strong> Use only when host-side mail policy is
-  already locked down.</li>
-<li>Wait for v1.1: the integration will ship without a config change.</li>
+  already locked down at the MTA layer.</li>
 </ul>
 <h3 id="no-stricter-mode-available-failure-on-landlock">"no stricter mode available" failure on landlock<a class="headerlink" href="#no-stricter-mode-available-failure-on-landlock" title="Permanent link">&para;</a></h3>
 <p>Landlock has neither a mount namespace nor a network namespace, so it
@@ -1952,22 +2083,32 @@ cannot deliver <code>filtered</code> or <code>isolated</code>. Choices:</p>
 and does NOT speak SMTP or any other network protocol. It continues
 to function in all three modes including <code>isolated</code>. No carve-out
 required at the configuration level.</p>
-<h3 id="pre-existing-tests-fail-with-enetunreach">Pre-existing tests fail with "ENETUNREACH"<a class="headerlink" href="#pre-existing-tests-fail-with-enetunreach" title="Permanent link">&para;</a></h3>
-<p><code>NETWORK_FILTER_MODE=filtered</code> (default) falls back to <code>isolated</code> in
-v1.0, which kills the sandbox's network. CI / local test runs that
-expect network access need either <code>NETWORK_FILTER_MODE=open</code> for the
-duration of the test or a host-side <code>pasta</code> install plus the v1.1
-integration. The test suite gates its network-dependent sections on
-the resolved mode (see <code>test.sh</code> section "Network filter").</p>
+<h3 id="pre-existing-tests-fail-with-enetunreach-or-per-port-blocks">Pre-existing tests fail with "ENETUNREACH" or per-port blocks<a class="headerlink" href="#pre-existing-tests-fail-with-enetunreach-or-per-port-blocks" title="Permanent link">&para;</a></h3>
+<p>In v1.1, when <code>pasta</code> is present on the runner,
+<code>NETWORK_FILTER_MODE=filtered</code> (default) enforces the universal
+port floor — ports 24/25/465/587/2525 (SMTP submission class), 853
+(DoT), 23/79/113/512/513/514 (legacy r-services). CI / local test
+runs that need ports the default blocklist closes can either:</p>
+<ul>
+<li>Pin <code>NETWORK_FILTER_MODE=open</code> for the duration of the test (often
+  the right call for CI runners on isolated infrastructure).</li>
+<li>Add <code>NETWORK_BLOCKLIST_EXCEPT+=(&lt;port&gt;)</code> for the specific bare
+  port the test legitimately needs (host:port exceptions are not
+  carved at the pasta layer — port-level enforcement is universal).</li>
+<li>Pin <code>NETWORK_FILTER_MODE=isolated</code> for tests that explicitly
+  exercise the no-network path.</li>
+</ul>
+<p>The test suite already gates its network-dependent sections on the
+resolved mode (see <code>test.sh</code> section 11.4 "Network filter").</p>
 <h2 id="admin-enforcement-sandbox-adminconf">Admin enforcement (sandbox-admin.conf)<a class="headerlink" href="#admin-enforcement-sandbox-adminconf" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># /etc/agent-sandbox/sandbox-admin.conf</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="nv">NETWORK_FILTER_MODE</span><span class="o">=</span><span class="s2">&quot;filtered&quot;</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="nv">NETWORK_FILTER_FALLBACK</span><span class="o">=</span><span class="s2">&quot;strict&quot;</span><span class="w">      </span><span class="c1"># admins typically pin strict</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">=(</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span><span class="s2">&quot;hooks.slack.com&quot;</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">    </span><span class="s2">&quot;api.mailgun.net&quot;</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">    </span><span class="c1"># … site-specific must-blocks</span>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="o">)</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># /etc/agent-sandbox/sandbox-admin.conf</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="nv">NETWORK_FILTER_MODE</span><span class="o">=</span><span class="s2">&quot;filtered&quot;</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="nv">NETWORK_FILTER_FALLBACK</span><span class="o">=</span><span class="s2">&quot;strict&quot;</span><span class="w">      </span><span class="c1"># admins typically pin strict</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">=(</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="s2">&quot;hooks.slack.com&quot;</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">    </span><span class="s2">&quot;api.mailgun.net&quot;</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">    </span><span class="c1"># … site-specific must-blocks</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="o">)</span>
 </span></code></pre></div>
 <p>User config can only request:</p>
 <ul>
