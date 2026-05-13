@@ -1400,9 +1400,9 @@ _resolve_network_helper() {
 #
 # Side effects (set in caller's scope; this function is invoked from
 # _prepare_network_helper_probe which is NOT in a subshell):
-#   _NETWORK_HELPER_PROBE_RESULT   — "ok" | "degraded" | "failed"
-#   _NETWORK_HELPER_DEGRADED_REASON — set on degraded/failed; consumed
-#                                     by resolve_network_filter_mode's
+#   _NETWORK_HELPER_PROBE_RESULT   — "ok" | "degraded"
+#   _NETWORK_HELPER_DEGRADED_REASON — set on degraded; consumed by
+#                                     resolve_network_filter_mode's
 #                                     `_why` switch.
 _pasta_can_forward_outbound() {
     local _pasta="$1"
@@ -1415,18 +1415,14 @@ _pasta_can_forward_outbound() {
     # pasta still prints the SO_BINDTODEVICE degradation banner — it's
     # a critical fall-back notice, not a verbosity-gated message. Cap
     # runtime with a short timeout in case pasta hangs on an exotic
-    # host config; the happy path exits in ~50ms.
-    local _stderr _rc
+    # host config; the happy path exits in ~50ms. `|| true` is load-
+    # bearing under `set -e` — we only care about the stderr text, not
+    # pasta's exit code.
+    local _stderr
     _stderr="$(timeout 5 "$_pasta" --foreground --quiet -- true 2>&1 1>/dev/null)" || true
-    _rc=$?
     if [[ "$_stderr" == *"forwarding only 127.0.0.1"* ]]; then
         _NETWORK_HELPER_PROBE_RESULT="degraded"
         _NETWORK_HELPER_DEGRADED_REASON="pasta started but degraded to loopback-only forwarding (kernel SO_BINDTODEVICE unavailable to unprivileged users on this host); filtered mode would silently leave the agent with no outbound. Workarounds: (a) admin runs 'setcap cap_net_raw+ep $_pasta' on a system-wide pasta binary; (b) upgrade to kernel >= 5.7 with the SO_BINDTODEVICE relaxation; (c) pin NETWORK_FILTER_MODE=open or 'isolated' to make the choice explicit."
-        return 1
-    fi
-    if [[ "$_rc" -ne 0 ]]; then
-        _NETWORK_HELPER_PROBE_RESULT="failed"
-        _NETWORK_HELPER_DEGRADED_REASON="pasta probe exited with code $_rc (stderr: ${_stderr:-<empty>}); filtered mode is not safe to declare as deliverable on this host."
         return 1
     fi
     _NETWORK_HELPER_PROBE_RESULT="ok"
@@ -1434,9 +1430,9 @@ _pasta_can_forward_outbound() {
 }
 
 # Resolve + probe the network helper in the caller's scope. Sets:
-#   _NETWORK_HELPER_PROBE_RESULT   — "ok" | "degraded" | "failed" | "none"
+#   _NETWORK_HELPER_PROBE_RESULT   — "ok" | "degraded" | "none"
 #   _NETWORK_HELPER_DEGRADED_REASON — human-readable line for `_why`
-#                                     (set only on degraded/failed)
+#                                     (set only on degraded)
 #   _NETWORK_HELPER_RESOLVED_PATH   — helper path on resolve success
 #
 # Backend-agnostic at the entry point because only bwrap currently uses

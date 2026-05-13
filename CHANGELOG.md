@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-12
+
 ### Fixed
+
+- **`_pasta_can_forward_outbound` dead-code cleanup.** The post-
+  cmdsubst `_rc=$?` was masked by the preceding `|| true` and so
+  always read `0`; the `_rc -ne 0` "failed" branch was unreachable.
+  Removed `_rc` entirely (the load-bearing signal is the
+  `forwarding only 127.0.0.1` stderr match, not pasta's exit code).
+  Behaviour is unchanged on the working path; only the dead branch
+  goes away. Side-effect contract narrows from
+  `"ok"|"degraded"|"failed"` to `"ok"|"degraded"`; no caller read
+  `"failed"`.
 
 - **`make install` now installs `tools/pasta/`.** v1.1 ships the
   pasta helper at `tools/pasta/<arch>/pasta` and
