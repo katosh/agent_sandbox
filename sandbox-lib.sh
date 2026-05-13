@@ -239,17 +239,42 @@ FILTER_PASSWD=true
 NETWORK_FILTER_MODE="filtered"
 NETWORK_FILTER_FALLBACK="stricter"
 
-# Sentinel for any future "always-on, not user-removable" floor
-# entries. Currently empty — the full identity-bound exfil + lateral-
-# movement surface lives in `sandbox.conf::NETWORK_BLOCKLIST` so an
-# operator editing their config sees the policy and can comment-out
-# entries that don't apply to their deployment. See
-# docs/reference/network-filter.md for the rationale + the full
-# enumerated default set.
+# Always-on, not-user-removable port floor. v1.1 moved the universally-
+# enforceable ports here (was previously sandbox.conf-only) so that an
+# operator upgrading from v1.0 — whose `~/.config/agent-sandbox/sandbox.conf`
+# predates v1.1 and never gets overwritten by `install.sh` — still picks
+# up the new enforcement on the first session after upgrade. Every entry
+# here is enforceable at pasta's `-T ~N` outbound port-exclusion layer.
 #
-# Pattern syntax (when entries do live here): host[:port] | CIDR[:port]
-# | port | "*.suffix" wildcard | "*" deny-all.
+# Sites that need to REMOVE an entry (e.g., a lab pipeline legitimately
+# needs port 25) must do it via `NETWORK_BLOCKLIST_EXCEPT+=("25")` in the
+# user config; admin policy can still pin the floor via its own
+# `NETWORK_BLOCKLIST` entries.
+#
+# Site-specific entries (campus mail-relay CIDR, LDAP/Kerberos/SMB ports
+# that depend on deployment topology) stay in sandbox.conf where the
+# operator can uncomment per site.
 _NETWORK_BLOCKLIST_DEFAULTS=(
+    # ── Mail submission ports (universal — closes the local-MTA
+    # identity-hijack class) ──
+    "24"          # LMTP (Local Mail Transport Protocol)
+    "25"          # SMTP, plaintext
+    "465"         # SMTPS (TLS-wrapped SMTP)
+    "587"         # submission (authenticated MUA → MSA)
+    "2525"        # alt-submission (Mailgun/SendGrid; ISP-25 dodge)
+
+    # ── DoT (DNS-over-TLS) — fixed port; DoH-over-443 cannot be
+    # enforced at this layer (see Known limitations) ──
+    "853"
+
+    # ── Legacy r-services & clear-text auth (universal — no modern
+    # workload needs these; each carries credential-leak baggage) ──
+    "23"          # telnet
+    "79"          # finger
+    "113"         # ident / auth
+    "512"         # rexec
+    "513"         # rlogin
+    "514"         # rsh / syslog
 )
 
 # User/admin block extensions. Format identical to the floor above.
@@ -1740,11 +1765,12 @@ _classify_pasta_port_entry() {
     local -n _tcp="$2" _udp="$3"
     local _port
 
-    # "*" deny-all — unenforceable; operators wanting deny-all should
-    # use isolated mode.
+    # "*" deny-all — pasta's `-T` exclusion syntax has no "exclude all
+    # ports" form short of an explicit allow-list; operators wanting
+    # deny-all should use isolated mode.
     if [[ "$_entry" == "*" ]]; then
         [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" ]] && \
-            echo "sandbox: NOTE — network-filter entry '*' cannot be enforced at pasta's port-level layer (would block DNS); use NETWORK_FILTER_MODE=isolated for deny-all semantics. Skipping." >&2
+            echo "sandbox: NOTE — network-filter entry '*' has no pasta -T form for deny-all (the syntax models exclusions, not allow-lists); use NETWORK_FILTER_MODE=isolated for deny-all semantics. Skipping." >&2
         return 0
     fi
 
@@ -1770,16 +1796,21 @@ _classify_pasta_port_entry() {
     # class) where universal closure is the desired threat model.
     if [[ "$_entry" =~ :([0-9]+)$ ]]; then
         _port="${BASH_REMATCH[1]}"
-        # Note the host-specificity drop only when NETWORK_FILTER_VERBOSE=1
-        # AND the host part is non-trivial (i.e., not a universal
-        # loopback / any-address pattern). The "loopback + universal"
-        # cases are structurally equivalent to a bare-port block here.
+        # Universal-host forms (loopback / 0.0.0.0/0 / [::]/0 / [::1])
+        # are semantically equivalent to a bare-port block — no
+        # warning needed. Any other host/CIDR specificity SILENTLY
+        # WIDENS to a universal port closure under pasta's
+        # exclusion syntax. That is a genuine footgun (an admin
+        # writing "10.0.0.0/8:443" expecting site-only closure
+        # instead closes 443 globally, breaking pip/git/HTTPS), so
+        # the warning is UNCONDITIONAL — not gated behind
+        # NETWORK_FILTER_VERBOSE.
         local _suppress_note=false
         case "$_entry" in
             0.0.0.0/0:*|127.0.0.1:*|"[::]/0:"*|"[::1]:"*) _suppress_note=true ;;
         esac
-        if [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" && "$_suppress_note" != "true" ]]; then
-            echo "sandbox: NOTE — entry '${_entry}' enforced as universal port-${_port} block (pasta does not filter by host/CIDR at this layer); use the v1.2 L7 proxy for host-specific port carve-outs." >&2
+        if [[ "$_suppress_note" != "true" ]]; then
+            echo "sandbox: WARNING — network-filter entry '${_entry}' silently widens to a UNIVERSAL port-${_port} block at pasta's port-exclusion layer (pasta does not filter by host/CIDR). This may close port ${_port} more broadly than intended (e.g., '10.0.0.0/8:443' closes 443 to every destination). For host-/CIDR-specific carve-outs use a managed egress proxy (see docs/reference/network-filter.md#known-limitations)." >&2
         fi
         _tcp["$_port"]=1
         _udp["$_port"]=1

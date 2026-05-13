@@ -24,6 +24,8 @@ For other install paths (Make, system-wide, no-Homebrew), see [Installation](adm
 
 ## Where to go from here
 
+- **[Configure](configure.md)** — every knob (`NETWORK_FILTER_MODE`, `HOME_ACCESS`, `BLOCKED_FILES`, …) with defaults, types, and admin-pin behaviour.
+- **[Network filter](reference/network-filter.md)** — outbound port-level enforcement. v1.1 enforces by default on bwrap (mail-submission + DoT + r-services ports closed in a pasta-provisioned netns); hostname-level egress is a [known limitation](reference/network-filter.md#known-limitations) with a managed-proxy mitigation.
 - **[Reference](reference/chaperon.md)** — chaperon (Slurm proxy), device passthrough, sandbox-vs-Apptainer, security model.
 - **[Admin](admin/install.md)** — installation, hardening, the runtime config guide that the in-sandbox agents themselves read.
 - **[GitHub](https://github.com/katosh/agent_sandbox)** — source, issues, releases.

@@ -4514,14 +4514,21 @@ if (
     # Test 1: defaults
     [[ "$NETWORK_FILTER_MODE" == "filtered" ]] || { echo "default mode wrong"; exit 1; }
     [[ "$NETWORK_FILTER_FALLBACK" == "stricter" ]] || { echo "default fallback wrong"; exit 1; }
-    # _NETWORK_BLOCKLIST_DEFAULTS is now empty (sentinel); the floor
-    # lives in the shipped sandbox.conf so an operator editing their
-    # config sees the policy table directly. Load the shipped
-    # sandbox.conf to populate NETWORK_BLOCKLIST for the floor checks
-    # below.
-    [[ "${#_NETWORK_BLOCKLIST_DEFAULTS[@]}" -eq 0 ]] || { echo "lib floor sentinel non-empty"; exit 1; }
+    # v1.1: _NETWORK_BLOCKLIST_DEFAULTS holds the always-on universal
+    # port floor (mail submission + DoT + r-services). An operator
+    # upgrading from v1.0 — whose user sandbox.conf is never
+    # overwritten by install.sh — still picks up enforcement from
+    # this lib-side floor on first session after upgrade.
+    [[ "${#_NETWORK_BLOCKLIST_DEFAULTS[@]}" -ge 12 ]] || { echo "lib floor too short (#=${#_NETWORK_BLOCKLIST_DEFAULTS[@]}); should hold the universal port floor"; exit 1; }
+    # The mail-submission and DoT ports must be in the lib floor.
+    printf '%s\n' "${_NETWORK_BLOCKLIST_DEFAULTS[@]}" | grep -q "^25$" || { echo "lib floor missing port 25"; exit 1; }
+    printf '%s\n' "${_NETWORK_BLOCKLIST_DEFAULTS[@]}" | grep -q "^853$" || { echo "lib floor missing port 853 (DoT)"; exit 1; }
+    printf '%s\n' "${_NETWORK_BLOCKLIST_DEFAULTS[@]}" | grep -q "^23$" || { echo "lib floor missing port 23 (telnet)"; exit 1; }
     _load_untrusted_config "$SCRIPT_DIR/sandbox.conf" "Test default sandbox.conf load"
-    [[ "${#NETWORK_BLOCKLIST[@]}" -ge 20 ]] || { echo "shipped sandbox.conf NETWORK_BLOCKLIST too short"; exit 1; }
+    # User sandbox.conf's NETWORK_BLOCKLIST is now thin (everything
+    # universal moved to the lib floor; sandbox.conf holds only the
+    # commented-out site-specific examples). Expect empty or very small.
+    [[ "${#NETWORK_BLOCKLIST[@]}" -le 5 ]] || { echo "shipped sandbox.conf NETWORK_BLOCKLIST too long (#=${#NETWORK_BLOCKLIST[@]}); site-specific entries should be commented-out by default"; exit 1; }
 
     # Test 2: bwrap + filtered + stricter — v1.1 outcome depends on
     # whether pasta is available on the runner.
@@ -4572,42 +4579,43 @@ if (
     resolve_network_filter_mode landlock 2>/dev/null
     [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || exit 1
 
-    # Test 6: effective blocklist (after loading shipped sandbox.conf
-    # in Test 1) contains the universal entries. Site-specific entries
-    # are commented out by default in the skel and so must NOT appear.
-    # Mail submission (universal):
-    effective_network_blocklist 2>/dev/null | grep -q "^127.0.0.1:24\$" || exit 1
-    effective_network_blocklist 2>/dev/null | grep -q "^127.0.0.1:25\$" || exit 1
-    effective_network_blocklist 2>/dev/null | grep -q "^0.0.0.0/0:25\$" || exit 1
-    # Site-specific Fred Hutch CIDR — commented out by default → MUST
-    # NOT be present:
-    effective_network_blocklist 2>/dev/null | grep -q "^140.107.0.0/16:25\$" && exit 1
-    # Transactional-email HTTPS APIs (universal):
-    effective_network_blocklist 2>/dev/null | grep -q "^api.mailgun.net\$" || exit 1
-    # Webhooks (universal):
-    effective_network_blocklist 2>/dev/null | grep -q "^hooks.slack.com\$" || exit 1
-    # File drops + paste (universal):
-    effective_network_blocklist 2>/dev/null | grep -q "^transfer.sh\$" || exit 1
-    effective_network_blocklist 2>/dev/null | grep -q "^pastebin.com\$" || exit 1
-    # DoH / DoT (universal):
-    effective_network_blocklist 2>/dev/null | grep -q "^cloudflare-dns.com\$" || exit 1
+    # Test 6: the always-on lib floor + user sandbox.conf together
+    # produce an effective blocklist of port-only entries (the v1.1
+    # enforceable shape). v1.1 moved the universal port floor into
+    # `_NETWORK_BLOCKLIST_DEFAULTS` so upgraders with a stale
+    # sandbox.conf still pick up enforcement.
+    # Mail submission (universal port-class, from lib floor):
+    effective_network_blocklist 2>/dev/null | grep -q "^25\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^465\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^587\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^2525\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^24\$" || exit 1
+    # DoT (universal port; DoH-over-443 is NOT enforced at this
+    # layer — see Known limitations):
     effective_network_blocklist 2>/dev/null | grep -q "^853\$" || exit 1
-    # SMB / RDP / VNC — site-specific (commented out) → MUST NOT be
-    # present:
+    # Legacy r-services (universal port-class, from lib floor):
+    effective_network_blocklist 2>/dev/null | grep -q "^23\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^514\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^79\$" || exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^113\$" || exit 1
+    # Site-specific entries (commented out in skel) → MUST NOT
+    # appear:
+    effective_network_blocklist 2>/dev/null | grep -q "^140.107" && exit 1
     effective_network_blocklist 2>/dev/null | grep -q "^445\$" && exit 1
     effective_network_blocklist 2>/dev/null | grep -q "^3389\$" && exit 1
     effective_network_blocklist 2>/dev/null | grep -q "^5900\$" && exit 1
-    # Legacy r-services (universal):
-    effective_network_blocklist 2>/dev/null | grep -q "^23\$" || exit 1
-    effective_network_blocklist 2>/dev/null | grep -q "^514\$" || exit 1
-    # Site-specific LDAP / Kerberos — commented out by default → MUST
-    # NOT be present:
     effective_network_blocklist 2>/dev/null | grep -q "^389\$" && exit 1
     effective_network_blocklist 2>/dev/null | grep -q "^88\$" && exit 1
-    # Site-specific Slurm / munge — commented out by default → MUST
-    # NOT be present:
     effective_network_blocklist 2>/dev/null | grep -q "^6817\$" && exit 1
     effective_network_blocklist 2>/dev/null | grep -q "^904\$" && exit 1
+    # Hostname entries are unenforceable at the pasta layer (v1.1
+    # removed them — see Known limitations in the reference doc).
+    # These MUST NOT appear in the default effective blocklist:
+    effective_network_blocklist 2>/dev/null | grep -q "^api.mailgun.net\$" && exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^hooks.slack.com\$" && exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^transfer.sh\$" && exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^pastebin.com\$" && exit 1
+    effective_network_blocklist 2>/dev/null | grep -q "^cloudflare-dns.com\$" && exit 1
 
     exit 0
 ); then

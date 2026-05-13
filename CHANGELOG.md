@@ -10,24 +10,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Security
 
 - **Network filter v1.1 — port-level `filtered`-mode enforcement
-  via bwrap + pasta.** Builds on the v1.0 configuration surface +
-  fallback resolver. Removes the
-  `NETWORK_FILTER_ENABLE_HELPER_PROBE=1` gate; `filtered` mode is
-  real by default whenever `pasta` is available on the host.
-  **No nftables / iptables runtime dependency** — enforcement
-  happens at pasta's own outbound forwarding boundary via the
-  `-T ~N` (TCP) / `-U ~K` (UDP) port-exclusion syntax.
+  via bwrap + pasta.**
 
-  **Enforcement flip — read this before upgrading.** v1.0
-  deployments running the defaults (`NETWORK_FILTER_MODE=filtered`,
-  `NETWORK_FILTER_FALLBACK=stricter`) silently fell back to
-  `isolated` because the helper-probe was gated — the layer was
-  inert in practice. v1.1 ungates the probe AND ships an in-tree
-  pasta binary, so those same deployments will START enforcing real
-  `filtered` mode the moment v1.1 lands. If your CI / test runners
-  needed a specific outbound port the default blocklist closes, add
+  ### ⚠ Behaviour change — read before upgrading
+
+  v1.0 deployments running the defaults
+  (`NETWORK_FILTER_MODE=filtered`, `NETWORK_FILTER_FALLBACK=stricter`)
+  silently fell back to `isolated` because the helper-probe was
+  gated — the layer was inert in practice. v1.1 ungates the probe
+  AND ships an in-tree pasta binary, so those same deployments will
+  START enforcing real `filtered` mode the moment v1.1 lands. The
+  enforced floor (mail submission 24/25/465/587/2525, DoT 853,
+  legacy r-services 23/79/113/512/513/514) lives in
+  `sandbox-lib.sh::_NETWORK_BLOCKLIST_DEFAULTS` — your existing
+  `~/.config/agent-sandbox/sandbox.conf` is not overwritten on
+  upgrade, but the floor still applies. If your CI / test runners
+  needed a specific outbound port the floor closes, add
   `NETWORK_BLOCKLIST_EXCEPT+=(<port>)` for the bare port or pin
   `NETWORK_FILTER_MODE=open` for those runs.
+
+  ### Implementation summary
+
+  Builds on the v1.0 configuration surface + fallback resolver.
+  Removes the `NETWORK_FILTER_ENABLE_HELPER_PROBE=1` gate;
+  `filtered` mode is real by default whenever `pasta` is available
+  on the host. **No nftables / iptables runtime dependency** —
+  enforcement happens at pasta's own outbound forwarding boundary
+  via the `-T ~N` (TCP) / `-U ~K` (UDP) port-exclusion syntax.
 
   **Shipped static `pasta` binary.** The repo ships
   `tools/pasta/x86_64/pasta` (1.2 MiB, statically linked, runnable
@@ -115,10 +124,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   rules. The simpler design — pasta `-T/-U` port exclusions — was
   picked because (a) the identity-hijack threat is closed by
   port-class closure alone, (b) hostname-resolution-to-IPs was
-  already best-effort under nft (IPs rotate; v1.2 L7 work is the
-  correct fix), and (c) nft is one runtime dependency we don't
-  need to add for the threat surface we cover. The honest
+  already best-effort under nft (IPs rotate; the proper fix is a
+  managed egress proxy), and (c) nft is one runtime dependency we
+  don't need to add for the threat surface we cover. The honest
   enforcement scope is the same either way.
+
+  **Hostname entries removed from the default blocklist.** Earlier
+  drafts of `sandbox.conf` listed transactional-email API
+  hostnames (Mailgun, SendGrid, Postmark, Resend, Amazon SES),
+  webhook surfaces (Slack/Discord/Teams/IFTTT/webhook.site/…),
+  anonymous file-drop endpoints (transfer.sh, file.io, 0x0.st,
+  pastebin.com, …), and DoH resolver hostnames (cloudflare-dns.com,
+  dns.google, …). All of these are reached over TLS/443 — the
+  destination hostname is only visible in the encrypted SNI
+  handshake. Neither nftables nor pasta's port-exclusion layer
+  can see it. Listing unenforceable entries created a credibility
+  gap between the policy table and runtime enforcement; the
+  honest thing was to remove them.
+
+  - The threat is still real; it now lives in
+    `docs/reference/network-filter.md` as a **Known limitation**
+    with a **managed-proxy mitigation** (SNI-allowlist proxy
+    inside the netns, prior art from Anthropic's `sandbox-runtime`
+    and OpenAI's Codex CLI). Tracked as v1.2 scope per
+    settylab/dotto-nexus#117.
+  - Default `NETWORK_BLOCKLIST` after the trim: mail-submission
+    ports (24/25/465/587/2525) at universal CIDR + loopback;
+    DoT port 853; legacy r-services ports (23/79/113/512/513/514).
+    All entries are enforceable at the pasta port-exclusion
+    layer; nothing in the floor silently no-ops.
+  - The pasta port-exclusion generator now skips hostname /
+    wildcard / `*` entries SILENTLY by default to avoid noisy
+    startup. Set `NETWORK_FILTER_VERBOSE=1` to surface per-entry
+    notes (useful when porting a snippet from an older doc or
+    another project).
+
+  **Docs reorganization.** All configuration knobs (including
+  `NETWORK_FILTER_MODE`, `NETWORK_FILTER_FALLBACK`,
+  `NETWORK_BLOCKLIST`, `NETWORK_BLOCKLIST_EXCEPT`,
+  `NETWORK_FILTER_VERBOSE`) now live in the canonical
+  `docs/configure.md` alongside every other sandbox knob. The
+  reference page `docs/reference/network-filter.md` is refocused on
+  the implementation: threat model, modes, fallback decision
+  matrix, helper sourcing, Known Limitations + managed-proxy
+  mitigation, troubleshooting, real-world verification recipe.
+  Duplicate config-grammar content removed from the reference doc;
+  cross-links added in both directions.
 
 - **Network filter — optional default-deny outbound network layer
   with strict-mode enforcement.** Closes the local-MTA identity-hijack

@@ -29,12 +29,13 @@ TCP path itself at a layer the agent cannot escape.
 
 **Non-goals.** This layer does NOT defend against:
 
-- Covert L7 channels over allowed 443 hostnames the policy admits (a
-  determined agent with `pip install requests` can POST to any HTTPS
-  endpoint the policy permits). The default blocklist closes the
-  obvious universal exfil channels (webhooks-as-mail, paste sites,
-  transactional-email HTTPS APIs); SNI-level filtering of arbitrary
-  HTTPS destinations is a future layer.
+- **Covert L7 channels over 443 to ANY hostname.** A determined
+  agent with `pip install requests` can POST to any HTTPS endpoint;
+  the netfilter layer can't inspect TLS SNI. The threat surface
+  this fails to cover (webhook-as-mail, transactional-email HTTPS
+  APIs, paste sites, DoH resolvers, …) is real, NOT addressed by
+  v1.1, and properly closed by a managed egress proxy. See
+  ["Known limitations"](#known-limitations) below.
 - Host-side mail policy bypass via mechanisms outside the sandbox's
   control (a privileged user on the host with mail-spool access).
   Negotiate host-side mail policy with your site's operations team
@@ -42,28 +43,28 @@ TCP path itself at a layer the agent cannot escape.
 
 ## Modes
 
-`NETWORK_FILTER_MODE` (default: `filtered`):
+`NETWORK_FILTER_MODE` (default: `filtered`). The knob's full
+grammar and admin-pin behaviour live in
+[configure.md → NETWORK_FILTER_MODE](../configure.md#network_filter_mode);
+the table below names what each mode does at the runtime layer:
 
 | Mode | Mechanism | Network reach |
 | --- | --- | --- |
 | `open` | share the host network namespace; no isolation | full host network (legacy behaviour) |
-| `filtered` | new netns (Linux network namespace — a per-process isolated network stack) + helper (pasta or slirp4netns); apply default-deny floor + user/admin blocklist | general outbound TCP/UDP/DNS minus the threat ports |
+| `filtered` | new netns (Linux network namespace — a per-process isolated network stack) + pasta tap forwarding + DNS proxy; pasta enforces the universal port floor at its `-T ~N` outbound boundary | general outbound TCP/UDP/DNS minus the blocked ports |
 | `isolated` | new netns with no network at all | none (DNS / pip / git break) |
 
-**Default state (v1.1).** When `pasta` is available on the host,
-`NETWORK_FILTER_MODE=filtered` delivers port-level outbound
-enforcement: pasta provisions a netns with a tap interface
-forwarding to the host network and a private (empty) loopback, and
-the bwrap workload runs inside that netns. The port-level blocklist
-is enforced at pasta's own outbound boundary via `-T ~N` (TCP) and
-`-U ~K` (UDP) exclusion flags generated from
-`effective_network_blocklist`. **No nftables / iptables dependency.**
-
-| `NETWORK_FILTER_MODE` | What happens (v1.1) |
-| --- | --- |
-| `open` | shares host network (legacy behaviour; layer disabled) |
-| `filtered` | bwrap inside a pasta netns with `-T/-U` port exclusions enforcing the universal port floor (SMTP submission 24/25/465/587/2525, DoT 853, telnet/finger/rsh/rexec/rsyslog) plus any operator-added bare-port or universal-CIDR-port entries. Falls back per `NETWORK_FILTER_FALLBACK` when pasta is unavailable. |
-| `isolated` | full network kill via `bwrap --unshare-net` / `firejail --net=none` |
+**Default state.** When `pasta` is available on the host,
+`NETWORK_FILTER_MODE=filtered` enforces the universal port floor
+shipped in `sandbox-lib.sh::_NETWORK_BLOCKLIST_DEFAULTS`: SMTP
+submission (24/25/465/587/2525), DoT (853), legacy r-services
+(23/79/113/512/513/514). The floor lives in the lib (not the user's
+`sandbox.conf`) so an operator upgrading from v1.0 still gets
+enforcement on the first session after install — `install.sh`
+intentionally does not overwrite a user's existing `sandbox.conf`.
+Operator-added bare-port entries in `NETWORK_BLOCKLIST` extend the
+floor; bare-port entries in `NETWORK_BLOCKLIST_EXCEPT` lift it.
+**No nftables / iptables runtime dependency.**
 
 agent-sandbox ships a verified static `pasta` binary at
 `tools/pasta/<arch>/pasta` (x86_64 in v1.1); on Linux hosts this is
@@ -160,140 +161,113 @@ mode than requested. If you want `filtered` but want to accept
 
 ## Configuration
 
-```bash
-# sandbox.conf
-NETWORK_FILTER_MODE="filtered"
-NETWORK_FILTER_FALLBACK="stricter"
+The configuration knobs (`NETWORK_FILTER_MODE`,
+`NETWORK_FILTER_FALLBACK`, `NETWORK_BLOCKLIST`,
+`NETWORK_BLOCKLIST_EXCEPT`, `NETWORK_FILTER_VERBOSE`) live in the
+canonical [config doc](../configure.md#network-filter) alongside
+every other sandbox knob — defaults, types, admin-pin behaviour,
+pattern grammar, and the precedence model.
 
-NETWORK_BLOCKLIST=(
-    "*.untrusted-vendor.com"   # wildcard host block
-    "10.0.0.0/8:25"            # site-specific CIDR + port
-    # … see sandbox.conf for additional examples
-)
+This reference doc covers the **implementation**: what the layer
+actually does at runtime, what it can and can't enforce, and how
+to handle the gaps.
 
-NETWORK_BLOCKLIST_EXCEPT=(
-    "mybucket.s3.amazonaws.com"  # carve out a specific bucket
-    # … see "Precedence model" below
-)
-```
+## Known limitations
 
-### Pattern syntax for `NETWORK_BLOCKLIST` and `NETWORK_BLOCKLIST_EXCEPT`
+The v1.1 enforcement layer (pasta `-T/-U` port exclusions) operates
+at L3/L4: IP, CIDR, port. It is intentionally a SIMPLE layer with
+no userspace stateful inspection, so its limits are sharp and worth
+naming up front.
 
-| Pattern | Meaning |
-| --- | --- |
-| `"host"` | block all ports on this hostname/IP |
-| `"host:port"` | block specific port |
-| `"CIDR"` | block all ports on this CIDR range |
-| `"CIDR:port"` | block specific port on this range |
-| `"port"` (numeric) | block this port outbound on every destination |
-| `"[ipv6]:port"` | IPv6 form |
-| `"*.suffix"` | bash-glob wildcard on the host part (matches any subdomain prefix) |
-| `"*"` | matches every destination (deny-all base for the implicit-allowlist idiom) |
+### Hostname-level filtering is not provided
 
-The runtime applies the union of:
+TLS-wrapped traffic (HTTPS on 443, anything else over TLS) carries
+the destination hostname only inside the encrypted **SNI** (Server
+Name Indication, the TLS handshake field naming the remote host)
+handshake. pasta's port-exclusion layer sees the destination IP
+and port, never the hostname. Consequences for the threat model:
 
-1. `_NETWORK_BLOCKLIST_DEFAULTS` (built-in floor in `sandbox-lib.sh`;
-   always enforced) — covers the identity-bound exfil + lateral-
-   movement surface enumerated in "Default blocklist".
-2. Admin baseline `NETWORK_BLOCKLIST` (set in `sandbox-admin.conf`;
-   user cannot remove).
-3. User `NETWORK_BLOCKLIST` extensions (additive only).
-4. Exception list `NETWORK_BLOCKLIST_EXCEPT` (admin + user merged;
-   user entries covered by admin BLOCKLIST are stripped at config-
-   load — see "Precedence model" below).
+- **Transactional-email APIs** (Mailgun, SendGrid, Postmark, Resend,
+  Amazon SES) — all reached over 443. Cannot be blocked by name.
+- **Webhook surfaces** (Slack `hooks.slack.com`, Discord webhooks,
+  Teams `*.webhook.office.com`, webhook.site, requestbin) — same.
+- **Anonymous file-drop / paste endpoints** (transfer.sh, file.io,
+  0x0.st, pastebin.com, …) — same.
+- **DoH (DNS-over-HTTPS) resolver hostnames** (`cloudflare-dns.com`,
+  `dns.google`, …) — DoH-over-443 cannot be filtered. The DoT
+  channel (port 853) IS blocked via the universal port closure.
 
-Inspect the effective lists at runtime:
+Earlier drafts of the default blocklist listed all of these as
+hostname entries. v1.1 removed them: listing unenforceable entries
+created a credibility gap between the documented policy and the
+runtime enforcement. The threat is still real; the honest place to
+close it is one layer up.
 
-```bash
-# From a test harness or sandbox-aware tool
-source sandbox-lib.sh
-effective_network_blocklist       # block entries (floor + admin + user)
-effective_network_exception_list  # allowed exceptions (admin + user, post-strip)
-```
+### Mitigation — managed egress proxy with SNI allowlist
 
-## Precedence model
+The right mechanism for hostname-level egress control is a small
+**managed proxy** running inside the sandbox's netns:
 
-Policy resolution under v1.1 enforcement (bwrap + pasta + nft):
+- Sandbox sets `HTTPS_PROXY` / `HTTP_PROXY` environment variables
+  inside the netns so HTTPS clients (curl, requests, git over
+  HTTPS, …) tunnel through the proxy.
+- Proxy reads the TLS SNI from the client hello, checks it against
+  an allowlist, and either splices the connection through to the
+  host network or returns `HTTP 403 Forbidden` before any bytes
+  leave the netns.
+- For HTTP/2 / HTTP/3 clients that ignore proxy env vars, the
+  proxy can additionally bind a transparent-proxy port (TCP 443)
+  via pasta's port-forwarding so the egress path becomes
+  unavoidable.
 
-**Specificity (most → least specific):**
+Prior art (worth copying):
 
-1. exact `host:port`
-2. exact `host` (no port)
-3. CIDR with smaller prefix (e.g. `/32` highest)
-4. CIDR with larger prefix (e.g. `/0` lowest)
-5. wildcard host pattern (`*.example.com`)
-6. wildcard `*`
-7. bare `port`
+- **Anthropic's `sandbox-runtime`** ships a small managed proxy
+  enforcing exactly this pattern (SNI allowlist, deny-by-default).
+- **OpenAI's Codex CLI** sandboxes its agents behind a managed
+  proxy with similar shape.
+- **`squid`** with `ssl_bump` + `acl` rules implements a
+  production-grade version (heavier; needs a CA injected into the
+  netns trust store for full MITM, or splice-only SNI inspection
+  without MITM).
+- **`tinyproxy` + `Filter` directive** — the minimum-viable form;
+  HTTP-only without SNI inspection. Useful as a learning step but
+  doesn't reach the threat surface here (HTTP is the easy case).
 
-**Decision rules:**
+**Status in agent-sandbox** — not shipped in v1.1. Two paths
+forward, in rough order of likely user preference:
 
-- The most-specific matching rule wins.
-- Among same-specificity rules, `NETWORK_BLOCKLIST` wins over
-  `NETWORK_BLOCKLIST_EXCEPT` (safer default).
-- Admin-set rules win over user-set rules at every specificity level.
+1. **Document running an external proxy** (squid or similar) and
+   provide a `sandbox.conf` snippet wiring `HTTPS_PROXY` +
+   `EXTRA_WRITABLE_PATHS` for the proxy's runtime state. Smallest
+   surface area for agent-sandbox to maintain.
+2. **Ship a small in-tree SNI proxy** (similar pattern to pasta —
+   single static binary, BSD-or-equivalent license, in-tree under
+   `tools/`). Bigger lift; gives operators a one-knob default-deny
+   hostname-allowlist mode.
 
-**Worked examples:**
+Either path is tracked as v1.2 scope and explicitly named in
+[settylab/dotto-nexus#117](https://github.com/settylab/dotto-nexus/issues/117).
 
-| Blocklist | Except list | Connection | Outcome |
-| --- | --- | --- | --- |
-| `*.example.com` | — | `api.example.com` | block (wildcard match) |
-| `*.example.com` | `api.example.com` | `api.example.com` | **allow** (exception more specific) |
-| `*.example.com` | `api.example.com` | `foo.example.com` | block (no matching exception) |
-| `*.amazonaws.com` | `s3.amazonaws.com` | `s3.amazonaws.com` | allow |
-| `*` | `github.com`, `api.openai.com` | `github.com` | allow (implicit-allowlist idiom) |
-| `*` | `github.com`, `api.openai.com` | `pastebin.com` | block (no exception) |
+### Deny-all `*` would break DNS
 
-### Admin precedence
+The blocklist syntax accepts `"*"` as a deny-all pattern, but at
+the pasta-port layer this would block ALL outbound forwarding
+including DNS — pasta's host-resolver proxy still goes through the
+netns boundary. Operators wanting deny-all should set
+`NETWORK_FILTER_MODE=isolated` directly; the runtime emits a
+stderr note and skips the `*` entry at the port-exclusion
+generator.
 
-A `NETWORK_BLOCKLIST` entry set in `sandbox-admin.conf` cannot be
-carved out by a user `NETWORK_BLOCKLIST_EXCEPT`. The check runs at
-config-load time under bash-glob semantics:
+### Hostname / wildcard / `*` entries no-op silently
 
-```bash
-# admin sandbox-admin.conf
-NETWORK_BLOCKLIST+=("*.example.com")
-
-# user sandbox.conf
-NETWORK_BLOCKLIST_EXCEPT+=("api.example.com")   # stripped at load!
-```
-
-The user's `api.example.com` exception is removed and a warning is
-emitted:
-
-```
-WARNING: User config attempted to except 'api.example.com' but
-admin NETWORK_BLOCKLIST has '*.example.com' which covers it —
-exception stripped (admin policy is absolute).
-```
-
-Admins can carve their own exceptions in their own
-`NETWORK_BLOCKLIST_EXCEPT` (admin policy is the floor for both
-arrays).
-
-### Implicit-allowlist idiom (`*` + exact hosts)
-
-For deployments that want deny-by-default semantics, the canonical
-pattern is:
-
-```bash
-NETWORK_BLOCKLIST+=("*")
-NETWORK_BLOCKLIST_EXCEPT+=(
-    "github.com" "api.github.com"
-    "api.anthropic.com" "api.openai.com"
-    "pypi.org" "files.pythonhosted.org"
-    "conda.anaconda.org"
-    # … your minimal essential set
-)
-```
-
-The `*` rule has the lowest specificity, so any exact-host exception
-overrides it. Future-deferred: a curated default-allowlist preset
-(survey reference R3) would package this pattern with sensible
-defaults; the user direction in
-[settylab/dotto-nexus#117](https://github.com/settylab/dotto-nexus/issues/117#issuecomment-4435142136)
-deferred R3 in favour of the blocklist-not-allowlist model — the
-idiom above remains available for power users who want the inverse
-shape.
+To avoid spamming session startup with notes about unenforceable
+entries (a common shape when an operator copies a snippet from
+the older docs or another project), the pasta port-exclusion
+generator skips hostname/wildcard/`*` entries silently by
+default. Set `NETWORK_FILTER_VERBOSE=1` in the calling
+environment to surface a per-entry note. See
+[`NETWORK_FILTER_VERBOSE`](../configure.md#network_filter_verbose).
 
 ## Resolver pinning — is it needed?
 
@@ -320,13 +294,16 @@ The resolver-evasion surface that actually matters for the threat
 model is **application-level**: Python `dnspython`, Go's
 `net.Resolver`, Rust's `hickory-dns`, and similar libraries can open
 their own TCP/UDP sockets to a DoH/DoT endpoint, bypassing
-`/etc/resolv.conf` entirely. The network-filter floor blocks this
-class:
+`/etc/resolv.conf` entirely. The network-filter floor partially
+addresses this class:
 
-- DoH hostnames (`cloudflare-dns.com`, `dns.google`, `dns.quad9.net`,
-  `mozilla.cloudflare-dns.com`) — closes the HTTPS-tunnelled lookup.
-- DoT port 853 (universal port block) — closes the TLS-wrapped
-  lookup.
+- **DoT (DNS-over-TLS)** — fixed port 853, universal port block ✓.
+- **DoH (DNS-over-HTTPS)** — traffic is TLS-on-443. The destination
+  hostname (`cloudflare-dns.com`, `dns.google`, `dns.quad9.net`,
+  `mozilla.cloudflare-dns.com`, …) is only visible in the SNI.
+  At the netfilter layer this **cannot be filtered** — see the
+  [managed-proxy mitigation](#mitigation--managed-egress-proxy-with-sni-allowlist)
+  for the proper fix.
 
 Other resolver-mutation surfaces, evaluated:
 
@@ -337,11 +314,11 @@ Other resolver-mutation surfaces, evaluated:
 | `/etc/nsswitch.conf` re-order | no | same RO bind-mount |
 | `LD_PRELOAD` intercepting `getaddrinfo` | no | the attacker isn't using the system resolver; they'd skip the libc path entirely |
 | `RES_OPTIONS` env var | no | glibc-resolver only; attacker routes around |
-| Application DoH/DoT clients | **yes** | covered by the DoH-hostname + DoT-port block in the floor |
+| Application DoT clients | **yes** | covered by the port-853 floor block |
+| Application DoH clients | partial | DoT path closed; DoH-over-443 needs the managed-proxy mitigation |
 
-So the practical defense is the network-layer block of the DoH
-hostnames + DoT port (already in the floor), not an in-sandbox
-resolver pin.
+So the practical defense at the netfilter layer is the universal
+port-853 (DoT) block; DoH-over-443 requires the managed proxy.
 
 ## Helper sourcing (pasta — no nft)
 
@@ -411,14 +388,16 @@ exec 3<>/dev/tcp/127.0.0.1/23 2>&1 || echo "BLOCKED — telnet closed (expected)
 # Expected: "BLOCKED".
 ```
 
-Note that v1.1 enforces *port-level* blocks at pasta's boundary,
-not hostname-level blocks. A request like
-`curl https://hooks.slack.com/` (a hostname entry in the default
-blocklist) will **not** fail in v1.1 — hostname-level filtering is
-v1.2 L7-proxy scope. Plan defense-in-depth accordingly: the
-universal port-class closure shuts the identity-hijack threat (the
-motivating concern); hostname surfaces are best handled at the
-egress proxy or DNS layer.
+Note that v1.1 enforces **port-level** blocks at pasta's boundary,
+not hostname-level. A request like `curl https://hooks.slack.com/`
+will succeed — pasta's port-exclusion layer cannot see TLS SNI. The default
+blocklist no longer includes any hostname entries (they were
+removed in v1.1; see [Known limitations](#known-limitations)). The
+identity-hijack threat that motivated this layer is closed by the
+universal port-class closure (SMTP submission 24/25/465/587/2525);
+hostname-level surfaces (webhooks, transactional-email APIs, paste
+sites, DoH-over-443) require a [managed egress
+proxy](#mitigation--managed-egress-proxy-with-sni-allowlist).
 
 If (1) fails: pasta is not on PATH and the in-tree binary is
 missing or not executable. Re-run with `NETWORK_FILTER_VERBOSE=1`
@@ -496,11 +475,21 @@ resolved mode (see `test.sh` section 11.4 "Network filter").
 NETWORK_FILTER_MODE="filtered"
 NETWORK_FILTER_FALLBACK="strict"      # admins typically pin strict
 NETWORK_BLOCKLIST=(
-    "hooks.slack.com"
-    "api.mailgun.net"
-    # … site-specific must-blocks
+    # Bare-port closures (universal — recommended shape):
+    "445"                       # SMB direct (lateral-movement)
+    "3389"                      # RDP
 )
 ```
+
+**Footgun warning.** Do **not** pin `CIDR:port` entries
+(e.g. `"10.0.0.0/8:443"`) expecting site-only closure. pasta's
+exclusion layer ignores the host/CIDR part and applies the port
+universally — `10.0.0.0/8:443` would close port 443 to **every**
+destination (breaking `pip`, `git over HTTPS`, github.com, …). The
+generator emits an unconditional `WARNING:` for any non-universal
+`CIDR:port` entry; treat it as a config error. Use a managed
+egress proxy (see [Known limitations](#known-limitations)) for
+CIDR-specific port carve-outs.
 
 User config can only request:
 
@@ -512,7 +501,9 @@ User config can only request:
   the admin set cannot be removed).
 
 Violations are restored at config-load time with a warning naming the
-offending entry.
+offending entry. Full configuration grammar (defaults, types,
+admin-pin behaviour, pattern table) lives in
+[configure.md → Network filter](../configure.md#network-filter).
 
 ## See also
 

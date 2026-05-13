@@ -125,7 +125,30 @@ OS user separation handles credential isolation — the agent physically cannot 
 
 ## 4. Network Controls
 
-**What it solves:** The current sandbox shares the host network stack. The [chaperon](../reference/chaperon.md) removed the dependency on in-sandbox network access for Slurm on bwrap/firejail (munge socket is blocked, all Slurm communication goes through FIFOs). On Landlock, the munge socket remains accessible — use bwrap or firejail for any deployment that needs a hard Slurm boundary. The agent still has unrestricted outbound network on every backend — it can reach any host the user can, using the same institutional IP.
+**What's in-baseline (v1.1).** agent-sandbox now ships an in-tree
+network filter — [`reference/network-filter.md`](../reference/network-filter.md)
++ [`configure.md → Network filter`](../configure.md#network-filter).
+The default `NETWORK_FILTER_MODE=filtered` on bwrap puts the
+workload in a pasta-provisioned netns and enforces a port-level
+universal floor (SMTP submission 24/25/465/587/2525, DoT 853,
+legacy r-services 23/79/113/512/513/514) at pasta's outbound
+boundary. This closes the local-MTA identity-hijack class on every
+modern Linux deployment, out of the box. The [chaperon](../reference/chaperon.md)
+remains the path for Slurm (its socket is on the host side of pasta).
+
+**What this section adds.** The in-tree layer is **port-level**. It
+does NOT inspect TLS SNI — hostname / wildcard / CIDR:hostname
+egress control needs a hop above L4. Options A/B/C below all
+provide that additional control surface (SSH escape, internal REST
+APIs, cloud metadata endpoint at `169.254.169.254`, other agents'
+sandboxes, hostname-level exfil to webhook/paste/mail-API
+endpoints). Pick one — they layer cleanly on top of the in-baseline
+filter. Option C (netns + policy proxy with SNI-allowlist) is the
+SAME pattern the v1.1 reference doc calls out as the eventual
+in-tree mitigation for hostname-level filtering ([Known
+limitations](../reference/network-filter.md#known-limitations));
+Option C deployed today is the recommended path for sites that
+need hostname allowlists immediately.
 
 Agents legitimately need general web access: reading documentation, downloading papers (often through institutional proxy/IP for paywall access), installing packages, cloning repos. The goal is not to cut off network access, but to **route agent traffic through a controllable path** where agent-specific policies can be applied — blocking certain services, logging traffic, or rate-limiting — without breaking research workflows.
 

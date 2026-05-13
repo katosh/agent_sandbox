@@ -76,6 +76,11 @@ Without an admin baseline, `~/.config/agent-sandbox/sandbox.conf` is the only co
 | [`FILTER_PASSWD`](#filter_passwd) | scalar | **harden-only** | `true` |
 | [`SANDBOX_NPROC_LIMIT`](#sandbox_nproc_limit) | scalar | no | `""` (unlimited) |
 | [`SANDBOX_QUIET`](#sandbox_quiet) | scalar | no | `false` |
+| [`NETWORK_FILTER_MODE`](#network_filter_mode) | scalar | **harden-only** (user can only request stricter) | `filtered` |
+| [`NETWORK_FILTER_FALLBACK`](#network_filter_fallback) | scalar | **harden-only** (user can only request stricter) | `stricter` |
+| [`NETWORK_BLOCKLIST`](#network_blocklist) | array | **yes** (admin entries restored; users can append) | mail-submission + DoT + r-services ports (see [`sandbox.conf`](../sandbox.conf)) |
+| [`NETWORK_BLOCKLIST_EXCEPT`](#network_blocklist_except) | array | additive; admin-covered entries stripped | `()` |
+| [`NETWORK_FILTER_VERBOSE`](#network_filter_verbose) | scalar (env-var) | no | `0` |
 | [`SLURM_SCOPE`](#slurm_scope) | scalar | no | `project` |
 | [`CHAPERON_LOG_LEVEL`](#chaperon_log_level) | scalar | no | `info` |
 | [`CHAPERON_LOG_RETAIN_DAYS`](#chaperon_log_retain_days) | scalar | no | `7` |
@@ -464,6 +469,103 @@ SANDBOX_NPROC_LIMIT="4096"
 **Type** scalar · **Admin-enforced** no · **Default** `false`
 
 Suppress the one-line startup banner that shows backend, project dir, and home-access mode, plus the count of env vars blocked by pattern. Useful inside scripts and CI where the banner is noise.
+
+---
+
+## Network filter
+
+Controls the sandbox's outbound network reach. The threat model, per-backend support matrix, and Known Limitations live in [reference/network-filter.md](reference/network-filter.md); this section documents the knobs only.
+
+### `NETWORK_FILTER_MODE`
+
+**Type** scalar · **Admin-enforced** harden-only · **Default** `filtered`
+
+One of `open` | `filtered` | `isolated`.
+
+| Mode | Effect |
+|---|---|
+| `open` | Sandbox shares the host's network namespace; no isolation. Legacy behaviour. |
+| `filtered` | Sandbox runs in a new netns; pasta provisions a tap to the host network and DNS proxy, AND enforces the `NETWORK_BLOCKLIST` port-level entries at its outbound forwarding boundary (`-T ~N` / `-U ~K`). Falls back per [`NETWORK_FILTER_FALLBACK`](#network_filter_fallback) if pasta is unavailable. |
+| `isolated` | Sandbox runs in a new netns with NO network at all (`bwrap --unshare-net`). DNS / pip / git break inside. |
+
+**Strictness order** `open < filtered < isolated`. Admin pin: user can request a value `>=` admin's; weakening triggers a `WARNING: weakened admin-enforced …` and the admin value is restored.
+
+```bash
+# sandbox.conf
+NETWORK_FILTER_MODE="filtered"
+```
+
+### `NETWORK_FILTER_FALLBACK`
+
+**Type** scalar · **Admin-enforced** harden-only · **Default** `stricter`
+
+One of `strict` | `stricter` | `open`. Picks what happens when [`NETWORK_FILTER_MODE`](#network_filter_mode) is unavailable on the resolved backend (no pasta on landlock, etc.).
+
+| Policy | Behaviour |
+|---|---|
+| `strict` | Refuse to launch. Loud error enumerates fix paths (install pasta, pin a different mode, accept `open` policy, …). |
+| `stricter` | Fall back ONLY to a stricter mode than requested. Loud startup warning. If no stricter mode exists (e.g. landlock has no netns, so filtered→isolated isn't reachable), the sandbox refuses to launch. |
+| `open` | Fall back ONLY to a less-restrictive mode than requested. Never strengthens against user intent. Loud warning on fall. |
+
+**Strictness order** `open < stricter < strict`. Admin pin: user can request `>=` admin's. Default `stricter` is the production-safe choice — silently downgrading the threat layer is the failure mode users notice last.
+
+```bash
+# sandbox.conf
+NETWORK_FILTER_FALLBACK="stricter"
+```
+
+### `NETWORK_BLOCKLIST`
+
+**Type** array · **Admin-enforced** yes (admin entries restored; users can append) · **Default** mail-submission ports + universal mail CIDRs + DoT 853 + r-services ports (see [`sandbox.conf`](../sandbox.conf) for the full skeleton with rationales)
+
+Outbound destinations to block in `filtered` mode. Pattern grammar — **enforced patterns listed first**:
+
+| Pattern | Enforced? | Notes |
+|---|---|---|
+| `"25"` (bare port) | **✓ ENFORCED** | Universal port closure on all destinations. |
+| `"127.0.0.1:25"` (loopback host:port) | **✓ ENFORCED** | Treated as universal port-25 block. |
+| `"0.0.0.0/0:25"` (universal CIDR:port) | **✓ ENFORCED** | Treated as universal port-25 block. |
+| `"10.0.0.0/8:25"` (site CIDR:port) | ⚠ **WIDENS** | Silently widens to a universal port-25 closure (the CIDR is ignored at pasta's port layer). The generator emits an unconditional `WARNING:` for this shape — pin only with eyes open. See [reference/network-filter.md#known-limitations](reference/network-filter.md#known-limitations). |
+| `"host.example.com"` (bare hostname) | ✗ NOT ENFORCED | Silent no-op (hostname filtering needs SNI inspection). See [Known limitations](reference/network-filter.md#known-limitations). |
+| `"host:443"` (hostname:port) | ✗ NOT ENFORCED | Silent no-op. |
+| `"*.example.com"` (wildcard hostname) | ✗ NOT ENFORCED | Silent no-op. |
+| `"*"` (deny-all) | ✗ NOT ENFORCED | Silent no-op. Use `MODE=isolated` for hard deny-all. |
+
+Unenforceable entries silently no-op by default. Set [`NETWORK_FILTER_VERBOSE=1`](#network_filter_verbose) to surface a per-entry stderr note — useful when porting a snippet from older docs or another project.
+
+Admin baseline entries cannot be removed by user config; users can extend the list. The rationale behind the v1.1 hostname-removal and the managed-proxy mitigation for hostname-level filtering live in [reference/network-filter.md](reference/network-filter.md#known-limitations).
+
+```bash
+# sandbox.conf
+NETWORK_BLOCKLIST+=(
+    "25"                 # universal SMTP submission close
+    "10.0.0.0/8:443"     # site CIDR — port-only closure
+)
+```
+
+### `NETWORK_BLOCKLIST_EXCEPT`
+
+**Type** array · **Admin-enforced** additive; admin-covered entries stripped at config-load · **Default** `()`
+
+Carves holes in [`NETWORK_BLOCKLIST`](#network_blocklist) under the most-specific-rule-wins precedence model. **At the pasta-port layer only bare-port exceptions are meaningful** — they lift the corresponding port closure. Hostname / host:port exceptions are silently no-op (their corresponding blocklist entries were also unenforceable; nothing to lift).
+
+Admin precedence: a user `NETWORK_BLOCKLIST_EXCEPT` entry covered by an admin `NETWORK_BLOCKLIST` entry (under bash-glob semantics) is stripped at config-load with a loud warning.
+
+```bash
+# sandbox.conf
+NETWORK_BLOCKLIST+=("25")
+NETWORK_BLOCKLIST_EXCEPT+=("25")    # lift the port-25 closure for this user
+```
+
+### `NETWORK_FILTER_VERBOSE`
+
+**Type** scalar (env-var only — not a config-file setting) · **Default** `0`
+
+Set `NETWORK_FILTER_VERBOSE=1` in the calling environment to print stderr notes from the pasta port-exclusion generator about entries it can't enforce at the netfilter layer (hostnames, wildcards, `*`, …). Off by default to keep session startup quiet for the common case where the operator has accepted the limitation. See the [Known limitations](reference/network-filter.md#known-limitations) section for the mitigation path.
+
+```bash
+NETWORK_FILTER_VERBOSE=1 sandbox-exec.sh ...
+```
 
 ---
 
