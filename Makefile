@@ -103,6 +103,34 @@ install-lib:
 	@# bin/ (in-sandbox utilities — sandbox-notify, tmux config wrapper)
 	$(INSTALL) -d $(DESTDIR)$(LIBDIR)/bin
 	for f in $(SRC_DIR)/bin/*; do $(INSTALL) -m 755 "$$f" $(DESTDIR)$(LIBDIR)/bin/; done
+	@# tools/pasta — the shipped pasta helper that delivers
+	@# NETWORK_FILTER_MODE=filtered on bwrap. Without these files the
+	@# helper-probe in sandbox-lib.sh::_resolve_network_helper finds
+	@# nothing under $(LIBDIR)/tools/pasta/<arch>/ and every filtered-
+	@# mode request falls back per NETWORK_FILTER_FALLBACK. fetch.sh
+	@# stays installed so admins can refresh / rebuild in place.
+	@if [ -d "$(SRC_DIR)/tools/pasta" ]; then \
+		$(INSTALL) -d $(DESTDIR)$(LIBDIR)/tools/pasta; \
+		for f in $(SRC_DIR)/tools/pasta/*; do \
+			[ -f "$$f" ] || continue; \
+			case "$$f" in \
+				*/fetch.sh) $(INSTALL) -m 755 "$$f" $(DESTDIR)$(LIBDIR)/tools/pasta/ ;; \
+				*)          $(INSTALL) -m 644 "$$f" $(DESTDIR)$(LIBDIR)/tools/pasta/ ;; \
+			esac; \
+		done; \
+		for arch_dir in $(SRC_DIR)/tools/pasta/*/; do \
+			[ -d "$$arch_dir" ] || continue; \
+			arch=$$(basename "$$arch_dir"); \
+			$(INSTALL) -d $(DESTDIR)$(LIBDIR)/tools/pasta/$$arch; \
+			for f in $$arch_dir*; do \
+				[ -f "$$f" ] || continue; \
+				case "$$f" in \
+					*/pasta) $(INSTALL) -m 755 "$$f" $(DESTDIR)$(LIBDIR)/tools/pasta/$$arch/ ;; \
+					*)       $(INSTALL) -m 644 "$$f" $(DESTDIR)$(LIBDIR)/tools/pasta/$$arch/ ;; \
+				esac; \
+			done; \
+		done; \
+	fi
 	@# Agents
 	@for agent_dir in $(SRC_DIR)/agents/*/; do \
 		agent=$$(basename "$$agent_dir"); \
