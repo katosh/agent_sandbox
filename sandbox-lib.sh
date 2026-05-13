@@ -222,7 +222,7 @@ FILTER_PASSWD=true
 #               the sandbox break; use for offline-only workloads or as
 #               the strictest fallback target.
 #
-#   NETWORK_FILTER_FALLBACK — strict | stricter | open  (default: stricter)
+#   NETWORK_FILTER_FALLBACK — strict | stricter | open  (default: open)
 #     strict:   the requested mode must be deliverable on this host; the
 #               sandbox refuses to launch otherwise.
 #     stricter: fall back ONLY to a more-restrictive mode if the requested
@@ -230,14 +230,25 @@ FILTER_PASSWD=true
 #               is possible (landlock has no netns at all), refuses to
 #               launch with an explicit fix-path enumeration.
 #     open:     fall back to ANY available mode, preferring stricter first.
-#               Will silently degrade to host-network if no isolated mode
-#               is available. Loud startup warning on any fallback.
+#               Will degrade loudly to host-network if no isolated mode
+#               is available.
+#
+# Default rationale: on kernel < 5.7 hosts (common on shared HPC login
+# nodes) pasta's SO_BINDTODEVICE call requires CAP_NET_RAW; without
+# admin intervention (setcap cap_net_raw+ep on the pasta binary) the
+# forwarding probe trips and `filtered` is unavailable. Under
+# `stricter` the resolver would fall to `isolated`, breaking DNS /
+# pip / git / API inside the sandbox — i.e. the sandbox effectively
+# refuses to run on those hosts. `open` keeps the sandbox usable
+# (loud warning, threat-class ports re-opened) instead. Sites that
+# need the stronger posture should pin `stricter`/`strict` in the
+# admin baseline; that pin is non-weakening per the model below.
 #
 # Admin enforcement: an admin baseline can pin NETWORK_FILTER_MODE and
 # NETWORK_FILTER_FALLBACK; user config can request stricter values but
 # cannot weaken admin-set ones (same model as PRIVATE_TMP, FILTER_PASSWD).
 NETWORK_FILTER_MODE="filtered"
-NETWORK_FILTER_FALLBACK="stricter"
+NETWORK_FILTER_FALLBACK="open"
 
 # Sentinel for any future "always-on, not user-removable" floor
 # entries. Currently empty — the full identity-bound exfil + lateral-
@@ -1006,7 +1017,7 @@ _enforce_admin_policy() {
     if [[ -n "${_ADMIN_NETWORK_FILTER_FALLBACK:-}" ]]; then
         local _admin_pidx _user_pidx
         _admin_pidx="$(_network_fallback_strictness_idx "$_ADMIN_NETWORK_FILTER_FALLBACK")"
-        _user_pidx="$(_network_fallback_strictness_idx "${NETWORK_FILTER_FALLBACK:-stricter}")"
+        _user_pidx="$(_network_fallback_strictness_idx "${NETWORK_FILTER_FALLBACK:-open}")"
         if [[ "$_user_pidx" -lt "$_admin_pidx" ]]; then
             echo "WARNING: ${_label} weakened admin-enforced NETWORK_FILTER_FALLBACK='${_ADMIN_NETWORK_FILTER_FALLBACK}' to '${NETWORK_FILTER_FALLBACK}' — restored." >&2
             NETWORK_FILTER_FALLBACK="$_ADMIN_NETWORK_FILTER_FALLBACK"
@@ -1560,7 +1571,7 @@ EOF
 resolve_network_filter_mode() {
     local _backend="$1"
     local _requested="${NETWORK_FILTER_MODE:-filtered}"
-    local _policy="${NETWORK_FILTER_FALLBACK:-stricter}"
+    local _policy="${NETWORK_FILTER_FALLBACK:-open}"
 
     case "$_requested" in
         open|filtered|isolated) ;;
@@ -2002,7 +2013,7 @@ if [[ -n "$_ADMIN_CONF" ]]; then
     fi
     if [[ -n "${_ADMIN_NETWORK_FILTER_FALLBACK:-}" ]]; then
         _admin_pidx="$(_network_fallback_strictness_idx "$_ADMIN_NETWORK_FILTER_FALLBACK")"
-        _user_pidx="$(_network_fallback_strictness_idx "${NETWORK_FILTER_FALLBACK:-stricter}")"
+        _user_pidx="$(_network_fallback_strictness_idx "${NETWORK_FILTER_FALLBACK:-open}")"
         if [[ "$_user_pidx" -lt "$_admin_pidx" ]]; then
             echo "WARNING: env override NETWORK_FILTER_FALLBACK='${NETWORK_FILTER_FALLBACK}' weaker than admin '${_ADMIN_NETWORK_FILTER_FALLBACK}' — restored." >&2
             NETWORK_FILTER_FALLBACK="$_ADMIN_NETWORK_FILTER_FALLBACK"

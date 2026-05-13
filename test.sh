@@ -33,14 +33,16 @@ export SANDBOX_CONF="$SCRIPT_DIR/sandbox.conf"
 export SANDBOX_QUIET=true
 
 # The shipped sandbox.conf defaults to NETWORK_FILTER_MODE=filtered +
-# NETWORK_FILTER_FALLBACK=stricter, which is correct for production
-# but the test suite (which is NOT exercising the network-filter
-# layer in most of its sections) needs an open network so existing
+# NETWORK_FILTER_FALLBACK=open, which is the right balance for the
+# CLI: filtered when the host can deliver it, fall back to open
+# (loud warning) on legacy kernels rather than refusing to launch.
+# The test suite (which is NOT exercising the network-filter layer
+# in most of its sections) needs an open network so existing
 # assertions about Slurm reachability, MTA-credential warnings, etc.
 # still hold. Under v1.0 the helper-probe was gated, so default
-# filtered+stricter fell back to isolated and (with the test
-# harness's FALLBACK=open override) ended up as `open` — i.e., the
-# whole suite ran with the network layer effectively disabled. v1.1
+# filtered fell back to isolated and (with the test harness's
+# FALLBACK=open override) ended up as `open` — i.e., the whole
+# suite ran with the network layer effectively disabled. v1.1
 # ungates the probe AND ships pasta in-tree, so filtered actually
 # resolves on every CI runner — and EVERY sandbox call would
 # suddenly run through pasta's netns, which breaks tests that
@@ -4533,7 +4535,7 @@ if (
 
     # Test 1: defaults
     [[ "$NETWORK_FILTER_MODE" == "filtered" ]] || { echo "default mode wrong"; exit 1; }
-    [[ "$NETWORK_FILTER_FALLBACK" == "stricter" ]] || { echo "default fallback wrong"; exit 1; }
+    [[ "$NETWORK_FILTER_FALLBACK" == "open" ]] || { echo "default fallback wrong"; exit 1; }
     # _NETWORK_BLOCKLIST_DEFAULTS is now empty (sentinel); the floor
     # lives in the shipped sandbox.conf so an operator editing their
     # config sees the policy table directly. Load the shipped

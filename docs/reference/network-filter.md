@@ -125,7 +125,7 @@ R3 in survey, deferred — see settylab/dotto-nexus#117).
 
 ## Fallback policies
 
-`NETWORK_FILTER_FALLBACK` (default: `stricter`):
+`NETWORK_FILTER_FALLBACK` (default: `open`):
 
 | Policy | If requested mode is unavailable on the backend |
 | --- | --- |
@@ -163,7 +163,7 @@ mode than requested. If you want `filtered` but want to accept
 ```bash
 # sandbox.conf
 NETWORK_FILTER_MODE="filtered"
-NETWORK_FILTER_FALLBACK="stricter"
+NETWORK_FILTER_FALLBACK="open"
 
 NETWORK_BLOCKLIST=(
     "*.untrusted-vendor.com"   # wildcard host block
@@ -380,9 +380,10 @@ agent-sandbox auto-detects `pasta` at session-start. Probe order:
    reserves slirp4netns support and currently downgrades to isolated
    mode with a warning when only slirp4netns is present.
 
-If pasta is missing, the resolver falls back per
-`NETWORK_FILTER_FALLBACK` (default `stricter` → `isolated`; loud
-warning naming the gap).
+If pasta is missing or its forwarding probe trips, the resolver
+falls back per `NETWORK_FILTER_FALLBACK` (default `open`; loud
+warning naming the gap). Sites that need the stronger default-deny
+posture should pin `stricter` (or `strict`) in their admin baseline.
 
 ### Helper validation: the forwarding probe
 

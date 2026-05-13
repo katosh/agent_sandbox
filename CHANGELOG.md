@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.10.0] - 2026-05-12
 
+### Changed
+
+- **`NETWORK_FILTER_FALLBACK` default flipped from `stricter` to
+  `open`** (in both the shipped `sandbox.conf` skeleton and the
+  `sandbox-lib.sh` runtime default). On kernel < 5.7 hosts (common
+  on shared HPC login nodes), pasta's `SO_BINDTODEVICE` call needs
+  `CAP_NET_RAW` even from an unprivileged process; without admin
+  intervention (`setcap cap_net_raw+ep` on the pasta binary) the
+  forwarding probe trips and `filtered` is unavailable. Under
+  `stricter`, the resolver would then fall to `isolated` — breaking
+  DNS / pip / git / API inside the sandbox and effectively refusing
+  to run on every legacy-kernel deployment. `open` keeps the
+  sandbox usable (loud warning, threat-class ports re-opened)
+  instead. Trade-off: out-of-the-box deployments on degraded hosts
+  retain host-network reach rather than killing outbound; sites
+  where the stronger default-deny posture is mandatory should pin
+  `NETWORK_FILTER_FALLBACK="stricter"` (or `strict`) in the admin
+  baseline (non-weakening per the admin-enforcement model).
+  Resolver unit test in `test.sh::11.4` updated to assert the new
+  default.
+
 ### Fixed
 
 - **`_pasta_can_forward_outbound` dead-code cleanup.** The post-
