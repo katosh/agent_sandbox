@@ -4543,11 +4543,21 @@ if (
     resolve_network_filter_mode landlock 2>/dev/null
     [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || exit 1
 
-    # Test 5b: filtered + open on bwrap-no-helper must NOT go stricter
-    # (to isolated). The `open` policy is "less restrictive only".
+    # Test 5b: filtered + open + bwrap — `open` policy NEVER strengthens.
+    # Under v1.0 (no helper) this resolved to 'open' (the regression
+    # guard). Under v1.1 (shipped pasta) filtered is available on
+    # bwrap, so the resolver returns 'filtered' directly (no fallback
+    # exercised). The invariant the test guards is "open policy never
+    # falls to a stricter mode than requested" — both outcomes
+    # satisfy it (filtered ≤ filtered, open < filtered). Branch on
+    # runner capability to keep the regression guard meaningful.
     NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=open
     resolve_network_filter_mode bwrap 2>/dev/null
-    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || { echo "open policy went stricter ($_NETWORK_FILTER_RESOLVED) — regression"; exit 1; }
+    if [[ "${_test_has_pasta:-0}" == "1" ]]; then
+        [[ "$_NETWORK_FILTER_RESOLVED" == "filtered" ]] || { echo "open policy regressed ($_NETWORK_FILTER_RESOLVED) — expected filtered (pasta present)"; exit 1; }
+    else
+        [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || { echo "open policy went stricter ($_NETWORK_FILTER_RESOLVED) — regression"; exit 1; }
+    fi
 
     # Test 5c: isolated + open + landlock → open (less-strict only)
     NETWORK_FILTER_MODE=isolated NETWORK_FILTER_FALLBACK=open
