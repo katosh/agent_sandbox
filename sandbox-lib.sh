@@ -1375,8 +1375,99 @@ _resolve_network_helper() {
     return 1
 }
 
+# Probe whether the resolved helper can actually forward outbound from
+# an unprivileged netns on this host. Returns 0 if forwarding is healthy,
+# 1 if the helper degrades to loopback-only (and so `filtered` mode would
+# silently behave like `isolated`).
+#
+# Why this exists. pasta uses SO_BINDTODEVICE to pin host-side sockets to
+# the outbound interface. On kernel < 5.7 (or any kernel without the
+# 2020 relaxation backported) SO_BINDTODEVICE requires CAP_NET_RAW in
+# the init userns; an unprivileged shell on a typical HPC login node has
+# neither root nor a `setcap cap_net_raw+ep`-blessed pasta. pasta still
+# starts under those conditions but logs `SO_BINDTODEVICE unavailable,
+# forwarding only 127.0.0.1 and ::1` and silently restricts forwarding
+# to loopback. Without this probe the resolver declares `filtered`
+# supported, the sandbox launches with the documented filtered argv,
+# and the agent gets no network at all on ports that should be allowed
+# (53, 443, ...) — the worst of both worlds: not isolated (no warning),
+# but no outbound. Probing catches that and lets `stricter` fallback do
+# its job (filtered → isolated, loud warning).
+#
+# The optional override NETWORK_FILTER_SKIP_HELPER_PROBE=1 bypasses the
+# probe for operators who know their pasta is healthy (e.g. setcap-
+# blessed system binary) and want to spend the ms elsewhere.
+#
+# Side effects (set in caller's scope; this function is invoked from
+# _prepare_network_helper_probe which is NOT in a subshell):
+#   _NETWORK_HELPER_PROBE_RESULT   — "ok" | "degraded" | "failed"
+#   _NETWORK_HELPER_DEGRADED_REASON — set on degraded/failed; consumed
+#                                     by resolve_network_filter_mode's
+#                                     `_why` switch.
+_pasta_can_forward_outbound() {
+    local _pasta="$1"
+    [[ -x "$_pasta" ]] || return 1
+    if [[ "${NETWORK_FILTER_SKIP_HELPER_PROBE:-0}" == "1" ]]; then
+        _NETWORK_HELPER_PROBE_RESULT="ok"
+        return 0
+    fi
+    # Run pasta with a no-op command and capture stderr. With --quiet
+    # pasta still prints the SO_BINDTODEVICE degradation banner — it's
+    # a critical fall-back notice, not a verbosity-gated message. Cap
+    # runtime with a short timeout in case pasta hangs on an exotic
+    # host config; the happy path exits in ~50ms.
+    local _stderr _rc
+    _stderr="$(timeout 5 "$_pasta" --foreground --quiet -- true 2>&1 1>/dev/null)" || true
+    _rc=$?
+    if [[ "$_stderr" == *"forwarding only 127.0.0.1"* ]]; then
+        _NETWORK_HELPER_PROBE_RESULT="degraded"
+        _NETWORK_HELPER_DEGRADED_REASON="pasta started but degraded to loopback-only forwarding (kernel SO_BINDTODEVICE unavailable to unprivileged users on this host); filtered mode would silently leave the agent with no outbound. Workarounds: (a) admin runs 'setcap cap_net_raw+ep $_pasta' on a system-wide pasta binary; (b) upgrade to kernel >= 5.7 with the SO_BINDTODEVICE relaxation; (c) pin NETWORK_FILTER_MODE=open or 'isolated' to make the choice explicit."
+        return 1
+    fi
+    if [[ "$_rc" -ne 0 ]]; then
+        _NETWORK_HELPER_PROBE_RESULT="failed"
+        _NETWORK_HELPER_DEGRADED_REASON="pasta probe exited with code $_rc (stderr: ${_stderr:-<empty>}); filtered mode is not safe to declare as deliverable on this host."
+        return 1
+    fi
+    _NETWORK_HELPER_PROBE_RESULT="ok"
+    return 0
+}
+
+# Resolve + probe the network helper in the caller's scope. Sets:
+#   _NETWORK_HELPER_PROBE_RESULT   — "ok" | "degraded" | "failed" | "none"
+#   _NETWORK_HELPER_DEGRADED_REASON — human-readable line for `_why`
+#                                     (set only on degraded/failed)
+#   _NETWORK_HELPER_RESOLVED_PATH   — helper path on resolve success
+#
+# Backend-agnostic at the entry point because only bwrap currently uses
+# the helper, but other backends can adopt the same probe by adding a
+# case below.
+_prepare_network_helper_probe() {
+    local _backend="$1"
+    _NETWORK_HELPER_PROBE_RESULT="none"
+    _NETWORK_HELPER_DEGRADED_REASON=""
+    _NETWORK_HELPER_RESOLVED_PATH=""
+    case "$_backend" in
+        bwrap) ;;
+        *) return 0 ;;
+    esac
+    local _helper
+    _helper="$(_resolve_network_helper)" || return 0
+    _NETWORK_HELPER_RESOLVED_PATH="$_helper"
+    if _pasta_can_forward_outbound "$_helper"; then
+        return 0
+    fi
+    return 0
+}
+
 # Backend-capability probe. Stdout: space-separated list of supported
 # modes for the given backend.
+#
+# Note: this function is invoked from `resolve_network_filter_mode` via
+# command substitution, so any variables it sets are confined to that
+# subshell. Side effects that must reach the caller (notably
+# _NETWORK_HELPER_PROBE_RESULT and _NETWORK_HELPER_DEGRADED_REASON) are
+# established BEFORE this call — see `_prepare_network_helper_probe`.
 _network_modes_supported_by_backend() {
     local _backend="$1"
     case "$_backend" in
@@ -1385,8 +1476,13 @@ _network_modes_supported_by_backend() {
             # DNS proxy AND enforces the port-level blocklist at its
             # own forwarding boundary (`-T ~N` outbound exclusions).
             # No nftables dependency.
+            #
+            # The helper must (a) resolve to an executable AND (b) pass
+            # the forwarding probe. (b) catches the kernel-< 5.7 /
+            # unprivileged-userns trap where pasta runs but silently
+            # forwards only loopback — see _pasta_can_forward_outbound.
             local _modes="open isolated"
-            if _resolve_network_helper >/dev/null 2>&1; then
+            if [[ "${_NETWORK_HELPER_PROBE_RESULT:-}" == "ok" ]]; then
                 _modes="open filtered isolated"
             fi
             echo "$_modes"
@@ -1479,6 +1575,11 @@ resolve_network_filter_mode() {
         *) echo "Error: NETWORK_FILTER_FALLBACK='$_policy' invalid (strict|stricter|open)." >&2; exit 1 ;;
     esac
 
+    # Run the helper-forwarding probe before evaluating supported modes.
+    # _network_modes_supported_by_backend reads _NETWORK_HELPER_PROBE_RESULT
+    # but cannot set it (it's invoked in a $(...) subshell below).
+    _prepare_network_helper_probe "$_backend"
+
     local _supported
     _supported=" $(_network_modes_supported_by_backend "$_backend") "
 
@@ -1494,7 +1595,13 @@ resolve_network_filter_mode() {
 
     local _why
     case "$_requested:$_backend" in
-        filtered:bwrap)    _why="filtered mode requires a network helper (pasta); none found on PATH and the shipped binary at tools/pasta/<arch>/pasta is missing or not executable." ;;
+        filtered:bwrap)
+            if [[ -n "${_NETWORK_HELPER_DEGRADED_REASON:-}" ]]; then
+                _why="$_NETWORK_HELPER_DEGRADED_REASON"
+            else
+                _why="filtered mode requires a network helper (pasta); none found on PATH and the shipped binary at tools/pasta/<arch>/pasta is missing or not executable."
+            fi
+            ;;
         filtered:firejail) _why="filtered mode on firejail requires a site-provisioned bridge (--net=<iface> + --netfilter); v1.1 does not auto-provision the bridge. Use bwrap for filtered mode, or accept the policy fallback." ;;
         filtered:landlock) _why="filtered mode requires a mount/network namespace; landlock has neither." ;;
         isolated:landlock) _why="isolated mode requires a network namespace; landlock has none." ;;

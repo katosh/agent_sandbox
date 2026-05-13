@@ -4500,6 +4500,26 @@ else
     export _test_has_pasta=0
 fi
 
+# Helper PRESENCE alone is not sufficient — pasta may start and then
+# degrade to loopback-only forwarding (kernel < 5.7 / unprivileged
+# userns / no CAP_NET_RAW). The resolver's pasta forwarding probe
+# catches that and falls back; the unit tests below must branch on the
+# resolver's actual verdict, not on binary-on-disk. Run filtered /
+# stricter once and record whether the resolver delivers filtered.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=stricter
+    resolve_network_filter_mode bwrap 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "filtered" ]]
+); then
+    export _test_filtered_deliverable=1
+else
+    export _test_filtered_deliverable=0
+fi
+
 echo "11.4. Network filter"
 
 # Mode-resolver unit tests via _SANDBOX_LIB_NO_INIT=1 harness — pure
@@ -4524,16 +4544,23 @@ if (
     [[ "${#NETWORK_BLOCKLIST[@]}" -ge 20 ]] || { echo "shipped sandbox.conf NETWORK_BLOCKLIST too short"; exit 1; }
 
     # Test 2: bwrap + filtered + stricter — v1.1 outcome depends on
-    # whether pasta is available on the runner.
-    #   pasta available  → resolves to 'filtered' (the v1.1 happy path)
-    #   pasta missing    → falls back to 'isolated' (stricter policy)
+    # whether the runner can actually deliver filtered. "Can deliver"
+    # = pasta resolves AND the forwarding probe passes. On Ubuntu
+    # 22.04+ runners (kernel >= 5.7 with the SO_BINDTODEVICE
+    # relaxation) the probe passes and we get filtered. On kernel <
+    # 5.7 hosts (e.g. Ubuntu 18.04 / Fred Hutch gizmo login nodes
+    # without a setcap-blessed pasta), pasta starts but degrades to
+    # loopback-only — the probe catches that and falls back to
+    # isolated. The pre-run capability detection
+    # (_test_filtered_deliverable) above is what the resolver itself
+    # decided.
     NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=stricter
     resolve_network_filter_mode bwrap 2>/dev/null
-    if [[ "${_test_has_pasta:-0}" == "1" ]]; then
-        [[ "$_NETWORK_FILTER_RESOLVED" == "filtered" ]] || { echo "v1.1: expected filtered (pasta present), got $_NETWORK_FILTER_RESOLVED"; exit 1; }
+    if [[ "${_test_filtered_deliverable:-0}" == "1" ]]; then
+        [[ "$_NETWORK_FILTER_RESOLVED" == "filtered" ]] || { echo "v1.1: expected filtered (deliverable on this runner), got $_NETWORK_FILTER_RESOLVED"; exit 1; }
         [[ -n "$_NETWORK_FILTER_HELPER" ]] || { echo "v1.1: helper path empty"; exit 1; }
     else
-        [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || { echo "expected fallback to isolated (no pasta on runner), got $_NETWORK_FILTER_RESOLVED"; exit 1; }
+        [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || { echo "expected fallback to isolated (filtered not deliverable on this runner), got $_NETWORK_FILTER_RESOLVED"; exit 1; }
     fi
 
     # Test 3: bwrap + isolated + stricter → isolated (no fallback needed)
@@ -4553,16 +4580,17 @@ if (
 
     # Test 5b: filtered + open + bwrap — `open` policy NEVER strengthens.
     # Under v1.0 (no helper) this resolved to 'open' (the regression
-    # guard). Under v1.1 (shipped pasta) filtered is available on
-    # bwrap, so the resolver returns 'filtered' directly (no fallback
-    # exercised). The invariant the test guards is "open policy never
-    # falls to a stricter mode than requested" — both outcomes
-    # satisfy it (filtered ≤ filtered, open < filtered). Branch on
-    # runner capability to keep the regression guard meaningful.
+    # guard). Under v1.1 with a deliverable pasta, the resolver returns
+    # 'filtered' directly (no fallback exercised). When pasta is
+    # missing OR degraded (probe-gated), filtered is unavailable and
+    # the open policy falls to 'open'. The invariant the test guards
+    # is "open policy never falls to a stricter mode than requested"
+    # — both outcomes satisfy it (filtered ≤ filtered, open <
+    # filtered). Branch on probe-actual deliverability.
     NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=open
     resolve_network_filter_mode bwrap 2>/dev/null
-    if [[ "${_test_has_pasta:-0}" == "1" ]]; then
-        [[ "$_NETWORK_FILTER_RESOLVED" == "filtered" ]] || { echo "open policy regressed ($_NETWORK_FILTER_RESOLVED) — expected filtered (pasta present)"; exit 1; }
+    if [[ "${_test_filtered_deliverable:-0}" == "1" ]]; then
+        [[ "$_NETWORK_FILTER_RESOLVED" == "filtered" ]] || { echo "open policy regressed ($_NETWORK_FILTER_RESOLVED) — expected filtered (deliverable)"; exit 1; }
     else
         [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || { echo "open policy went stricter ($_NETWORK_FILTER_RESOLVED) — regression"; exit 1; }
     fi
@@ -4614,6 +4642,76 @@ if (
     pass "Network filter: resolver unit tests (defaults, fallback, effective blocklist)"
 else
     fail "Network filter: resolver unit tests failed (rc=$?)"
+fi
+
+# Pasta forwarding-probe regression guard. Reproduces the kernel < 5.7 /
+# unprivileged-userns / no-CAP_NET_RAW host condition where pasta starts
+# but degrades to loopback-only forwarding (`SO_BINDTODEVICE unavailable,
+# forwarding only 127.0.0.1 and ::1`). Without the probe, the resolver
+# declared `filtered` supported on any host with an executable pasta —
+# and the sandbox launched with the documented filtered argv that
+# pasta then silently neutered. CI on Ubuntu 22.04+ never tripped over
+# this because the kernel allows SO_BINDTODEVICE; HPC login nodes
+# running kernel 5.4 (e.g. Fred Hutch gizmo) did, and got no outbound on
+# allowed ports. The probe + this test close the gap.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+
+    # Build a fake pasta stub matching the structure pasta emits when
+    # SO_BINDTODEVICE is denied. The exact substring 'forwarding only
+    # 127.0.0.1' is what the probe matches; everything else mirrors
+    # pasta's real banner so the stub stays realistic.
+    _stub_dir="$(mktemp -d "${TMPDIR:-/tmp}/pasta-degraded-stub.XXXXXX")"
+    trap 'rm -rf "$_stub_dir"' EXIT
+    cat >"$_stub_dir/pasta" <<'STUB'
+#!/usr/bin/env bash
+# Mimic pasta's loopback-only degradation banner. Print to stderr,
+# accept the same argv shape the real probe uses (--foreground --quiet
+# -- COMMAND), exit 0 so the probe can't fall through on rc.
+echo "SO_BINDTODEVICE unavailable, forwarding only 127.0.0.1 and ::1 for '-T auto'" >&2
+echo "SO_BINDTODEVICE unavailable, forwarding only 127.0.0.1 and ::1 for '-U auto'" >&2
+# Honour the trailing '--' COMMAND so the probe's `-- true` runs and
+# returns 0 without us needing to know the netns plumbing.
+_seen_sep=0
+for _a in "$@"; do
+    if [[ "$_seen_sep" == 1 ]]; then "$_a" "${@:2}" 2>/dev/null; exit $?; fi
+    [[ "$_a" == "--" ]] && _seen_sep=1
+done
+exit 0
+STUB
+    chmod 755 "$_stub_dir/pasta"
+
+    # Force the resolver onto our stub. Clearing PATH to the stub dir
+    # makes _resolve_network_helper find pasta on PATH first (before
+    # the in-tree binary).
+    PATH="$_stub_dir:$PATH"
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=stricter
+    # Suppress stderr so the fallback warning doesn't pollute test output;
+    # the assertions read state, not the banner.
+    resolve_network_filter_mode bwrap 2>/dev/null
+
+    [[ "$_NETWORK_HELPER_PROBE_RESULT" == "degraded" ]] || \
+        { echo "expected probe result 'degraded', got '$_NETWORK_HELPER_PROBE_RESULT'"; exit 1; }
+    [[ -n "$_NETWORK_HELPER_DEGRADED_REASON" ]] || \
+        { echo "_NETWORK_HELPER_DEGRADED_REASON empty"; exit 1; }
+    [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || \
+        { echo "expected fallback to isolated, got '$_NETWORK_FILTER_RESOLVED'"; exit 1; }
+
+    # Override must bypass the probe — operators with a setcap-blessed
+    # pasta need an escape hatch.
+    NETWORK_FILTER_SKIP_HELPER_PROBE=1 \
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=stricter
+    resolve_network_filter_mode bwrap 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "filtered" ]] || \
+        { echo "SKIP_HELPER_PROBE=1 didn't restore filtered, got '$_NETWORK_FILTER_RESOLVED'"; exit 1; }
+    exit 0
+); then
+    pass "Network filter: pasta forwarding probe gates filtered when helper degrades to loopback-only"
+else
+    fail "Network filter: pasta forwarding probe test failed (rc=$?)"
 fi
 
 # Mode resolution failure paths exit the parent process via _network_filter_fail.

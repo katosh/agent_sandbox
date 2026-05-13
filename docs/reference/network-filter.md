@@ -384,6 +384,52 @@ If pasta is missing, the resolver falls back per
 `NETWORK_FILTER_FALLBACK` (default `stricter` → `isolated`; loud
 warning naming the gap).
 
+### Helper validation: the forwarding probe
+
+Pasta-binary presence is necessary but not sufficient. On kernels
+that still gate `SO_BINDTODEVICE` behind `CAP_NET_RAW` (most kernels
+< 5.7, or any host without the 2020 relaxation backported), an
+unprivileged pasta starts but logs
+
+```
+SO_BINDTODEVICE unavailable, forwarding only 127.0.0.1 and ::1 for '-T auto'
+SO_BINDTODEVICE unavailable, forwarding only 127.0.0.1 and ::1 for '-U auto'
+```
+
+and silently restricts forwarding to loopback. The sandbox would
+launch with the documented pasta argv, and the agent would lose
+outbound on every port — including ports the blocklist did not
+exclude. Both the threat-model intent (close mail-relay / webhook /
+paste / DoH / legacy-r-services) and the operator's reach
+expectation collapse.
+
+To close that gap, `_pasta_can_forward_outbound` runs
+`pasta --foreground --quiet -- true` after resolving the binary,
+inspects stderr for the `forwarding only 127.0.0.1` banner, and on
+match flips `_NETWORK_HELPER_PROBE_RESULT="degraded"`. The resolver
+treats degraded helpers identically to missing helpers — `filtered`
+is not in the supported-modes set; fallback proceeds per
+`NETWORK_FILTER_FALLBACK`. The fallback warning quotes the specific
+degradation reason rather than the generic "pasta not found" line so
+the operator knows the path forward:
+
+1. **`setcap cap_net_raw+ep <pasta>`** on a system-wide pasta binary
+   (admin/root needed; cleanest fix; survives upgrades until the
+   pasta package version changes).
+2. **Upgrade to kernel ≥ 5.7** with the SO_BINDTODEVICE relaxation.
+3. **Pin `NETWORK_FILTER_MODE=open` or `isolated`** to make the
+   reach trade-off explicit.
+
+#### Probe escape hatch — `NETWORK_FILTER_SKIP_HELPER_PROBE=1`
+
+Operators who have verified their pasta's host-side forwarding works
+(e.g. ran the `setcap` step above) can set
+`NETWORK_FILTER_SKIP_HELPER_PROBE=1` to skip the ~50ms probe per
+sandbox start. **Do not set it as a workaround for the degradation
+warning** — setting it on a host where pasta actually degrades
+re-introduces the silent-loopback-only failure mode that the probe
+exists to catch.
+
 ## Real-world recipe — verify filtered mode is enforcing
 
 After deploying v1.1, an operator can confirm `filtered` mode is
@@ -433,17 +479,27 @@ isolated` because pasta is missing, or `filtered → open` under a
 
 ### "filtered fell back to isolated" on startup (v1.1)
 
-`filtered` requires `pasta`. Common causes:
+`filtered` requires `pasta` AND a working `SO_BINDTODEVICE`. Common
+causes (the fallback warning quotes the specific reason):
 
 - `pasta` not detected: agent-sandbox ships `tools/pasta/<arch>/pasta`
   by default. If you removed it (or are on an unsupported arch like
   aarch64 in v1.1), install via distro package (`apt install passt` /
   `dnf install passt` / `brew install passt`) or run
-  `tools/pasta/fetch.sh` to refresh.
+  `tools/pasta/fetch.sh` to refresh. `make install` lays the shipped
+  binary down at `<prefix>/lib/agent-sandbox/tools/pasta/<arch>/pasta`
+  automatically; if you installed via `make install` and the binary
+  is missing there, re-run `make install`.
 - Custom `PATH`: the probe uses `command -v pasta` first; if your
   shell prunes `PATH` aggressively, ensure `/usr/bin` (or wherever
   your distro ships `pasta`) is reachable, or rely on the shipped
   in-tree binary which is path-independent.
+- **`pasta` present but degraded to loopback-only** (kernel < 5.7 /
+  unprivileged userns / no `CAP_NET_RAW`). The fallback warning will
+  quote `pasta started but degraded to loopback-only forwarding`.
+  See "Helper validation: the forwarding probe" above for the
+  three workarounds; the operationally cleanest is an admin running
+  `setcap cap_net_raw+ep` on a system-wide pasta binary.
 
 Fallback alternatives, all valid:
 

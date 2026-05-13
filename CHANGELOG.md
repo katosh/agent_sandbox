@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`make install` now installs `tools/pasta/`.** v1.1 ships the
+  pasta helper at `tools/pasta/<arch>/pasta` and
+  `_resolve_network_helper` looks for it at
+  `<SANDBOX_DIR>/tools/pasta/<arch>/pasta`, but the Makefile's
+  `install-lib` rule did not copy the `tools/` tree. Result: every
+  `make install`-based deployment without a distro `passt` package
+  on PATH silently dropped to the resolver's "no helper found"
+  fallback path. Fix copies the entire `tools/pasta/{fetch.sh,
+  README.md,<arch>/*}` tree to `<prefix>/lib/agent-sandbox/tools/
+  pasta/` with executable bits preserved on `fetch.sh` and the
+  per-arch `pasta` binary.
+
+- **Helper presence ≠ helper deliverability.** v1.1 declared
+  `filtered` supported on any host with an executable pasta. On
+  kernels < 5.7 / unprivileged userns / no `CAP_NET_RAW`, pasta
+  starts but degrades to loopback-only forwarding — the sandbox
+  then launched with the documented filtered argv and the agent
+  lost outbound on every port, including ports the blocklist did
+  not exclude (silent worst-of-both-worlds). Added
+  `_pasta_can_forward_outbound`: probes pasta's stderr for the
+  `forwarding only 127.0.0.1` banner; on match the resolver falls
+  back per `NETWORK_FILTER_FALLBACK` (default stricter→isolated)
+  with the specific degradation reason quoted in the warning.
+  Escape hatch: `NETWORK_FILTER_SKIP_HELPER_PROBE=1` for operators
+  who have validated pasta out-of-band (`setcap cap_net_raw+ep` or
+  newer kernel). CI hosts (Ubuntu 22.04+) are unaffected; HPC
+  login-node deployments now degrade gracefully and explicitly.
+  Regression test in `test.sh::11.4` stubs a degraded pasta and
+  asserts both the fallback and the override behaviour.
+
 ### Security
 
 - **Network filter v1.1 — port-level `filtered`-mode enforcement
@@ -63,6 +95,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `slirp4netns` (currently downgrades to isolated mode with a
   warning; slirp4netns CLI shape differs and is follow-up work).
 
+  **Forwarding-capability probe.** Helper presence is now necessary
+  but not sufficient. After resolving a pasta binary the resolver
+  runs `pasta --foreground --quiet -- true` and inspects stderr for
+  the `SO_BINDTODEVICE unavailable, forwarding only 127.0.0.1` banner
+  pasta emits when its host-side outbound bind is denied (kernel
+  < 5.7 / unprivileged userns / no `CAP_NET_RAW` — typical HPC
+  login-node profile). When the probe trips, the resolver treats the
+  helper as unavailable, falls back per `NETWORK_FILTER_FALLBACK`,
+  and quotes the specific degradation reason in the warning rather
+  than the generic "pasta not found" line. Without this probe, v1.1
+  would have silently launched the documented pasta argv on degraded
+  hosts and left the agent with no outbound on every port — the
+  worst-of-both-worlds. Escape hatch:
+  `NETWORK_FILTER_SKIP_HELPER_PROBE=1` for operators who have
+  validated pasta out-of-band (e.g. via `setcap cap_net_raw+ep`).
+  See `docs/reference/network-filter.md` → "Helper validation: the
+  forwarding probe" for the full rationale and workarounds.
+
   **Test coverage.** `test.sh::11.4` is extended with:
   - pasta port-exclusion generator unit tests: bare-port /
     universal-CIDR-port / loopback-host-port → `~N` emission;
@@ -72,13 +122,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - Empirical `filtered`-mode integration (skips cleanly when
     pasta missing from the runner): port 25 must drop;
     github.com:443 must remain reachable through the pasta tap.
-  - v1.0 test 2 (`filtered + stricter`) is rewritten to branch on
-    runner capability (`_test_has_pasta`) — legacy fallback
-    behaviour on no-pasta runners, v1.1 happy path on
-    fully-equipped runners.
+  - v1.0 test 2 (`filtered + stricter`) now branches on
+    `_test_filtered_deliverable` (resolver's actual verdict on the
+    runner, which includes the forwarding probe), not just
+    binary-on-disk. Catches the "pasta present but degraded" case
+    that the presence-only check would have missed.
+  - New regression guard: a stubbed pasta that emits the
+    `forwarding only 127.0.0.1` banner triggers the resolver's
+    degraded path; assert fallback to isolated AND
+    `_NETWORK_HELPER_DEGRADED_REASON` is set. Also asserts
+    `NETWORK_FILTER_SKIP_HELPER_PROBE=1` restores filtered.
   - The "strict + unavailable-filtered → must exit" assertion is
-    moved from bwrap (which now resolves with the shipped pasta)
-    to landlock (deterministically unsupported on every runner).
+    moved from bwrap (which now resolves with the shipped pasta on
+    most runners) to landlock (deterministically unsupported on
+    every runner).
 
   **Firejail + landlock parity (unchanged from v1.0).** Firejail's
   `--netfilter` requires a private netns wired to a host bridge
