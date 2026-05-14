@@ -1551,33 +1551,7 @@ TCP path itself at a layer the agent cannot escape.</p>
   as the Layer 3 complement.</li>
 </ul>
 <h2 id="modes">Modes<a class="headerlink" href="#modes" title="Permanent link">&para;</a></h2>
-<p><code>NETWORK_FILTER_MODE</code> (default: <code>filtered</code>):</p>
-<table>
-<thead>
-<tr>
-<th>Mode</th>
-<th>Mechanism</th>
-<th>Network reach</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>open</code></td>
-<td>share the host network namespace; no isolation</td>
-<td>full host network (legacy behaviour)</td>
-</tr>
-<tr>
-<td><code>filtered</code></td>
-<td>new netns (Linux network namespace — a per-process isolated network stack) + helper (pasta or slirp4netns); apply default-deny floor + user/admin blocklist</td>
-<td>general outbound TCP/UDP/DNS minus the threat ports</td>
-</tr>
-<tr>
-<td><code>isolated</code></td>
-<td>new netns with no network at all</td>
-<td>none (DNS / pip / git break)</td>
-</tr>
-</tbody>
-</table>
+<p>The three values of <a href="../../configure/#network_filter_mode"><code>NETWORK_FILTER_MODE</code></a> — <code>open</code>, <code>filtered</code>, <code>isolated</code> — and the mechanism each selects (host netns vs. new netns + pasta vs. new netns with no network) are defined on the configure page. This section covers v1.1's <em>behavioural</em> detail: what <code>filtered</code> actually enforces at runtime, what it skips, and the upgrade flip from v1.0.</p>
 <p><strong>Default state (v1.1).</strong> When <code>pasta</code> is available on the host,
 <code>NETWORK_FILTER_MODE=filtered</code> delivers port-level outbound
 enforcement: pasta provisions a netns with a tap interface
@@ -1660,29 +1634,7 @@ port-class closure. The hostname-level entries in the default
 blocklist are tracked for v1.2 L7-proxy work (SNI-aware filtering;
 R3 in survey, deferred — see settylab/dotto-nexus#117).</p>
 <h2 id="fallback-policies">Fallback policies<a class="headerlink" href="#fallback-policies" title="Permanent link">&para;</a></h2>
-<p><code>NETWORK_FILTER_FALLBACK</code> (default: <code>open</code>):</p>
-<table>
-<thead>
-<tr>
-<th>Policy</th>
-<th>If requested mode is unavailable on the backend</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>strict</code></td>
-<td>Sandbox refuses to launch. Loud error with fix-paths.</td>
-</tr>
-<tr>
-<td><code>stricter</code></td>
-<td>Fall back ONLY to a STRICTER (more restrictive) mode. Loud warning. If no stricter mode is possible (e.g. landlock has no netns), the sandbox refuses to launch with an explicit fix-path enumeration.</td>
-</tr>
-<tr>
-<td><code>open</code></td>
-<td>Fall back ONLY to a LESS restrictive mode (loud warning). NEVER falls to a stricter mode than requested — the policy name reflects user intent ("OK to weaken, but don't strengthen against my wishes"). Probe order: most-strict-of-the-less-strict first (e.g. <code>isolated</code> requested → try <code>filtered</code> before <code>open</code>).</td>
-</tr>
-</tbody>
-</table>
+<p>The three values of <a href="../../configure/#network_filter_fallback"><code>NETWORK_FILTER_FALLBACK</code></a> — <code>strict</code>, <code>stricter</code>, <code>open</code> — and the strictness ordering (<code>open</code> &lt; <code>stricter</code> &lt; <code>strict</code>) live on the configure page. The interesting content here is <em>which backend can deliver which mode</em> and <em>what each fallback policy actually produces per requested-mode × backend-support combination</em>.</p>
 <p>Per-backend support, v1.1:</p>
 <table>
 <thead>
@@ -1782,21 +1734,7 @@ mode than requested. If you want <code>filtered</code> but want to accept
 <code>isolated</code> as a fallback when no helper is available, use
 <code>stricter</code> (not <code>open</code>).</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># sandbox.conf</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nv">NETWORK_FILTER_MODE</span><span class="o">=</span><span class="s2">&quot;filtered&quot;</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nv">NETWORK_FILTER_FALLBACK</span><span class="o">=</span><span class="s2">&quot;open&quot;</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">=(</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="s2">&quot;*.untrusted-vendor.com&quot;</span><span class="w">   </span><span class="c1"># wildcard host block</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="s2">&quot;10.0.0.0/8:25&quot;</span><span class="w">            </span><span class="c1"># site-specific CIDR + port</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="c1"># … see sandbox.conf for additional examples</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="o">)</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="nv">NETWORK_BLOCKLIST_EXCEPT</span><span class="o">=(</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">    </span><span class="s2">&quot;mybucket.s3.amazonaws.com&quot;</span><span class="w">  </span><span class="c1"># carve out a specific bucket</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">    </span><span class="c1"># … see &quot;Precedence model&quot; below</span>
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="o">)</span>
-</span></code></pre></div>
+<p>The user-facing knobs — <code>NETWORK_FILTER_MODE</code>, <code>NETWORK_FILTER_FALLBACK</code>, <code>NETWORK_BLOCKLIST</code>, <code>NETWORK_BLOCKLIST_EXCEPT</code>, and the <code>NETWORK_FILTER_SKIP_HELPER_PROBE</code> env override — are documented per-knob in the <a href="../../configure/#network-filter">configure page's Network filter section</a>. This section covers the syntax of blocklist patterns and the runtime apply order; the precedence model and worked examples follow below.</p>
 <h3 id="pattern-syntax-for-network_blocklist-and-network_blocklist_except">Pattern syntax for <code>NETWORK_BLOCKLIST</code> and <code>NETWORK_BLOCKLIST_EXCEPT</code><a class="headerlink" href="#pattern-syntax-for-network_blocklist-and-network_blocklist_except" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -1853,10 +1791,10 @@ mode than requested. If you want <code>filtered</code> but want to accept
    load — see "Precedence model" below).</li>
 </ol>
 <p>Inspect the effective lists at runtime:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># From a test harness or sandbox-aware tool</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nb">source</span><span class="w"> </span>sandbox-lib.sh
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>effective_network_blocklist<span class="w">       </span><span class="c1"># block entries (floor + admin + user)</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>effective_network_exception_list<span class="w">  </span><span class="c1"># allowed exceptions (admin + user, post-strip)</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># From a test harness or sandbox-aware tool</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">source</span><span class="w"> </span>sandbox-lib.sh
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>effective_network_blocklist<span class="w">       </span><span class="c1"># block entries (floor + admin + user)</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>effective_network_exception_list<span class="w">  </span><span class="c1"># allowed exceptions (admin + user, post-strip)</span>
 </span></code></pre></div>
 <h2 id="precedence-model">Precedence model<a class="headerlink" href="#precedence-model" title="Permanent link">&para;</a></h2>
 <p>Policy resolution under v1.1 enforcement (bwrap + pasta + nft):</p>
@@ -1930,17 +1868,17 @@ mode than requested. If you want <code>filtered</code> but want to accept
 <p>A <code>NETWORK_BLOCKLIST</code> entry set in <code>sandbox-admin.conf</code> cannot be
 carved out by a user <code>NETWORK_BLOCKLIST_EXCEPT</code>. The check runs at
 config-load time under bash-glob semantics:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># admin sandbox-admin.conf</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">+=(</span><span class="s2">&quot;*.example.com&quot;</span><span class="o">)</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># user sandbox.conf</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="nv">NETWORK_BLOCKLIST_EXCEPT</span><span class="o">+=(</span><span class="s2">&quot;api.example.com&quot;</span><span class="o">)</span><span class="w">   </span><span class="c1"># stripped at load!</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># admin sandbox-admin.conf</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">+=(</span><span class="s2">&quot;*.example.com&quot;</span><span class="o">)</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1"># user sandbox.conf</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="nv">NETWORK_BLOCKLIST_EXCEPT</span><span class="o">+=(</span><span class="s2">&quot;api.example.com&quot;</span><span class="o">)</span><span class="w">   </span><span class="c1"># stripped at load!</span>
 </span></code></pre></div>
 <p>The user's <code>api.example.com</code> exception is removed and a warning is
 emitted:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>WARNING: User config attempted to except &#39;api.example.com&#39; but
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>admin NETWORK_BLOCKLIST has &#39;*.example.com&#39; which covers it —
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>exception stripped (admin policy is absolute).
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>WARNING: User config attempted to except &#39;api.example.com&#39; but
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>admin NETWORK_BLOCKLIST has &#39;*.example.com&#39; which covers it —
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>exception stripped (admin policy is absolute).
 </span></code></pre></div>
 <p>Admins can carve their own exceptions in their own
 <code>NETWORK_BLOCKLIST_EXCEPT</code> (admin policy is the floor for both
@@ -1948,14 +1886,14 @@ arrays).</p>
 <h3 id="implicit-allowlist-idiom-exact-hosts">Implicit-allowlist idiom (<code>*</code> + exact hosts)<a class="headerlink" href="#implicit-allowlist-idiom-exact-hosts" title="Permanent link">&para;</a></h3>
 <p>For deployments that want deny-by-default semantics, the canonical
 pattern is:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">+=(</span><span class="s2">&quot;*&quot;</span><span class="o">)</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nv">NETWORK_BLOCKLIST_EXCEPT</span><span class="o">+=(</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="s2">&quot;github.com&quot;</span><span class="w"> </span><span class="s2">&quot;api.github.com&quot;</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="s2">&quot;api.anthropic.com&quot;</span><span class="w"> </span><span class="s2">&quot;api.openai.com&quot;</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="s2">&quot;pypi.org&quot;</span><span class="w"> </span><span class="s2">&quot;files.pythonhosted.org&quot;</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="s2">&quot;conda.anaconda.org&quot;</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span><span class="c1"># … your minimal essential set</span>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="o">)</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">+=(</span><span class="s2">&quot;*&quot;</span><span class="o">)</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="nv">NETWORK_BLOCKLIST_EXCEPT</span><span class="o">+=(</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="s2">&quot;github.com&quot;</span><span class="w"> </span><span class="s2">&quot;api.github.com&quot;</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="s2">&quot;api.anthropic.com&quot;</span><span class="w"> </span><span class="s2">&quot;api.openai.com&quot;</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="s2">&quot;pypi.org&quot;</span><span class="w"> </span><span class="s2">&quot;files.pythonhosted.org&quot;</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="s2">&quot;conda.anaconda.org&quot;</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">    </span><span class="c1"># … your minimal essential set</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="o">)</span>
 </span></code></pre></div>
 <p>The <code>*</code> rule has the lowest specificity, so any exact-host exception
 overrides it. Future-deferred: a curated default-allowlist preset
@@ -1968,12 +1906,12 @@ shape.</p>
 <h2 id="resolver-pinning-is-it-needed">Resolver pinning — is it needed?<a class="headerlink" href="#resolver-pinning-is-it-needed" title="Permanent link">&para;</a></h2>
 <p>Empirically verified on a representative HPC node (<code>gizmok87</code>,
 Ubuntu 18.04, kernel 5.4):</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>$ stat -c &#39;%a %F %N&#39; /etc/resolv.conf
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>777 symbolic link &#39;/etc/resolv.conf&#39; -&gt; &#39;../run/systemd/resolve/stub-resolv.conf&#39;
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>$ ls -lL /etc/resolv.conf
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>-rw-r--r-- 1 nobody 732 May 12 14:54 /etc/resolv.conf
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>$ [[ -w /etc/resolv.conf ]] &amp;&amp; echo writable || echo RO
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>RO
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>$ stat -c &#39;%a %F %N&#39; /etc/resolv.conf
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>777 symbolic link &#39;/etc/resolv.conf&#39; -&gt; &#39;../run/systemd/resolve/stub-resolv.conf&#39;
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>$ ls -lL /etc/resolv.conf
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>-rw-r--r-- 1 nobody 732 May 12 14:54 /etc/resolv.conf
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>$ [[ -w /etc/resolv.conf ]] &amp;&amp; echo writable || echo RO
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>RO
 </span></code></pre></div>
 <p><code>/etc/resolv.conf</code> is RO to unprivileged users on the host, and
 inside the sandbox <code>/etc</code> is bind-mounted read-only via
@@ -2083,8 +2021,8 @@ posture should pin <code>stricter</code> (or <code>strict</code>) in their admin
 that still gate <code>SO_BINDTODEVICE</code> behind <code>CAP_NET_RAW</code> (most kernels
 &lt; 5.7, or any host without the 2020 relaxation backported), an
 unprivileged pasta starts but logs</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>SO_BINDTODEVICE unavailable, forwarding only 127.0.0.1 and ::1 for &#39;-T auto&#39;
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>SO_BINDTODEVICE unavailable, forwarding only 127.0.0.1 and ::1 for &#39;-U auto&#39;
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>SO_BINDTODEVICE unavailable, forwarding only 127.0.0.1 and ::1 for &#39;-T auto&#39;
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>SO_BINDTODEVICE unavailable, forwarding only 127.0.0.1 and ::1 for &#39;-U auto&#39;
 </span></code></pre></div>
 <p>and silently restricts forwarding to loopback. The sandbox would
 launch with the documented pasta argv, and the agent would lose
@@ -2121,24 +2059,24 @@ exists to catch.</p>
 <p>After deploying v1.1, an operator can confirm <code>filtered</code> mode is
 actually enforcing inside their sandbox with a handful of one-liners.
 Run each inside a sandbox session:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># (1) DNS + general egress: should resolve + reach github.com.</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>getent<span class="w"> </span>hosts<span class="w"> </span>github.com<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span>curl<span class="w"> </span>-fsS<span class="w"> </span>--max-time<span class="w"> </span><span class="m">5</span><span class="w"> </span>-o<span class="w"> </span>/dev/null<span class="w"> </span>-w<span class="w"> </span><span class="s1">&#39;%{http_code}\n&#39;</span><span class="w"> </span>https://github.com/
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># Expected: A/AAAA record + &quot;200&quot; or &quot;301&quot;.</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="c1"># (2) SMTP submission: must fail. The universal port-25 closure plus</span>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># pasta&#39;s empty loopback both block the path.</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/127.0.0.1/25<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — SMTP closed (expected)&quot;</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="c1"># Expected: &quot;BLOCKED&quot; (Connection refused / ENETUNREACH).</span>
-</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>
-</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="c1"># (3) DoT (DNS-over-TLS) evasion port: must fail. Universal port-853</span>
-</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="c1"># closure.</span>
-</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/1.1.1.1/853<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — DoT closed (expected)&quot;</span>
-</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="c1"># Expected: &quot;BLOCKED&quot;.</span>
-</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>
-</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a><span class="c1"># (4) Telnet (legacy r-services): must fail. Port 23 closure.</span>
-</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/127.0.0.1/23<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — telnet closed (expected)&quot;</span>
-</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a><span class="c1"># Expected: &quot;BLOCKED&quot;.</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># (1) DNS + general egress: should resolve + reach github.com.</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>getent<span class="w"> </span>hosts<span class="w"> </span>github.com<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span>curl<span class="w"> </span>-fsS<span class="w"> </span>--max-time<span class="w"> </span><span class="m">5</span><span class="w"> </span>-o<span class="w"> </span>/dev/null<span class="w"> </span>-w<span class="w"> </span><span class="s1">&#39;%{http_code}\n&#39;</span><span class="w"> </span>https://github.com/
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Expected: A/AAAA record + &quot;200&quot; or &quot;301&quot;.</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="c1"># (2) SMTP submission: must fail. The universal port-25 closure plus</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="c1"># pasta&#39;s empty loopback both block the path.</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/127.0.0.1/25<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — SMTP closed (expected)&quot;</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="c1"># Expected: &quot;BLOCKED&quot; (Connection refused / ENETUNREACH).</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="c1"># (3) DoT (DNS-over-TLS) evasion port: must fail. Universal port-853</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="c1"># closure.</span>
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/1.1.1.1/853<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — DoT closed (expected)&quot;</span>
+</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="c1"># Expected: &quot;BLOCKED&quot;.</span>
+</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>
+</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a><span class="c1"># (4) Telnet (legacy r-services): must fail. Port 23 closure.</span>
+</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/127.0.0.1/23<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — telnet closed (expected)&quot;</span>
+</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a><span class="c1"># Expected: &quot;BLOCKED&quot;.</span>
 </span></code></pre></div>
 <p>Note that v1.1 enforces <em>port-level</em> blocks at pasta's boundary,
 not hostname-level blocks. A request like
@@ -2219,26 +2157,14 @@ runs that need ports the default blocklist closes can either:</p>
 <p>The test suite already gates its network-dependent sections on the
 resolved mode (see <code>test.sh</code> section 11.4 "Network filter").</p>
 <h2 id="admin-enforcement-sandbox-adminconf">Admin enforcement (sandbox-admin.conf)<a class="headerlink" href="#admin-enforcement-sandbox-adminconf" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># /etc/agent-sandbox/sandbox-admin.conf</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="nv">NETWORK_FILTER_MODE</span><span class="o">=</span><span class="s2">&quot;filtered&quot;</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="nv">NETWORK_FILTER_FALLBACK</span><span class="o">=</span><span class="s2">&quot;strict&quot;</span><span class="w">      </span><span class="c1"># admins typically pin strict</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="nv">NETWORK_BLOCKLIST</span><span class="o">=(</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">    </span><span class="s2">&quot;hooks.slack.com&quot;</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">    </span><span class="s2">&quot;api.mailgun.net&quot;</span>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">    </span><span class="c1"># … site-specific must-blocks</span>
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="o">)</span>
-</span></code></pre></div>
-<p>User config can only request:</p>
+<p>An admin baseline pins values that user config cannot weaken. Per-knob admin-enforcement semantics are documented on the configure page (each knob's <em>Admin-enforced</em> field); the consolidated view for the network-filter knobs:</p>
 <ul>
-<li>A mode <code>&gt;=</code> the admin pin in the strictness ordering
-  (<code>open</code> &lt; <code>filtered</code> &lt; <code>isolated</code>).</li>
-<li>A fallback policy <code>&gt;=</code> the admin pin
-  (<code>open</code> &lt; <code>stricter</code> &lt; <code>strict</code>).</li>
-<li>A <code>NETWORK_BLOCKLIST</code> that is a superset of the admin's (entries
-  the admin set cannot be removed).</li>
+<li><code>NETWORK_FILTER_MODE</code> — user can only request a mode <code>&gt;=</code> the admin pin in the strictness ordering <code>open</code> &lt; <code>filtered</code> &lt; <code>isolated</code>.</li>
+<li><code>NETWORK_FILTER_FALLBACK</code> — user can only request a fallback policy <code>&gt;=</code> the admin pin in the strictness ordering <code>open</code> &lt; <code>stricter</code> &lt; <code>strict</code>.</li>
+<li><code>NETWORK_BLOCKLIST</code> — admin entries become a floor; the user's effective list must be a superset (entries the admin set cannot be removed).</li>
+<li><code>NETWORK_BLOCKLIST_EXCEPT</code> — user exceptions covered by an admin <code>NETWORK_BLOCKLIST</code> pattern are stripped at config-load (admin policy is absolute; see <a href="#admin-precedence">Admin precedence</a> above).</li>
 </ul>
-<p>Violations are restored at config-load time with a warning naming the
-offending entry.</p>
+<p>Violations are restored at config-load time with a <code>WARNING</code> naming the offending entry. See <a href="../../configure/#network_filter_mode"><code>NETWORK_FILTER_MODE</code></a> and adjacent entries on the configure page for the knob-level reference.</p>
 <h2 id="see-also">See also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../security/">Security model</a> — overall sandbox threat model and
