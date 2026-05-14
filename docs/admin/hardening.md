@@ -263,6 +263,12 @@ All three options use a **default-allow** policy for general web access (researc
 
 **Recommendation:** Option B is the best balance for admin-managed deployments — no dedicated accounts needed, transparent to processes, and works with all backends. Option C provides the deepest control (logging, rate-limiting, policy-as-code) and requires no admin, but needs proxy configuration. Option A is simplest if dedicated accounts (Section 3) are already deployed.
 
+### Outbound mail — a discrete hardened sub-policy (v0.10.2)
+
+The built-in [network filter](../reference/network-filter.md#modes) closes SMTP submission ports (25 / 465 / 587 / 2525 / 24) at the namespace edge, plus the local-MTA loopback variants. v0.10.2 adds an **upstream** layer: [`NETWORK_MAIL_BLOCK`](../reference/network-filter.md#outbound-mail-policy) replaces every canonical mailer binary inside the sandbox (sendmail, mail, mailx, mutt, msmtp, ssmtp, s-nail, swaks, postfix admin tools, exim, dma, qmail clients) with a stub that prints a deterrent message addressed to the agent and exits 77 (sysexits `EX_NOPERM`). The stub catches the `execve` syscall, so the agent reads the policy in plain text before the kernel drops the connection — converting a 30-second SMTP timeout (which reads as transient and invites retry) into an immediate, intelligible refusal.
+
+The two layers compose: the stub catches every UNIX tool that respects the sendmail interface, the network filter catches application-level dialers (`python -c 'import smtplib...'`, `curl smtp://`, `nc <host> 25`). Default `auto` activates the stub whenever `NETWORK_FILTER_MODE != open`, so any of Options A / B / C above complements it cleanly: the sandbox-local stub layer fires inside the namespace, the host-side rules / proxy fire on the wire. Admins who want the layer on regardless of the user's network mode can pin `NETWORK_MAIL_BLOCK="on"` in `sandbox-admin.conf` (non-weakening; users can request equal or stricter).
+
 ---
 
 ## 5. Audit Logging

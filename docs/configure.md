@@ -80,6 +80,7 @@ Without an admin baseline, `~/.config/agent-sandbox/sandbox.conf` is the only co
 | [`NETWORK_FILTER_FALLBACK`](#network_filter_fallback) | scalar | **harden-only** | `open` |
 | [`NETWORK_BLOCKLIST`](#network_blocklist) | array | **yes** (admin entries floor) | built-in floor (SMTP submission, webhook/paste/DoH exfil surfaces, legacy r-services) |
 | [`NETWORK_BLOCKLIST_EXCEPT`](#network_blocklist_except) | array | additive; user entries covered by an admin BLOCKLIST pattern are stripped | `()` |
+| [`NETWORK_MAIL_BLOCK`](#network_mail_block) | scalar | **harden-only** (user can only request equal or stricter; off < auto < on) | `auto` |
 | [`NETWORK_FILTER_SKIP_HELPER_PROBE`](#network_filter_skip_helper_probe) | env override | no | `0` |
 | [`SLURM_SCOPE`](#slurm_scope) | scalar | no | `project` |
 | [`CHAPERON_LOG_LEVEL`](#chaperon_log_level) | scalar | no | `info` |
@@ -558,6 +559,37 @@ NETWORK_BLOCKLIST_EXCEPT+=(
 ```
 
 Admin policy is absolute: a user exception covered by an admin-set `NETWORK_BLOCKLIST` pattern is stripped at config-load. See [Admin precedence](reference/network-filter.md#admin-precedence) and [Implicit-allowlist idiom](reference/network-filter.md#implicit-allowlist-idiom-exact-hosts) on the reference page.
+
+### `NETWORK_MAIL_BLOCK`
+
+**Type** scalar `auto` \| `on` \| `off` · **Admin-enforced** harden-only (user can only request equal or stricter; `off < auto < on`) · **Default** `auto`
+
+Defense-in-depth above [`NETWORK_FILTER_MODE`](#network_filter_mode)'s port-level SMTP block. When active, the launcher replaces every canonical mailer binary inside the sandbox — `sendmail`, `mail`, `mailx`, `mutt`, `msmtp`, `ssmtp`, `s-nail`, `swaks`, the postfix admin tools, `exim`, `dma`, qmail clients — with a stub (`tools/mail-block/mail-block-stub.sh`) that prints a deterrent message to stderr and exits 77 (sysexits `EX_NOPERM`). The stub catches the `execve` syscall, so the agent learns the policy in human-readable terms before the network filter drops a connection.
+
+| Value | Behaviour |
+|---|---|
+| `auto` (default) | on whenever [`NETWORK_FILTER_MODE`](#network_filter_mode) resolves to a value other than `open`. If the sandbox is constraining network at all, the stub gives a clearer error than a 30-second SMTP timeout; with `MODE=open` (host-network parity) it steps aside. |
+| `on` | always on, regardless of `NETWORK_FILTER_MODE`. |
+| `off` | never on. Escape hatch for sites that legitimately need the canonical mailer binaries visible. Rare — the v0.10.0 port filter already breaks them at the socket layer. |
+
+The two layers compose. The stub catches every UNIX tool that respects the sendmail interface or has a canonical binary name on PATH; the network filter catches the application-level remainder (`python -c 'import smtplib...'`, `curl smtp://`, `nc <host> 25`). Evaluated CONFIG > NETWORK so the agent sees the policy text before the kernel drops the connection.
+
+Mechanism: bind-mount the stub `--ro-bind` over every canonical absolute path that exists on the host (`/usr/{bin,sbin}/<name>`, `/usr/lib/sendmail`, `/var/qmail/bin/qmail-*`), plus a symlink farm of the same names at `/run/agent-sandbox/mail-block` prepended to PATH so name-resolution finds the stub before any unstubbed copies (e.g. `/usr/local/bin/<name>`, Lmod-injected `/app/software/.../bin/<name>`).
+
+Argv echo is sanitized: the stub strips bytes outside `[:graph:]` from `basename "$0"` and reports the argv count, never the args themselves — a hostile argv[0] containing ANSI / OSC-8 / CR / NUL bytes cannot rewrite the agent's terminal or smuggle clickable URLs into log scrapers.
+
+```bash
+# Default — auto picks the right thing for the active network mode
+NETWORK_MAIL_BLOCK="auto"
+
+# Always on, even when MODE=open
+NETWORK_MAIL_BLOCK="on"
+
+# Off (rare — document the use case)
+NETWORK_MAIL_BLOCK="off"
+```
+
+Backend support: bwrap only in v0.10.2 (firejail and landlock fall back to no stub; the network filter still applies on the supported backends per their own matrix). See [Outbound mail policy](reference/network-filter.md#outbound-mail-policy) for the threat-model / mechanism / failure-mode write-up.
 
 ### `NETWORK_FILTER_SKIP_HELPER_PROBE`
 

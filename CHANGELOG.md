@@ -7,6 +7,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-05-14
+
+### Added
+
+- **`NETWORK_MAIL_BLOCK` — defense-in-depth above the port-level
+  SMTP filter.** v0.10.0's network filter closes outbound SMTP at
+  the namespace edge (ports 25 / 465 / 587 / 2525 / 24, plus the
+  local-MTA loopback variants); an agent that exec's `sendmail`
+  hits a connection-refused / ENETUNREACH after a 30-second timeout,
+  which reads as a transient network fault and invites retry. The
+  new mail-block layer catches the `execve` syscall instead:
+  every canonical mailer binary inside the sandbox is replaced
+  with a stub (`tools/mail-block/mail-block-stub.sh`, single POSIX
+  sh, no bash dependency) that prints a 16-line deterrent message
+  to stderr — explicitly addressed to an AI agent reading it,
+  foreclosing the search tree ("retrying with another binary,
+  another invocation, or another path will produce the same
+  result"), enumerating the known-mailer set so the agent doesn't
+  burn cycles hunting alternatives, and instructing escalate to
+  the user rather than retry. Exit code 77 (sysexits `EX_NOPERM`,
+  "permission denied at a higher level" — chosen over `EX_CONFIG`
+  because the latter reads as operator misconfiguration and invites
+  retry-with-fix).
+
+  Two reinforcing path-resolution layers compose to catch the
+  invocation regardless of how `argv[0]` was assembled:
+
+    1. **Absolute-path bind-mounts.** The launcher iterates the
+       canonical mailer paths (`/usr/{bin,sbin}/<name>`,
+       `/usr/lib/sendmail`, `/var/qmail/bin/qmail-*`) and `--ro-bind`s
+       the stub over every entry that exists on the host. Catches
+       absolute-path invocations (`/usr/sbin/sendmail -t`,
+       `git send-email`'s internal sendmail call, …).
+    2. **PATH-prefix symlink farm.** A per-launch tempdir under
+       `$XDG_RUNTIME_DIR` (mode `0700`, mirroring the v0.10.1
+       proxy-socket pattern) is populated with one symlink per
+       canonical name pointing at the in-sandbox stub path. The dir
+       is bound at `/run/agent-sandbox/mail-block` and prepended to
+       `PATH` ahead of chaperon stubs and the rest of the sandbox
+       `PATH`. Catches PATH lookups that land on
+       `/usr/local/bin/<name>`, Lmod-injected
+       `/app/software/<pkg>/bin/<name>`, or any other host path the
+       bind-mount loop missed.
+
+  Canonical mailer-name set (`_MAIL_BLOCK_STUB_NAMES` in
+  `sandbox-lib.sh`): sendmail family (`sendmail`,
+  `sendmail.sendmail`, `sendmail.postfix`, `rmail`); mail / mailx
+  variants (`mail`, `mailx`, `Mail`, `s-nail`, `nail`, `bsd-mailx`,
+  `heirloom-mailx`); mutt family (`mutt`, `neomutt`); SMTP-direct
+  clients (`msmtp`, `ssmtp`, `nullmailer-send`, `smtp-cli`); postfix
+  admin (`postsuper`, `postdrop`, `postqueue`, `mailq`,
+  `newaliases`); test tool (`swaks`); mpack family (`mpack`,
+  `metasend`); exim admin (`exim`, `exim4`); DragonFly Mail Agent
+  (`dma`); qmail clients (`qmail-inject`, `qmail-qmqpc`,
+  `qmail-remote`). 30 names total, composed from a security review
+  covering common Debian / Ubuntu / RHEL / Arch / DragonFly mailer
+  packaging.
+
+  Argv echo is hardened against control-byte injection. A naive
+  stub that prints `argv[1..N]` to stderr would let a hostile
+  argument containing `\e[2J\e[H` (ANSI CSI) or OSC-8 hyperlinks
+  rewrite the agent's terminal view or smuggle clickable URLs into
+  log scrapers. The stub instead reports only `basename "$0"`
+  passed through `LC_ALL=C tr -cd '[:graph:]'` (strips every byte
+  outside printable ASCII, including ESC `0x1b` and CR / NUL) and
+  capped at 64 bytes, plus the argv **count** (so the agent can
+  distinguish a probe from a real send attempt) — never the args
+  themselves.
+
+  Three-valued knob: `NETWORK_MAIL_BLOCK=auto|on|off`. Default
+  `auto` activates the stub whenever `NETWORK_FILTER_MODE` resolves
+  to a non-`open` value — so the stub is on for the default
+  configuration and steps aside under `MODE=open` (host-network
+  parity, where the host-side mail policy is shaped to handle
+  legitimate mail anyway). `on` activates regardless of the
+  network mode; `off` is the escape hatch for sites that
+  legitimately need the canonical mailer binaries visible (rare —
+  the v0.10.0 port filter already breaks them at the socket
+  layer; document the use case if you set this). Admin
+  enforcement is harden-only with strictness `off < auto < on`,
+  matching the model used by `NETWORK_FILTER_MODE` / `_FALLBACK`.
+
+  Backend support: bwrap only in 0.10.2. Firejail / landlock
+  parity is mechanically straightforward (both support the same
+  bind-mount + PATH-prefix primitives) but deferred so the initial
+  PR stays auditable; the network-filter port closure still applies
+  on the supported backends per their own matrix.
+
+  Tests (`test.sh::11.4.mailblock`): resolver semantics (default
+  knob, auto/on/off interaction with the mode axis, invalid-knob
+  rejection); stub-direct behaviour (exit 77, deterrent message,
+  argv[0] propagation through symlinks under each of 13 canonical
+  names); ANSI-sanitization (hostile `argv[0]` containing ESC is
+  stripped before stderr emission); end-to-end through bwrap
+  (PATH-prefix shadow + deterrent message + exit 77; guarded by
+  `is_bwrap && has_mount_ns`); off-escape-hatch (PATH unaffected
+  when `MAIL_BLOCK=off`).
+
+  Tracks [settylab/dotto-nexus#127](https://github.com/settylab/dotto-nexus/issues/127).
+
+### Changed
+
+- `_CONFIG_SCALARS` (in `sandbox-lib.sh`) gains
+  `NETWORK_MAIL_BLOCK`. No backwards-compat surface — operators
+  carrying older `sandbox.conf` files inherit the default `auto`
+  silently.
+
+- `sandbox-exec.sh::_sandbox_cleanup` extended to `rm -rf` the
+  per-launch mail-block stubs dir, matching the existing pattern
+  for the proxy-fallback socket dir.
+
 ## [0.10.1] - 2026-05-13
 
 ### Added

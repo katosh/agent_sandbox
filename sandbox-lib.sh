@@ -185,6 +185,7 @@ _PRIVATE_IPC_OVERRIDE="${PRIVATE_IPC:-}"
 _FILTER_PASSWD_OVERRIDE="${FILTER_PASSWD:-}"
 _NETWORK_FILTER_MODE_OVERRIDE="${NETWORK_FILTER_MODE:-}"
 _NETWORK_FILTER_FALLBACK_OVERRIDE="${NETWORK_FILTER_FALLBACK:-}"
+_NETWORK_MAIL_BLOCK_OVERRIDE="${NETWORK_MAIL_BLOCK:-}"
 
 PRIVATE_TMP=true
 
@@ -249,6 +250,35 @@ FILTER_PASSWD=true
 # cannot weaken admin-set ones (same model as PRIVATE_TMP, FILTER_PASSWD).
 NETWORK_FILTER_MODE="filtered"
 NETWORK_FILTER_FALLBACK="open"
+
+# ── Mail-block layer (NETWORK_MAIL_BLOCK) ────────────────────────
+#
+# Defense-in-depth above NETWORK_FILTER_MODE's port-level SMTP block.
+# When active, the launcher bind-mounts a universal stub
+# (tools/mail-block/mail-block-stub.sh) over every canonical mailer
+# path that exists on the host and prepends a symlink farm of the same
+# names to PATH. Any invocation of `sendmail`, `mail`, `mutt`, …
+# prints a deterrent message and exits 77 (sysexits EX_NOPERM). The
+# stub catches the syscall (execve); the network filter still catches
+# application-level dialers (smtplib, curl smtp://, nc) at the netns
+# edge — two reinforcing layers, evaluated CONFIG > NETWORK so the
+# agent learns the policy in human-readable terms before the kernel
+# drops the connection.
+#
+# Values: auto | on | off
+#   off:  do nothing (escape hatch for sites that legitimately need
+#         the canonical mailer binaries visible — rare; the v0.10.0
+#         filter already breaks them at the socket layer).
+#   auto: (default) on whenever NETWORK_FILTER_MODE != open. If the
+#         sandbox is constraining network at all, the stub provides
+#         the clearer error path; if MODE=open is explicit (host-
+#         network parity), the stub is off too.
+#   on:   always on regardless of NETWORK_FILTER_MODE.
+#
+# Admin enforcement: admin pin uses the same "user can only request
+# a stricter value" model as NETWORK_FILTER_MODE; strictness ordering
+# off < auto < on.
+NETWORK_MAIL_BLOCK="auto"
 
 # Sentinel for any future "always-on, not user-removable" floor
 # entries. Currently empty — the full identity-bound exfil + lateral-
@@ -626,7 +656,7 @@ _CONFIG_ARRAYS=(
 )
 _CONFIG_SCALARS=(
     SANDBOX_BACKEND PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD BIND_DEV_PTS
-    NETWORK_FILTER_MODE NETWORK_FILTER_FALLBACK
+    NETWORK_FILTER_MODE NETWORK_FILTER_FALLBACK NETWORK_MAIL_BLOCK
     SLURM_SCOPE HOME_ACCESS SANDBOX_QUIET SANDBOX_NPROC_LIMIT
     CHAPERON_LOG_LEVEL CHAPERON_LOG_RETAIN_DAYS
     LANDLOCK_REQUIRED_ABI LANDLOCK_HARD_REQUIREMENT
@@ -1024,6 +1054,18 @@ _enforce_admin_policy() {
         fi
     fi
 
+    # Mail-block layer (tri-valued): user can only request an EQUAL OR
+    # STRICTER value than the admin pin. Ordering: off < auto < on.
+    if [[ -n "${_ADMIN_NETWORK_MAIL_BLOCK:-}" ]]; then
+        local _admin_midx _user_midx
+        _admin_midx="$(_mail_block_strictness_idx "$_ADMIN_NETWORK_MAIL_BLOCK")"
+        _user_midx="$(_mail_block_strictness_idx "${NETWORK_MAIL_BLOCK:-auto}")"
+        if [[ "$_user_midx" -lt "$_admin_midx" ]]; then
+            echo "WARNING: ${_label} weakened admin-enforced NETWORK_MAIL_BLOCK='${_ADMIN_NETWORK_MAIL_BLOCK}' to '${NETWORK_MAIL_BLOCK}' — restored." >&2
+            NETWORK_MAIL_BLOCK="$_ADMIN_NETWORK_MAIL_BLOCK"
+        fi
+    fi
+
     # --- Collect user-only additions (items not in admin snapshot) ---
     # Save the user's arrays before restoring admin values.
     local _user_bf=("${BLOCKED_FILES[@]}")
@@ -1301,6 +1343,7 @@ _snapshot_admin_config() {
     # config / built-in defaults apply).
     _ADMIN_NETWORK_FILTER_MODE="${NETWORK_FILTER_MODE:-}"
     _ADMIN_NETWORK_FILTER_FALLBACK="${NETWORK_FILTER_FALLBACK:-}"
+    _ADMIN_NETWORK_MAIL_BLOCK="${NETWORK_MAIL_BLOCK:-}"
 }
 
 # ── Network filter — mode resolution + helper detection ──────────
@@ -1715,6 +1758,106 @@ resolve_network_filter_mode() {
     esac
 }
 
+# ── Mail-block layer — resolution + target lists ─────────────────
+#
+# `NETWORK_MAIL_BLOCK` controls whether canonical mailer binaries get
+# replaced inside the sandbox with `tools/mail-block/mail-block-stub.sh`.
+# This is upstream of the network filter (which blocks SMTP at the
+# namespace edge): the stub catches `execve` so the agent learns the
+# policy in human-readable terms before the kernel drops a connection.
+# Strictness ordering: off (0) < auto (1) < on (2). Admin enforcement
+# uses the same "user can only request a stricter value" model as
+# NETWORK_FILTER_MODE.
+
+_mail_block_strictness_idx() {
+    case "$1" in
+        off) echo 0 ;;
+        auto) echo 1 ;;
+        on) echo 2 ;;
+        *) echo 1 ;;
+    esac
+}
+
+# Canonical mailer binary names. Used by `backends/bwrap.sh` to (a)
+# materialise a symlink farm inside `/run/agent-sandbox/mail-block` so
+# PATH-prefix shadows host-PATH lookups (catches `/usr/local/bin/<name>`,
+# Lmod-injected `/app/software/<pkg>/bin/<name>`, etc.) and (b) drive
+# the bind-mount loop below for absolute-path invocations.
+#
+# Set composed from the multi-expert design review for v0.10.2:
+# Sendmail family + sendmail-alternatives backing files; mail/mailx
+# variants including legacy/heirloom names; mutt family; SMTP-direct
+# clients; postfix admin tools; test/utility (swaks); mpack/metasend;
+# exim admin; DragonFly Mail Agent (dma); qmail client utilities.
+_MAIL_BLOCK_STUB_NAMES=(
+    sendmail sendmail.sendmail sendmail.postfix rmail
+    mail mailx Mail s-nail nail bsd-mailx heirloom-mailx
+    mutt neomutt
+    msmtp ssmtp nullmailer-send smtp-cli
+    postsuper postdrop postqueue mailq newaliases
+    swaks
+    mpack metasend
+    exim exim4
+    dma
+    qmail-inject qmail-qmqpc qmail-remote
+)
+
+# Canonical absolute paths the bind-mount loop attempts to shadow. An
+# entry that doesn't exist on the host is silently skipped — there's
+# no need to materialise phantom paths (the symlink farm + PATH
+# prefix catches any name the loop missed). Each name is enumerated
+# under `/usr/bin`, `/usr/sbin`, and known fallback locations (qmail
+# under `/var/qmail/bin`, sendmail's historical `/usr/lib/sendmail`).
+_mail_block_target_paths() {
+    local _n
+    for _n in "${_MAIL_BLOCK_STUB_NAMES[@]}"; do
+        echo "/usr/bin/$_n"
+        echo "/usr/sbin/$_n"
+    done
+    # Historical sendmail location (Debian / pre-FHS).
+    echo "/usr/lib/sendmail"
+    # qmail location convention.
+    echo "/var/qmail/bin/qmail-inject"
+    echo "/var/qmail/bin/qmail-qmqpc"
+    echo "/var/qmail/bin/qmail-remote"
+}
+
+# Resolve effective mail-block mode given the network-filter mode the
+# resolver picked. Side effects:
+#   _MAIL_BLOCK_RESOLVED — "on" | "off"
+#   _MAIL_BLOCK_REASON   — human-readable rationale (for dry-run /
+#                          banner)
+# Reads:
+#   NETWORK_MAIL_BLOCK         — knob (auto|on|off)
+#   _NETWORK_FILTER_RESOLVED   — set earlier by resolve_network_filter_mode
+resolve_network_mail_block_mode() {
+    local _knob="${NETWORK_MAIL_BLOCK:-auto}"
+    local _net="${_NETWORK_FILTER_RESOLVED:-open}"
+    case "$_knob" in
+        on)
+            _MAIL_BLOCK_RESOLVED="on"
+            _MAIL_BLOCK_REASON="on (requested)"
+            ;;
+        off)
+            _MAIL_BLOCK_RESOLVED="off"
+            _MAIL_BLOCK_REASON="off (requested)"
+            ;;
+        auto)
+            if [[ "$_net" == "open" ]]; then
+                _MAIL_BLOCK_RESOLVED="off"
+                _MAIL_BLOCK_REASON="off (auto; NETWORK_FILTER_MODE resolved to open)"
+            else
+                _MAIL_BLOCK_RESOLVED="on"
+                _MAIL_BLOCK_REASON="on (auto; NETWORK_FILTER_MODE resolved to '$_net')"
+            fi
+            ;;
+        *)
+            echo "Error: NETWORK_MAIL_BLOCK='$_knob' invalid (auto|on|off)." >&2
+            exit 1
+            ;;
+    esac
+}
+
 # ── Precedence model — wildcard / exception / admin pin ──────────
 #
 # Policy entries (NETWORK_BLOCKLIST and NETWORK_BLOCKLIST_EXCEPT)
@@ -2044,7 +2187,10 @@ fi
 if [[ -n "${_NETWORK_FILTER_FALLBACK_OVERRIDE:-}" ]]; then
     NETWORK_FILTER_FALLBACK="$_NETWORK_FILTER_FALLBACK_OVERRIDE"
 fi
-unset _NETWORK_FILTER_MODE_OVERRIDE _NETWORK_FILTER_FALLBACK_OVERRIDE
+if [[ -n "${_NETWORK_MAIL_BLOCK_OVERRIDE:-}" ]]; then
+    NETWORK_MAIL_BLOCK="$_NETWORK_MAIL_BLOCK_OVERRIDE"
+fi
+unset _NETWORK_FILTER_MODE_OVERRIDE _NETWORK_FILTER_FALLBACK_OVERRIDE _NETWORK_MAIL_BLOCK_OVERRIDE
 
 # Re-apply admin enforcement on network-filter scalars: env can loosen
 # user config but cannot weaken admin-set values.
@@ -2066,6 +2212,15 @@ if [[ -n "$_ADMIN_CONF" ]]; then
             NETWORK_FILTER_FALLBACK="$_ADMIN_NETWORK_FILTER_FALLBACK"
         fi
         unset _admin_pidx _user_pidx
+    fi
+    if [[ -n "${_ADMIN_NETWORK_MAIL_BLOCK:-}" ]]; then
+        _admin_midx="$(_mail_block_strictness_idx "$_ADMIN_NETWORK_MAIL_BLOCK")"
+        _user_midx="$(_mail_block_strictness_idx "${NETWORK_MAIL_BLOCK:-auto}")"
+        if [[ "$_user_midx" -lt "$_admin_midx" ]]; then
+            echo "WARNING: env override NETWORK_MAIL_BLOCK='${NETWORK_MAIL_BLOCK}' weaker than admin '${_ADMIN_NETWORK_MAIL_BLOCK}' — restored." >&2
+            NETWORK_MAIL_BLOCK="$_ADMIN_NETWORK_MAIL_BLOCK"
+        fi
+        unset _admin_midx _user_midx
     fi
 fi
 
