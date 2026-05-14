@@ -5311,6 +5311,227 @@ fi
 unset _has_pasta
 
 
+# ── 11.4.mailblock NETWORK_MAIL_BLOCK layer (v0.10.2) ──────────────
+#
+# Defense-in-depth above the port-level network filter. The stub
+# (tools/mail-block/mail-block-stub.sh) is bind-mounted over canonical
+# mailer paths inside the sandbox AND symlinks of the same names
+# populate /run/agent-sandbox/mail-block, prepended to PATH. Three
+# layers of test:
+#   1. resolver semantics  — auto|on|off → on|off given the active
+#      NETWORK_FILTER_MODE; admin pin non-weakening.
+#   2. stub-direct behaviour — argv[0] propagation under each
+#      canonical name, exit code 77, deterrent message on stderr,
+#      no ANSI-byte injection from a hostile argv[0].
+#   3. end-to-end via sandbox — bwrap launch with MAIL_BLOCK=on,
+#      invoke `sendmail` inside, assert message + exit 77 (skipped
+#      on hosts without a mount-ns backend, same shape as the
+#      filtered-mode empirical tests).
+
+echo "11.4.mailblock Mail-block layer"
+
+# ── Test M1: resolver — defaults + auto under filtered ─────────────
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    [[ "$NETWORK_MAIL_BLOCK" == "auto" ]] || { echo "default knob wrong: $NETWORK_MAIL_BLOCK"; exit 1; }
+    # auto + filtered → on
+    NETWORK_MAIL_BLOCK="auto"
+    _NETWORK_FILTER_RESOLVED="filtered"
+    resolve_network_mail_block_mode
+    [[ "$_MAIL_BLOCK_RESOLVED" == "on" ]] || { echo "auto+filtered should be on, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
+    # auto + open → off
+    _NETWORK_FILTER_RESOLVED="open"
+    resolve_network_mail_block_mode
+    [[ "$_MAIL_BLOCK_RESOLVED" == "off" ]] || { echo "auto+open should be off, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
+    # auto + isolated → on
+    _NETWORK_FILTER_RESOLVED="isolated"
+    resolve_network_mail_block_mode
+    [[ "$_MAIL_BLOCK_RESOLVED" == "on" ]] || { echo "auto+isolated should be on, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
+    # auto + proxied → on
+    _NETWORK_FILTER_RESOLVED="proxied"
+    resolve_network_mail_block_mode
+    [[ "$_MAIL_BLOCK_RESOLVED" == "on" ]] || { echo "auto+proxied should be on, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
+    exit 0
+); then
+    pass "Mail-block (M1): resolver auto-mode respects NETWORK_FILTER_MODE axis"
+else
+    fail "Mail-block (M1): resolver auto-mode did not match the mode axis"
+fi
+
+# ── Test M2: resolver — explicit on/off overrides axis ─────────────
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    # explicit on + open → still on
+    NETWORK_MAIL_BLOCK="on"
+    _NETWORK_FILTER_RESOLVED="open"
+    resolve_network_mail_block_mode
+    [[ "$_MAIL_BLOCK_RESOLVED" == "on" ]] || { echo "on+open should be on, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
+    # explicit off + filtered → still off
+    NETWORK_MAIL_BLOCK="off"
+    _NETWORK_FILTER_RESOLVED="filtered"
+    resolve_network_mail_block_mode
+    [[ "$_MAIL_BLOCK_RESOLVED" == "off" ]] || { echo "off+filtered should be off, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
+    exit 0
+); then
+    pass "Mail-block (M2): explicit on/off override the mode axis"
+else
+    fail "Mail-block (M2): explicit knob did not override the mode axis"
+fi
+
+# ── Test M3: resolver — invalid knob errors loudly ─────────────────
+# The resolver calls `exit 1` on bad input (config error is fatal),
+# so we need an inner subshell to isolate the abort from the outer
+# test harness.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    if (
+        NETWORK_MAIL_BLOCK="bogus"
+        _NETWORK_FILTER_RESOLVED="filtered"
+        resolve_network_mail_block_mode
+    ) 2>/dev/null; then
+        echo "invalid knob accepted (should have exited)"
+        exit 1
+    fi
+    exit 0
+); then
+    pass "Mail-block (M3): invalid NETWORK_MAIL_BLOCK rejected"
+else
+    fail "Mail-block (M3): invalid knob was accepted"
+fi
+
+# ── Test M4: stub direct + argv[0] propagation under each name ─────
+if (
+    set -uo pipefail
+    _mb_stub="$SCRIPT_DIR/tools/mail-block/mail-block-stub.sh"
+    [[ -x "$_mb_stub" ]] || { echo "stub missing or not executable: $_mb_stub"; exit 1; }
+    # Direct invocation — exit 77, stderr message starts with the
+    # expected lead line.
+    _msg="$("$_mb_stub" -t -f a@b.example c@d.example 2>&1 >/dev/null)" && _rc=0 || _rc=$?
+    [[ "$_rc" -eq 77 ]] || { echo "direct exit code: expected 77, got $_rc"; exit 1; }
+    [[ "$_msg" == *"outbound mail is disabled"* ]] || { echo "lead line missing"; exit 1; }
+    [[ "$_msg" == *"EX_NOPERM"* ]] || { echo "exit-code annotation missing"; exit 1; }
+    # argv[0] propagation through symlinks. We're running on the
+    # host (no sandbox) so we use a host tmpdir; the in-sandbox
+    # mechanism is the same kernel feature, exercised at M5/M6.
+    _tmp="$(mktemp -d)"
+    trap "rm -rf '$_tmp'" EXIT
+    for _name in sendmail mail mailx mutt msmtp ssmtp s-nail swaks postsuper mailq newaliases exim dma qmail-inject; do
+        ln -s "$_mb_stub" "$_tmp/$_name"
+        _out="$("$_tmp/$_name" 2>&1 >/dev/null)" && _nrc=0 || _nrc=$?
+        [[ "$_nrc" -eq 77 ]] || { echo "$_name exit code: $_nrc"; exit 1; }
+        [[ "$_out" == *"Invoked as: $_name "* ]] || { echo "$_name argv[0] not visible in message"; exit 1; }
+    done
+    exit 0
+); then
+    pass "Mail-block (M4): stub direct + argv[0] propagates under each canonical name"
+else
+    fail "Mail-block (M4): stub direct invocation or argv[0] threading failed"
+fi
+
+# ── Test M5: stub sanitizes ANSI bytes from a hostile argv[0] ──────
+if (
+    set -uo pipefail
+    _mb_stub="$SCRIPT_DIR/tools/mail-block/mail-block-stub.sh"
+    _tmp="$(mktemp -d)"
+    trap "rm -rf '$_tmp'" EXIT
+    # Hostile basename containing ESC (0x1b) and a CSI sequence.
+    _hostile=$'evil\x1b[2Jname'
+    ln -s "$_mb_stub" "$_tmp/$_hostile"
+    _out="$("$_tmp/$_hostile" 2>&1 >/dev/null)" && _rc=0 || _rc=$?
+    [[ "$_rc" -eq 77 ]] || { echo "exit code wrong: $_rc"; exit 1; }
+    # Critical: ESC (0x1b) must NOT appear anywhere in the stderr
+    # output, even though the symlink name contained it.
+    if printf '%s' "$_out" | LC_ALL=C grep -q $'\x1b'; then
+        echo "ANSI escape leaked into deterrent message — sanitization broken"
+        exit 1
+    fi
+    # The visible portion of the name should still be present.
+    [[ "$_out" == *"evil"* ]] || { echo "visible portion of name missing"; exit 1; }
+    exit 0
+); then
+    pass "Mail-block (M5): stub strips ANSI control bytes from a hostile argv[0]"
+else
+    fail "Mail-block (M5): hostile argv[0] not sanitized"
+fi
+
+# ── Test M6: end-to-end through bwrap (requires mount-ns backend) ──
+# Inject the knob via a conf.d/*.conf override (the supported
+# per-project mechanism — matches the pattern used for the v1.1
+# filtered-mode empirical tests above).
+if is_bwrap && has_mount_ns; then
+    _net_mb_conf="$HOME/.config/agent-sandbox/conf.d/test-mb-on-$$.conf"
+    _TEST_TEMP_FILES+=("$_net_mb_conf")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    cat > "$_net_mb_conf" <<CONF
+NETWORK_FILTER_MODE=open
+NETWORK_FILTER_FALLBACK=open
+NETWORK_MAIL_BLOCK=on
+CONF
+    OUTPUT="$(
+        SANDBOX_QUIET=true \
+        "$SCRIPT_DIR/sandbox-exec.sh" --backend bwrap -- bash -c '
+            command -v sendmail 2>/dev/null || true
+            sendmail -t </dev/null 2>&1 1>/dev/null || echo "EXIT=$?"
+        ' 2>&1
+    )" || true
+    if echo "$OUTPUT" | grep -q '^/run/agent-sandbox/mail-block/sendmail$'; then
+        pass "Mail-block (M6a): PATH-prefix shadow resolves sendmail to the stub"
+    else
+        fail "Mail-block (M6a): PATH-prefix did not shadow sendmail" "$OUTPUT"
+    fi
+    if echo "$OUTPUT" | grep -q 'outbound mail is disabled'; then
+        pass "Mail-block (M6b): deterrent message visible inside sandbox"
+    else
+        fail "Mail-block (M6b): deterrent message missing" "$OUTPUT"
+    fi
+    if echo "$OUTPUT" | grep -q 'EXIT=77'; then
+        pass "Mail-block (M6c): sendmail exits 77 (EX_NOPERM) inside sandbox"
+    else
+        fail "Mail-block (M6c): sendmail did not exit 77" "$OUTPUT"
+    fi
+    rm -f "$_net_mb_conf"
+    unset _net_mb_conf
+else
+    skip "Mail-block (M6): empirical end-to-end tests need a mount-ns backend"
+fi
+
+# ── Test M7: off escape hatch — knob disables the layer ────────────
+if is_bwrap && has_mount_ns; then
+    _net_mb_conf="$HOME/.config/agent-sandbox/conf.d/test-mb-off-$$.conf"
+    _TEST_TEMP_FILES+=("$_net_mb_conf")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    cat > "$_net_mb_conf" <<CONF
+NETWORK_FILTER_MODE=open
+NETWORK_FILTER_FALLBACK=open
+NETWORK_MAIL_BLOCK=off
+CONF
+    OUTPUT="$(
+        SANDBOX_QUIET=true \
+        "$SCRIPT_DIR/sandbox-exec.sh" --backend bwrap -- bash -c '
+            echo "PATH=$PATH"
+        ' 2>&1
+    )" || true
+    if echo "$OUTPUT" | grep -q '^PATH=/run/agent-sandbox/mail-block'; then
+        fail "Mail-block (M7): off knob still prepended the mail-block PATH-prefix" "$OUTPUT"
+    else
+        pass "Mail-block (M7): off knob disables the mail-block layer (PATH unaffected)"
+    fi
+    rm -f "$_net_mb_conf"
+    unset _net_mb_conf
+else
+    skip "Mail-block (M7): off-escape-hatch test needs a mount-ns backend"
+fi
+
+
 # ── 11.5 Device passthrough (bwrap only) ──────────────────────────
 
 echo "11.5. Device passthrough"
