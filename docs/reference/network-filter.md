@@ -540,8 +540,10 @@ the policy in plain text; the kernel still enforces it on the wire.
               ──────────       │
               argv[0] resolves │ → /usr/sbin/sendmail is bind-
               to the bound      mounted to mail-block-stub.sh
-              path             │ → /run/agent-sandbox/mail-block/<name>
-                               │   shadows PATH lookups
+              path             │ → per-launch stubs dir under
+                               │   $TMPDIR (bound same-path on both
+                               │   sides) is PATH-prefixed and
+                               │   shadows host-PATH lookups
                                │ → stub prints deterrent message,
                                │   exits 77 (EX_NOPERM)
                                │
@@ -602,9 +604,10 @@ Two reinforcing path-resolution layers, both established at
    silently skipped — there's no need to materialise phantom paths
    because layer 2 covers PATH-resolution misses.
 2. **Symlink farm + PATH-prefix.** A per-launch tempdir under
-   `$XDG_RUNTIME_DIR` (mode `0700`) is populated with one symlink
-   per name pointing at the in-sandbox stub path. The dir is bound
-   read-only at `/run/agent-sandbox/mail-block` and prepended to
+   `$TMPDIR` (mode `0700`) is populated with one symlink per name
+   pointing at the in-sandbox stub path. The dir is `--ro-bind`'d at
+   the same path on both sides of the sandbox boundary (mirroring
+   the chaperon FIFO + proxy-socket-dir pattern) and prepended to
    `PATH` inside the sandbox. Catches PATH lookups that resolve to
    `/usr/local/bin/<name>`, Lmod-injected
    `/app/software/<pkg>/bin/<name>`, or any other host-PATH-position

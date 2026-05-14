@@ -18,8 +18,10 @@ filter quietly drops a connection on the floor.
               ──────────       │
               argv[0] resolves │ → /usr/sbin/sendmail is bind-
               to the bound      mounted to mail-block-stub.sh
-              path             │ → /run/agent-sandbox/mail-block/<name>
-                               │   shadows PATH lookups
+              path             │ → per-launch stubs dir under
+                               │   $TMPDIR (bound same-path on both
+                               │   sides) is PATH-prefixed and
+                               │   shadows host-PATH lookups
                                │ → stub prints deterrent message,
                                │   exits 77 (EX_NOPERM)
                                │
@@ -93,13 +95,14 @@ The launcher (`backends/bwrap.sh::backend_prepare`) iterates
 lib}` and `/var/qmail/bin`) and bind-mounts the stub over every entry
 that exists on the host; entries that don't exist are silently
 skipped (no need to materialise phantom paths). It also creates a
-symlink farm in a per-launch tempdir under `$XDG_RUNTIME_DIR` —
-one symlink per name in `_MAIL_BLOCK_STUB_NAMES` pointing at the
-in-sandbox stub path — and prepends the tempdir's in-sandbox bind
-target (`/run/agent-sandbox/mail-block`) to PATH. PATH-prefix
-catches `/usr/local/bin/<name>`, `/app/software/<pkg>/bin/<name>`
-(Lmod-injected paths), and any other host-PATH-position the
-bind-mount loop missed.
+symlink farm in a per-launch tempdir under `$TMPDIR` — one symlink
+per name in `_MAIL_BLOCK_STUB_NAMES` pointing at the in-sandbox stub
+path — `--ro-bind`'s that dir at the same path on both sides of the
+sandbox boundary (mirroring the chaperon FIFO and proxy socket-dir
+pattern, so the path resolves identically inside and outside), and
+prepends it to PATH. PATH-prefix catches `/usr/local/bin/<name>`,
+`/app/software/<pkg>/bin/<name>` (Lmod-injected paths), and any
+other host-PATH-position the bind-mount loop missed.
 
 See `sandbox-lib.sh::_MAIL_BLOCK_TARGET_PATHS` and
 `_MAIL_BLOCK_STUB_NAMES` for the canonical lists, and

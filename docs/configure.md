@@ -574,7 +574,7 @@ Defense-in-depth above [`NETWORK_FILTER_MODE`](#network_filter_mode)'s port-leve
 
 The two layers compose. The stub catches every UNIX tool that respects the sendmail interface or has a canonical binary name on PATH; the network filter catches the application-level remainder (`python -c 'import smtplib...'`, `curl smtp://`, `nc <host> 25`). Evaluated CONFIG > NETWORK so the agent sees the policy text before the kernel drops the connection.
 
-Mechanism: bind-mount the stub `--ro-bind` over every canonical absolute path that exists on the host (`/usr/{bin,sbin}/<name>`, `/usr/lib/sendmail`, `/var/qmail/bin/qmail-*`), plus a symlink farm of the same names at `/run/agent-sandbox/mail-block` prepended to PATH so name-resolution finds the stub before any unstubbed copies (e.g. `/usr/local/bin/<name>`, Lmod-injected `/app/software/.../bin/<name>`).
+Mechanism: bind-mount the stub `--ro-bind` over every canonical absolute path that exists on the host (`/usr/{bin,sbin}/<name>`, `/usr/lib/sendmail`, `/var/qmail/bin/qmail-*`), plus a per-launch symlink farm of the same names under `$TMPDIR` that is `--ro-bind`'d at the same path on both sides of the sandbox boundary (mirroring the chaperon FIFO and proxy socket-dir pattern) and prepended to PATH so name-resolution finds the stub before any unstubbed copies (e.g. `/usr/local/bin/<name>`, Lmod-injected `/app/software/.../bin/<name>`).
 
 Argv echo is sanitized: the stub strips bytes outside `[:graph:]` from `basename "$0"` and reports the argv count, never the args themselves — a hostile argv[0] containing ANSI / OSC-8 / CR / NUL bytes cannot rewrite the agent's terminal or smuggle clickable URLs into log scrapers.
 
