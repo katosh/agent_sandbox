@@ -4752,6 +4752,12 @@ STUB
     # `proxied`. `open` policy only weakens. This is the load-bearing
     # default-config-user invariant — adding `proxied` to the strictness
     # chain must not shift their reach.
+    #
+    # The previous SKIP_HELPER_PROBE=1 line above is a bare variable
+    # assignment (no command suffix), which under bash assigns to the
+    # shell — so it persists into this test. Unset it explicitly so the
+    # real (stub-pasta-driven) probe runs and returns "degraded".
+    unset NETWORK_FILTER_SKIP_HELPER_PROBE
     NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=open
     resolve_network_filter_mode bwrap 2>/dev/null
     [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || \
