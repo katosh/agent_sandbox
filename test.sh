@@ -4624,25 +4624,11 @@ if (
     resolve_network_filter_mode landlock 2>/dev/null
     [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || { echo "proxied+landlock+open didn't fall to open, got $_NETWORK_FILTER_RESOLVED"; exit 1; }
 
-    # Test 5f: filtered + stricter on a degraded host: with proxied
-    # available, stricter must prefer proxied over isolated (smallest
-    # step up). Forces _NETWORK_HELPER_PROBE_RESULT=degraded so the
-    # capability matrix excludes filtered.
-    if _proxied_supported_on_bwrap; then
-        NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=stricter
-        _NETWORK_HELPER_PROBE_RESULT="degraded"
-        resolve_network_filter_mode bwrap 2>/dev/null
-        [[ "$_NETWORK_FILTER_RESOLVED" == "proxied" ]] || { echo "filtered+stricter+degraded should land on proxied (least step up), got $_NETWORK_FILTER_RESOLVED"; exit 1; }
-    fi
-
-    # Test 5g: regression guard — filtered + open on degraded host must
-    # stay on open. proxied is STRICTER than filtered, and `open` policy
-    # NEVER strengthens — so the proxied addition must not shift the
-    # default-config user on a degraded host to proxied silently.
-    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=open
-    _NETWORK_HELPER_PROBE_RESULT="degraded"
-    resolve_network_filter_mode bwrap 2>/dev/null
-    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || { echo "open-policy DEFAULT MUST STAY ON open under degraded-pasta — proxied creep regression, got $_NETWORK_FILTER_RESOLVED"; exit 1; }
+    # Tests 5f / 5g (degraded-pasta fallback semantics) live in the
+    # pasta-forwarding-probe block below — they need a fake degraded
+    # pasta stub on PATH because `_prepare_network_helper_probe` resets
+    # `_NETWORK_HELPER_PROBE_RESULT` before reading the capability
+    # matrix, so pre-setting it in this subshell has no effect.
 
     # Test 6: effective blocklist (after loading shipped sandbox.conf
     # in Test 1) contains the universal entries. Site-specific entries
@@ -4741,8 +4727,17 @@ STUB
         { echo "expected probe result 'degraded', got '$_NETWORK_HELPER_PROBE_RESULT'"; exit 1; }
     [[ -n "$_NETWORK_HELPER_DEGRADED_REASON" ]] || \
         { echo "_NETWORK_HELPER_DEGRADED_REASON empty"; exit 1; }
-    [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || \
-        { echo "expected fallback to isolated, got '$_NETWORK_FILTER_RESOLVED'"; exit 1; }
+    # v0.10.1: with proxied available (python3 on PATH + in-tree
+    # helper), the stricter walk's least-strict-step-up rule lands on
+    # proxied before isolated. When proxied is unsupported, the walk
+    # continues to isolated (pre-v0.10.1 behaviour).
+    if _proxied_supported_on_bwrap; then
+        [[ "$_NETWORK_FILTER_RESOLVED" == "proxied" ]] || \
+            { echo "v0.10.1: expected fallback to proxied (filtered degraded, proxied supported), got '$_NETWORK_FILTER_RESOLVED'"; exit 1; }
+    else
+        [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || \
+            { echo "expected fallback to isolated (filtered degraded, proxied unsupported), got '$_NETWORK_FILTER_RESOLVED'"; exit 1; }
+    fi
 
     # Override must bypass the probe — operators with a setcap-blessed
     # pasta need an escape hatch.
@@ -4751,6 +4746,16 @@ STUB
     resolve_network_filter_mode bwrap 2>/dev/null
     [[ "$_NETWORK_FILTER_RESOLVED" == "filtered" ]] || \
         { echo "SKIP_HELPER_PROBE=1 didn't restore filtered, got '$_NETWORK_FILTER_RESOLVED'"; exit 1; }
+
+    # Test 5g (v0.10.1 regression guard): filtered + open on a degraded
+    # pasta host MUST land on `open`, NOT silently strengthen to
+    # `proxied`. `open` policy only weakens. This is the load-bearing
+    # default-config-user invariant — adding `proxied` to the strictness
+    # chain must not shift their reach.
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=open
+    resolve_network_filter_mode bwrap 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || \
+        { echo "v0.10.1: open policy on degraded pasta MUST STAY ON open (default-config invariant) — proxied creep regression, got '$_NETWORK_FILTER_RESOLVED'"; exit 1; }
     exit 0
 ); then
     pass "Network filter: pasta forwarding probe gates filtered when helper degrades to loopback-only"
