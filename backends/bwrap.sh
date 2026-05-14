@@ -228,18 +228,18 @@ backend_prepare() {
             # sockets. Standard HTTP_PROXY/HTTPS_PROXY env handles
             # client-side proxy selection.
             BWRAP_ARGS+=(--unshare-net)
-            # Per-launch socket dir under $XDG_RUNTIME_DIR (tmpfs,
-            # 0700, user-owned, cleared on logout). Fall back to
-            # $TMPDIR (/tmp) when XDG_RUNTIME_DIR is unset or missing.
-            local _proxy_root="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
-            [[ -d "$_proxy_root" ]] || _proxy_root="${TMPDIR:-/tmp}"
-            _NETWORK_PROXY_DIR="$(mktemp -d "$_proxy_root/agent-sandbox-proxy-XXXXXX")"
+            # Per-launch socket dir under $TMPDIR. Deliberately avoids
+            # $XDG_RUNTIME_DIR (typically /run/user/<uid>) because the
+            # later `--tmpfs /run` would mask any bind whose path falls
+            # under /run. Mirrors the chaperon FIFO location
+            # (sandbox-exec.sh::_CHAPERON_DIR). The actual bind-mount
+            # is added below, AFTER the `--tmpfs /tmp` + `--tmpfs /run`
+            # lines, paired with the chaperon FIFO bind — same path on
+            # both sides means no path-rewriting inside the helper, and
+            # late ordering restores the path through the surrounding
+            # tmpfs masks.
+            _NETWORK_PROXY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-proxy-XXXXXX")"
             chmod 700 "$_NETWORK_PROXY_DIR"
-            # --ro-bind defends against the agent unlinking/replacing
-            # the bind-mounted sockets to MITM its own egress. The
-            # socket files inside are still connectable (Unix-socket
-            # connect needs traverse on the dir, not write).
-            BWRAP_ARGS+=(--ro-bind "$_NETWORK_PROXY_DIR" /run/agent-sandbox/proxy)
             # Standard proxy env vars. NO_PROXY exempts loopback (the
             # agent's own services, e.g. a Jupyter kernel it spawns)
             # AND the bridge listener addresses themselves (so tools
@@ -620,6 +620,17 @@ backend_prepare() {
         BWRAP_ARGS+=(--setenv _CHAPERON_FIFO_DIR "$_CHAPERON_FIFO_DIR")
     fi
 
+    # Bind-mount proxy socket directory (proxied mode only) at the same
+    # path on both sides — the in-sandbox bridge opens the same socket
+    # paths the host-side server bound. Placed here, AFTER --tmpfs /tmp
+    # and --tmpfs /run, so the surrounding tmpfs masks don't shadow it.
+    # --ro-bind prevents the agent from unlinking/replacing the sockets
+    # to MITM its own egress; Unix-socket connect needs traverse on the
+    # dir, not write, so the agent can still use the proxy.
+    if [[ -n "${_NETWORK_PROXY_DIR:-}" && -d "${_NETWORK_PROXY_DIR:-}" ]]; then
+        BWRAP_ARGS+=(--ro-bind "$_NETWORK_PROXY_DIR" "$_NETWORK_PROXY_DIR")
+    fi
+
 
     # Agent-specific environment exports (e.g., CLAUDE_CONFIG_DIR)
     for _agent_export in "${_AGENT_ENV_EXPORTS[@]}"; do
@@ -724,9 +735,11 @@ backend_exec() {
     # ── proxied-mode composition: in-sandbox bridge wraps agent ────
     #
     # The host-side proxy daemon was spawned by sandbox-exec.sh BEFORE
-    # backend_exec, listening on Unix sockets in $_NETWORK_PROXY_DIR
-    # (bind-mounted into the sandbox at /run/agent-sandbox/proxy). The
-    # in-sandbox bridge (PID 1 inside the empty netns) listens on
+    # backend_exec, listening on Unix sockets in $_NETWORK_PROXY_DIR.
+    # The dir is `--ro-bind`'d at the same path on both sides of the
+    # bwrap boundary (mirrors the chaperon FIFO pattern), so the bridge
+    # opens the same `$_NETWORK_PROXY_DIR/http.sock` path that the
+    # host-side server bound. The in-sandbox bridge listens on
     # TCP 127.0.0.1:44889 / :44890 and forwards bytes into the
     # bind-mounted Unix sockets. The agent runs as the bridge's child
     # and uses HTTP_PROXY / HTTPS_PROXY / ALL_PROXY to reach the bridge.
@@ -734,7 +747,7 @@ backend_exec() {
         exec "$BWRAP" "${BWRAP_ARGS[@]}" -- \
             python3 "$SANDBOX_DIR/tools/proxy/agent-sandbox-proxy.py" \
                 --bridge \
-                --socket-dir /run/agent-sandbox/proxy \
+                --socket-dir "$_NETWORK_PROXY_DIR" \
                 --http-port 44889 \
                 --socks-port 44890 \
                 -- "$@"
@@ -763,7 +776,7 @@ backend_dry_run() {
     if [[ "${_NETWORK_FILTER_PROXIED_PENDING:-0}" == "1" ]]; then
         echo "# Network filter: proxied mode (host-side HTTP+SOCKS daemon)"
         echo "# proxy:     $SANDBOX_DIR/tools/proxy/agent-sandbox-proxy.py"
-        echo "# sockets:   $_NETWORK_PROXY_DIR -> /run/agent-sandbox/proxy (--ro-bind)"
+        echo "# sockets:   $_NETWORK_PROXY_DIR (--ro-bind, same path inside sandbox)"
         echo "# in-sandbox bridge: 127.0.0.1:44889 (HTTP), 127.0.0.1:44890 (SOCKS5)"
     fi
     printf '%s \\\n' "$BWRAP"
@@ -771,8 +784,9 @@ backend_dry_run() {
         printf '  %s \\\n' "$arg"
     done
     if [[ "${_NETWORK_FILTER_PROXIED_PENDING:-0}" == "1" ]]; then
-        printf '  -- python3 %s --bridge --socket-dir /run/agent-sandbox/proxy \\\n' \
-            "$SANDBOX_DIR/tools/proxy/agent-sandbox-proxy.py"
+        printf '  -- python3 %s --bridge --socket-dir %s \\\n' \
+            "$SANDBOX_DIR/tools/proxy/agent-sandbox-proxy.py" \
+            "$_NETWORK_PROXY_DIR"
         printf '    --http-port 44889 --socks-port 44890 -- %s\n' "$*"
     else
         printf '  -- %s\n' "$*"

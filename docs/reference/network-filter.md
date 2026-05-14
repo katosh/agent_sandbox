@@ -422,7 +422,9 @@ the sandbox runs inside an empty network namespace, and every outbound
 connection must pass through a host-side policy proxy. The proxy
 listens on two Unix sockets in a per-launch dir (mode `0700`, under
 `$XDG_RUNTIME_DIR` when available, else `$TMPDIR`); bwrap bind-mounts
-the dir read-only into the sandbox at `/run/agent-sandbox/proxy/`. An
+the dir read-only at the same path on both sides of the sandbox
+boundary (mirroring the chaperon FIFO pattern), so the in-sandbox
+bridge opens the same socket paths the host-side server bound. An
 in-sandbox bridge (also Python; runs as PID 1 inside the netns)
 listens on `127.0.0.1:44889` (HTTP) and `127.0.0.1:44890` (SOCKS5) and
 forwards bytes byte-for-byte to the bind-mounted Unix sockets.
