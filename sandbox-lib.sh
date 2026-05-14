@@ -1779,10 +1779,12 @@ _mail_block_strictness_idx() {
 }
 
 # Canonical mailer binary names. Used by `backends/bwrap.sh` to (a)
-# materialise a symlink farm inside `/run/agent-sandbox/mail-block` so
-# PATH-prefix shadows host-PATH lookups (catches `/usr/local/bin/<name>`,
-# Lmod-injected `/app/software/<pkg>/bin/<name>`, etc.) and (b) drive
-# the bind-mount loop below for absolute-path invocations.
+# materialise a per-launch symlink farm under $TMPDIR (bind-mounted at
+# the same path on both sides of the sandbox boundary, mirroring the
+# chaperon FIFO pattern) so a PATH prepend of that dir shadows
+# host-PATH lookups (catches `/usr/local/bin/<name>`, Lmod-injected
+# `/app/software/<pkg>/bin/<name>`, etc.) and (b) drive the bind-mount
+# loop below for absolute-path invocations.
 #
 # Set composed from the multi-expert design review for v0.10.2:
 # Sendmail family + sendmail-alternatives backing files; mail/mailx

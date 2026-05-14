@@ -25,9 +25,11 @@ set -u
 
 # Canonical name we were invoked under. $0 is whichever path bash /
 # the kernel followed — for a bind-mount that's `/usr/bin/sendmail`,
-# for a PATH-prefix symlink that's `/run/agent-sandbox/mail-block/mail`
-# (or the bare name if the shell did PATH lookup). basename collapses
-# both to the leaf; sanitize the result to printable ASCII (defensive
+# for a PATH-prefix symlink that's the per-launch stubs dir under
+# $TMPDIR (e.g. `/tmp/agent-sandbox-mailblock-XXXXXX/mail`; bound at
+# the same path on both sides of the sandbox boundary so the path
+# resolves identically inside and outside). basename collapses both
+# to the leaf; sanitize the result to printable ASCII (defensive
 # against a hostile $0 — argv[0] is caller-controlled).
 _MB_NAME="$(basename -- "$0" 2>/dev/null || echo mailer)"
 _MB_NAME="$(printf '%s' "$_MB_NAME" | LC_ALL=C tr -cd '[:graph:]' | cut -c1-64)"

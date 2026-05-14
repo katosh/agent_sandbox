@@ -195,8 +195,10 @@ _NETWORK_PROXY_PID=""
 # Populated when `resolve_network_mail_block_mode` (called inside
 # backend_prepare) resolves to `on`. Holds one symlink per canonical
 # mailer name pointing at the universal stub; the backend bind-mounts
-# the dir at `/run/agent-sandbox/mail-block` and prepends that path
-# to PATH inside the sandbox. Cleaned up on exit via the trap below.
+# the dir at the same path on both sides of the bwrap boundary
+# (mirrors the chaperon FIFO + proxy socket-dir pattern) and prepends
+# that path to PATH inside the sandbox. Cleaned up on exit via the
+# trap below.
 _MAIL_BLOCK_STUBS_DIR=""
 
 if [[ -x "$SCRIPT_DIR/chaperon/chaperon.sh" ]]; then

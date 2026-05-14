@@ -41,13 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
        absolute-path invocations (`/usr/sbin/sendmail -t`,
        `git send-email`'s internal sendmail call, …).
     2. **PATH-prefix symlink farm.** A per-launch tempdir under
-       `$XDG_RUNTIME_DIR` (mode `0700`, mirroring the v0.10.1
-       proxy-socket pattern) is populated with one symlink per
-       canonical name pointing at the in-sandbox stub path. The dir
-       is bound at `/run/agent-sandbox/mail-block` and prepended to
-       `PATH` ahead of chaperon stubs and the rest of the sandbox
-       `PATH`. Catches PATH lookups that land on
-       `/usr/local/bin/<name>`, Lmod-injected
+       `$TMPDIR` (mode `0700`, same staging area as the chaperon
+       FIFO and the v0.10.1 proxy socket dir) is populated with one
+       symlink per canonical name pointing at the in-sandbox stub
+       path. The dir is `--ro-bind`'d at the same path on both sides
+       of the bwrap boundary — mirroring the chaperon FIFO pattern,
+       so the path resolves identically inside and outside the
+       sandbox — and prepended to `PATH` ahead of chaperon stubs and
+       the rest of the sandbox `PATH`. Catches PATH lookups that
+       land on `/usr/local/bin/<name>`, Lmod-injected
        `/app/software/<pkg>/bin/<name>`, or any other host path the
        bind-mount loop missed.
 

@@ -5316,8 +5316,9 @@ unset _has_pasta
 # Defense-in-depth above the port-level network filter. The stub
 # (tools/mail-block/mail-block-stub.sh) is bind-mounted over canonical
 # mailer paths inside the sandbox AND symlinks of the same names
-# populate /run/agent-sandbox/mail-block, prepended to PATH. Three
-# layers of test:
+# populate a per-launch dir under $TMPDIR that is bind-mounted at the
+# same path on both sides of the sandbox boundary and prepended to
+# PATH. Three layers of test:
 #   1. resolver semantics  — auto|on|off → on|off given the active
 #      NETWORK_FILTER_MODE; admin pin non-weakening.
 #   2. stub-direct behaviour — argv[0] propagation under each
@@ -5483,7 +5484,11 @@ CONF
             sendmail -t </dev/null 2>&1 1>/dev/null || echo "EXIT=$?"
         ' 2>&1
     )" || true
-    if echo "$OUTPUT" | grep -q '^/run/agent-sandbox/mail-block/sendmail$'; then
+    # Stubs dir lives under $TMPDIR with a randomised suffix; we don't
+    # know the exact path here, so match the stable prefix. Also accept
+    # the host-side $TMPDIR (paths are same-on-both-sides).
+    if echo "$OUTPUT" \
+       | grep -qE "^(${TMPDIR:-/tmp})/agent-sandbox-mailblock-[A-Za-z0-9]+/sendmail$"; then
         pass "Mail-block (M6a): PATH-prefix shadow resolves sendmail to the stub"
     else
         fail "Mail-block (M6a): PATH-prefix did not shadow sendmail" "$OUTPUT"
@@ -5520,7 +5525,7 @@ CONF
             echo "PATH=$PATH"
         ' 2>&1
     )" || true
-    if echo "$OUTPUT" | grep -q '^PATH=/run/agent-sandbox/mail-block'; then
+    if echo "$OUTPUT" | grep -qE '^PATH=[^:]*agent-sandbox-mailblock-[A-Za-z0-9]+'; then
         fail "Mail-block (M7): off knob still prepended the mail-block PATH-prefix" "$OUTPUT"
     else
         pass "Mail-block (M7): off knob disables the mail-block layer (PATH unaffected)"
