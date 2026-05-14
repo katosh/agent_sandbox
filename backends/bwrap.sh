@@ -213,9 +213,48 @@ backend_prepare() {
     # (strict policy, or stricter with no stricter mode available).
     resolve_network_filter_mode bwrap
     _NETWORK_FILTER_BWRAP_PENDING=0
+    _NETWORK_FILTER_PROXIED_PENDING=0
     _NETWORK_FILTER_PASTA_TCP_SPEC=""
     _NETWORK_FILTER_PASTA_UDP_SPEC=""
     case "$_NETWORK_FILTER_RESOLVED" in
+        proxied)
+            # Empty netns; the agent reaches the host-side HTTP CONNECT
+            # + SOCKS5 daemons via two layers — bind-mounted Unix
+            # sockets (host-side, --ro-bind so the agent cannot
+            # unlink/replace them) plus an in-sandbox Python bridge
+            # (`tools/proxy/agent-sandbox-proxy.py --bridge`) that
+            # listens on the sandbox's empty netns at 127.0.0.1:44889
+            # (HTTP) and :44890 (SOCKS5) and forwards into the Unix
+            # sockets. Standard HTTP_PROXY/HTTPS_PROXY env handles
+            # client-side proxy selection.
+            BWRAP_ARGS+=(--unshare-net)
+            # Per-launch socket dir under $XDG_RUNTIME_DIR (tmpfs,
+            # 0700, user-owned, cleared on logout). Fall back to
+            # $TMPDIR (/tmp) when XDG_RUNTIME_DIR is unset or missing.
+            local _proxy_root="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+            [[ -d "$_proxy_root" ]] || _proxy_root="${TMPDIR:-/tmp}"
+            _NETWORK_PROXY_DIR="$(mktemp -d "$_proxy_root/agent-sandbox-proxy-XXXXXX")"
+            chmod 700 "$_NETWORK_PROXY_DIR"
+            # --ro-bind defends against the agent unlinking/replacing
+            # the bind-mounted sockets to MITM its own egress. The
+            # socket files inside are still connectable (Unix-socket
+            # connect needs traverse on the dir, not write).
+            BWRAP_ARGS+=(--ro-bind "$_NETWORK_PROXY_DIR" /run/agent-sandbox/proxy)
+            # Standard proxy env vars. NO_PROXY exempts loopback (the
+            # agent's own services, e.g. a Jupyter kernel it spawns)
+            # AND the bridge listener addresses themselves (so tools
+            # don't recursively proxy through themselves — this last
+            # bit is load-bearing).
+            BWRAP_ARGS+=(--setenv HTTP_PROXY  "http://127.0.0.1:44889")
+            BWRAP_ARGS+=(--setenv HTTPS_PROXY "http://127.0.0.1:44889")
+            BWRAP_ARGS+=(--setenv http_proxy  "http://127.0.0.1:44889")
+            BWRAP_ARGS+=(--setenv https_proxy "http://127.0.0.1:44889")
+            BWRAP_ARGS+=(--setenv ALL_PROXY   "socks5h://127.0.0.1:44890")
+            BWRAP_ARGS+=(--setenv all_proxy   "socks5h://127.0.0.1:44890")
+            BWRAP_ARGS+=(--setenv NO_PROXY    "127.0.0.1,localhost,::1,[::1]")
+            BWRAP_ARGS+=(--setenv no_proxy    "127.0.0.1,localhost,::1,[::1]")
+            _NETWORK_FILTER_PROXIED_PENDING=1
+            ;;
         isolated)
             BWRAP_ARGS+=(--unshare-net)
             ;;
@@ -682,6 +721,25 @@ backend_exec() {
             "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
     fi
 
+    # ── proxied-mode composition: in-sandbox bridge wraps agent ────
+    #
+    # The host-side proxy daemon was spawned by sandbox-exec.sh BEFORE
+    # backend_exec, listening on Unix sockets in $_NETWORK_PROXY_DIR
+    # (bind-mounted into the sandbox at /run/agent-sandbox/proxy). The
+    # in-sandbox bridge (PID 1 inside the empty netns) listens on
+    # TCP 127.0.0.1:44889 / :44890 and forwards bytes into the
+    # bind-mounted Unix sockets. The agent runs as the bridge's child
+    # and uses HTTP_PROXY / HTTPS_PROXY / ALL_PROXY to reach the bridge.
+    if [[ "${_NETWORK_FILTER_PROXIED_PENDING:-0}" == "1" ]]; then
+        exec "$BWRAP" "${BWRAP_ARGS[@]}" -- \
+            python3 "$SANDBOX_DIR/tools/proxy/agent-sandbox-proxy.py" \
+                --bridge \
+                --socket-dir /run/agent-sandbox/proxy \
+                --http-port 44889 \
+                --socks-port 44890 \
+                -- "$@"
+    fi
+
     exec "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
 }
 
@@ -702,11 +760,23 @@ backend_dry_run() {
             printf '  -U %s \\\n' "$_NETWORK_FILTER_PASTA_UDP_SPEC"
         printf '  -- \\\n'
     fi
+    if [[ "${_NETWORK_FILTER_PROXIED_PENDING:-0}" == "1" ]]; then
+        echo "# Network filter: proxied mode (host-side HTTP+SOCKS daemon)"
+        echo "# proxy:     $SANDBOX_DIR/tools/proxy/agent-sandbox-proxy.py"
+        echo "# sockets:   $_NETWORK_PROXY_DIR -> /run/agent-sandbox/proxy (--ro-bind)"
+        echo "# in-sandbox bridge: 127.0.0.1:44889 (HTTP), 127.0.0.1:44890 (SOCKS5)"
+    fi
     printf '%s \\\n' "$BWRAP"
     for arg in "${BWRAP_ARGS[@]}"; do
         printf '  %s \\\n' "$arg"
     done
-    printf '  -- %s\n' "$*"
+    if [[ "${_NETWORK_FILTER_PROXIED_PENDING:-0}" == "1" ]]; then
+        printf '  -- python3 %s --bridge --socket-dir /run/agent-sandbox/proxy \\\n' \
+            "$SANDBOX_DIR/tools/proxy/agent-sandbox-proxy.py"
+        printf '    --http-port 44889 --socks-port 44890 -- %s\n' "$*"
+    else
+        printf '  -- %s\n' "$*"
+    fi
     # Clean up seccomp temp file (dry-run doesn't exec)
     [[ -n "${_SECCOMP_TMPFILE:-}" ]] && rm -f "$_SECCOMP_TMPFILE" 2>/dev/null || true
     # Clean up HOME_SEEDED_FILES staged temp files (dry-run doesn't exec)

@@ -42,7 +42,7 @@ TCP path itself at a layer the agent cannot escape.
 
 ## Modes
 
-The three values of [`NETWORK_FILTER_MODE`](../configure.md#network_filter_mode) — `open`, `filtered`, `isolated` — and the mechanism each selects (host netns vs. new netns + pasta vs. new netns with no network) are defined on the configure page. This section covers v1.1's *behavioural* detail: what `filtered` actually enforces at runtime, what it skips, and the upgrade flip from v1.0.
+The four values of [`NETWORK_FILTER_MODE`](../configure.md#network_filter_mode) — `open`, `filtered`, `proxied` (new in 0.10.1), `isolated` — and the mechanism each selects are defined on the configure page. Strictness ordering: `open < filtered < proxied < isolated`. This section covers the *behavioural* detail: what `filtered` actually enforces at runtime, what it skips, and how `proxied` mediates the netns-no-outbound chokepoint.
 
 **Default state (v1.1).** When `pasta` is available on the host,
 `NETWORK_FILTER_MODE=filtered` delivers port-level outbound
@@ -53,10 +53,11 @@ is enforced at pasta's own outbound boundary via `-T ~N` (TCP) and
 `-U ~K` (UDP) exclusion flags generated from
 `effective_network_blocklist`. **No nftables / iptables dependency.**
 
-| `NETWORK_FILTER_MODE` | What happens (v1.1) |
+| `NETWORK_FILTER_MODE` | What happens (v0.10.1) |
 | --- | --- |
 | `open` | shares host network (legacy behaviour; layer disabled) |
 | `filtered` | bwrap inside a pasta netns with `-T/-U` port exclusions enforcing the universal port floor (SMTP submission 24/25/465/587/2525, DoT 853, telnet/finger/rsh/rexec/rsyslog) plus any operator-added bare-port or universal-CIDR-port entries. Falls back per `NETWORK_FILTER_FALLBACK` when pasta is unavailable. |
+| `proxied` | bwrap with `--unshare-net` + bind-mounted Unix sockets to a host-side HTTP CONNECT + SOCKS5 daemon (`tools/proxy/agent-sandbox-proxy.py`); blocklist enforced at CONNECT time PLUS a hardened IP floor (RFC1918, loopback, link-local, cloud metadata). Bwrap only; firejail/landlock unsupported. |
 | `isolated` | full network kill via `bwrap --unshare-net` / `firejail --net=none` |
 
 agent-sandbox ships a verified static `pasta` binary at
@@ -121,30 +122,40 @@ R3 in survey, deferred — see settylab/dotto-nexus#117).
 
 The three values of [`NETWORK_FILTER_FALLBACK`](../configure.md#network_filter_fallback) — `strict`, `stricter`, `open` — and the strictness ordering (`open` < `stricter` < `strict`) live on the configure page. The interesting content here is *which backend can deliver which mode* and *what each fallback policy actually produces per requested-mode × backend-support combination*.
 
-Per-backend support, v1.1:
+Per-backend support, v0.10.1:
 
-| Backend | `open` | `filtered` | `isolated` |
-| --- | --- | --- | --- |
-| **bwrap** | ✓ | ✓ when `pasta` is available (shipped in-tree at `tools/pasta/<arch>/pasta`, or via distro `passt` package); otherwise falls back per policy | ✓ (`--unshare-net`) |
-| **firejail** | ✓ | ✗ (needs a site-provisioned bridge via `--net=<iface>` + `--netfilter`; v1.1 does not auto-provision the bridge — use bwrap or accept the fallback) | ✓ (`--net=none`) |
-| **landlock** | ✓ | ✗ (no mount/network namespace) | ✗ (no network namespace) |
+| Backend | `open` | `filtered` | `proxied` | `isolated` |
+| --- | --- | --- | --- | --- |
+| **bwrap** | ✓ | ✓ when `pasta` is available (shipped in-tree at `tools/pasta/<arch>/pasta`, or via distro `passt` package); otherwise falls back per policy | ✓ when `python3` is on PATH (the bundled `tools/proxy/agent-sandbox-proxy.py` is the helper) | ✓ (`--unshare-net`) |
+| **firejail** | ✓ | ✗ (needs a site-provisioned bridge via `--net=<iface>` + `--netfilter`; v0.10.1 does not auto-provision the bridge — use bwrap or accept the fallback) | ✗ (bwrap-only in v0.10.1; firejail parity tracked for follow-up) | ✓ (`--net=none`) |
+| **landlock** | ✓ | ✗ (no mount/network namespace) | ✗ (no namespace primitives) | ✗ (no network namespace) |
 
 ### Fallback decision matrix
+
+`stricter` walks the strictness chain LEAST-strict-step-up first
+(smallest weakening) so a degraded-pasta host lands on `proxied`
+before `isolated`. `open` walks the LESS-strict chain MOST-strict-
+first; `proxied` is stricter than `filtered`, so the `open`-policy
+default-config user on a degraded-pasta host still lands on `open`
+— `proxied` is opt-in via `MODE=proxied` or `FALLBACK=stricter`.
 
 | Requested | Backend supports it? | Policy `strict` | Policy `stricter` | Policy `open` |
 | --- | --- | --- | --- | --- |
 | `filtered` | yes | filtered | filtered | filtered |
-| `filtered` | no (bwrap/firejail; no helper) | **FAIL** | isolated (loud warning) | open (loud warning) |
+| `filtered` | no (bwrap; degraded pasta; proxied supported) | **FAIL** | **proxied** (loud warning; v0.10.1 default fallback target) | open (loud warning) |
+| `filtered` | no (bwrap; degraded pasta; proxied unsupported) | **FAIL** | isolated (loud warning) | open (loud warning) |
 | `filtered` | no (landlock; no netns) | **FAIL** | **FAIL** (no stricter mode possible) | open (loud warning) |
+| `proxied` | yes (bwrap; python3 available) | proxied | proxied | proxied |
+| `proxied` | no (firejail/landlock) | **FAIL** | isolated (loud warning, firejail) | filtered/open (loud warning, less-strict) |
 | `isolated` | yes | isolated | isolated | isolated |
 | `isolated` | no (landlock; no netns) | **FAIL** | **FAIL** (no stricter mode possible) | open (loud warning; only available less-strict mode on landlock) |
-| `isolated` | no (bwrap, helper present) | **FAIL** | **FAIL** | filtered (loud warning; the most-strict less-strict option available) |
+| `isolated` | no (bwrap, helper present) | **FAIL** | **FAIL** | proxied/filtered (loud warning; most-strict less-strict option) |
 | `open` | (always) | open | open | open |
 
 Note for the `open` policy row: `open` never falls to a stricter
 mode than requested. If you want `filtered` but want to accept
-`isolated` as a fallback when no helper is available, use
-`stricter` (not `open`).
+`proxied` (then `isolated`) as a fallback when no helper is
+available, use `stricter` (not `open`).
 
 ## Configuration
 
@@ -403,6 +414,79 @@ sandbox start. **Do not set it as a workaround for the degradation
 warning** — setting it on a host where pasta actually degrades
 re-introduces the silent-loopback-only failure mode that the probe
 exists to catch.
+
+## Proxied mode (host-side HTTP CONNECT + SOCKS5 fallback)
+
+`NETWORK_FILTER_MODE=proxied` (v0.10.1+) is the **chokepoint** mode:
+the sandbox runs inside an empty network namespace, and every outbound
+connection must pass through a host-side policy proxy. The proxy
+listens on two Unix sockets in a per-launch dir (mode `0700`, under
+`$XDG_RUNTIME_DIR` when available, else `$TMPDIR`); bwrap bind-mounts
+the dir read-only into the sandbox at `/run/agent-sandbox/proxy/`. An
+in-sandbox bridge (also Python; runs as PID 1 inside the netns)
+listens on `127.0.0.1:44889` (HTTP) and `127.0.0.1:44890` (SOCKS5) and
+forwards bytes byte-for-byte to the bind-mounted Unix sockets.
+`HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `ALL_PROXY`,
+and `NO_PROXY` are pre-set inside the sandbox so the standard suite
+of tools (curl, pip, conda, git, gh, Claude SDK, etc.) routes through
+the proxy without further configuration.
+
+### Why this mode exists
+
+When pasta cannot deliver `filtered` (typically: kernel `< 5.7`
+without `setcap cap_net_raw+ep` on the pasta binary, common on shared
+HPC login nodes), the pre-v0.10.1 fallback chain offered two
+choices: `isolated` (no DNS / pip / git — sandbox effectively
+unusable) or `open` (host network — loses port-level enforcement).
+`proxied` is the third path: the sandbox is just as isolated at the
+namespace boundary as `isolated`, but proxy-aware tools still work.
+Set `NETWORK_FILTER_FALLBACK=stricter` to land on it automatically;
+or set `NETWORK_FILTER_MODE=proxied` to opt in unconditionally.
+
+### What's enforced
+
+| Layer | Check |
+| --- | --- |
+| Host-string normalisation | reject CR/LF/NUL/space/`@`/`#`/`?`/`/`/`\`; reject decimal-int / hex / octal IPv4 quirks (`2130706433`, `0x7f000001`); IDN-encode unicode and lowercase. |
+| DNS-rebind defence | resolve hostname ONCE, check the resolved IP against the floor + blocklist, connect to that literal IP. No re-resolve between policy decision and connect. |
+| Hardened IP floor | `127.0.0.0/8`, `169.254.0.0/16` (cloud metadata + link-local IPv4), `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `0.0.0.0/8`, `::1/128`, `fe80::/10`, `fc00::/7` (includes `fd00:ec2::254` AWS IPv6 metadata), `::/8`. Always denied; not lifted by `NETWORK_BLOCKLIST_EXCEPT`. |
+| `NETWORK_BLOCKLIST` | full enforcement of exact-host, wildcard hostname (`*.suffix`), CIDR, and bare-port entries — at the proxy CONNECT boundary, not at L4 (so wildcard / hostname entries are now load-bearing under `proxied`, unlike `filtered` where the L4 layer skipped them). |
+| `NETWORK_BLOCKLIST_EXCEPT` | same precedence model as elsewhere; an EXCEPT entry carves through a BLOCK entry it covers. Does NOT lift the hardened IP floor. |
+
+### What breaks under `proxied`
+
+The trade-off for the chokepoint is loss of every protocol the
+proxy does not speak. Inside the sandbox:
+
+- **`ssh host`** (direct): blocked. Workaround: `ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:44890 %h %p'` routes ssh through the SOCKS5 proxy.
+- **`dig`, `nslookup`, `host`, `getent hosts`**: blocked (no resolver inside the netns). Name resolution happens host-side inside the proxy. Debug DNS on the host, not in the sandbox.
+- **`ping` / ICMP**: blocked (HTTP CONNECT and SOCKS5 do not forward ICMP).
+- **`bash /dev/tcp/host/port`**: blocked. The empty netns has no native TCP path out. This is the intentional hardening side-effect — the same primitive was an exfil surface under `open` mode.
+- **Spark / MPI / NCCL / arbitrary TCP daemons**: blocked. The proxy is for proxy-aware *clients* only. Workloads needing arbitrary TCP egress must pin `NETWORK_FILTER_MODE=open` or `filtered`.
+- **UDP** (except DNS-over-HTTPS via the proxy): not supported.
+
+Loopback inside the sandbox (e.g. an agent-spawned Jupyter kernel
+on `127.0.0.1:N`) is reachable as usual: `NO_PROXY` includes
+`127.0.0.1`, `localhost`, `::1`, and `[::1]`. The bridge listener
+addresses themselves (`127.0.0.1:44889/44890`) are in `NO_PROXY` so
+proxy-aware clients don't recursively proxy through themselves.
+
+### Resource cost
+
+Each sandbox launches one host-side proxy daemon (~25 MB RSS) and one
+in-sandbox bridge (also ~25 MB). At 20 parallel agents on a shared
+node, total ~1 GB across all daemons. Acceptable on typical HPC
+compute nodes; tight on cgroup-memory-capped login nodes (often 8-16
+GB per user) — pin `NETWORK_FILTER_MODE=open` for sessions that
+need every byte.
+
+### Lifecycle
+
+`sandbox-exec.sh` spawns the host-side proxy daemon BEFORE bwrap; the
+daemon arms `prctl(PR_SET_PDEATHSIG, SIGTERM)` as its first action so
+it dies cleanly when the parent shell exits. The cleanup trap
+kills the daemon and `rm -rf`'s the per-launch socket dir as
+belt-and-suspenders for the pre-exec failure window.
 
 ## Real-world recipe — verify filtered mode is enforcing
 

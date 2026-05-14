@@ -486,11 +486,14 @@ How the agent's outbound network is isolated.
 |---|---|---|
 | `open` | share the host network namespace; no isolation | full host network (legacy behaviour) |
 | `filtered` (default) | new Linux network namespace + `pasta` helper; default-deny port floor plus user/admin `NETWORK_BLOCKLIST` | general outbound TCP/UDP/DNS minus the threat-class ports |
+| `proxied` *(new in 0.10.1)* | new netns with no native outbound; agent traffic is mediated by a host-side HTTP CONNECT + SOCKS5 daemon (`tools/proxy/agent-sandbox-proxy.py`) reached via bind-mounted Unix sockets + an in-sandbox TCP↔Unix bridge. `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` pre-set | only what the proxy admits — proxy-aware tools (curl, pip, git, gh, conda, Claude SDK) work; raw TCP/UDP/ICMP, `ssh` direct, `dig`/`nslookup`, `ping`, `bash /dev/tcp/*` all break |
 | `isolated` | new netns with no network at all | none (DNS / pip / git break inside the sandbox) |
 
 `filtered` requires `pasta` on the host. agent-sandbox ships a static `pasta` binary at `tools/pasta/<arch>/pasta` (x86_64 in v1.1); install `passt` from your distro (`apt install passt`, `dnf install passt`, `brew install passt`) for a newer system pasta on `PATH`. When `filtered` cannot be delivered (no pasta, kernel < 5.7 without `setcap cap_net_raw+ep`, landlock backend), the resolver falls back per [`NETWORK_FILTER_FALLBACK`](#network_filter_fallback).
 
-**Strictness ordering:** `open` < `filtered` < `isolated`. If the admin baseline pins a value, the user's effective value cannot be weaker; an attempted weakening is restored at config-load with a `WARNING`.
+`proxied` requires `python3` on `PATH` and the in-tree helper `tools/proxy/agent-sandbox-proxy.py` (always present in a `make install`-ed deployment; no per-arch build). Bwrap only in v0.10.1; firejail/landlock unsupported. See [Proxied mode](reference/network-filter.md#proxied-mode-host-side-http-connect-socks5-fallback) for the enforcement surface and breakage list.
+
+**Strictness ordering:** `open` < `filtered` < `proxied` < `isolated`. If the admin baseline pins a value, the user's effective value cannot be weaker; an attempted weakening is restored at config-load with a `WARNING`.
 
 ```bash
 NETWORK_FILTER_MODE="filtered"          # default — port-level enforcement
@@ -507,8 +510,8 @@ What happens when the requested [`NETWORK_FILTER_MODE`](#network_filter_mode) is
 | Value | Behaviour |
 |---|---|
 | `strict` | Refuse to launch. Loud error enumerating the fix paths. |
-| `stricter` | Fall back ONLY to a STRICTER mode (e.g. `filtered` → `isolated`). Loud warning. If no stricter mode is possible (landlock has no netns), refuse to launch. |
-| `open` (default) | Fall back ONLY to a LESS restrictive mode, preferring the most-strict less-strict option first. Loud warning. |
+| `stricter` | Fall back ONLY to a STRICTER mode. Loud warning. Walks the strictness chain LEAST-strict-step-up first (smallest weakening), so a degraded-pasta host pinning `MODE=filtered` lands on `proxied` (v0.10.1+) before `isolated`. If no stricter mode is possible (landlock has no netns), refuse to launch. |
+| `open` (default) | Fall back ONLY to a LESS restrictive mode, preferring the most-strict less-strict option first. NEVER strengthens — default-config users (`MODE=filtered FALLBACK=open`) on a degraded host fall to `open`, never silently to `proxied`. Loud warning. |
 
 **Strictness ordering:** `open` < `stricter` < `strict`. Admin-pinned values cannot be weakened by the user.
 

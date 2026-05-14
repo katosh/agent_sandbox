@@ -183,6 +183,14 @@ prepare_agent_configs "$PROJECT_DIR"
 _CHAPERON_PID=""
 _CHAPERON_DIR=""
 
+# ── Proxy fallback: per-launch socket dir + daemon ────────────────
+# Populated when `resolve_network_filter_mode` (called inside
+# backend_prepare) resolves to `proxied`. Backends bind-mount
+# $_NETWORK_PROXY_DIR into the sandbox; the proxy daemon spawns
+# AFTER backend_prepare so the in-sandbox bind path is settled.
+_NETWORK_PROXY_DIR=""
+_NETWORK_PROXY_PID=""
+
 if [[ -x "$SCRIPT_DIR/chaperon/chaperon.sh" ]]; then
     _CHAPERON_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chaperon-XXXXXX")"
     chmod 700 "$_CHAPERON_DIR"
@@ -203,6 +211,65 @@ if [[ "$DRY_RUN" == true ]]; then
     # Clean up chaperon dir on dry-run
     [[ -n "$_CHAPERON_DIR" ]] && rm -rf "$_CHAPERON_DIR"
     exit 0
+fi
+
+# ── Proxy fallback: spawn host-side daemon (only when proxied) ────
+#
+# When backend_prepare resolved NETWORK_FILTER_MODE=proxied, it set
+# _NETWORK_PROXY_DIR (the per-launch Unix-socket dir) and prepared the
+# backend's bind-mount + env-var argv to expose it inside the sandbox.
+# Spawn the host-side proxy server here, blocking until it writes
+# "ready\n" on stdout (so the sandbox doesn't race past the socket
+# bind).
+#
+# Lifecycle: PR_SET_PDEATHSIG (set inside the Python helper as its
+# FIRST action) makes the proxy die when this shell dies, which is
+# what happens when bwrap exits and the exec'd shell terminates.
+# Belt-and-suspenders kill+rm-rf in _sandbox_cleanup covers the
+# pre-exec failure window (Ctrl-C between proxy spawn and exec).
+if [[ -n "${_NETWORK_PROXY_DIR:-}" ]]; then
+    _proxy_py="$SCRIPT_DIR/tools/proxy/agent-sandbox-proxy.py"
+    if [[ ! -r "$_proxy_py" ]]; then
+        echo "Error: NETWORK_FILTER_MODE=proxied requested but $_proxy_py is missing." >&2
+        exit 1
+    fi
+    # Compose the effective blocklist + exception list as JSON arrays
+    # via Python's json.dumps so multi-line / quoted entries can't
+    # shell-quote-escape into the argv. The shell pipes one entry per
+    # line; Python collects them into a list.
+    _proxy_blocklist_json="$(
+        effective_network_blocklist | python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l]))'
+    )"
+    _proxy_except_json="$(
+        effective_network_exception_list 2>/dev/null \
+            | python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l]))'
+    )"
+    # Spawn the server. setsid detaches the daemon from the
+    # controlling terminal so Ctrl-C in the parent shell goes to the
+    # foreground bwrap, not the daemon — the daemon then dies via
+    # PR_SET_PDEATHSIG when the parent exits.
+    python3 "$_proxy_py" \
+        --server --socket-dir "$_NETWORK_PROXY_DIR" \
+        --blocklist-json "$_proxy_blocklist_json" \
+        --except-json    "$_proxy_except_json" >"$_NETWORK_PROXY_DIR/ready" 2>"$_NETWORK_PROXY_DIR/proxy.err" &
+    _NETWORK_PROXY_PID=$!
+    # Wait ≤2s for the daemon to write "ready\n" to its stdout (we
+    # tee'd that to a sentinel file). Python startup on cold-cache HPC
+    # login nodes can take ~300ms; 2s is comfortable headroom.
+    _ready_deadline=$(( SECONDS + 2 ))
+    while (( SECONDS < _ready_deadline )); do
+        if [[ -s "$_NETWORK_PROXY_DIR/ready" ]] \
+           && grep -q '^ready$' "$_NETWORK_PROXY_DIR/ready" 2>/dev/null; then
+            break
+        fi
+        sleep 0.02
+    done
+    if ! grep -q '^ready$' "$_NETWORK_PROXY_DIR/ready" 2>/dev/null; then
+        echo "Error: agent-sandbox-proxy.py did not signal readiness within 2s." >&2
+        [[ -s "$_NETWORK_PROXY_DIR/proxy.err" ]] && \
+            sed 's/^/  proxy.err: /' "$_NETWORK_PROXY_DIR/proxy.err" >&2
+        exit 1
+    fi
 fi
 
 # Start chaperon in background.
@@ -229,9 +296,11 @@ if [[ -n "$_CHAPERON_DIR" ]]; then
     _CHAPERON_PID=$!
 fi
 
-# Clean up chaperon on exit — backend_exec does exec, so this only runs
-# if exec fails (e.g., command not found, bwrap error).  On success, exec
-# replaces this shell and the chaperon dies via PR_SET_PDEATHSIG.
+# Clean up chaperon + proxy on exit — backend_exec does exec, so this
+# only runs if exec fails (e.g., command not found, bwrap error). On
+# success, exec replaces this shell and child processes die via
+# PR_SET_PDEATHSIG (chaperon and the proxy server both arm it as their
+# first action). Belt-and-suspenders: trap kills + cleanup.
 _sandbox_cleanup() {
     if [[ -n "${_CHAPERON_PID:-}" ]]; then
         kill "$_CHAPERON_PID" 2>/dev/null || true
@@ -239,6 +308,13 @@ _sandbox_cleanup() {
     fi
     if [[ -n "${_CHAPERON_DIR:-}" ]]; then
         rm -rf "$_CHAPERON_DIR" 2>/dev/null || true
+    fi
+    if [[ -n "${_NETWORK_PROXY_PID:-}" ]]; then
+        kill "$_NETWORK_PROXY_PID" 2>/dev/null || true
+        wait "$_NETWORK_PROXY_PID" 2>/dev/null || true
+    fi
+    if [[ -n "${_NETWORK_PROXY_DIR:-}" ]]; then
+        rm -rf "$_NETWORK_PROXY_DIR" 2>/dev/null || true
     fi
 }
 trap _sandbox_cleanup EXIT
