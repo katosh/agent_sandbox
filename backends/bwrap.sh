@@ -212,6 +212,9 @@ backend_prepare() {
     # _NETWORK_FILTER_HELPER. May exit on irrecoverable mismatch
     # (strict policy, or stricter with no stricter mode available).
     resolve_network_filter_mode bwrap
+    # Resolve the mail-block layer (auto|on|off → on|off). Reads
+    # _NETWORK_FILTER_RESOLVED so it must follow the line above.
+    resolve_network_mail_block_mode
     _NETWORK_FILTER_BWRAP_PENDING=0
     _NETWORK_FILTER_PROXIED_PENDING=0
     _NETWORK_FILTER_PASTA_TCP_SPEC=""
@@ -328,6 +331,64 @@ backend_prepare() {
             BWRAP_ARGS+=(--ro-bind /dev/null "/usr/bin/$bin")
         fi
     done
+
+    # --- Mail-block layer (NETWORK_MAIL_BLOCK) ---
+    # Defense-in-depth above the network filter's port-level SMTP block.
+    # When resolved on:
+    #   1. Bind-mount `tools/mail-block/mail-block-stub.sh` over every
+    #      canonical mailer path that exists on the host (sendmail,
+    #      mail, mailx, mutt, msmtp, …). Catches absolute-path
+    #      invocations (e.g. `/usr/sbin/sendmail -t`). These binds go
+    #      directly to absolute paths under /usr/{bin,sbin,lib} and
+    #      /var/qmail/bin — none under /run or /tmp — so ordering
+    #      doesn't matter and they're emitted here.
+    #   2. Build a per-launch symlink farm in $_MAIL_BLOCK_STUBS_DIR
+    #      (under $TMPDIR — same as the chaperon FIFO and proxy socket
+    #      dirs; avoids /run/user/<uid> which the later `--tmpfs /run`
+    #      would mask). The actual bind for that dir is emitted LATER,
+    #      after `--tmpfs /tmp` + `--tmpfs /run`, paired with the
+    #      chaperon FIFO bind, at the same path on both sides of the
+    #      bwrap boundary. PATH is prepended with $_MAIL_BLOCK_STUBS_DIR
+    #      so name-lookup finds the stubs first (catches Lmod-injected
+    #      /app/software/<pkg>/bin/<name>, /usr/local/bin/<name>, etc.).
+    # The two mechanisms compose: an attacker bypassing one still
+    # hits the other.
+    _MAIL_BLOCK_STUBS_DIR=""
+    if [[ "${_MAIL_BLOCK_RESOLVED:-off}" == "on" ]]; then
+        local _mb_stub="$SANDBOX_DIR/tools/mail-block/mail-block-stub.sh"
+        if [[ ! -x "$_mb_stub" ]]; then
+            echo "sandbox: WARNING — NETWORK_MAIL_BLOCK resolved to 'on' but $_mb_stub is missing or not executable; mail-block layer disabled." >&2
+        else
+            # (1) Absolute-path bind-mounts.
+            local _mb_path
+            while IFS= read -r _mb_path; do
+                [[ -n "$_mb_path" ]] || continue
+                if [[ -e "$_mb_path" && ! -L "$_mb_path" ]]; then
+                    # Skip symlinks at the literal path — bwrap's
+                    # ensure_file rejects S_IFLNK destinations.
+                    BWRAP_ARGS+=(--ro-bind "$_mb_stub" "$_mb_path")
+                elif [[ -L "$_mb_path" ]]; then
+                    local _mb_resolved
+                    _mb_resolved="$(readlink -f "$_mb_path" 2>/dev/null || true)"
+                    if [[ -n "$_mb_resolved" && -e "$_mb_resolved" ]]; then
+                        BWRAP_ARGS+=(--ro-bind "$_mb_stub" "$_mb_resolved")
+                    fi
+                fi
+            done < <(_mail_block_target_paths)
+
+            # (2) Symlink farm — bound below alongside the chaperon FIFO.
+            _MAIL_BLOCK_STUBS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-mailblock-XXXXXX")"
+            chmod 700 "$_MAIL_BLOCK_STUBS_DIR"
+            local _mb_name
+            for _mb_name in "${_MAIL_BLOCK_STUB_NAMES[@]}"; do
+                # Symlinks point at the in-sandbox path of the stub.
+                # $SANDBOX_DIR is ro-bound at the same path inside the
+                # sandbox, so the absolute symlink target resolves
+                # identically on both sides of the bwrap boundary.
+                ln -s "$_mb_stub" "$_MAIL_BLOCK_STUBS_DIR/$_mb_name"
+            done
+        fi
+    fi
 
 
     # Block Slurm config (leaks controller address)
@@ -610,8 +671,19 @@ backend_prepare() {
     BWRAP_ARGS+=(--setenv SANDBOX_ACTIVE 1)
     BWRAP_ARGS+=(--setenv SANDBOX_BACKEND bwrap)
     BWRAP_ARGS+=(--setenv SANDBOX_PROJECT_DIR "$project_dir")
-    # Prepend chaperon stubs to PATH (before bin/ for sbatch/srun override)
-    BWRAP_ARGS+=(--setenv PATH "$SANDBOX_DIR/chaperon/stubs:$SANDBOX_DIR/bin:${PATH}")
+    # Prepend chaperon stubs + (optionally) mail-block stubs to PATH.
+    # Mail-block first when active so its name-shadowing wins over any
+    # mailer the host PATH-resolution chain would otherwise reach
+    # (chaperon stubs / SANDBOX_DIR/bin / system PATH). Without an
+    # active mail-block layer, the chaperon order is unchanged.
+    local _mb_path_prefix=""
+    if [[ "${_MAIL_BLOCK_RESOLVED:-off}" == "on" && -n "$_MAIL_BLOCK_STUBS_DIR" ]]; then
+        # Same path on both sides of the bwrap boundary (see the
+        # mail-block bind above), so the PATH entry resolves the symlink
+        # farm whether the lookup happens inside or outside the sandbox.
+        _mb_path_prefix="$_MAIL_BLOCK_STUBS_DIR:"
+    fi
+    BWRAP_ARGS+=(--setenv PATH "${_mb_path_prefix}$SANDBOX_DIR/chaperon/stubs:$SANDBOX_DIR/bin:${PATH}")
 
     # Bind-mount chaperon FIFO directory into the sandbox (writable for
     # per-request response FIFOs created by stubs)
@@ -629,6 +701,16 @@ backend_prepare() {
     # dir, not write, so the agent can still use the proxy.
     if [[ -n "${_NETWORK_PROXY_DIR:-}" && -d "${_NETWORK_PROXY_DIR:-}" ]]; then
         BWRAP_ARGS+=(--ro-bind "$_NETWORK_PROXY_DIR" "$_NETWORK_PROXY_DIR")
+    fi
+
+    # Bind-mount mail-block symlink farm (mail-block layer 2) at the
+    # same path on both sides. Same reasoning as the proxy bind: late
+    # placement restores the path through `--tmpfs /tmp` (the dir lives
+    # under $TMPDIR), --ro-bind keeps the agent from rewriting the
+    # symlink farm. PATH is prepended with this dir (see PATH setenv
+    # below) so name-resolution lands here before any host-PATH mailer.
+    if [[ -n "${_MAIL_BLOCK_STUBS_DIR:-}" && -d "${_MAIL_BLOCK_STUBS_DIR:-}" ]]; then
+        BWRAP_ARGS+=(--ro-bind "$_MAIL_BLOCK_STUBS_DIR" "$_MAIL_BLOCK_STUBS_DIR")
     fi
 
 
@@ -779,6 +861,12 @@ backend_dry_run() {
         echo "# sockets:   $_NETWORK_PROXY_DIR (--ro-bind, same path inside sandbox)"
         echo "# in-sandbox bridge: 127.0.0.1:44889 (HTTP), 127.0.0.1:44890 (SOCKS5)"
     fi
+    if [[ "${_MAIL_BLOCK_RESOLVED:-off}" == "on" ]]; then
+        echo "# Mail-block: on (${_MAIL_BLOCK_REASON:-})"
+        echo "# stub:       $SANDBOX_DIR/tools/mail-block/mail-block-stub.sh"
+        [[ -n "${_MAIL_BLOCK_STUBS_DIR:-}" ]] && \
+            echo "# stubs dir:  $_MAIL_BLOCK_STUBS_DIR (--ro-bind, same path inside sandbox; PATH-prefixed)"
+    fi
     printf '%s \\\n' "$BWRAP"
     for arg in "${BWRAP_ARGS[@]}"; do
         printf '  %s \\\n' "$arg"
@@ -799,5 +887,10 @@ backend_dry_run() {
         for _f in "${_SEED_TMPFILES[@]}"; do
             rm -f "$_f" 2>/dev/null || true
         done
+    fi
+    # Clean up mail-block stubs dir (dry-run doesn't exec; sandbox-exec.sh
+    # trap covers the exec path).
+    if [[ -n "${_MAIL_BLOCK_STUBS_DIR:-}" ]]; then
+        rm -rf "$_MAIL_BLOCK_STUBS_DIR" 2>/dev/null || true
     fi
 }

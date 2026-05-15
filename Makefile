@@ -118,6 +118,21 @@ install-lib:
 			esac; \
 		done; \
 	fi
+	@# tools/mail-block — universal mailer-binary stub that delivers
+	@# NETWORK_MAIL_BLOCK. Without it the bwrap backend's bind-mount
+	@# loop tries to overlay a missing source file and the launcher
+	@# warns + disables the layer.  Shell + Markdown only; no per-arch
+	@# tree (the stub is POSIX sh).
+	@if [ -d "$(SRC_DIR)/tools/mail-block" ]; then \
+		$(INSTALL) -d $(DESTDIR)$(LIBDIR)/tools/mail-block; \
+		for f in $(SRC_DIR)/tools/mail-block/*; do \
+			[ -f "$$f" ] || continue; \
+			case "$$f" in \
+				*.sh) $(INSTALL) -m 755 "$$f" $(DESTDIR)$(LIBDIR)/tools/mail-block/ ;; \
+				*)    $(INSTALL) -m 644 "$$f" $(DESTDIR)$(LIBDIR)/tools/mail-block/ ;; \
+			esac; \
+		done; \
+	fi
 	@# tools/pasta — the shipped pasta helper that delivers
 	@# NETWORK_FILTER_MODE=filtered on bwrap. Without these files the
 	@# helper-probe in sandbox-lib.sh::_resolve_network_helper finds

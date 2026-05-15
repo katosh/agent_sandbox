@@ -191,6 +191,16 @@ _CHAPERON_DIR=""
 _NETWORK_PROXY_DIR=""
 _NETWORK_PROXY_PID=""
 
+# ── Mail-block: per-launch stub symlink-farm dir ──────────────────
+# Populated when `resolve_network_mail_block_mode` (called inside
+# backend_prepare) resolves to `on`. Holds one symlink per canonical
+# mailer name pointing at the universal stub; the backend bind-mounts
+# the dir at the same path on both sides of the bwrap boundary
+# (mirrors the chaperon FIFO + proxy socket-dir pattern) and prepends
+# that path to PATH inside the sandbox. Cleaned up on exit via the
+# trap below.
+_MAIL_BLOCK_STUBS_DIR=""
+
 if [[ -x "$SCRIPT_DIR/chaperon/chaperon.sh" ]]; then
     _CHAPERON_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chaperon-XXXXXX")"
     chmod 700 "$_CHAPERON_DIR"
@@ -315,6 +325,9 @@ _sandbox_cleanup() {
     fi
     if [[ -n "${_NETWORK_PROXY_DIR:-}" ]]; then
         rm -rf "$_NETWORK_PROXY_DIR" 2>/dev/null || true
+    fi
+    if [[ -n "${_MAIL_BLOCK_STUBS_DIR:-}" ]]; then
+        rm -rf "$_MAIL_BLOCK_STUBS_DIR" 2>/dev/null || true
     fi
 }
 trap _sandbox_cleanup EXIT

@@ -490,6 +490,200 @@ it dies cleanly when the parent shell exits. The cleanup trap
 kills the daemon and `rm -rf`'s the per-launch socket dir as
 belt-and-suspenders for the pre-exec failure window.
 
+## Outbound mail policy
+
+`NETWORK_MAIL_BLOCK` (v0.10.1+) is the **upstream** layer above the
+port-level SMTP block. While [`NETWORK_FILTER_MODE`](#modes) closes
+TCP ports 25 / 465 / 587 (and the local-MTA loopback variants) at the
+namespace edge, the mail-block layer replaces every canonical mailer
+binary inside the sandbox with a stub that prints a deterrent
+message and exits 77 (sysexits `EX_NOPERM`). The stub catches the
+`execve` syscall, so the agent learns the policy in human-readable
+terms before the kernel drops a connection.
+
+### Why two layers
+
+The port-level filter catches every dialer that reaches the SMTP
+socket — `python -c 'import smtplib...'`, `curl smtp://relay:25`,
+`nc <host> 25`. But an agent that exec's `sendmail` gets a connection
+refused / ENETUNREACH after a 30-second timeout, which reads as a
+transient network fault and invites retry. The stub closes the
+common case (every UNIX tool that respects the sendmail interface,
+plus every canonical mailer name on PATH) at the syscall, with a
+message text that explicitly forecloses the search tree:
+
+```
+agent-sandbox: outbound mail is disabled in this configuration.
+
+This is a configured boundary, not a transient fault. Every known
+mailer on this system — sendmail, mail, mailx, mutt, msmtp, ssmtp,
+s-nail, swaks, the postfix admin tools, exim, dma, qmail — has been
+shimmed by this stub. Retrying with another binary, another
+invocation, or another path will produce the same result. The
+companion network filter additionally blocks SMTP ports at the
+namespace edge, so application-level dialers (smtplib, curl smtp://,
+nc) also fail.
+
+Agents: do not retry. This rule is enforced, not advisory; persistence
+escalates the incident. ...
+```
+
+Two reinforcing layers, evaluated CONFIG > NETWORK. The agent reads
+the policy in plain text; the kernel still enforces it on the wire.
+
+```
+                  ┌──────────────────────────────┐
+                  │ AGENT exec's `sendmail -t`   │
+                  └────────────┬─────────────────┘
+                               │
+              CONFIG layer     │ stub layer (tools/mail-block/)
+              ──────────       │
+              argv[0] resolves │ → /usr/sbin/sendmail is bind-
+              to the bound      mounted to mail-block-stub.sh
+              path             │ → per-launch stubs dir under
+                               │   $TMPDIR (bound same-path on both
+                               │   sides) is PATH-prefixed and
+                               │   shadows host-PATH lookups
+                               │ → stub prints deterrent message,
+                               │   exits 77 (EX_NOPERM)
+                               │
+                               ▼ if the agent escalates to a
+                                 language-level dialer instead…
+              NETWORK layer
+              ─────────────
+              python -c 'smtplib...'   ↘
+              curl smtp://relay:25     ─→ NETWORK_FILTER_MODE
+              nc relay 25              ↗   blocks 25/465/587 at
+                                          the namespace edge
+```
+
+### Configuration
+
+| Value | Behaviour |
+|---|---|
+| `auto` (default) | on whenever the configured `NETWORK_FILTER_MODE` OR the resolved one is anything other than `open` (strictest-of-both rule). Disengages only when BOTH are `open`. |
+| `on` | always on, regardless of `NETWORK_FILTER_MODE`. |
+| `off` | never on. Escape hatch for sites that legitimately need the canonical mailer binaries visible. |
+
+The strictest-of-both rule matters when `NETWORK_FILTER_FALLBACK=open`
+degrades a `filtered`/`proxied`/`isolated` request to `open` (e.g. on a
+kernel without `setcap cap_net_raw+ep` on pasta). The user's configured
+intent — "constrain outbound network" — is still in force; the fallback
+policy only authorises degrading the network layer, not withdrawing all
+egress concerns. Mail-block doesn't depend on the kernel features the
+network filter gated on, so it can still fire — and this is precisely
+when defense-in-depth earns its name. Symmetrically, under
+`NETWORK_FILTER_FALLBACK=stricter` a configured `open` can be walked up
+to `filtered` (or higher); the stricter realised state is what an
+outside observer would see, so the mail-block layer follows.
+
+Admin enforcement: harden-only. A user-configured value can be equal
+to or stricter than the admin pin (off < auto < on); attempts to
+weaken raise a `WARNING` at config-load and restore the admin value.
+See [`NETWORK_MAIL_BLOCK`](../configure.md#network_mail_block) for
+the full operator-facing description.
+
+### Canonical mailer name set
+
+The stub is invoked under each of the following names. The list is
+maintained as `_MAIL_BLOCK_STUB_NAMES` in `sandbox-lib.sh`:
+
+| Family | Names |
+|---|---|
+| Sendmail interface | `sendmail`, `sendmail.sendmail`, `sendmail.postfix`, `rmail` |
+| mail / mailx | `mail`, `mailx`, `Mail`, `s-nail`, `nail`, `bsd-mailx`, `heirloom-mailx` |
+| mutt | `mutt`, `neomutt` |
+| SMTP-direct | `msmtp`, `ssmtp`, `nullmailer-send`, `smtp-cli` |
+| Postfix admin | `postsuper`, `postdrop`, `postqueue`, `mailq`, `newaliases` |
+| Test tool | `swaks` |
+| mpack | `mpack`, `metasend` |
+| Exim admin | `exim`, `exim4` |
+| DragonFly Mail Agent | `dma` |
+| qmail client | `qmail-inject`, `qmail-qmqpc`, `qmail-remote` |
+
+`git send-email` and `git imap-send` invoke an external `sendmail`
+for delivery, so the sendmail stub covers them.
+
+### Mechanism
+
+Two reinforcing path-resolution layers, both established at
+`backend_prepare` time:
+
+1. **Bind-mount over canonical absolute paths.** For each name, the
+   launcher tries `/usr/bin/<name>`, `/usr/sbin/<name>`,
+   `/usr/lib/sendmail` (Debian historical), `/var/qmail/bin/qmail-*`
+   (qmail convention). Entries that don't exist on the host are
+   silently skipped — there's no need to materialise phantom paths
+   because layer 2 covers PATH-resolution misses.
+2. **Symlink farm + PATH-prefix.** A per-launch tempdir under
+   `$TMPDIR` (mode `0700`) is populated with one symlink per name
+   pointing at the in-sandbox stub path. The dir is `--ro-bind`'d at
+   the same path on both sides of the sandbox boundary (mirroring
+   the chaperon FIFO + proxy-socket-dir pattern) and prepended to
+   `PATH` inside the sandbox. Catches PATH lookups that resolve to
+   `/usr/local/bin/<name>`, Lmod-injected
+   `/app/software/<pkg>/bin/<name>`, or any other host-PATH-position
+   layer 1 missed.
+
+Layer 2 fires FIRST in PATH order (before `$SANDBOX_DIR/chaperon/stubs`,
+`$SANDBOX_DIR/bin`, and the rest of `$PATH`) so the stub wins even
+when host PATH contains an unstubbed copy.
+
+### What it catches and what it doesn't
+
+**Catches** (the easy ~80%):
+
+- Every UNIX tool that respects the sendmail interface (`git
+  send-email`, alpine, mh-mail, …).
+- Every name that resolves through PATH lookup, regardless of
+  where the resolved path lives (PATH-prefix layer wins over
+  Lmod-injected, brew-installed, hand-built copies).
+
+**Does NOT catch** (the network filter does — see
+[Modes](#modes)):
+
+- `python -c 'import smtplib; …'` — language-level dialer.
+- `curl smtp://relay:25 ...` — application-level dialer.
+- `nc <host> 25` — raw TCP. Under `proxied` mode this also fails
+  because the namespace has no native TCP egress; under `filtered`
+  the port closure does the work.
+
+### Argv echo sanitization
+
+A naive stub that echoes its argv invites a control-byte injection
+surface — a crafted `argv[1]` containing `\e[2J\e[H` rewrites the
+agent's terminal view, OSC-8 sequences smuggle clickable URLs into
+log scrapers. The stub instead:
+
+- Reports only `basename "$0"` (so the reader sees which mailer the
+  agent reached for), passed through
+  `LC_ALL=C tr -cd '[:graph:]'` to strip every byte outside
+  printable ASCII, capped at 64 bytes.
+- Reports the argv **count** (so the agent can distinguish a probe
+  from a real send attempt), never the contents.
+
+Exit code is `77` (`EX_NOPERM` from `sysexits.h`, "permission denied
+at a higher level"). `EX_CONFIG` (78) was considered and rejected:
+it reads as "operator misconfiguration, retry with a fix" which
+invites exactly the retry loop the stub is meant to break.
+
+### Backend support
+
+Bwrap only in v0.10.1. Firejail and landlock parity is mechanically
+straightforward but deferred so the initial release stays auditable —
+the layer falls back to no-stub on unsupported backends; the network
+filter still applies per the [backend matrix](#modes).
+
+### Operator opt-out
+
+`NETWORK_MAIL_BLOCK=off` is the escape hatch. Rare in practice: HPC
+sites typically route legitimate mail through a host-side relay or
+a separate non-sandboxed task, not through a sandboxed mailer
+binary. If you find yourself reaching for it, prefer `MODE=open` —
+which carries the entire mail policy with it — and document the
+reason inline in `~/.config/agent-sandbox/sandbox.conf` so a future
+operator (or auditor) can find it.
+
 ## Real-world recipe — verify filtered mode is enforcing
 
 After deploying v1.1, an operator can confirm `filtered` mode is
