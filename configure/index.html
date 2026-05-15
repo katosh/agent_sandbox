@@ -2775,6 +2775,11 @@
 <td>general outbound TCP/UDP/DNS minus the threat-class ports</td>
 </tr>
 <tr>
+<td><code>proxied</code> <em>(new in 0.10.1)</em></td>
+<td>new netns with no native outbound; agent traffic is mediated by a host-side HTTP CONNECT + SOCKS5 daemon (<code>tools/proxy/agent-sandbox-proxy.py</code>) reached via bind-mounted Unix sockets + an in-sandbox TCP↔Unix bridge. <code>HTTP_PROXY</code>/<code>HTTPS_PROXY</code>/<code>ALL_PROXY</code> pre-set</td>
+<td>only what the proxy admits — proxy-aware tools (curl, pip, git, gh, conda, Claude SDK) work; raw TCP/UDP/ICMP, <code>ssh</code> direct, <code>dig</code>/<code>nslookup</code>, <code>ping</code>, <code>bash /dev/tcp/*</code> all break</td>
+</tr>
+<tr>
 <td><code>isolated</code></td>
 <td>new netns with no network at all</td>
 <td>none (DNS / pip / git break inside the sandbox)</td>
@@ -2782,7 +2787,8 @@
 </tbody>
 </table>
 <p><code>filtered</code> requires <code>pasta</code> on the host. agent-sandbox ships a static <code>pasta</code> binary at <code>tools/pasta/&lt;arch&gt;/pasta</code> (x86_64 in v1.1); install <code>passt</code> from your distro (<code>apt install passt</code>, <code>dnf install passt</code>, <code>brew install passt</code>) for a newer system pasta on <code>PATH</code>. When <code>filtered</code> cannot be delivered (no pasta, kernel &lt; 5.7 without <code>setcap cap_net_raw+ep</code>, landlock backend), the resolver falls back per <a href="#network_filter_fallback"><code>NETWORK_FILTER_FALLBACK</code></a>.</p>
-<p><strong>Strictness ordering:</strong> <code>open</code> &lt; <code>filtered</code> &lt; <code>isolated</code>. If the admin baseline pins a value, the user's effective value cannot be weaker; an attempted weakening is restored at config-load with a <code>WARNING</code>.</p>
+<p><code>proxied</code> requires <code>python3</code> on <code>PATH</code> and the in-tree helper <code>tools/proxy/agent-sandbox-proxy.py</code> (always present in a <code>make install</code>-ed deployment; no per-arch build). Bwrap only in v0.10.1; firejail/landlock unsupported. See <a href="../reference/network-filter/#proxied-mode-host-side-http-connect-socks5-fallback">Proxied mode</a> for the enforcement surface and breakage list.</p>
+<p><strong>Strictness ordering:</strong> <code>open</code> &lt; <code>filtered</code> &lt; <code>proxied</code> &lt; <code>isolated</code>. If the admin baseline pins a value, the user's effective value cannot be weaker; an attempted weakening is restored at config-load with a <code>WARNING</code>.</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="nv">NETWORK_FILTER_MODE</span><span class="o">=</span><span class="s2">&quot;filtered&quot;</span><span class="w">          </span><span class="c1"># default — port-level enforcement</span>
 </span></code></pre></div>
 <p>See the <a href="../reference/network-filter/#modes">Modes section</a> of the reference page for what pasta <code>-T/-U</code> actually enforces in v1.1 (port-level entries) versus what is tracked for v1.2 L7-proxy work (hostname-level entries).</p>
@@ -2803,11 +2809,11 @@
 </tr>
 <tr>
 <td><code>stricter</code></td>
-<td>Fall back ONLY to a STRICTER mode (e.g. <code>filtered</code> → <code>isolated</code>). Loud warning. If no stricter mode is possible (landlock has no netns), refuse to launch.</td>
+<td>Fall back ONLY to a STRICTER mode. Loud warning. Walks the strictness chain LEAST-strict-step-up first (smallest weakening), so a degraded-pasta host pinning <code>MODE=filtered</code> lands on <code>proxied</code> (v0.10.1+) before <code>isolated</code>. If no stricter mode is possible (landlock has no netns), refuse to launch.</td>
 </tr>
 <tr>
 <td><code>open</code> (default)</td>
-<td>Fall back ONLY to a LESS restrictive mode, preferring the most-strict less-strict option first. Loud warning.</td>
+<td>Fall back ONLY to a LESS restrictive mode, preferring the most-strict less-strict option first. NEVER strengthens — default-config users (<code>MODE=filtered FALLBACK=open</code>) on a degraded host fall to <code>open</code>, never silently to <code>proxied</code>. Loud warning.</td>
 </tr>
 </tbody>
 </table>

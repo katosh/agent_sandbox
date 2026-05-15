@@ -1582,7 +1582,18 @@
 </span></code></pre></div>
 <p><strong>Pros:</strong> No dedicated accounts needed — cgroup membership identifies sandboxed processes; transparent to the process (no proxy config); institutional IP preserved; default-allow keeps research workflows intact; works with any backend. <strong>Cons:</strong> cgroup path hierarchy varies by distro and systemd version — the nftables rules must match the actual cgroup tree; <code>systemd-run --user --scope</code> may require <code>loginctl enable-linger</code> for the user; multi-user deployments need per-user rules or a common slice.</p>
 <h3 id="option-c-network-namespace-policy-proxy">Option C: Network Namespace + Policy Proxy<a class="headerlink" href="#option-c-network-namespace-policy-proxy" title="Permanent link">&para;</a></h3>
-<p><strong>Does not require</strong> dedicated accounts or admin. <strong>Effort:</strong> Medium-high (self-serve).</p>
+<p><strong>Implemented in 0.10.1</strong> as <code>NETWORK_FILTER_MODE=proxied</code>. The proxy
+ships at <code>tools/proxy/agent-sandbox-proxy.py</code> and enforces the
+effective NETWORK_BLOCKLIST at HTTP CONNECT / SOCKS5 connect time, with
+a hardened IP floor (RFC1918, loopback, link-local, cloud metadata) that
+defends against blocklist-bypass via DNS-rebind or IPv4-quirky forms.
+Opt in via <code>NETWORK_FILTER_MODE=proxied</code>, or pin
+<code>NETWORK_FILTER_FALLBACK=stricter</code> to land on it automatically when
+pasta cannot deliver <code>filtered</code>. See
+<a href="../../reference/network-filter/#proxied-mode-host-side-http-connect-socks5-fallback">Network filter — proxied mode</a>
+for the full surface.</p>
+<p><strong>Does not require</strong> dedicated accounts or admin. <strong>Effort:</strong> zero
+(self-serve config switch).</p>
 <p>Bwrap supports <code>--unshare-net</code>, which places the sandbox in a network namespace with <strong>no interfaces at all</strong>. All network access is then restored through a proxy running outside the sandbox, listening on a Unix socket (bind-mounted in, like the chaperon FIFOs). The proxy becomes a policy enforcement point — it can allow general web access while blocking specific destinations, logging requests, or applying rate limits.</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>sandbox-exec.sh
 </span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>  ├── start policy-proxy on Unix socket (outside sandbox)
@@ -1638,7 +1649,7 @@
 <tr>
 <td><strong>C: netns + proxy</strong></td>
 <td>No</td>
-<td>No</td>
+<td>No (user-level config switch)</td>
 <td>No (<code>HTTPS_PROXY</code>)</td>
 <td>Blocked</td>
 <td>Built-in</td>

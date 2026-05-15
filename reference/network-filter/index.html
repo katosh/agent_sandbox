@@ -831,6 +831,78 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#proxied-mode-host-side-http-connect-socks5-fallback" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Proxied mode (host-side HTTP CONNECT + SOCKS5 fallback)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Proxied mode (host-side HTTP CONNECT + SOCKS5 fallback)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-this-mode-exists" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why this mode exists
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#whats-enforced" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's enforced
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-breaks-under-proxied" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What breaks under proxied
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#resource-cost" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resource cost
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#real-world-recipe-verify-filtered-mode-is-enforcing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1394,6 +1466,78 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#proxied-mode-host-side-http-connect-socks5-fallback" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Proxied mode (host-side HTTP CONNECT + SOCKS5 fallback)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Proxied mode (host-side HTTP CONNECT + SOCKS5 fallback)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-this-mode-exists" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why this mode exists
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#whats-enforced" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's enforced
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-breaks-under-proxied" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What breaks under proxied
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#resource-cost" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resource cost
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#real-world-recipe-verify-filtered-mode-is-enforcing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1551,7 +1695,7 @@ TCP path itself at a layer the agent cannot escape.</p>
   as the Layer 3 complement.</li>
 </ul>
 <h2 id="modes">Modes<a class="headerlink" href="#modes" title="Permanent link">&para;</a></h2>
-<p>The three values of <a href="../../configure/#network_filter_mode"><code>NETWORK_FILTER_MODE</code></a> — <code>open</code>, <code>filtered</code>, <code>isolated</code> — and the mechanism each selects (host netns vs. new netns + pasta vs. new netns with no network) are defined on the configure page. This section covers v1.1's <em>behavioural</em> detail: what <code>filtered</code> actually enforces at runtime, what it skips, and the upgrade flip from v1.0.</p>
+<p>The four values of <a href="../../configure/#network_filter_mode"><code>NETWORK_FILTER_MODE</code></a> — <code>open</code>, <code>filtered</code>, <code>proxied</code> (new in 0.10.1), <code>isolated</code> — and the mechanism each selects are defined on the configure page. Strictness ordering: <code>open &lt; filtered &lt; proxied &lt; isolated</code>. This section covers the <em>behavioural</em> detail: what <code>filtered</code> actually enforces at runtime, what it skips, and how <code>proxied</code> mediates the netns-no-outbound chokepoint.</p>
 <p><strong>Default state (v1.1).</strong> When <code>pasta</code> is available on the host,
 <code>NETWORK_FILTER_MODE=filtered</code> delivers port-level outbound
 enforcement: pasta provisions a netns with a tap interface
@@ -1564,7 +1708,7 @@ is enforced at pasta's own outbound boundary via <code>-T ~N</code> (TCP) and
 <thead>
 <tr>
 <th><code>NETWORK_FILTER_MODE</code></th>
-<th>What happens (v1.1)</th>
+<th>What happens (v0.10.1)</th>
 </tr>
 </thead>
 <tbody>
@@ -1575,6 +1719,10 @@ is enforced at pasta's own outbound boundary via <code>-T ~N</code> (TCP) and
 <tr>
 <td><code>filtered</code></td>
 <td>bwrap inside a pasta netns with <code>-T/-U</code> port exclusions enforcing the universal port floor (SMTP submission 24/25/465/587/2525, DoT 853, telnet/finger/rsh/rexec/rsyslog) plus any operator-added bare-port or universal-CIDR-port entries. Falls back per <code>NETWORK_FILTER_FALLBACK</code> when pasta is unavailable.</td>
+</tr>
+<tr>
+<td><code>proxied</code></td>
+<td>bwrap with <code>--unshare-net</code> + bind-mounted Unix sockets to a host-side HTTP CONNECT + SOCKS5 daemon (<code>tools/proxy/agent-sandbox-proxy.py</code>); blocklist enforced at CONNECT time PLUS a hardened IP floor (RFC1918, loopback, link-local, cloud metadata). Bwrap only; firejail/landlock unsupported.</td>
 </tr>
 <tr>
 <td><code>isolated</code></td>
@@ -1635,13 +1783,14 @@ blocklist are tracked for v1.2 L7-proxy work (SNI-aware filtering;
 R3 in survey, deferred — see settylab/dotto-nexus#117).</p>
 <h2 id="fallback-policies">Fallback policies<a class="headerlink" href="#fallback-policies" title="Permanent link">&para;</a></h2>
 <p>The three values of <a href="../../configure/#network_filter_fallback"><code>NETWORK_FILTER_FALLBACK</code></a> — <code>strict</code>, <code>stricter</code>, <code>open</code> — and the strictness ordering (<code>open</code> &lt; <code>stricter</code> &lt; <code>strict</code>) live on the configure page. The interesting content here is <em>which backend can deliver which mode</em> and <em>what each fallback policy actually produces per requested-mode × backend-support combination</em>.</p>
-<p>Per-backend support, v1.1:</p>
+<p>Per-backend support, v0.10.1:</p>
 <table>
 <thead>
 <tr>
 <th>Backend</th>
 <th><code>open</code></th>
 <th><code>filtered</code></th>
+<th><code>proxied</code></th>
 <th><code>isolated</code></th>
 </tr>
 </thead>
@@ -1650,23 +1799,32 @@ R3 in survey, deferred — see settylab/dotto-nexus#117).</p>
 <td><strong>bwrap</strong></td>
 <td>✓</td>
 <td>✓ when <code>pasta</code> is available (shipped in-tree at <code>tools/pasta/&lt;arch&gt;/pasta</code>, or via distro <code>passt</code> package); otherwise falls back per policy</td>
+<td>✓ when <code>python3</code> is on PATH (the bundled <code>tools/proxy/agent-sandbox-proxy.py</code> is the helper)</td>
 <td>✓ (<code>--unshare-net</code>)</td>
 </tr>
 <tr>
 <td><strong>firejail</strong></td>
 <td>✓</td>
-<td>✗ (needs a site-provisioned bridge via <code>--net=&lt;iface&gt;</code> + <code>--netfilter</code>; v1.1 does not auto-provision the bridge — use bwrap or accept the fallback)</td>
+<td>✗ (needs a site-provisioned bridge via <code>--net=&lt;iface&gt;</code> + <code>--netfilter</code>; v0.10.1 does not auto-provision the bridge — use bwrap or accept the fallback)</td>
+<td>✗ (bwrap-only in v0.10.1; firejail parity tracked for follow-up)</td>
 <td>✓ (<code>--net=none</code>)</td>
 </tr>
 <tr>
 <td><strong>landlock</strong></td>
 <td>✓</td>
 <td>✗ (no mount/network namespace)</td>
+<td>✗ (no namespace primitives)</td>
 <td>✗ (no network namespace)</td>
 </tr>
 </tbody>
 </table>
 <h3 id="fallback-decision-matrix">Fallback decision matrix<a class="headerlink" href="#fallback-decision-matrix" title="Permanent link">&para;</a></h3>
+<p><code>stricter</code> walks the strictness chain LEAST-strict-step-up first
+(smallest weakening) so a degraded-pasta host lands on <code>proxied</code>
+before <code>isolated</code>. <code>open</code> walks the LESS-strict chain MOST-strict-
+first; <code>proxied</code> is stricter than <code>filtered</code>, so the <code>open</code>-policy
+default-config user on a degraded-pasta host still lands on <code>open</code>
+— <code>proxied</code> is opt-in via <code>MODE=proxied</code> or <code>FALLBACK=stricter</code>.</p>
 <table>
 <thead>
 <tr>
@@ -1687,7 +1845,14 @@ R3 in survey, deferred — see settylab/dotto-nexus#117).</p>
 </tr>
 <tr>
 <td><code>filtered</code></td>
-<td>no (bwrap/firejail; no helper)</td>
+<td>no (bwrap; degraded pasta; proxied supported)</td>
+<td><strong>FAIL</strong></td>
+<td><strong>proxied</strong> (loud warning; v0.10.1 default fallback target)</td>
+<td>open (loud warning)</td>
+</tr>
+<tr>
+<td><code>filtered</code></td>
+<td>no (bwrap; degraded pasta; proxied unsupported)</td>
 <td><strong>FAIL</strong></td>
 <td>isolated (loud warning)</td>
 <td>open (loud warning)</td>
@@ -1698,6 +1863,20 @@ R3 in survey, deferred — see settylab/dotto-nexus#117).</p>
 <td><strong>FAIL</strong></td>
 <td><strong>FAIL</strong> (no stricter mode possible)</td>
 <td>open (loud warning)</td>
+</tr>
+<tr>
+<td><code>proxied</code></td>
+<td>yes (bwrap; python3 available)</td>
+<td>proxied</td>
+<td>proxied</td>
+<td>proxied</td>
+</tr>
+<tr>
+<td><code>proxied</code></td>
+<td>no (firejail/landlock)</td>
+<td><strong>FAIL</strong></td>
+<td>isolated (loud warning, firejail)</td>
+<td>filtered/open (loud warning, less-strict)</td>
 </tr>
 <tr>
 <td><code>isolated</code></td>
@@ -1718,7 +1897,7 @@ R3 in survey, deferred — see settylab/dotto-nexus#117).</p>
 <td>no (bwrap, helper present)</td>
 <td><strong>FAIL</strong></td>
 <td><strong>FAIL</strong></td>
-<td>filtered (loud warning; the most-strict less-strict option available)</td>
+<td>proxied/filtered (loud warning; most-strict less-strict option)</td>
 </tr>
 <tr>
 <td><code>open</code></td>
@@ -1731,8 +1910,8 @@ R3 in survey, deferred — see settylab/dotto-nexus#117).</p>
 </table>
 <p>Note for the <code>open</code> policy row: <code>open</code> never falls to a stricter
 mode than requested. If you want <code>filtered</code> but want to accept
-<code>isolated</code> as a fallback when no helper is available, use
-<code>stricter</code> (not <code>open</code>).</p>
+<code>proxied</code> (then <code>isolated</code>) as a fallback when no helper is
+available, use <code>stricter</code> (not <code>open</code>).</p>
 <h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
 <p>The user-facing knobs — <code>NETWORK_FILTER_MODE</code>, <code>NETWORK_FILTER_FALLBACK</code>, <code>NETWORK_BLOCKLIST</code>, <code>NETWORK_BLOCKLIST_EXCEPT</code>, and the <code>NETWORK_FILTER_SKIP_HELPER_PROBE</code> env override — are documented per-knob in the <a href="../../configure/#network-filter">configure page's Network filter section</a>. This section covers the syntax of blocklist patterns and the runtime apply order; the precedence model and worked examples follow below.</p>
 <h3 id="pattern-syntax-for-network_blocklist-and-network_blocklist_except">Pattern syntax for <code>NETWORK_BLOCKLIST</code> and <code>NETWORK_BLOCKLIST_EXCEPT</code><a class="headerlink" href="#pattern-syntax-for-network_blocklist-and-network_blocklist_except" title="Permanent link">&para;</a></h3>
@@ -2055,6 +2234,92 @@ sandbox start. <strong>Do not set it as a workaround for the degradation
 warning</strong> — setting it on a host where pasta actually degrades
 re-introduces the silent-loopback-only failure mode that the probe
 exists to catch.</p>
+<h2 id="proxied-mode-host-side-http-connect-socks5-fallback">Proxied mode (host-side HTTP CONNECT + SOCKS5 fallback)<a class="headerlink" href="#proxied-mode-host-side-http-connect-socks5-fallback" title="Permanent link">&para;</a></h2>
+<p><code>NETWORK_FILTER_MODE=proxied</code> (v0.10.1+) is the <strong>chokepoint</strong> mode:
+the sandbox runs inside an empty network namespace, and every outbound
+connection must pass through a host-side policy proxy. The proxy
+listens on two Unix sockets in a per-launch dir (mode <code>0700</code>, under
+<code>$XDG_RUNTIME_DIR</code> when available, else <code>$TMPDIR</code>); bwrap bind-mounts
+the dir read-only at the same path on both sides of the sandbox
+boundary (mirroring the chaperon FIFO pattern), so the in-sandbox
+bridge opens the same socket paths the host-side server bound. An
+in-sandbox bridge (also Python; runs as PID 1 inside the netns)
+listens on <code>127.0.0.1:44889</code> (HTTP) and <code>127.0.0.1:44890</code> (SOCKS5) and
+forwards bytes byte-for-byte to the bind-mounted Unix sockets.
+<code>HTTP_PROXY</code>, <code>HTTPS_PROXY</code>, <code>http_proxy</code>, <code>https_proxy</code>, <code>ALL_PROXY</code>,
+and <code>NO_PROXY</code> are pre-set inside the sandbox so the standard suite
+of tools (curl, pip, conda, git, gh, Claude SDK, etc.) routes through
+the proxy without further configuration.</p>
+<h3 id="why-this-mode-exists">Why this mode exists<a class="headerlink" href="#why-this-mode-exists" title="Permanent link">&para;</a></h3>
+<p>When pasta cannot deliver <code>filtered</code> (typically: kernel <code>&lt; 5.7</code>
+without <code>setcap cap_net_raw+ep</code> on the pasta binary, common on shared
+HPC login nodes), the pre-v0.10.1 fallback chain offered two
+choices: <code>isolated</code> (no DNS / pip / git — sandbox effectively
+unusable) or <code>open</code> (host network — loses port-level enforcement).
+<code>proxied</code> is the third path: the sandbox is just as isolated at the
+namespace boundary as <code>isolated</code>, but proxy-aware tools still work.
+Set <code>NETWORK_FILTER_FALLBACK=stricter</code> to land on it automatically;
+or set <code>NETWORK_FILTER_MODE=proxied</code> to opt in unconditionally.</p>
+<h3 id="whats-enforced">What's enforced<a class="headerlink" href="#whats-enforced" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Check</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Host-string normalisation</td>
+<td>reject CR/LF/NUL/space/<code>@</code>/<code>#</code>/<code>?</code>/<code>/</code>/<code>\</code>; reject decimal-int / hex / octal IPv4 quirks (<code>2130706433</code>, <code>0x7f000001</code>); IDN-encode unicode and lowercase.</td>
+</tr>
+<tr>
+<td>DNS-rebind defence</td>
+<td>resolve hostname ONCE, check the resolved IP against the floor + blocklist, connect to that literal IP. No re-resolve between policy decision and connect.</td>
+</tr>
+<tr>
+<td>Hardened IP floor</td>
+<td><code>127.0.0.0/8</code>, <code>169.254.0.0/16</code> (cloud metadata + link-local IPv4), <code>10.0.0.0/8</code>, <code>172.16.0.0/12</code>, <code>192.168.0.0/16</code>, <code>100.64.0.0/10</code>, <code>0.0.0.0/8</code>, <code>::1/128</code>, <code>fe80::/10</code>, <code>fc00::/7</code> (includes <code>fd00:ec2::254</code> AWS IPv6 metadata), <code>::/8</code>. Always denied; not lifted by <code>NETWORK_BLOCKLIST_EXCEPT</code>.</td>
+</tr>
+<tr>
+<td><code>NETWORK_BLOCKLIST</code></td>
+<td>full enforcement of exact-host, wildcard hostname (<code>*.suffix</code>), CIDR, and bare-port entries — at the proxy CONNECT boundary, not at L4 (so wildcard / hostname entries are now load-bearing under <code>proxied</code>, unlike <code>filtered</code> where the L4 layer skipped them).</td>
+</tr>
+<tr>
+<td><code>NETWORK_BLOCKLIST_EXCEPT</code></td>
+<td>same precedence model as elsewhere; an EXCEPT entry carves through a BLOCK entry it covers. Does NOT lift the hardened IP floor.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="what-breaks-under-proxied">What breaks under <code>proxied</code><a class="headerlink" href="#what-breaks-under-proxied" title="Permanent link">&para;</a></h3>
+<p>The trade-off for the chokepoint is loss of every protocol the
+proxy does not speak. Inside the sandbox:</p>
+<ul>
+<li><strong><code>ssh host</code></strong> (direct): blocked. Workaround: <code>ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:44890 %h %p'</code> routes ssh through the SOCKS5 proxy.</li>
+<li><strong><code>dig</code>, <code>nslookup</code>, <code>host</code>, <code>getent hosts</code></strong>: blocked (no resolver inside the netns). Name resolution happens host-side inside the proxy. Debug DNS on the host, not in the sandbox.</li>
+<li><strong><code>ping</code> / ICMP</strong>: blocked (HTTP CONNECT and SOCKS5 do not forward ICMP).</li>
+<li><strong><code>bash /dev/tcp/host/port</code></strong>: blocked. The empty netns has no native TCP path out. This is the intentional hardening side-effect — the same primitive was an exfil surface under <code>open</code> mode.</li>
+<li><strong>Spark / MPI / NCCL / arbitrary TCP daemons</strong>: blocked. The proxy is for proxy-aware <em>clients</em> only. Workloads needing arbitrary TCP egress must pin <code>NETWORK_FILTER_MODE=open</code> or <code>filtered</code>.</li>
+<li><strong>UDP</strong> (except DNS-over-HTTPS via the proxy): not supported.</li>
+</ul>
+<p>Loopback inside the sandbox (e.g. an agent-spawned Jupyter kernel
+on <code>127.0.0.1:N</code>) is reachable as usual: <code>NO_PROXY</code> includes
+<code>127.0.0.1</code>, <code>localhost</code>, <code>::1</code>, and <code>[::1]</code>. The bridge listener
+addresses themselves (<code>127.0.0.1:44889/44890</code>) are in <code>NO_PROXY</code> so
+proxy-aware clients don't recursively proxy through themselves.</p>
+<h3 id="resource-cost">Resource cost<a class="headerlink" href="#resource-cost" title="Permanent link">&para;</a></h3>
+<p>Each sandbox launches one host-side proxy daemon (~25 MB RSS) and one
+in-sandbox bridge (also ~25 MB). At 20 parallel agents on a shared
+node, total ~1 GB across all daemons. Acceptable on typical HPC
+compute nodes; tight on cgroup-memory-capped login nodes (often 8-16
+GB per user) — pin <code>NETWORK_FILTER_MODE=open</code> for sessions that
+need every byte.</p>
+<h3 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h3>
+<p><code>sandbox-exec.sh</code> spawns the host-side proxy daemon BEFORE bwrap; the
+daemon arms <code>prctl(PR_SET_PDEATHSIG, SIGTERM)</code> as its first action so
+it dies cleanly when the parent shell exits. The cleanup trap
+kills the daemon and <code>rm -rf</code>'s the per-launch socket dir as
+belt-and-suspenders for the pre-exec failure window.</p>
 <h2 id="real-world-recipe-verify-filtered-mode-is-enforcing">Real-world recipe — verify filtered mode is enforcing<a class="headerlink" href="#real-world-recipe-verify-filtered-mode-is-enforcing" title="Permanent link">&para;</a></h2>
 <p>After deploying v1.1, an operator can confirm <code>filtered</code> mode is
 actually enforcing inside their sandbox with a handful of one-liners.
