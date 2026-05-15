@@ -1,8 +1,8 @@
 # agent-sandbox
 
-**Kernel-enforced filesystem isolation for AI coding agents on Linux.**
+**Kernel-enforced filesystem and network isolation for AI coding agents on Linux.**
 
-Hides SSH keys, cloud credentials, GPG keys, and environment secrets from AI coding agents while letting them do their job. Three backends (bubblewrap, firejail, Landlock), six built-in agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode, pi-mono) with a one-line recipe for adding more, zero containers.
+Hides SSH keys, cloud credentials, GPG keys, and environment secrets from AI coding agents while letting them do their job. Three backends (bubblewrap, firejail, Landlock), six built-in agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode, pi-mono) with a one-line recipe for adding more, zero containers. Network egress is enforced at the Linux network namespace (four [`NETWORK_FILTER_MODE`](reference/network-filter.md#modes) values — `open`/`filtered`/`proxied`/`isolated`), not via tool cooperation — a jailbroken agent cannot reach the network outside the configured policy regardless of what its tool layer thinks.
 
 ```bash
 agent-sandbox claude          # Claude Code, sandboxed
