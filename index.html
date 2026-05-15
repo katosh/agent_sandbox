@@ -1016,8 +1016,8 @@
 
 
 <h1 id="agent-sandbox">agent-sandbox<a class="headerlink" href="#agent-sandbox" title="Permanent link">&para;</a></h1>
-<p><strong>Kernel-enforced filesystem isolation for AI coding agents on Linux.</strong></p>
-<p>Hides SSH keys, cloud credentials, GPG keys, and environment secrets from AI coding agents while letting them do their job. Three backends (bubblewrap, firejail, Landlock), six built-in agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode, pi-mono) with a one-line recipe for adding more, zero containers.</p>
+<p><strong>Kernel-enforced filesystem and network isolation for AI coding agents on Linux.</strong></p>
+<p>Hides SSH keys, cloud credentials, GPG keys, and environment secrets from AI coding agents while letting them do their job. Three backends (bubblewrap, firejail, Landlock), six built-in agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode, pi-mono) with a one-line recipe for adding more, zero containers. Network egress is enforced at the Linux network namespace (four <a href="reference/network-filter/#modes"><code>NETWORK_FILTER_MODE</code></a> values — <code>open</code>/<code>filtered</code>/<code>proxied</code>/<code>isolated</code>), not via tool cooperation — a jailbroken agent cannot reach the network outside the configured policy regardless of what its tool layer thinks.</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>agent-sandbox<span class="w"> </span>claude<span class="w">          </span><span class="c1"># Claude Code, sandboxed</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>agent-sandbox<span class="w"> </span>bash<span class="w">            </span><span class="c1"># interactive shell, sandboxed</span>
 </span></code></pre></div>

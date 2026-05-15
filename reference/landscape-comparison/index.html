@@ -766,6 +766,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="What this means for agent-sandbox&#39;s design">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#closed-since-the-v080-survey" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Closed since the v0.8.0 survey
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#still-deferred" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Still deferred
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1083,6 +1111,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="What this means for agent-sandbox&#39;s design">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#closed-since-the-v080-survey" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Closed since the v0.8.0 survey
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#still-deferred" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Still deferred
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1139,7 +1195,9 @@ tools. It is a best-effort survey of publicly available documentation and
 source code, written so that readers evaluating agent-sandboxing choices on
 shared HPC clusters can place this project in context. Project capabilities
 change quickly — verify against each project's current docs before making
-deployment decisions. Last reviewed: <strong>2026-05-07</strong>.</p>
+deployment decisions. Last reviewed: <strong>2026-05-15</strong> (originally surveyed
+<strong>2026-05-07</strong>; refreshed on 2026-05-15 for the v0.10.x network-filter
+mode-quartet and mail-block additions).</p>
 </blockquote>
 <h2 id="the-field">The field<a class="headerlink" href="#the-field" title="Permanent link">&para;</a></h2>
 <p>Sandboxing for AI coding agents has converged into roughly six isolation
@@ -1174,6 +1232,43 @@ Codex CLI foregrounds being on-by-default, agent-sandbox foregrounds HPC
 compatibility — but the kernel primitives underneath are largely the
 same.</p>
 <h2 id="what-is-unique-to-agent-sandbox">What is unique to agent-sandbox<a class="headerlink" href="#what-is-unique-to-agent-sandbox" title="Permanent link">&para;</a></h2>
+<p><strong>Kernel-namespace-enforced network egress, not tool-cooperative.</strong>
+v0.10.1 ships four <a href="../network-filter/#modes"><code>NETWORK_FILTER_MODE</code></a>
+values — <code>open</code> &lt; <code>filtered</code> &lt; <code>proxied</code> &lt; <code>isolated</code> — and the three
+non-<code>open</code> modes run the sandboxed agent inside an <code>--unshare-net</code>
+network namespace. <code>filtered</code> (the shipped default) provisions a
+<a href="https://passt.top/">pasta</a>-backed tap interface to the host network
+and closes the identity-bound port floor (SMTP submission
+24/25/465/587/2525, DoT 853, telnet/finger/ident/rexec/rlogin/rsh) at
+pasta's own <code>-T ~N</code> / <code>-U ~K</code> outbound-forwarding boundary — no
+nftables or iptables dependency. <code>proxied</code> (v0.10.1, the
+<a href="../network-filter/#proxied-mode-host-side-http-connect-socks5-fallback">fallback target for pasta-deficient hosts</a>)
+puts the empty netns behind a host-side HTTP CONNECT + SOCKS5 daemon
+(<code>tools/proxy/agent-sandbox-proxy.py</code>) reached via two bind-mounted
+Unix sockets, enforcing the full blocklist (hostname, wildcard, CIDR,
+bare port) at CONNECT time on top of a hardened IP floor the user
+cannot lift (RFC1918, link-local, CGNAT, cloud metadata, IPv6 ULA).
+<code>isolated</code> is <code>--unshare-net</code> with no helper.</p>
+<p>The mechanism is the differentiator. A non-cooperating, jailbroken,
+or compromised agent inside the sandbox <strong>cannot</strong> reach the network
+outside the configured policy regardless of what its tool layer
+thinks about its permissions — the kernel does not consult the
+agent's tools list. Contrast with agent-layer permission gates
+(Claude Code's <code>--allowedTools</code> / <code>--dangerously-skip-permissions</code>
+/ per-action permission prompts, and similar permission systems in
+other CLI harnesses), which mediate the agent's <em>cooperation</em> with
+the gate and can be ignored once jailbroken. The mode-quartet and
+fallback resolver live in
+<a href="https://github.com/katosh/agent_sandbox/blob/main/sandbox-lib.sh"><code>sandbox-lib.sh</code></a>
+(<code>NETWORK_FILTER_MODE</code>, <code>NETWORK_FILTER_FALLBACK</code>,
+<code>_resolve_network_helper</code>); helper binaries under <code>tools/pasta/</code>
+(SHA256-pinned static pasta) and <code>tools/proxy/</code> (single-file Python
+helper). In the <a href="#feature-matrix">feature matrix</a> below this puts
+<code>filtered</code>/<code>proxied</code> in the same enforcement class as Anthropic
+<code>sandbox-runtime</code>'s bwrap + proxy combination and Codex CLI's
+<code>unshare-net</code> + managed-proxy, and outside the enforcement class of
+cco / scode (no enforcement) and cooperative-tool-permission gates
+generally.</p>
 <p><strong>HPC/Slurm awareness via the chaperon proxy.</strong> Of the projects surveyed,
 agent-sandbox is the only one that targets shared-cluster multi-tenant
 deployments as a first-class scenario. The <a href="../chaperon/">chaperon</a> is a
@@ -1199,10 +1294,39 @@ filesystem is rebuilt from <code>~/.ssh</code>-blank inputs, so denied paths ret
 <code>ENOENT</code> and there is no canonical name reachable through <code>ld-linux</code> or
 <code>/proc/self/root</code>. The Landlock fallback is weaker (path-based,
 <code>EACCES</code>); see <a href="../security/#backend-comparison">Security model — Backend Comparison</a>.</p>
+<p><strong>Deterrent stubs against AI mail exfiltration.</strong>
+<a href="../network-filter/#outbound-mail-policy"><code>NETWORK_MAIL_BLOCK</code></a>
+(v0.10.1) replaces 30 canonical mailer binaries (the
+<code>_MAIL_BLOCK_STUB_NAMES</code> set in <code>sandbox-lib.sh</code> — <code>sendmail</code>,
+<code>mail</code>, <code>mailx</code>, <code>mutt</code>, <code>msmtp</code>, the postfix admin tools, <code>swaks</code>,
+<code>exim</code>, <code>dma</code>, the qmail client family, and others) with a
+<a href="https://github.com/katosh/agent_sandbox/blob/main/tools/mail-block/mail-block-stub.sh">stub</a>
+that exits 77 (<code>EX_NOPERM</code>) and prints a sixteen-line message
+addressed <em>to an AI agent</em> — the policy is configured not transient,
+every known mailer resolves to this stub, retrying with another
+binary or another path produces the same result, escalate to the
+user rather than search. Two reinforcing path-resolution layers
+(<code>--ro-bind</code> over canonical absolute paths plus a per-launch
+PATH-prefix symlink farm) ensure the stub wins regardless of how
+<code>argv[0]</code> resolves — Lmod-injected, brew-installed, hand-built, or
+distro-shipped.</p>
+<p>This is defense-in-depth above the network filter's port closure,
+targeting the agentic retry loop specifically. The port-level filter
+catches the language-level dialer (<code>python -c 'smtplib...'</code>,
+<code>curl smtp://</code>, <code>nc relay 25</code>); the stub catches the <code>execve</code> <em>before</em>
+the dial, with a message that explicitly forecloses the search tree.
+Of the surveyed peers none ship an analogue: domain-allowlist proxies
+(Anthropic, nono, Codex CLI, matchlock) also drop SMTP, but silently
+at L4 — to a cooperating agent that reads as a transient network
+fault and invites retry across binaries and paths. Bwrap only in
+v0.10.1; firejail / landlock parity is mechanically straightforward
+and tracked as follow-up.</p>
 <h2 id="feature-matrix">Feature matrix<a class="headerlink" href="#feature-matrix" title="Permanent link">&para;</a></h2>
-<p>Six deeply-compared peers plus four reference rows. Snapshot date
-<strong>2026-05-07</strong>; cells reflect each project's documented behaviour at that
-time. Verify against each project's current docs.</p>
+<p>Six deeply-compared peers plus four reference rows. Peer rows
+snapshotted <strong>2026-05-07</strong>; agent-sandbox row refreshed <strong>2026-05-15</strong>
+for the v0.10.x network-filter mode-quartet and mail-block
+additions. Cells reflect each project's documented behaviour at the
+respective snapshot date; verify against each project's current docs.</p>
 <table>
 <thead>
 <tr>
@@ -1222,7 +1346,7 @@ time. Verify against each project's current docs.</p>
 <td>MIT</td>
 <td>Linux kernel-bind: bwrap → firejail → Landlock fallback</td>
 <td>Hidden (<code>ENOENT</code>) on bwrap/firejail; <code>EACCES</code> on Landlock; project-dir-only writable</td>
-<td>Open by default (Anthropic API requirement); admin nftables hardening templates</td>
+<td><strong>Kernel-namespace-enforced</strong>, four <code>NETWORK_FILTER_MODE</code> modes (<code>open</code>/<code>filtered</code>/<code>proxied</code>/<code>isolated</code>); <code>filtered</code> default uses a pasta-backed netns with an identity-bound port-class deny floor; <code>proxied</code> adds a host-side HTTP CONNECT + SOCKS5 daemon enforcing the full hostname/wildcard/CIDR blocklist; deterrent-stub mail-block layer over 30 canonical mailer binaries</td>
 <td><code>DEVICES+=(/dev/nvidia*)</code>, admin-locked <code>DEVICES_BLACKLIST</code></td>
 <td>Kernel-enforced; chaperon scopes Slurm to project</td>
 <td><strong>Yes — only project in the surveyed field.</strong> Chaperon mediates sbatch/srun/squeue/scancel/scontrol/sacct/sacctmgr</td>
@@ -1333,54 +1457,98 @@ coding agent running on a user's HPC login node, with kernel-enforced
 boundaries against credential and cross-project leakage</strong> — and trades
 breadth for fit. The tools above sketch a few directions where the field
 has gone further; we have looked at each and recorded our current stance.</p>
-<p><strong>Domain-allowlist egress proxy.</strong> Anthropic <code>sandbox-runtime</code>, <code>nono</code>,
-Codex CLI, and <code>matchlock</code> ship a host-side proxy that restricts the
-sandbox to a configured set of domains. agent-sandbox accepts open
-network as a <a href="../security/#accepted-trade-offs">documented trade-off</a>:
-agents need API access, and a workable allowlist that covers Anthropic,
-OpenAI, GitHub, package indexes, conda channels, and HPC-specific
-endpoints is non-trivial to maintain. The chaperon's UDS-over-bwrap
-pattern is the obvious architectural template if this is ever pursued,
-but it is <strong>not on the current roadmap</strong> — admins who want this today
-should layer nftables / cgroups-net at the host level (see
-<a href="../../admin/hardening/">Admin Hardening</a>).</p>
-<p><strong>Credential injection at the egress boundary.</strong> <code>nono</code> and <code>matchlock</code>
-keep API keys outside the sandbox and inject them at the proxy. Useful,
-but coupled to having a proxy in the first place; same status as above.</p>
-<p><strong>Network-namespace isolation as an opt-in profile.</strong> <code>matchlock</code> ships
-a <code>--no-network</code> mode and Codex CLI's bwrap mode unshares the network
-namespace by default. agent-sandbox does not isolate the network
-namespace today (sharing it is required for DNS / NSS / munge / Slurm in
-the bwrap and firejail backends). A profile that drops network for
-post-hoc analysis or offline review is a clean future addition that does
-not conflict with the existing posture, but is <strong>not on the roadmap</strong>.</p>
-<p><strong>Tamper-resistance messaging.</strong> <code>nono</code> foregrounds the property that
-Landlock rules cannot be widened by the sandboxed process. agent-sandbox
-already provides equivalent (or stronger) tamper-resistance with the
-bwrap backend — the agent runs in a separate user, mount, and PID
-namespace it cannot rejoin — but the security docs do not currently
-state this as a property of its own. A future docs pass should close
-that messaging gap.</p>
+<h3 id="closed-since-the-v080-survey">Closed since the v0.8.0 survey<a class="headerlink" href="#closed-since-the-v080-survey" title="Permanent link">&para;</a></h3>
+<p><strong>Network-namespace isolation and egress enforcement.</strong> The original
+survey (v0.8.0) listed "agent-sandbox does not isolate the network
+namespace today" as a gap and "a host-side proxy that restricts the
+sandbox to a configured set of domains" as not on the roadmap. v1.0
+(v0.9-cycle) shipped the configuration surface and fallback resolver;
+v1.1 (v0.10.0) shipped port-level enforcement via pasta + netns;
+v0.10.1 shipped the host-side HTTP CONNECT + SOCKS5 proxy
+(<code>proxied</code> mode) with hostname/wildcard/CIDR enforcement. The
+shipped <a href="../network-filter/#configuration"><code>NETWORK_BLOCKLIST</code> floor</a>
+closes the identity-bound exfil + lateral-movement surface (mail
+relays, webhook-as-mail endpoints, transactional-email APIs,
+file-drop / paste services, DoH/DoT, legacy r-services) without
+requiring operators to enumerate every host the agent legitimately
+needs. The
+<a href="../network-filter/#implicit-allowlist-idiom-exact-hosts">implicit-allowlist idiom</a>
+(<code>NETWORK_BLOCKLIST=("*")</code> plus <code>NETWORK_BLOCKLIST_EXCEPT</code> of exact
+hosts) is documented for power users who want deny-by-default
+semantics. Mechanism citation:
+<a href="#what-is-unique-to-agent-sandbox">Kernel-namespace-enforced network egress</a>
+above.</p>
+<p><strong>Mail-block deterrent layer.</strong> A novel addition vs. the surveyed
+peers — <code>NETWORK_MAIL_BLOCK=auto|on|off</code> replaces 30 canonical mailer
+binaries with a stub that exits 77 and prints a deterrent message
+addressed to an AI agent. Mechanism citation:
+<a href="#what-is-unique-to-agent-sandbox">Deterrent stubs against AI mail exfiltration</a>
+above.</p>
+<p><strong>Tamper-resistance messaging.</strong> <code>nono</code> foregrounds the property
+that Landlock rules cannot be widened by the sandboxed process.
+v0.9.0 added a <a href="../security/#tamper-resistance">Tamper resistance section</a>
+to the security model naming the equivalent (and stronger) property
+on the bwrap primitive: once the sandbox is up, the agent inside
+cannot weaken isolation — no <code>dangerouslyDisableSandbox</code> flag, no
+in-process bypass, mount/PID/seccomp state irrevocable for the
+sandboxed PIDs. v0.9.0 also added a
+<a href="../security/#cooperative-reinforcement-agent-side-awareness">Cooperative reinforcement section</a>
+documenting the per-agent Sandbox Integrity injection — defense in
+depth on top of kernel enforcement, so a cooperating agent stops
+wasting turns on "retry without sandbox" attempts and a hostile
+instruction in the agent's input data becomes a recognizable
+prompt-injection signal.</p>
+<h3 id="still-deferred">Still deferred<a class="headerlink" href="#still-deferred" title="Permanent link">&para;</a></h3>
+<p><strong>Credential injection at the egress boundary.</strong> <code>nono</code> and
+<code>matchlock</code> keep API keys outside the sandbox and inject them at the
+proxy. The v0.10.1 <code>proxied</code> mode is a policy-checking proxy, not an
+auth-mediating one — credentials live inside the sandbox alongside
+the agent the same way they do on the other kernel-bind peers.
+Adding credential injection on top of the existing <code>tools/proxy/</code>
+daemon is a clean extension (the Python helper is in the right place
+architecturally) but <strong>not on the current roadmap</strong>; the present
+recommendation is <code>BLOCKED_ENV_VARS</code> + <code>BLOCKED_ENV_PATTERNS</code> to
+keep credential env vars out of the agent's environment in the first
+place.</p>
+<p><strong>Curated default-allowlist preset for known agent destinations.</strong>
+The shipped policy is deny-by-blocklist. A curated inverse preset
+(<code>NETWORK_BLOCKLIST=("*")</code> with a maintained <code>NETWORK_BLOCKLIST_EXCEPT</code>
+covering Anthropic, OpenAI, GitHub, PyPI, conda, and common HPC site
+endpoints) was deferred in favour of the blocklist model — the
+implicit-allowlist idiom remains available for power users who want
+to express the inverse shape today.</p>
+<p><strong>SNI-aware HTTPS filtering under <code>filtered</code>.</strong> pasta <code>-T/-U</code> filters
+by destination port at the netns boundary; hostname / wildcard / CIDR
+entries are silently skipped under <code>filtered</code> (notes emitted only
+under <code>NETWORK_FILTER_VERBOSE=1</code>) and only enforced under <code>proxied</code>.
+The universal port-class closure is what's load-bearing for the
+identity-hijack threat under <code>filtered</code>; L7 (SNI) inspection of
+arbitrary HTTPS destinations on top of <code>filtered</code> is future scope.</p>
 <p><strong>Snapshot / restore and stateful resumption.</strong> Vercel Sandbox and
-Daytona check-point the agent's filesystem and dependencies so a session
-can resume after restart. agent-sandbox's threat model does not motivate
-this, and Apptainer already covers the reproducible-environment case on
-HPC. <strong>Out of scope by design</strong> — see
-<a href="../apptainer-comparison/">Sandbox vs. Apptainer</a> for the longer
+Daytona check-point the agent's filesystem and dependencies so a
+session can resume after restart. agent-sandbox's threat model does
+not motivate this, and Apptainer already covers the
+reproducible-environment case on HPC. <strong>Out of scope by design</strong> —
+see <a href="../apptainer-comparison/">Sandbox vs. Apptainer</a> for the longer
 discussion of how the two complement each other.</p>
 <h2 id="bottom-line">Bottom line<a class="headerlink" href="#bottom-line" title="Permanent link">&para;</a></h2>
 <p>For AI agent containment on shared HPC, agent-sandbox occupies a niche
 that no other open-source project surveyed targets directly: a
-process-level kernel-bind sandbox with a Slurm-aware proxy, suitable for
-multi-user clusters where containers need root and microVMs are
-operationally heavy. Within the kernel-bind cluster, peers have
-explored egress allowlists and credential proxies further than this
-project has; outside the cluster, microVM and gVisor offerings provide
-stronger isolation at the cost of HPC integration. Pick the layer that
-matches your threat model and your operational footprint — and read the
-<a href="../security/">Security model</a> and the per-backend
-<a href="../security/#known-limitations">Known Limitations</a> before deploying any
-of them.</p>
+process-level kernel-bind sandbox with kernel-namespace-enforced
+network egress (four modes, pasta + HTTP CONNECT + SOCKS5), a deterrent
+mail-block layer targeted at agent retry behaviour, and a Slurm-aware
+proxy — suitable for multi-user clusters where containers need root
+and microVMs are operationally heavy. Within the kernel-bind cluster,
+peers offer adjacent enforcement shapes — Anthropic <code>sandbox-runtime</code>'s
+domain allowlist, <code>nono</code>'s credential proxy, Codex CLI's unshare-net +
+managed-proxy — and the credential-injection direction is one this
+project has not pursued. Outside the cluster, microVM and gVisor
+offerings provide stronger isolation at the cost of HPC integration.
+Pick the layer that matches your threat model and your operational
+footprint — and read the <a href="../security/">Security model</a>, the
+<a href="../network-filter/">Network filter reference</a>, and the per-backend
+<a href="../security/#known-limitations">Known Limitations</a> before deploying
+any of them.</p>
 <h2 id="survey-provenance">Survey provenance<a class="headerlink" href="#survey-provenance" title="Permanent link">&para;</a></h2>
 <p>Source for this comparison: an internal landscape survey conducted on
 <strong>2026-05-07</strong> against the v0.8.0 release, tracked at
@@ -1388,8 +1556,15 @@ of them.</p>
 (private). The survey methodology, full candidate triage, and exclusion
 reasons live in that thread for forensic reference. This page is a
 distillation, not a copy — the comparison-table cells were verified
-against each project's primary documentation at the snapshot date. If
-you spot a stale cell, please open an issue.</p>
+against each project's primary documentation at the snapshot date.</p>
+<p>Refreshed on <strong>2026-05-15</strong> for the v0.10.x additions: the network-filter
+configuration surface (PR #52, v0.9 cycle), port-level <code>filtered</code>
+enforcement via pasta (PRs #53–#54, v0.10.0), the <code>proxied</code> mode for
+pasta-deficient hosts (PR #58, v0.10.1), and the <code>NETWORK_MAIL_BLOCK</code>
+deterrent-stub layer (PR #61, v0.10.1) — plus the v0.9.0 Tamper
+resistance / Cooperative reinforcement sections of the
+<a href="../security/">security model</a>. The peer rows were not re-snapshotted in
+this refresh; if you spot a stale cell, please open an issue.</p>
 
 
 
