@@ -213,7 +213,19 @@ table inet sandbox_filter {
 
 ### Option C: Network Namespace + Policy Proxy
 
-**Does not require** dedicated accounts or admin. **Effort:** Medium-high (self-serve).
+**Implemented in 0.10.1** as `NETWORK_FILTER_MODE=proxied`. The proxy
+ships at `tools/proxy/agent-sandbox-proxy.py` and enforces the
+effective NETWORK_BLOCKLIST at HTTP CONNECT / SOCKS5 connect time, with
+a hardened IP floor (RFC1918, loopback, link-local, cloud metadata) that
+defends against blocklist-bypass via DNS-rebind or IPv4-quirky forms.
+Opt in via `NETWORK_FILTER_MODE=proxied`, or pin
+`NETWORK_FILTER_FALLBACK=stricter` to land on it automatically when
+pasta cannot deliver `filtered`. See
+[Network filter — proxied mode](../reference/network-filter.md#proxied-mode-host-side-http-connect-socks5-fallback)
+for the full surface.
+
+**Does not require** dedicated accounts or admin. **Effort:** zero
+(self-serve config switch).
 
 Bwrap supports `--unshare-net`, which places the sandbox in a network namespace with **no interfaces at all**. All network access is then restored through a proxy running outside the sandbox, listening on a Unix socket (bind-mounted in, like the chaperon FIFOs). The proxy becomes a policy enforcement point — it can allow general web access while blocking specific destinations, logging requests, or applying rate limits.
 
@@ -245,7 +257,7 @@ The proxy could be a lightweight HTTP CONNECT proxy (e.g., a small Go binary, or
 |---|---|---|---|---|---|---|
 | **A: UID iptables** | Yes (#3) | Yes | Yes | No | No (add auditd) | Yes |
 | **B: cgroup nftables** | No | Yes | Yes | No | No (add auditd) | Yes |
-| **C: netns + proxy** | No | No | No (`HTTPS_PROXY`) | Blocked | Built-in | No |
+| **C: netns + proxy** | No | No (user-level config switch) | No (`HTTPS_PROXY`) | Blocked | Built-in | No |
 
 All three options use a **default-allow** policy for general web access (research, packages, papers) with **targeted blocks** on dangerous services (SSH, internal networks, metadata endpoints). The difference is where enforcement happens: in the kernel (A, B) or in a userspace proxy (C).
 

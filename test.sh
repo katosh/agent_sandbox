@@ -4545,24 +4545,29 @@ if (
     _load_untrusted_config "$SCRIPT_DIR/sandbox.conf" "Test default sandbox.conf load"
     [[ "${#NETWORK_BLOCKLIST[@]}" -ge 20 ]] || { echo "shipped sandbox.conf NETWORK_BLOCKLIST too short"; exit 1; }
 
-    # Test 2: bwrap + filtered + stricter — v1.1 outcome depends on
-    # whether the runner can actually deliver filtered. "Can deliver"
-    # = pasta resolves AND the forwarding probe passes. On Ubuntu
-    # 22.04+ runners (kernel >= 5.7 with the SO_BINDTODEVICE
-    # relaxation) the probe passes and we get filtered. On kernel <
-    # 5.7 hosts (e.g. Ubuntu 18.04 / Fred Hutch gizmo login nodes
-    # without a setcap-blessed pasta), pasta starts but degrades to
-    # loopback-only — the probe catches that and falls back to
-    # isolated. The pre-run capability detection
-    # (_test_filtered_deliverable) above is what the resolver itself
-    # decided.
+    # Test 2: bwrap + filtered + stricter — v0.10.1 changes the
+    # fallback target when filtered is undeliverable. Under v0.10.0
+    # the only stricter mode available from filtered was isolated;
+    # v0.10.1 inserts `proxied` between filtered and isolated (smaller
+    # step up — sandbox stays usable via host-side HTTP+SOCKS proxy).
+    # Branches:
+    #   filtered deliverable    → filtered (no fallback exercised)
+    #   filtered NOT deliverable AND proxied supported → proxied (v0.10.1)
+    #   filtered NOT deliverable AND proxied NOT supported → isolated
+    #
+    # `proxied` requires python3 + the helper at
+    # $SANDBOX_DIR/tools/proxy/agent-sandbox-proxy.py. Both available on
+    # every modern Linux runner; the proxied branch is the new default
+    # for kernel < 5.7 / no-CAP_NET_RAW hosts.
     NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=stricter
     resolve_network_filter_mode bwrap 2>/dev/null
     if [[ "${_test_filtered_deliverable:-0}" == "1" ]]; then
         [[ "$_NETWORK_FILTER_RESOLVED" == "filtered" ]] || { echo "v1.1: expected filtered (deliverable on this runner), got $_NETWORK_FILTER_RESOLVED"; exit 1; }
         [[ -n "$_NETWORK_FILTER_HELPER" ]] || { echo "v1.1: helper path empty"; exit 1; }
+    elif _proxied_supported_on_bwrap; then
+        [[ "$_NETWORK_FILTER_RESOLVED" == "proxied" ]] || { echo "v0.10.1: expected fallback to proxied (filtered not deliverable, python3 available), got $_NETWORK_FILTER_RESOLVED"; exit 1; }
     else
-        [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || { echo "expected fallback to isolated (filtered not deliverable on this runner), got $_NETWORK_FILTER_RESOLVED"; exit 1; }
+        [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || { echo "expected fallback to isolated (filtered + proxied both undeliverable), got $_NETWORK_FILTER_RESOLVED"; exit 1; }
     fi
 
     # Test 3: bwrap + isolated + stricter → isolated (no fallback needed)
@@ -4601,6 +4606,29 @@ if (
     NETWORK_FILTER_MODE=isolated NETWORK_FILTER_FALLBACK=open
     resolve_network_filter_mode landlock 2>/dev/null
     [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || exit 1
+
+    # Test 5d: proxied + bwrap (any policy) → proxied directly when
+    # the helper is installed + python3 is on PATH. v0.10.1 surface.
+    if _proxied_supported_on_bwrap; then
+        NETWORK_FILTER_MODE=proxied NETWORK_FILTER_FALLBACK=open
+        resolve_network_filter_mode bwrap 2>/dev/null
+        [[ "$_NETWORK_FILTER_RESOLVED" == "proxied" ]] || { echo "MODE=proxied+open didn't yield proxied, got $_NETWORK_FILTER_RESOLVED"; exit 1; }
+    fi
+
+    # Test 5e: proxied + landlock → fail (no netns) or fallback per
+    # policy. landlock has no network namespace primitive, so proxied
+    # is structurally unavailable on it. Under `open` policy the
+    # resolver falls to `open` (the only less-strict mode landlock
+    # supports). Under `strict` it fails to launch.
+    NETWORK_FILTER_MODE=proxied NETWORK_FILTER_FALLBACK=open
+    resolve_network_filter_mode landlock 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || { echo "proxied+landlock+open didn't fall to open, got $_NETWORK_FILTER_RESOLVED"; exit 1; }
+
+    # Tests 5f / 5g (degraded-pasta fallback semantics) live in the
+    # pasta-forwarding-probe block below — they need a fake degraded
+    # pasta stub on PATH because `_prepare_network_helper_probe` resets
+    # `_NETWORK_HELPER_PROBE_RESULT` before reading the capability
+    # matrix, so pre-setting it in this subshell has no effect.
 
     # Test 6: effective blocklist (after loading shipped sandbox.conf
     # in Test 1) contains the universal entries. Site-specific entries
@@ -4699,8 +4727,17 @@ STUB
         { echo "expected probe result 'degraded', got '$_NETWORK_HELPER_PROBE_RESULT'"; exit 1; }
     [[ -n "$_NETWORK_HELPER_DEGRADED_REASON" ]] || \
         { echo "_NETWORK_HELPER_DEGRADED_REASON empty"; exit 1; }
-    [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || \
-        { echo "expected fallback to isolated, got '$_NETWORK_FILTER_RESOLVED'"; exit 1; }
+    # v0.10.1: with proxied available (python3 on PATH + in-tree
+    # helper), the stricter walk's least-strict-step-up rule lands on
+    # proxied before isolated. When proxied is unsupported, the walk
+    # continues to isolated (pre-v0.10.1 behaviour).
+    if _proxied_supported_on_bwrap; then
+        [[ "$_NETWORK_FILTER_RESOLVED" == "proxied" ]] || \
+            { echo "v0.10.1: expected fallback to proxied (filtered degraded, proxied supported), got '$_NETWORK_FILTER_RESOLVED'"; exit 1; }
+    else
+        [[ "$_NETWORK_FILTER_RESOLVED" == "isolated" ]] || \
+            { echo "expected fallback to isolated (filtered degraded, proxied unsupported), got '$_NETWORK_FILTER_RESOLVED'"; exit 1; }
+    fi
 
     # Override must bypass the probe — operators with a setcap-blessed
     # pasta need an escape hatch.
@@ -4709,6 +4746,22 @@ STUB
     resolve_network_filter_mode bwrap 2>/dev/null
     [[ "$_NETWORK_FILTER_RESOLVED" == "filtered" ]] || \
         { echo "SKIP_HELPER_PROBE=1 didn't restore filtered, got '$_NETWORK_FILTER_RESOLVED'"; exit 1; }
+
+    # Test 5g (v0.10.1 regression guard): filtered + open on a degraded
+    # pasta host MUST land on `open`, NOT silently strengthen to
+    # `proxied`. `open` policy only weakens. This is the load-bearing
+    # default-config-user invariant — adding `proxied` to the strictness
+    # chain must not shift their reach.
+    #
+    # The previous SKIP_HELPER_PROBE=1 line above is a bare variable
+    # assignment (no command suffix), which under bash assigns to the
+    # shell — so it persists into this test. Unset it explicitly so the
+    # real (stub-pasta-driven) probe runs and returns "degraded".
+    unset NETWORK_FILTER_SKIP_HELPER_PROBE
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=open
+    resolve_network_filter_mode bwrap 2>/dev/null
+    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || \
+        { echo "v0.10.1: open policy on degraded pasta MUST STAY ON open (default-config invariant) — proxied creep regression, got '$_NETWORK_FILTER_RESOLVED'"; exit 1; }
     exit 0
 ); then
     pass "Network filter: pasta forwarding probe gates filtered when helper degrades to loopback-only"
@@ -4748,6 +4801,117 @@ if (
     fail "Network filter: stricter on landlock should have exited"
 else
     pass "Network filter: stricter policy on landlock fails (no stricter mode available)"
+fi
+
+# ── 11.4.proxied: agent-sandbox-proxy.py unit tests ─────────────
+# v0.10.1 proxied-mode helper. Exercises the policy-check boundary:
+# spawn the daemon with a tight blocklist + a single EXCEPT entry,
+# fire shaped CONNECT and SOCKS5 requests at its Unix sockets, assert
+# the response code mirrors policy. The blocklist enforcement is the
+# load-bearing security property; the byte-pump path is exercised by
+# the integration tests further down (where a real outbound is in
+# scope).
+if command -v python3 >/dev/null 2>&1 \
+   && [[ -r "$SCRIPT_DIR/tools/proxy/agent-sandbox-proxy.py" ]]; then
+    _proxy_unit_dir="$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-proxy-unit-XXXXXX")"
+    chmod 700 "$_proxy_unit_dir"
+    _TEST_TEMP_FILES+=("$_proxy_unit_dir")
+    # Block: explicit host, wildcard, bare port, IPv4-CIDR floor.
+    # EXCEPT carve-out: api.example.com (overrides *.example.com).
+    python3 "$SCRIPT_DIR/tools/proxy/agent-sandbox-proxy.py" --server \
+        --socket-dir "$_proxy_unit_dir" \
+        --blocklist-json '["evil.net", "*.example.com", "23", "127.0.0.1:25"]' \
+        --except-json    '["api.example.com"]' \
+        >"$_proxy_unit_dir/ready" 2>"$_proxy_unit_dir/err" &
+    _proxy_unit_pid=$!
+    _proxy_unit_deadline=$(( SECONDS + 3 ))
+    while (( SECONDS < _proxy_unit_deadline )); do
+        grep -q '^ready$' "$_proxy_unit_dir/ready" 2>/dev/null && break
+        sleep 0.05
+    done
+    if grep -q '^ready$' "$_proxy_unit_dir/ready" 2>/dev/null; then
+        _proxy_unit_ok=1
+        # HTTP CONNECT path: 4 shapes.
+        _http_check() {
+            local _target="$1"; local _expect_code="$2"; local _why="$3"
+            local _resp
+            _resp="$(python3 -c "
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(3)
+s.connect('$_proxy_unit_dir/http.sock')
+s.sendall(b'CONNECT $_target HTTP/1.1\r\nHost: x\r\n\r\n')
+print(s.recv(512).decode(errors='replace').split('\r\n')[0])
+")"
+            if [[ "$_resp" != "HTTP/1.1 $_expect_code"* ]]; then
+                echo "  $_why: expected '$_expect_code', got '$_resp'"
+                _proxy_unit_ok=0
+            fi
+        }
+        _http_check "10.0.0.1:443" "403"          "RFC1918 floor must block"
+        _http_check "169.254.169.254:80" "403"    "cloud-metadata floor must block"
+        _http_check "[::1]:443" "403"             "IPv6 loopback floor must block"
+        _http_check "evil.net:443" "403"          "exact-host block"
+        _http_check "www.example.com:443" "403"   "wildcard *.example.com block"
+        _http_check "everything.test:23" "403"    "bare-port 23 block"
+        _http_check "2130706433:443" "400"        "decimal-int IPv4 must be rejected"
+        _http_check "0x7f000001:443" "400"        "hex IPv4 must be rejected"
+        # api.example.com is EXCEPT-carved through *.example.com; the
+        # policy passes but the connect will 502 (no Internet from this
+        # runner is fine — the test asserts policy DOES NOT 403).
+        _resp="$(python3 -c "
+import socket
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(3)
+s.connect('$_proxy_unit_dir/http.sock')
+s.sendall(b'CONNECT api.example.com:443 HTTP/1.1\r\nHost: x\r\n\r\n')
+print(s.recv(512).decode(errors='replace').split('\r\n')[0])
+")"
+        if [[ "$_resp" == "HTTP/1.1 403"* ]]; then
+            echo "  EXCEPT api.example.com was 403'd (should have carved through wildcard)"
+            _proxy_unit_ok=0
+        fi
+        # SOCKS5 path: refuse explicit floor + wildcard.
+        _socks_check() {
+            local _host="$1"; local _atyp="$2"; local _expect_rep="$3"; local _why="$4"
+            local _rep
+            _rep="$(python3 -c "
+import socket, struct, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(3)
+s.connect('$_proxy_unit_dir/socks.sock')
+s.sendall(b'\x05\x01\x00')
+assert s.recv(2) == b'\x05\x00'
+h = '$_host'.encode('ascii')
+if $_atyp == 0x03:
+    body = struct.pack('!BBBB', 5,1,0,3) + bytes([len(h)]) + h + struct.pack('!H', 443)
+elif $_atyp == 0x01:
+    body = struct.pack('!BBBB', 5,1,0,1) + socket.inet_aton('$_host') + struct.pack('!H', 443)
+s.sendall(body)
+r = s.recv(10)
+print(r[1])
+")"
+            if [[ "$_rep" != "$_expect_rep" ]]; then
+                echo "  $_why: SOCKS5 expected REP=$_expect_rep, got $_rep"
+                _proxy_unit_ok=0
+            fi
+        }
+        _socks_check "10.0.0.1" "0x01" "2" "SOCKS5 RFC1918 floor"
+        _socks_check "www.example.com" "0x03" "2" "SOCKS5 wildcard block"
+    else
+        echo "  proxy daemon did not signal ready within 3s; stderr:"
+        sed 's/^/    /' "$_proxy_unit_dir/err" 2>/dev/null | head -10 >&2
+        _proxy_unit_ok=0
+    fi
+    kill "$_proxy_unit_pid" 2>/dev/null || true
+    wait "$_proxy_unit_pid" 2>/dev/null || true
+    if [[ "${_proxy_unit_ok:-0}" == "1" ]]; then
+        pass "Network filter: agent-sandbox-proxy.py policy enforcement (HTTP CONNECT + SOCKS5)"
+    else
+        fail "Network filter: agent-sandbox-proxy.py policy enforcement failed"
+    fi
+else
+    skip "Network filter: proxied unit tests need python3 + tools/proxy/agent-sandbox-proxy.py"
 fi
 
 # Integration test: 'isolated' mode actually kills the network.

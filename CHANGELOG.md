@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-05-13
+
+### Added
+
+- **`NETWORK_FILTER_MODE=proxied` — host-mediated egress for
+  pasta-deficient hosts.** v0.10.0 left operators on legacy-kernel
+  hosts (`< 5.7` without `setcap cap_net_raw+ep` on pasta) with a
+  binary choice: accept the `open` fallback (host network, threat-
+  class ports re-opened) or pin `stricter` and fall to `isolated`
+  (no DNS / pip / git inside the sandbox). Neither preserved both
+  isolation and usability. `proxied` slots between `filtered` and
+  `isolated` in the strictness ordering (`open < filtered <
+  proxied < isolated`): the sandbox runs inside `--unshare-net`
+  (empty netns — no resolver, no raw sockets, no ICMP), and the
+  agent's outbound traffic is mediated by a host-side HTTP CONNECT
+  + SOCKS5 daemon (`tools/proxy/agent-sandbox-proxy.py`, single
+  Python 3.6+ helper) reached via two bind-mounted Unix sockets
+  and an in-sandbox Python TCP↔Unix bridge. `HTTP_PROXY`,
+  `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` are pre-set inside the
+  sandbox so curl, pip, conda, git, gh, and the Claude SDK route
+  through the proxy without further configuration. The proxy
+  enforces `effective_network_blocklist` at CONNECT time — so
+  hostname / wildcard / CIDR entries are now load-bearing (under
+  `filtered`, these are skipped at pasta's port-only layer). On top
+  of the user-supplied policy, the proxy hard-denies a baked-in IP
+  floor (`127.0.0.0/8`, `169.254.0.0/16`, RFC1918, IPv6 link-
+  local / ULA / cloud-metadata) regardless of `NETWORK_BLOCKLIST`,
+  and rejects host-string IPv4 quirks (`2130706433`, `0x7f000001`)
+  before resolution. DNS-rebind defence: one resolve per CONNECT,
+  IP-floor check on the resolved address, connect to that literal
+  IP. The host-side daemon arms `prctl(PR_SET_PDEATHSIG, SIGTERM)`
+  as its first action; `sandbox-exec.sh`'s cleanup trap is the
+  belt-and-suspenders cover for the pre-exec failure window.
+
+  Opt in via `NETWORK_FILTER_MODE=proxied`, or pin
+  `NETWORK_FILTER_FALLBACK=stricter` to land on it automatically
+  when pasta degrades — the `stricter` walk now goes least-strict-
+  step-up first, so a degraded-pasta host lands on `proxied` before
+  `isolated`. Default-config users (`MODE=filtered FALLBACK=open`)
+  see ZERO behaviour change: `open` policy never strengthens, so
+  the default flip from 0.10.0 (fall to `open` on degraded pasta)
+  is preserved. Implements Option C of `docs/admin/hardening.md`
+  §4 (previously sketched, now shipped). Trade-off: non-proxy-
+  aware tools (`ssh` direct, `dig`, `ping`, raw TCP daemons,
+  `bash /dev/tcp/...`) break inside the sandbox — `ssh -o
+  ProxyCommand='nc -X 5 -x 127.0.0.1:44890 %h %p'` routes ssh
+  through the SOCKS5 bridge; other workloads needing arbitrary TCP
+  egress should pin `MODE=open` or `MODE=filtered`. Bwrap only in
+  0.10.1; firejail/landlock parity tracked as follow-up.
+
+  Regression tests in `test.sh::11.4` exercise the resolver
+  changes (Tests 5d–5g) and the proxy daemon's policy enforcement
+  (HTTP CONNECT and SOCKS5 paths, hardened IP floor, IPv4-quirk
+  rejection, EXCEPT carve-throughs).
+
+### Changed
+
+- **`stricter` fallback walk order** flipped from most-strict-first
+  to LEAST-strict-step-up first. The pre-0.10.1 loop walked
+  `isolated filtered` (only meaningful when `proxied` did not
+  exist); the 0.10.1 loop walks `filtered proxied isolated` with
+  the `_try_idx > _req_idx` gate, so a degraded-pasta host pinning
+  `MODE=filtered FALLBACK=stricter` lands on `proxied` (smallest
+  step up that strengthens) instead of jumping straight to
+  `isolated`. The pre-0.10.1 behaviour is recovered by pinning
+  `MODE=isolated` directly (or by `setcap cap_net_raw+ep` on
+  pasta so the degraded fallback is never taken).
+
 ## [0.10.0] - 2026-05-12
 
 ### Changed

@@ -103,6 +103,21 @@ install-lib:
 	@# bin/ (in-sandbox utilities — sandbox-notify, tmux config wrapper)
 	$(INSTALL) -d $(DESTDIR)$(LIBDIR)/bin
 	for f in $(SRC_DIR)/bin/*; do $(INSTALL) -m 755 "$$f" $(DESTDIR)$(LIBDIR)/bin/; done
+	@# tools/proxy — Python helper that delivers
+	@# NETWORK_FILTER_MODE=proxied on bwrap. Without it the resolver's
+	@# _proxied_supported_on_bwrap probe fails (LIBDIR/tools/proxy/
+	@# agent-sandbox-proxy.py unreadable) and the new mode is
+	@# unavailable. Pure-Python; no per-arch tree.
+	@if [ -d "$(SRC_DIR)/tools/proxy" ]; then \
+		$(INSTALL) -d $(DESTDIR)$(LIBDIR)/tools/proxy; \
+		for f in $(SRC_DIR)/tools/proxy/*; do \
+			[ -f "$$f" ] || continue; \
+			case "$$f" in \
+				*.py) $(INSTALL) -m 755 "$$f" $(DESTDIR)$(LIBDIR)/tools/proxy/ ;; \
+				*)    $(INSTALL) -m 644 "$$f" $(DESTDIR)$(LIBDIR)/tools/proxy/ ;; \
+			esac; \
+		done; \
+	fi
 	@# tools/pasta — the shipped pasta helper that delivers
 	@# NETWORK_FILTER_MODE=filtered on bwrap. Without these files the
 	@# helper-probe in sandbox-lib.sh::_resolve_network_helper finds

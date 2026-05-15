@@ -213,9 +213,48 @@ backend_prepare() {
     # (strict policy, or stricter with no stricter mode available).
     resolve_network_filter_mode bwrap
     _NETWORK_FILTER_BWRAP_PENDING=0
+    _NETWORK_FILTER_PROXIED_PENDING=0
     _NETWORK_FILTER_PASTA_TCP_SPEC=""
     _NETWORK_FILTER_PASTA_UDP_SPEC=""
     case "$_NETWORK_FILTER_RESOLVED" in
+        proxied)
+            # Empty netns; the agent reaches the host-side HTTP CONNECT
+            # + SOCKS5 daemons via two layers — bind-mounted Unix
+            # sockets (host-side, --ro-bind so the agent cannot
+            # unlink/replace them) plus an in-sandbox Python bridge
+            # (`tools/proxy/agent-sandbox-proxy.py --bridge`) that
+            # listens on the sandbox's empty netns at 127.0.0.1:44889
+            # (HTTP) and :44890 (SOCKS5) and forwards into the Unix
+            # sockets. Standard HTTP_PROXY/HTTPS_PROXY env handles
+            # client-side proxy selection.
+            BWRAP_ARGS+=(--unshare-net)
+            # Per-launch socket dir under $TMPDIR. Deliberately avoids
+            # $XDG_RUNTIME_DIR (typically /run/user/<uid>) because the
+            # later `--tmpfs /run` would mask any bind whose path falls
+            # under /run. Mirrors the chaperon FIFO location
+            # (sandbox-exec.sh::_CHAPERON_DIR). The actual bind-mount
+            # is added below, AFTER the `--tmpfs /tmp` + `--tmpfs /run`
+            # lines, paired with the chaperon FIFO bind — same path on
+            # both sides means no path-rewriting inside the helper, and
+            # late ordering restores the path through the surrounding
+            # tmpfs masks.
+            _NETWORK_PROXY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-proxy-XXXXXX")"
+            chmod 700 "$_NETWORK_PROXY_DIR"
+            # Standard proxy env vars. NO_PROXY exempts loopback (the
+            # agent's own services, e.g. a Jupyter kernel it spawns)
+            # AND the bridge listener addresses themselves (so tools
+            # don't recursively proxy through themselves — this last
+            # bit is load-bearing).
+            BWRAP_ARGS+=(--setenv HTTP_PROXY  "http://127.0.0.1:44889")
+            BWRAP_ARGS+=(--setenv HTTPS_PROXY "http://127.0.0.1:44889")
+            BWRAP_ARGS+=(--setenv http_proxy  "http://127.0.0.1:44889")
+            BWRAP_ARGS+=(--setenv https_proxy "http://127.0.0.1:44889")
+            BWRAP_ARGS+=(--setenv ALL_PROXY   "socks5h://127.0.0.1:44890")
+            BWRAP_ARGS+=(--setenv all_proxy   "socks5h://127.0.0.1:44890")
+            BWRAP_ARGS+=(--setenv NO_PROXY    "127.0.0.1,localhost,::1,[::1]")
+            BWRAP_ARGS+=(--setenv no_proxy    "127.0.0.1,localhost,::1,[::1]")
+            _NETWORK_FILTER_PROXIED_PENDING=1
+            ;;
         isolated)
             BWRAP_ARGS+=(--unshare-net)
             ;;
@@ -581,6 +620,17 @@ backend_prepare() {
         BWRAP_ARGS+=(--setenv _CHAPERON_FIFO_DIR "$_CHAPERON_FIFO_DIR")
     fi
 
+    # Bind-mount proxy socket directory (proxied mode only) at the same
+    # path on both sides — the in-sandbox bridge opens the same socket
+    # paths the host-side server bound. Placed here, AFTER --tmpfs /tmp
+    # and --tmpfs /run, so the surrounding tmpfs masks don't shadow it.
+    # --ro-bind prevents the agent from unlinking/replacing the sockets
+    # to MITM its own egress; Unix-socket connect needs traverse on the
+    # dir, not write, so the agent can still use the proxy.
+    if [[ -n "${_NETWORK_PROXY_DIR:-}" && -d "${_NETWORK_PROXY_DIR:-}" ]]; then
+        BWRAP_ARGS+=(--ro-bind "$_NETWORK_PROXY_DIR" "$_NETWORK_PROXY_DIR")
+    fi
+
 
     # Agent-specific environment exports (e.g., CLAUDE_CONFIG_DIR)
     for _agent_export in "${_AGENT_ENV_EXPORTS[@]}"; do
@@ -682,6 +732,27 @@ backend_exec() {
             "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
     fi
 
+    # ── proxied-mode composition: in-sandbox bridge wraps agent ────
+    #
+    # The host-side proxy daemon was spawned by sandbox-exec.sh BEFORE
+    # backend_exec, listening on Unix sockets in $_NETWORK_PROXY_DIR.
+    # The dir is `--ro-bind`'d at the same path on both sides of the
+    # bwrap boundary (mirrors the chaperon FIFO pattern), so the bridge
+    # opens the same `$_NETWORK_PROXY_DIR/http.sock` path that the
+    # host-side server bound. The in-sandbox bridge listens on
+    # TCP 127.0.0.1:44889 / :44890 and forwards bytes into the
+    # bind-mounted Unix sockets. The agent runs as the bridge's child
+    # and uses HTTP_PROXY / HTTPS_PROXY / ALL_PROXY to reach the bridge.
+    if [[ "${_NETWORK_FILTER_PROXIED_PENDING:-0}" == "1" ]]; then
+        exec "$BWRAP" "${BWRAP_ARGS[@]}" -- \
+            python3 "$SANDBOX_DIR/tools/proxy/agent-sandbox-proxy.py" \
+                --bridge \
+                --socket-dir "$_NETWORK_PROXY_DIR" \
+                --http-port 44889 \
+                --socks-port 44890 \
+                -- "$@"
+    fi
+
     exec "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
 }
 
@@ -702,11 +773,24 @@ backend_dry_run() {
             printf '  -U %s \\\n' "$_NETWORK_FILTER_PASTA_UDP_SPEC"
         printf '  -- \\\n'
     fi
+    if [[ "${_NETWORK_FILTER_PROXIED_PENDING:-0}" == "1" ]]; then
+        echo "# Network filter: proxied mode (host-side HTTP+SOCKS daemon)"
+        echo "# proxy:     $SANDBOX_DIR/tools/proxy/agent-sandbox-proxy.py"
+        echo "# sockets:   $_NETWORK_PROXY_DIR (--ro-bind, same path inside sandbox)"
+        echo "# in-sandbox bridge: 127.0.0.1:44889 (HTTP), 127.0.0.1:44890 (SOCKS5)"
+    fi
     printf '%s \\\n' "$BWRAP"
     for arg in "${BWRAP_ARGS[@]}"; do
         printf '  %s \\\n' "$arg"
     done
-    printf '  -- %s\n' "$*"
+    if [[ "${_NETWORK_FILTER_PROXIED_PENDING:-0}" == "1" ]]; then
+        printf '  -- python3 %s --bridge --socket-dir %s \\\n' \
+            "$SANDBOX_DIR/tools/proxy/agent-sandbox-proxy.py" \
+            "$_NETWORK_PROXY_DIR"
+        printf '    --http-port 44889 --socks-port 44890 -- %s\n' "$*"
+    else
+        printf '  -- %s\n' "$*"
+    fi
     # Clean up seccomp temp file (dry-run doesn't exec)
     [[ -n "${_SECCOMP_TMPFILE:-}" ]] && rm -f "$_SECCOMP_TMPFILE" 2>/dev/null || true
     # Clean up HOME_SEEDED_FILES staged temp files (dry-run doesn't exec)

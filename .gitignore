@@ -14,3 +14,5 @@ test-projects/
 slurm-*.out
 .chaperon-*
 site/
+__pycache__/
+*.pyc

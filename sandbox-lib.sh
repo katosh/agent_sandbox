@@ -1327,7 +1327,8 @@ _network_mode_strictness_idx() {
     case "$1" in
         open) echo 0 ;;
         filtered) echo 1 ;;
-        isolated) echo 2 ;;
+        proxied) echo 2 ;;
+        isolated) echo 3 ;;
         *) echo 0 ;;
     esac
 }
@@ -1488,9 +1489,20 @@ _network_modes_supported_by_backend() {
             # the forwarding probe. (b) catches the kernel-< 5.7 /
             # unprivileged-userns trap where pasta runs but silently
             # forwards only loopback — see _pasta_can_forward_outbound.
+            #
+            # `proxied` (v0.10.1+) needs python3 (+ ipaddress stdlib,
+            # 3.6 baseline). Available on every modern Linux distro;
+            # the only realistic miss is hosts with python2-only.
+            # Detection: $LIBDIR/tools/proxy/agent-sandbox-proxy.py
+            # plus a python3 on PATH that parses our shebang. We do
+            # not exec-probe Python here — that work happens once at
+            # sandbox-exec.sh::_NETWORK_PROXY launch.
             local _modes="open isolated"
             if [[ "${_NETWORK_HELPER_PROBE_RESULT:-}" == "ok" ]]; then
                 _modes="open filtered isolated"
+            fi
+            if _proxied_supported_on_bwrap; then
+                _modes="$_modes proxied"
             fi
             echo "$_modes"
             ;;
@@ -1502,6 +1514,11 @@ _network_modes_supported_by_backend() {
             # using firejail get isolated-or-open until the bridge-
             # provisioning story is settled (tracked for v1.2). The
             # resolver falls back per policy.
+            #
+            # `proxied` is bwrap-only in 0.10.1 — wiring it for firejail
+            # is mechanically straightforward (firejail also supports
+            # --net=none + bind-mount) but defers to a follow-up so the
+            # initial PR stays auditable.
             echo "open isolated"
             ;;
         landlock)
@@ -1512,6 +1529,15 @@ _network_modes_supported_by_backend() {
             echo "open"
             ;;
     esac
+}
+
+# Does this host support `proxied` mode on the bwrap backend? Requires
+# python3 on PATH and the agent-sandbox-proxy.py helper installed under
+# $SANDBOX_DIR/tools/proxy/.
+_proxied_supported_on_bwrap() {
+    command -v python3 >/dev/null 2>&1 || return 1
+    [[ -r "$SANDBOX_DIR/tools/proxy/agent-sandbox-proxy.py" ]] || return 1
+    return 0
 }
 
 # Pretty-print the fix-path block. Used by both warn-fallback and fail
@@ -1574,8 +1600,8 @@ resolve_network_filter_mode() {
     local _policy="${NETWORK_FILTER_FALLBACK:-open}"
 
     case "$_requested" in
-        open|filtered|isolated) ;;
-        *) echo "Error: NETWORK_FILTER_MODE='$_requested' invalid (open|filtered|isolated)." >&2; exit 1 ;;
+        open|filtered|proxied|isolated) ;;
+        *) echo "Error: NETWORK_FILTER_MODE='$_requested' invalid (open|filtered|proxied|isolated)." >&2; exit 1 ;;
     esac
     case "$_policy" in
         strict|stricter|open) ;;
@@ -1620,9 +1646,18 @@ resolve_network_filter_mode() {
             _network_filter_fail "$_why" "$_requested" "$_backend"
             ;;
         stricter)
+            # Walk strict-direction modes LEAST-strict-first so we
+            # strengthen as little as necessary. `proxied` (idx 2)
+            # slots between `filtered` (1) and `isolated` (3): a host
+            # with a degraded pasta now lands on proxied instead of
+            # jumping straight to no-network. Pre-v0.10.1 the walk
+            # ordered `isolated filtered` because those were the only
+            # two candidates; with three candidates the load-bearing
+            # invariant is "smallest step up", which means the LEAST
+            # strict of the strict-direction modes wins first.
             local _req_idx _try _try_idx
             _req_idx="$(_network_mode_strictness_idx "$_requested")"
-            for _try in isolated filtered; do
+            for _try in filtered proxied isolated; do
                 _try_idx="$(_network_mode_strictness_idx "$_try")"
                 if [[ "$_try_idx" -gt "$_req_idx" && "$_supported" == *" $_try "* ]]; then
                     _NETWORK_FILTER_RESOLVED="$_try"
@@ -1634,6 +1669,10 @@ resolve_network_filter_mode() {
                     return 0
                 fi
             done
+            # Stricter requested but nothing strict-supported. Fall to
+            # the least strict supported. (Reach: degraded-pasta + only
+            # `proxied` requested + stricter — would mean isolated;
+            # exposed here only for theoretical completeness.)
             _network_filter_fail "$_why (no stricter mode available on backend '$_backend'; policy=stricter)" "$_requested" "$_backend"
             ;;
         open)
@@ -1643,9 +1682,17 @@ resolve_network_filter_mode() {
             # can't be delivered, `open` says "weaken, don't strengthen".
             # The probe order is most-strict-of-the-less-strict first so
             # we degrade as little as necessary.
+            #
+            # `proxied` is intentionally NOT in this fallback walk: a
+            # default-config user on a degraded host got `open` in
+            # v0.10.0; silently strengthening them to `proxied`
+            # (different observable behaviour — ssh / raw-tcp / dig all
+            # break) would violate least-surprise. Operators who want
+            # the proxy chokepoint set NETWORK_FILTER_FALLBACK=stricter
+            # (or NETWORK_FILTER_MODE=proxied directly).
             local _req_idx _try _try_idx
             _req_idx="$(_network_mode_strictness_idx "$_requested")"
-            for _try in filtered open; do
+            for _try in proxied filtered open; do
                 _try_idx="$(_network_mode_strictness_idx "$_try")"
                 if [[ "$_try_idx" -lt "$_req_idx" && "$_supported" == *" $_try "* ]]; then
                     _NETWORK_FILTER_RESOLVED="$_try"
