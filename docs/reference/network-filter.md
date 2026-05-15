@@ -492,7 +492,7 @@ belt-and-suspenders for the pre-exec failure window.
 
 ## Outbound mail policy
 
-`NETWORK_MAIL_BLOCK` (v0.10.2+) is the **upstream** layer above the
+`NETWORK_MAIL_BLOCK` (v0.10.1+) is the **upstream** layer above the
 port-level SMTP block. While [`NETWORK_FILTER_MODE`](#modes) closes
 TCP ports 25 / 465 / 587 (and the local-MTA loopback variants) at the
 namespace edge, the mail-block layer replaces every canonical mailer
@@ -669,8 +669,8 @@ invites exactly the retry loop the stub is meant to break.
 
 ### Backend support
 
-Bwrap only in v0.10.2. Firejail and landlock parity is mechanically
-straightforward but deferred so the initial PR stays auditable —
+Bwrap only in v0.10.1. Firejail and landlock parity is mechanically
+straightforward but deferred so the initial release stays auditable —
 the layer falls back to no-stub on unsupported backends; the network
 filter still applies per the [backend matrix](#modes).
 

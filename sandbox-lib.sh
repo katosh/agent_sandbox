@@ -1787,7 +1787,7 @@ _mail_block_strictness_idx() {
 # `/app/software/<pkg>/bin/<name>`, etc.) and (b) drive the bind-mount
 # loop below for absolute-path invocations.
 #
-# Set composed from the multi-expert design review for v0.10.2:
+# Set composed from the multi-expert design review for v0.10.1:
 # Sendmail family + sendmail-alternatives backing files; mail/mailx
 # variants including legacy/heirloom names; mutt family; SMTP-direct
 # clients; postfix admin tools; test/utility (swaks); mpack/metasend;

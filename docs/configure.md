@@ -589,7 +589,7 @@ NETWORK_MAIL_BLOCK="on"
 NETWORK_MAIL_BLOCK="off"
 ```
 
-Backend support: bwrap only in v0.10.2 (firejail and landlock fall back to no stub; the network filter still applies on the supported backends per their own matrix). See [Outbound mail policy](reference/network-filter.md#outbound-mail-policy) for the threat-model / mechanism / failure-mode write-up.
+Backend support: bwrap only in v0.10.1 (firejail and landlock fall back to no stub; the network filter still applies on the supported backends per their own matrix). See [Outbound mail policy](reference/network-filter.md#outbound-mail-policy) for the threat-model / mechanism / failure-mode write-up.
 
 ### `NETWORK_FILTER_SKIP_HELPER_PROBE`
 

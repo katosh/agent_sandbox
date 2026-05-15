@@ -5311,7 +5311,7 @@ fi
 unset _has_pasta
 
 
-# ── 11.4.mailblock NETWORK_MAIL_BLOCK layer (v0.10.2) ──────────────
+# ── 11.4.mailblock NETWORK_MAIL_BLOCK layer (v0.10.1) ──────────────
 #
 # Defense-in-depth above the port-level network filter. The stub
 # (tools/mail-block/mail-block-stub.sh) is bind-mounted over canonical
