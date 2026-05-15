@@ -5331,27 +5331,34 @@ unset _has_pasta
 
 echo "11.4.mailblock Mail-block layer"
 
-# ── Test M1: resolver — defaults + auto under filtered ─────────────
+# ── Test M1: resolver — defaults + auto with no fallback divergence ─
+# Configured intent equals resolved state. Exercises the four
+# (cfg=net) points on the mode axis. Fallback-divergence cases live
+# in M1b.
 if (
     set -uo pipefail
     export _SANDBOX_LIB_NO_INIT=1
     export SANDBOX_QUIET=true
     source "$SCRIPT_DIR/sandbox-lib.sh"
     [[ "$NETWORK_MAIL_BLOCK" == "auto" ]] || { echo "default knob wrong: $NETWORK_MAIL_BLOCK"; exit 1; }
-    # auto + filtered → on
     NETWORK_MAIL_BLOCK="auto"
+    # auto + filtered (cfg=net=filtered) → on
+    NETWORK_FILTER_MODE="filtered"
     _NETWORK_FILTER_RESOLVED="filtered"
     resolve_network_mail_block_mode
     [[ "$_MAIL_BLOCK_RESOLVED" == "on" ]] || { echo "auto+filtered should be on, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
-    # auto + open → off
+    # auto + open (cfg=net=open) → off
+    NETWORK_FILTER_MODE="open"
     _NETWORK_FILTER_RESOLVED="open"
     resolve_network_mail_block_mode
     [[ "$_MAIL_BLOCK_RESOLVED" == "off" ]] || { echo "auto+open should be off, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
-    # auto + isolated → on
+    # auto + isolated (cfg=net=isolated) → on
+    NETWORK_FILTER_MODE="isolated"
     _NETWORK_FILTER_RESOLVED="isolated"
     resolve_network_mail_block_mode
     [[ "$_MAIL_BLOCK_RESOLVED" == "on" ]] || { echo "auto+isolated should be on, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
-    # auto + proxied → on
+    # auto + proxied (cfg=net=proxied) → on
+    NETWORK_FILTER_MODE="proxied"
     _NETWORK_FILTER_RESOLVED="proxied"
     resolve_network_mail_block_mode
     [[ "$_MAIL_BLOCK_RESOLVED" == "on" ]] || { echo "auto+proxied should be on, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
@@ -5362,6 +5369,70 @@ else
     fail "Mail-block (M1): resolver auto-mode did not match the mode axis"
 fi
 
+# ── Test M1b: resolver — auto under fallback divergence ────────────
+# When the configured intent and the realised state diverge (network
+# filter fell back to a less- or more-strict mode than requested),
+# `auto` must take the STRICTER of the two — anything other than
+# (cfg=open AND resolved=open) leaves mail-block on. This is the
+# load-bearing fix for the "filter falls back to open, secondary
+# defense wrongly disengages" regression.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    NETWORK_MAIL_BLOCK="auto"
+
+    # The motivating case: user asked for filtered, host lacks pasta,
+    # FALLBACK=open landed on open. Configured intent is still
+    # filtered — mail-block must stay on.
+    NETWORK_FILTER_MODE="filtered"
+    _NETWORK_FILTER_RESOLVED="open"
+    resolve_network_mail_block_mode
+    [[ "$_MAIL_BLOCK_RESOLVED" == "on" ]] || { echo "cfg=filtered net=open auto: expected on (intent wins), got $_MAIL_BLOCK_RESOLVED"; exit 1; }
+    [[ "$_MAIL_BLOCK_REASON" == *"NETWORK_FILTER_MODE='filtered'"* && "$_MAIL_BLOCK_REASON" == *"resolved to 'open'"* ]] \
+        || { echo "reason text wrong: $_MAIL_BLOCK_REASON"; exit 1; }
+
+    # Same shape, deeper request — isolated fell back to open.
+    NETWORK_FILTER_MODE="isolated"
+    _NETWORK_FILTER_RESOLVED="open"
+    resolve_network_mail_block_mode
+    [[ "$_MAIL_BLOCK_RESOLVED" == "on" ]] || { echo "cfg=isolated net=open auto: expected on, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
+
+    # And proxied → open.
+    NETWORK_FILTER_MODE="proxied"
+    _NETWORK_FILTER_RESOLVED="open"
+    resolve_network_mail_block_mode
+    [[ "$_MAIL_BLOCK_RESOLVED" == "on" ]] || { echo "cfg=proxied net=open auto: expected on, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
+
+    # Stricter-direction fallback: user asked for open, admin pin or
+    # FALLBACK=stricter landed on filtered. Ambient strictness is
+    # filtered, so mail-block stays on (matches the network filter
+    # actually doing its work).
+    NETWORK_FILTER_MODE="open"
+    _NETWORK_FILTER_RESOLVED="filtered"
+    resolve_network_mail_block_mode
+    [[ "$_MAIL_BLOCK_RESOLVED" == "on" ]] || { echo "cfg=open net=filtered auto: expected on, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
+
+    # The disengage rule: BOTH cfg AND resolved must be open. Verified
+    # twice — once cleanly (no divergence) and once defensively (an
+    # unset cfg defaults to "filtered" per the resolver, so still on).
+    NETWORK_FILTER_MODE="open"
+    _NETWORK_FILTER_RESOLVED="open"
+    resolve_network_mail_block_mode
+    [[ "$_MAIL_BLOCK_RESOLVED" == "off" ]] || { echo "cfg=open net=open auto: expected off, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
+    unset NETWORK_FILTER_MODE
+    _NETWORK_FILTER_RESOLVED="open"
+    resolve_network_mail_block_mode
+    [[ "$_MAIL_BLOCK_RESOLVED" == "on" ]] || { echo "cfg=<unset> net=open auto: expected on (defensive default), got $_MAIL_BLOCK_RESOLVED"; exit 1; }
+
+    exit 0
+); then
+    pass "Mail-block (M1b): resolver auto tracks intent-or-resolved (strictest-of-both)"
+else
+    fail "Mail-block (M1b): auto-mode disengaged when configured intent still constrained"
+fi
+
 # ── Test M2: resolver — explicit on/off overrides axis ─────────────
 if (
     set -uo pipefail
@@ -5370,11 +5441,13 @@ if (
     source "$SCRIPT_DIR/sandbox-lib.sh"
     # explicit on + open → still on
     NETWORK_MAIL_BLOCK="on"
+    NETWORK_FILTER_MODE="open"
     _NETWORK_FILTER_RESOLVED="open"
     resolve_network_mail_block_mode
     [[ "$_MAIL_BLOCK_RESOLVED" == "on" ]] || { echo "on+open should be on, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
     # explicit off + filtered → still off
     NETWORK_MAIL_BLOCK="off"
+    NETWORK_FILTER_MODE="filtered"
     _NETWORK_FILTER_RESOLVED="filtered"
     resolve_network_mail_block_mode
     [[ "$_MAIL_BLOCK_RESOLVED" == "off" ]] || { echo "off+filtered should be off, got $_MAIL_BLOCK_RESOLVED"; exit 1; }
@@ -5396,6 +5469,7 @@ if (
     source "$SCRIPT_DIR/sandbox-lib.sh"
     if (
         NETWORK_MAIL_BLOCK="bogus"
+        NETWORK_FILTER_MODE="filtered"
         _NETWORK_FILTER_RESOLVED="filtered"
         resolve_network_mail_block_mode
     ) 2>/dev/null; then

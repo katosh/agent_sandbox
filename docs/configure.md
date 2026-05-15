@@ -568,7 +568,7 @@ Defense-in-depth above [`NETWORK_FILTER_MODE`](#network_filter_mode)'s port-leve
 
 | Value | Behaviour |
 |---|---|
-| `auto` (default) | on whenever [`NETWORK_FILTER_MODE`](#network_filter_mode) resolves to a value other than `open`. If the sandbox is constraining network at all, the stub gives a clearer error than a 30-second SMTP timeout; with `MODE=open` (host-network parity) it steps aside. |
+| `auto` (default) | on whenever the configured [`NETWORK_FILTER_MODE`](#network_filter_mode) OR the resolved one is anything other than `open`. Tracks the user's intent, not only the post-fallback realised state: if `NETWORK_FILTER_FALLBACK=open` degrades a `filtered` request to `open` because pasta is missing, the configured intent ("constrain egress") still keeps the stub layer on — defense-in-depth earns its name precisely when the primary layer collapsed. Only when BOTH configured and resolved are `open` does the layer step aside. |
 | `on` | always on, regardless of `NETWORK_FILTER_MODE`. |
 | `off` | never on. Escape hatch for sites that legitimately need the canonical mailer binaries visible. Rare — the v0.10.0 port filter already breaks them at the socket layer. |
 

@@ -269,10 +269,11 @@ NETWORK_FILTER_FALLBACK="open"
 #   off:  do nothing (escape hatch for sites that legitimately need
 #         the canonical mailer binaries visible — rare; the v0.10.0
 #         filter already breaks them at the socket layer).
-#   auto: (default) on whenever NETWORK_FILTER_MODE != open. If the
-#         sandbox is constraining network at all, the stub provides
-#         the clearer error path; if MODE=open is explicit (host-
-#         network parity), the stub is off too.
+#   auto: (default) on whenever the configured NETWORK_FILTER_MODE OR
+#         the resolved one is anything other than `open` (strictest-
+#         of-both). Disengages only when BOTH are open. Tracks user
+#         intent, so a fallback that weakens the network filter from
+#         `filtered` to `open` does NOT silently disable this layer.
 #   on:   always on regardless of NETWORK_FILTER_MODE.
 #
 # Admin enforcement: admin pin uses the same "user can only request
@@ -1831,9 +1832,35 @@ _mail_block_target_paths() {
 #                          banner)
 # Reads:
 #   NETWORK_MAIL_BLOCK         — knob (auto|on|off)
+#   NETWORK_FILTER_MODE        — user-configured network intent (post-
+#                                admin merge); see below for why we
+#                                read intent, not realised state.
 #   _NETWORK_FILTER_RESOLVED   — set earlier by resolve_network_filter_mode
+#
+# Auto semantics — strictest-of-both intent and realised state. The
+# mail-block layer disengages only when BOTH the configured network
+# mode AND the resolved one are `open`; if either is anything else,
+# the layer stays on.
+#
+# Why both, not just resolved: if a user configures
+# NETWORK_FILTER_MODE=filtered with NETWORK_FILTER_FALLBACK=open and
+# the host lacks pasta, the filter falls back to `open` — but their
+# configured intent ("I want egress constrained") is still in force.
+# `FALLBACK=open` says "accept degraded networking rather than refuse
+# to launch", NOT "withdraw all egress concerns". Mail-block doesn't
+# depend on the kernel features the fallback gated on (it's PATH-
+# prefix + bind-mount + symlinks), so the degradation that disabled
+# the primary defense does not disable this secondary one — and that
+# is precisely when defense-in-depth earns its name.
+#
+# Why both, not just configured: under NETWORK_FILTER_FALLBACK=stricter
+# the resolver can also walk UP (e.g. requested `open`, resolved to
+# `filtered` because the operator pinned a stricter floor). Tracking
+# the stricter of the two keeps `auto` aligned with the ambient
+# strictness an outside observer would see.
 resolve_network_mail_block_mode() {
     local _knob="${NETWORK_MAIL_BLOCK:-auto}"
+    local _cfg="${NETWORK_FILTER_MODE:-filtered}"
     local _net="${_NETWORK_FILTER_RESOLVED:-open}"
     case "$_knob" in
         on)
@@ -1845,12 +1872,16 @@ resolve_network_mail_block_mode() {
             _MAIL_BLOCK_REASON="off (requested)"
             ;;
         auto)
-            if [[ "$_net" == "open" ]]; then
+            if [[ "$_cfg" == "open" && "$_net" == "open" ]]; then
                 _MAIL_BLOCK_RESOLVED="off"
-                _MAIL_BLOCK_REASON="off (auto; NETWORK_FILTER_MODE resolved to open)"
+                _MAIL_BLOCK_REASON="off (auto; NETWORK_FILTER_MODE=open, resolved=open)"
             else
                 _MAIL_BLOCK_RESOLVED="on"
-                _MAIL_BLOCK_REASON="on (auto; NETWORK_FILTER_MODE resolved to '$_net')"
+                if [[ "$_cfg" != "$_net" ]]; then
+                    _MAIL_BLOCK_REASON="on (auto; NETWORK_FILTER_MODE='$_cfg', resolved to '$_net')"
+                else
+                    _MAIL_BLOCK_REASON="on (auto; NETWORK_FILTER_MODE='$_net')"
+                fi
             fi
             ;;
         *)
