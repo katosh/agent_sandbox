@@ -903,6 +903,111 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#outbound-mail-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Outbound mail policy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Outbound mail policy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-two-layers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why two layers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuration_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#canonical-mailer-name-set" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Canonical mailer name set
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mechanism" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mechanism
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-it-catches-and-what-it-doesnt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it catches and what it doesn't
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#argv-echo-sanitization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Argv echo sanitization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backend-support" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backend support
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#operator-opt-out" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operator opt-out
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#real-world-recipe-verify-filtered-mode-is-enforcing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1526,6 +1631,111 @@
     <span class="md-ellipsis">
       
         Lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#outbound-mail-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Outbound mail policy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Outbound mail policy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-two-layers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why two layers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuration_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#canonical-mailer-name-set" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Canonical mailer name set
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mechanism" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mechanism
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-it-catches-and-what-it-doesnt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it catches and what it doesn't
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#argv-echo-sanitization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Argv echo sanitization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backend-support" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backend support
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#operator-opt-out" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operator opt-out
       
     </span>
   </a>
@@ -2320,28 +2530,251 @@ daemon arms <code>prctl(PR_SET_PDEATHSIG, SIGTERM)</code> as its first action so
 it dies cleanly when the parent shell exits. The cleanup trap
 kills the daemon and <code>rm -rf</code>'s the per-launch socket dir as
 belt-and-suspenders for the pre-exec failure window.</p>
+<h2 id="outbound-mail-policy">Outbound mail policy<a class="headerlink" href="#outbound-mail-policy" title="Permanent link">&para;</a></h2>
+<p><code>NETWORK_MAIL_BLOCK</code> (v0.10.1+) is the <strong>upstream</strong> layer above the
+port-level SMTP block. While <a href="#modes"><code>NETWORK_FILTER_MODE</code></a> closes
+TCP ports 25 / 465 / 587 (and the local-MTA loopback variants) at the
+namespace edge, the mail-block layer replaces every canonical mailer
+binary inside the sandbox with a stub that prints a deterrent
+message and exits 77 (sysexits <code>EX_NOPERM</code>). The stub catches the
+<code>execve</code> syscall, so the agent learns the policy in human-readable
+terms before the kernel drops a connection.</p>
+<h3 id="why-two-layers">Why two layers<a class="headerlink" href="#why-two-layers" title="Permanent link">&para;</a></h3>
+<p>The port-level filter catches every dialer that reaches the SMTP
+socket — <code>python -c 'import smtplib...'</code>, <code>curl smtp://relay:25</code>,
+<code>nc &lt;host&gt; 25</code>. But an agent that exec's <code>sendmail</code> gets a connection
+refused / ENETUNREACH after a 30-second timeout, which reads as a
+transient network fault and invites retry. The stub closes the
+common case (every UNIX tool that respects the sendmail interface,
+plus every canonical mailer name on PATH) at the syscall, with a
+message text that explicitly forecloses the search tree:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>agent-sandbox: outbound mail is disabled in this configuration.
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>This is a configured boundary, not a transient fault. Every known
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>mailer on this system — sendmail, mail, mailx, mutt, msmtp, ssmtp,
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>s-nail, swaks, the postfix admin tools, exim, dma, qmail — has been
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>shimmed by this stub. Retrying with another binary, another
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>invocation, or another path will produce the same result. The
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>companion network filter additionally blocks SMTP ports at the
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>namespace edge, so application-level dialers (smtplib, curl smtp://,
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>nc) also fail.
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>Agents: do not retry. This rule is enforced, not advisory; persistence
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>escalates the incident. ...
+</span></code></pre></div>
+<p>Two reinforcing layers, evaluated CONFIG &gt; NETWORK. The agent reads
+the policy in plain text; the kernel still enforces it on the wire.</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>                  ┌──────────────────────────────┐
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>                  │ AGENT exec&#39;s `sendmail -t`   │
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>                  └────────────┬─────────────────┘
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>                               │
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>              CONFIG layer     │ stub layer (tools/mail-block/)
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>              ──────────       │
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>              argv[0] resolves │ → /usr/sbin/sendmail is bind-
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>              to the bound      mounted to mail-block-stub.sh
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>              path             │ → per-launch stubs dir under
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>                               │   $TMPDIR (bound same-path on both
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>                               │   sides) is PATH-prefixed and
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>                               │   shadows host-PATH lookups
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>                               │ → stub prints deterrent message,
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>                               │   exits 77 (EX_NOPERM)
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>                               │
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>                               ▼ if the agent escalates to a
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>                                 language-level dialer instead…
+</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a>              NETWORK layer
+</span><span id="__span-7-19"><a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a>              ─────────────
+</span><span id="__span-7-20"><a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a>              python -c &#39;smtplib...&#39;   ↘
+</span><span id="__span-7-21"><a id="__codelineno-7-21" name="__codelineno-7-21" href="#__codelineno-7-21"></a>              curl smtp://relay:25     ─→ NETWORK_FILTER_MODE
+</span><span id="__span-7-22"><a id="__codelineno-7-22" name="__codelineno-7-22" href="#__codelineno-7-22"></a>              nc relay 25              ↗   blocks 25/465/587 at
+</span><span id="__span-7-23"><a id="__codelineno-7-23" name="__codelineno-7-23" href="#__codelineno-7-23"></a>                                          the namespace edge
+</span></code></pre></div>
+<h3 id="configuration_1">Configuration<a class="headerlink" href="#configuration_1" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auto</code> (default)</td>
+<td>on whenever the configured <code>NETWORK_FILTER_MODE</code> OR the resolved one is anything other than <code>open</code> (strictest-of-both rule). Disengages only when BOTH are <code>open</code>.</td>
+</tr>
+<tr>
+<td><code>on</code></td>
+<td>always on, regardless of <code>NETWORK_FILTER_MODE</code>.</td>
+</tr>
+<tr>
+<td><code>off</code></td>
+<td>never on. Escape hatch for sites that legitimately need the canonical mailer binaries visible.</td>
+</tr>
+</tbody>
+</table>
+<p>The strictest-of-both rule matters when <code>NETWORK_FILTER_FALLBACK=open</code>
+degrades a <code>filtered</code>/<code>proxied</code>/<code>isolated</code> request to <code>open</code> (e.g. on a
+kernel without <code>setcap cap_net_raw+ep</code> on pasta). The user's configured
+intent — "constrain outbound network" — is still in force; the fallback
+policy only authorises degrading the network layer, not withdrawing all
+egress concerns. Mail-block doesn't depend on the kernel features the
+network filter gated on, so it can still fire — and this is precisely
+when defense-in-depth earns its name. Symmetrically, under
+<code>NETWORK_FILTER_FALLBACK=stricter</code> a configured <code>open</code> can be walked up
+to <code>filtered</code> (or higher); the stricter realised state is what an
+outside observer would see, so the mail-block layer follows.</p>
+<p>Admin enforcement: harden-only. A user-configured value can be equal
+to or stricter than the admin pin (off &lt; auto &lt; on); attempts to
+weaken raise a <code>WARNING</code> at config-load and restore the admin value.
+See <a href="../../configure/#network_mail_block"><code>NETWORK_MAIL_BLOCK</code></a> for
+the full operator-facing description.</p>
+<h3 id="canonical-mailer-name-set">Canonical mailer name set<a class="headerlink" href="#canonical-mailer-name-set" title="Permanent link">&para;</a></h3>
+<p>The stub is invoked under each of the following names. The list is
+maintained as <code>_MAIL_BLOCK_STUB_NAMES</code> in <code>sandbox-lib.sh</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th>Names</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sendmail interface</td>
+<td><code>sendmail</code>, <code>sendmail.sendmail</code>, <code>sendmail.postfix</code>, <code>rmail</code></td>
+</tr>
+<tr>
+<td>mail / mailx</td>
+<td><code>mail</code>, <code>mailx</code>, <code>Mail</code>, <code>s-nail</code>, <code>nail</code>, <code>bsd-mailx</code>, <code>heirloom-mailx</code></td>
+</tr>
+<tr>
+<td>mutt</td>
+<td><code>mutt</code>, <code>neomutt</code></td>
+</tr>
+<tr>
+<td>SMTP-direct</td>
+<td><code>msmtp</code>, <code>ssmtp</code>, <code>nullmailer-send</code>, <code>smtp-cli</code></td>
+</tr>
+<tr>
+<td>Postfix admin</td>
+<td><code>postsuper</code>, <code>postdrop</code>, <code>postqueue</code>, <code>mailq</code>, <code>newaliases</code></td>
+</tr>
+<tr>
+<td>Test tool</td>
+<td><code>swaks</code></td>
+</tr>
+<tr>
+<td>mpack</td>
+<td><code>mpack</code>, <code>metasend</code></td>
+</tr>
+<tr>
+<td>Exim admin</td>
+<td><code>exim</code>, <code>exim4</code></td>
+</tr>
+<tr>
+<td>DragonFly Mail Agent</td>
+<td><code>dma</code></td>
+</tr>
+<tr>
+<td>qmail client</td>
+<td><code>qmail-inject</code>, <code>qmail-qmqpc</code>, <code>qmail-remote</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>git send-email</code> and <code>git imap-send</code> invoke an external <code>sendmail</code>
+for delivery, so the sendmail stub covers them.</p>
+<h3 id="mechanism">Mechanism<a class="headerlink" href="#mechanism" title="Permanent link">&para;</a></h3>
+<p>Two reinforcing path-resolution layers, both established at
+<code>backend_prepare</code> time:</p>
+<ol>
+<li><strong>Bind-mount over canonical absolute paths.</strong> For each name, the
+   launcher tries <code>/usr/bin/&lt;name&gt;</code>, <code>/usr/sbin/&lt;name&gt;</code>,
+   <code>/usr/lib/sendmail</code> (Debian historical), <code>/var/qmail/bin/qmail-*</code>
+   (qmail convention). Entries that don't exist on the host are
+   silently skipped — there's no need to materialise phantom paths
+   because layer 2 covers PATH-resolution misses.</li>
+<li><strong>Symlink farm + PATH-prefix.</strong> A per-launch tempdir under
+   <code>$TMPDIR</code> (mode <code>0700</code>) is populated with one symlink per name
+   pointing at the in-sandbox stub path. The dir is <code>--ro-bind</code>'d at
+   the same path on both sides of the sandbox boundary (mirroring
+   the chaperon FIFO + proxy-socket-dir pattern) and prepended to
+   <code>PATH</code> inside the sandbox. Catches PATH lookups that resolve to
+   <code>/usr/local/bin/&lt;name&gt;</code>, Lmod-injected
+   <code>/app/software/&lt;pkg&gt;/bin/&lt;name&gt;</code>, or any other host-PATH-position
+   layer 1 missed.</li>
+</ol>
+<p>Layer 2 fires FIRST in PATH order (before <code>$SANDBOX_DIR/chaperon/stubs</code>,
+<code>$SANDBOX_DIR/bin</code>, and the rest of <code>$PATH</code>) so the stub wins even
+when host PATH contains an unstubbed copy.</p>
+<h3 id="what-it-catches-and-what-it-doesnt">What it catches and what it doesn't<a class="headerlink" href="#what-it-catches-and-what-it-doesnt" title="Permanent link">&para;</a></h3>
+<p><strong>Catches</strong> (the easy ~80%):</p>
+<ul>
+<li>Every UNIX tool that respects the sendmail interface (<code>git
+  send-email</code>, alpine, mh-mail, …).</li>
+<li>Every name that resolves through PATH lookup, regardless of
+  where the resolved path lives (PATH-prefix layer wins over
+  Lmod-injected, brew-installed, hand-built copies).</li>
+</ul>
+<p><strong>Does NOT catch</strong> (the network filter does — see
+<a href="#modes">Modes</a>):</p>
+<ul>
+<li><code>python -c 'import smtplib; …'</code> — language-level dialer.</li>
+<li><code>curl smtp://relay:25 ...</code> — application-level dialer.</li>
+<li><code>nc &lt;host&gt; 25</code> — raw TCP. Under <code>proxied</code> mode this also fails
+  because the namespace has no native TCP egress; under <code>filtered</code>
+  the port closure does the work.</li>
+</ul>
+<h3 id="argv-echo-sanitization">Argv echo sanitization<a class="headerlink" href="#argv-echo-sanitization" title="Permanent link">&para;</a></h3>
+<p>A naive stub that echoes its argv invites a control-byte injection
+surface — a crafted <code>argv[1]</code> containing <code>\e[2J\e[H</code> rewrites the
+agent's terminal view, OSC-8 sequences smuggle clickable URLs into
+log scrapers. The stub instead:</p>
+<ul>
+<li>Reports only <code>basename "$0"</code> (so the reader sees which mailer the
+  agent reached for), passed through
+  <code>LC_ALL=C tr -cd '[:graph:]'</code> to strip every byte outside
+  printable ASCII, capped at 64 bytes.</li>
+<li>Reports the argv <strong>count</strong> (so the agent can distinguish a probe
+  from a real send attempt), never the contents.</li>
+</ul>
+<p>Exit code is <code>77</code> (<code>EX_NOPERM</code> from <code>sysexits.h</code>, "permission denied
+at a higher level"). <code>EX_CONFIG</code> (78) was considered and rejected:
+it reads as "operator misconfiguration, retry with a fix" which
+invites exactly the retry loop the stub is meant to break.</p>
+<h3 id="backend-support">Backend support<a class="headerlink" href="#backend-support" title="Permanent link">&para;</a></h3>
+<p>Bwrap only in v0.10.1. Firejail and landlock parity is mechanically
+straightforward but deferred so the initial release stays auditable —
+the layer falls back to no-stub on unsupported backends; the network
+filter still applies per the <a href="#modes">backend matrix</a>.</p>
+<h3 id="operator-opt-out">Operator opt-out<a class="headerlink" href="#operator-opt-out" title="Permanent link">&para;</a></h3>
+<p><code>NETWORK_MAIL_BLOCK=off</code> is the escape hatch. Rare in practice: HPC
+sites typically route legitimate mail through a host-side relay or
+a separate non-sandboxed task, not through a sandboxed mailer
+binary. If you find yourself reaching for it, prefer <code>MODE=open</code> —
+which carries the entire mail policy with it — and document the
+reason inline in <code>~/.config/agent-sandbox/sandbox.conf</code> so a future
+operator (or auditor) can find it.</p>
 <h2 id="real-world-recipe-verify-filtered-mode-is-enforcing">Real-world recipe — verify filtered mode is enforcing<a class="headerlink" href="#real-world-recipe-verify-filtered-mode-is-enforcing" title="Permanent link">&para;</a></h2>
 <p>After deploying v1.1, an operator can confirm <code>filtered</code> mode is
 actually enforcing inside their sandbox with a handful of one-liners.
 Run each inside a sandbox session:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># (1) DNS + general egress: should resolve + reach github.com.</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>getent<span class="w"> </span>hosts<span class="w"> </span>github.com<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span>curl<span class="w"> </span>-fsS<span class="w"> </span>--max-time<span class="w"> </span><span class="m">5</span><span class="w"> </span>-o<span class="w"> </span>/dev/null<span class="w"> </span>-w<span class="w"> </span><span class="s1">&#39;%{http_code}\n&#39;</span><span class="w"> </span>https://github.com/
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Expected: A/AAAA record + &quot;200&quot; or &quot;301&quot;.</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="c1"># (2) SMTP submission: must fail. The universal port-25 closure plus</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="c1"># pasta&#39;s empty loopback both block the path.</span>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/127.0.0.1/25<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — SMTP closed (expected)&quot;</span>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="c1"># Expected: &quot;BLOCKED&quot; (Connection refused / ENETUNREACH).</span>
-</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>
-</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="c1"># (3) DoT (DNS-over-TLS) evasion port: must fail. Universal port-853</span>
-</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="c1"># closure.</span>
-</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/1.1.1.1/853<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — DoT closed (expected)&quot;</span>
-</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="c1"># Expected: &quot;BLOCKED&quot;.</span>
-</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>
-</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a><span class="c1"># (4) Telnet (legacy r-services): must fail. Port 23 closure.</span>
-</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/127.0.0.1/23<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — telnet closed (expected)&quot;</span>
-</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a><span class="c1"># Expected: &quot;BLOCKED&quot;.</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># (1) DNS + general egress: should resolve + reach github.com.</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>getent<span class="w"> </span>hosts<span class="w"> </span>github.com<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span>curl<span class="w"> </span>-fsS<span class="w"> </span>--max-time<span class="w"> </span><span class="m">5</span><span class="w"> </span>-o<span class="w"> </span>/dev/null<span class="w"> </span>-w<span class="w"> </span><span class="s1">&#39;%{http_code}\n&#39;</span><span class="w"> </span>https://github.com/
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># Expected: A/AAAA record + &quot;200&quot; or &quot;301&quot;.</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="c1"># (2) SMTP submission: must fail. The universal port-25 closure plus</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="c1"># pasta&#39;s empty loopback both block the path.</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/127.0.0.1/25<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — SMTP closed (expected)&quot;</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="c1"># Expected: &quot;BLOCKED&quot; (Connection refused / ENETUNREACH).</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="c1"># (3) DoT (DNS-over-TLS) evasion port: must fail. Universal port-853</span>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="c1"># closure.</span>
+</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/1.1.1.1/853<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — DoT closed (expected)&quot;</span>
+</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="c1"># Expected: &quot;BLOCKED&quot;.</span>
+</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>
+</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a><span class="c1"># (4) Telnet (legacy r-services): must fail. Port 23 closure.</span>
+</span><span id="__span-8-17"><a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a><span class="nb">exec</span><span class="w"> </span><span class="m">3</span>&lt;&gt;/dev/tcp/127.0.0.1/23<span class="w"> </span><span class="m">2</span>&gt;<span class="p">&amp;</span><span class="m">1</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;BLOCKED — telnet closed (expected)&quot;</span>
+</span><span id="__span-8-18"><a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a><span class="c1"># Expected: &quot;BLOCKED&quot;.</span>
 </span></code></pre></div>
 <p>Note that v1.1 enforces <em>port-level</em> blocks at pasta's boundary,
 not hostname-level blocks. A request like

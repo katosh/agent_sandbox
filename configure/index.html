@@ -900,6 +900,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#network_mail_block" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        NETWORK_MAIL_BLOCK
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#network_filter_skip_helper_probe" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1980,6 +1991,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#network_mail_block" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        NETWORK_MAIL_BLOCK
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#network_filter_skip_helper_probe" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2416,6 +2438,12 @@
 <td><code>()</code></td>
 </tr>
 <tr>
+<td><a href="#network_mail_block"><code>NETWORK_MAIL_BLOCK</code></a></td>
+<td>scalar</td>
+<td><strong>harden-only</strong> (user can only request equal or stricter; off &lt; auto &lt; on)</td>
+<td><code>auto</code></td>
+</tr>
+<tr>
 <td><a href="#network_filter_skip_helper_probe"><code>NETWORK_FILTER_SKIP_HELPER_PROBE</code></a></td>
 <td>env override</td>
 <td>no</td>
@@ -2847,10 +2875,48 @@
 </span><span id="__span-24-11"><a id="__codelineno-24-11" name="__codelineno-24-11" href="#__codelineno-24-11"></a><span class="o">)</span>
 </span></code></pre></div>
 <p>Admin policy is absolute: a user exception covered by an admin-set <code>NETWORK_BLOCKLIST</code> pattern is stripped at config-load. See <a href="../reference/network-filter/#admin-precedence">Admin precedence</a> and <a href="../reference/network-filter/#implicit-allowlist-idiom-exact-hosts">Implicit-allowlist idiom</a> on the reference page.</p>
+<h3 id="network_mail_block"><code>NETWORK_MAIL_BLOCK</code><a class="headerlink" href="#network_mail_block" title="Permanent link">&para;</a></h3>
+<p><strong>Type</strong> scalar <code>auto</code> | <code>on</code> | <code>off</code> · <strong>Admin-enforced</strong> harden-only (user can only request equal or stricter; <code>off &lt; auto &lt; on</code>) · <strong>Default</strong> <code>auto</code></p>
+<p>Defense-in-depth above <a href="#network_filter_mode"><code>NETWORK_FILTER_MODE</code></a>'s port-level SMTP block. When active, the launcher replaces every canonical mailer binary inside the sandbox — <code>sendmail</code>, <code>mail</code>, <code>mailx</code>, <code>mutt</code>, <code>msmtp</code>, <code>ssmtp</code>, <code>s-nail</code>, <code>swaks</code>, the postfix admin tools, <code>exim</code>, <code>dma</code>, qmail clients — with a stub (<code>tools/mail-block/mail-block-stub.sh</code>) that prints a deterrent message to stderr and exits 77 (sysexits <code>EX_NOPERM</code>). The stub catches the <code>execve</code> syscall, so the agent learns the policy in human-readable terms before the network filter drops a connection.</p>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auto</code> (default)</td>
+<td>on whenever the configured <a href="#network_filter_mode"><code>NETWORK_FILTER_MODE</code></a> OR the resolved one is anything other than <code>open</code>. Tracks the user's intent, not only the post-fallback realised state: if <code>NETWORK_FILTER_FALLBACK=open</code> degrades a <code>filtered</code> request to <code>open</code> because pasta is missing, the configured intent ("constrain egress") still keeps the stub layer on — defense-in-depth earns its name precisely when the primary layer collapsed. Only when BOTH configured and resolved are <code>open</code> does the layer step aside.</td>
+</tr>
+<tr>
+<td><code>on</code></td>
+<td>always on, regardless of <code>NETWORK_FILTER_MODE</code>.</td>
+</tr>
+<tr>
+<td><code>off</code></td>
+<td>never on. Escape hatch for sites that legitimately need the canonical mailer binaries visible. Rare — the v0.10.0 port filter already breaks them at the socket layer.</td>
+</tr>
+</tbody>
+</table>
+<p>The two layers compose. The stub catches every UNIX tool that respects the sendmail interface or has a canonical binary name on PATH; the network filter catches the application-level remainder (<code>python -c 'import smtplib...'</code>, <code>curl smtp://</code>, <code>nc &lt;host&gt; 25</code>). Evaluated CONFIG &gt; NETWORK so the agent sees the policy text before the kernel drops the connection.</p>
+<p>Mechanism: bind-mount the stub <code>--ro-bind</code> over every canonical absolute path that exists on the host (<code>/usr/{bin,sbin}/&lt;name&gt;</code>, <code>/usr/lib/sendmail</code>, <code>/var/qmail/bin/qmail-*</code>), plus a per-launch symlink farm of the same names under <code>$TMPDIR</code> that is <code>--ro-bind</code>'d at the same path on both sides of the sandbox boundary (mirroring the chaperon FIFO and proxy socket-dir pattern) and prepended to PATH so name-resolution finds the stub before any unstubbed copies (e.g. <code>/usr/local/bin/&lt;name&gt;</code>, Lmod-injected <code>/app/software/.../bin/&lt;name&gt;</code>).</p>
+<p>Argv echo is sanitized: the stub strips bytes outside <code>[:graph:]</code> from <code>basename "$0"</code> and reports the argv count, never the args themselves — a hostile argv[0] containing ANSI / OSC-8 / CR / NUL bytes cannot rewrite the agent's terminal or smuggle clickable URLs into log scrapers.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="c1"># Default — auto picks the right thing for the active network mode</span>
+</span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a><span class="nv">NETWORK_MAIL_BLOCK</span><span class="o">=</span><span class="s2">&quot;auto&quot;</span>
+</span><span id="__span-25-3"><a id="__codelineno-25-3" name="__codelineno-25-3" href="#__codelineno-25-3"></a>
+</span><span id="__span-25-4"><a id="__codelineno-25-4" name="__codelineno-25-4" href="#__codelineno-25-4"></a><span class="c1"># Always on, even when MODE=open</span>
+</span><span id="__span-25-5"><a id="__codelineno-25-5" name="__codelineno-25-5" href="#__codelineno-25-5"></a><span class="nv">NETWORK_MAIL_BLOCK</span><span class="o">=</span><span class="s2">&quot;on&quot;</span>
+</span><span id="__span-25-6"><a id="__codelineno-25-6" name="__codelineno-25-6" href="#__codelineno-25-6"></a>
+</span><span id="__span-25-7"><a id="__codelineno-25-7" name="__codelineno-25-7" href="#__codelineno-25-7"></a><span class="c1"># Off (rare — document the use case)</span>
+</span><span id="__span-25-8"><a id="__codelineno-25-8" name="__codelineno-25-8" href="#__codelineno-25-8"></a><span class="nv">NETWORK_MAIL_BLOCK</span><span class="o">=</span><span class="s2">&quot;off&quot;</span>
+</span></code></pre></div>
+<p>Backend support: bwrap only in v0.10.1 (firejail and landlock fall back to no stub; the network filter still applies on the supported backends per their own matrix). See <a href="../reference/network-filter/#outbound-mail-policy">Outbound mail policy</a> for the threat-model / mechanism / failure-mode write-up.</p>
 <h3 id="network_filter_skip_helper_probe"><code>NETWORK_FILTER_SKIP_HELPER_PROBE</code><a class="headerlink" href="#network_filter_skip_helper_probe" title="Permanent link">&para;</a></h3>
 <p><strong>Type</strong> env override (scalar <code>0</code> / <code>1</code>) · <strong>Admin-enforced</strong> no · <strong>Default</strong> <code>0</code></p>
 <p>Skip the ~50 ms pasta-forwarding probe that runs at session-start to detect kernels where <code>SO_BINDTODEVICE</code> is gated behind <code>CAP_NET_RAW</code> (most kernels &lt; 5.7 without the 2020 relaxation backported). Set only after verifying pasta's host-side forwarding actually works in your environment — typically after an admin has run <code>setcap cap_net_raw+ep</code> on a system-wide pasta binary, or on kernel ≥ 5.7.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a><span class="nv">NETWORK_FILTER_SKIP_HELPER_PROBE</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>agent-sandbox<span class="w"> </span>bash
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="nv">NETWORK_FILTER_SKIP_HELPER_PROBE</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>agent-sandbox<span class="w"> </span>bash
 </span></code></pre></div>
 <blockquote>
 <p><strong>Do not</strong> set this as a workaround for the <code>pasta degraded to loopback-only</code> fallback warning. The probe exists precisely to catch that silent-loopback-only failure mode; skipping it re-introduces the gap where <code>filtered</code> mode would launch with the agent silently unable to reach anything except <code>127.0.0.1</code>. See <a href="../reference/network-filter/#probe-escape-hatch-network_filter_skip_helper_probe1">Probe escape hatch</a> for the full reasoning.</p>
@@ -2932,51 +2998,51 @@
 </ul>
 <p>Disabled agents contribute <strong>nothing</strong> — their config dirs stay invisible inside the sandbox. Enable only the agents you actually use, so <code>~/.pi</code> or <code>~/.config/opencode</code> (which could be unrelated user data) doesn't become writable for users who don't run those agents.</p>
 <p>Built-in profiles: <code>claude</code>, <code>codex</code>, <code>gemini</code> (default-enabled), <code>aider</code>, <code>opencode</code>, <code>pi</code> (opt-in).</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="nv">ENABLED_AGENTS</span><span class="o">+=(</span><span class="s2">&quot;aider&quot;</span><span class="o">)</span><span class="w">              </span><span class="c1"># add to defaults</span>
-</span><span id="__span-26-2"><a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a><span class="nv">ENABLED_AGENTS</span><span class="o">=(</span><span class="s2">&quot;claude&quot;</span><span class="o">)</span><span class="w">              </span><span class="c1"># solo-claude profile</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="nv">ENABLED_AGENTS</span><span class="o">+=(</span><span class="s2">&quot;aider&quot;</span><span class="o">)</span><span class="w">              </span><span class="c1"># add to defaults</span>
+</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="nv">ENABLED_AGENTS</span><span class="o">=(</span><span class="s2">&quot;claude&quot;</span><span class="o">)</span><span class="w">              </span><span class="c1"># solo-claude profile</span>
 </span></code></pre></div>
 <p>Adding support for a new tool: drop in <code>agents/&lt;name&gt;/{config.conf,overlay.sh,agent.md}</code>, then add <code>"&lt;name&gt;"</code> to this list. See <code>agents/claude/config.conf</code> for the schema.</p>
 <h3 id="suppress_agent_warnings"><code>SUPPRESS_AGENT_WARNINGS</code><a class="headerlink" href="#suppress_agent_warnings" title="Permanent link">&para;</a></h3>
 <p><strong>Type</strong> array · <strong>Admin-enforced</strong> additive · <strong>Default</strong> <code>()</code></p>
 <p>Silence per-agent credential/path warnings emitted at startup. The sandbox checks each enabled agent profile and warns if the declared credentials/paths look unreachable (missing env vars <strong>and</strong> no writable auth directory). Useful when you intentionally isolate an agent (e.g. dropped <code>~/.claude</code> from <code>HOME_WRITABLE</code> to force a fresh login each session).</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="nv">SUPPRESS_AGENT_WARNINGS</span><span class="o">=(</span><span class="s2">&quot;claude&quot;</span><span class="o">)</span><span class="w">     </span><span class="c1"># silence Claude only</span>
-</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="nv">SUPPRESS_AGENT_WARNINGS</span><span class="o">=(</span><span class="s2">&quot;all&quot;</span><span class="o">)</span><span class="w">        </span><span class="c1"># silence every agent</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="nv">SUPPRESS_AGENT_WARNINGS</span><span class="o">=(</span><span class="s2">&quot;claude&quot;</span><span class="o">)</span><span class="w">     </span><span class="c1"># silence Claude only</span>
+</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="nv">SUPPRESS_AGENT_WARNINGS</span><span class="o">=(</span><span class="s2">&quot;all&quot;</span><span class="o">)</span><span class="w">        </span><span class="c1"># silence every agent</span>
 </span></code></pre></div>
 <hr />
 <h2 id="per-project-overrides-confd">Per-project overrides (<code>conf.d/</code>)<a class="headerlink" href="#per-project-overrides-confd" title="Permanent link">&para;</a></h2>
 <p>Different projects often need different data access. Drop files in <code>~/.config/agent-sandbox/conf.d/*.conf</code> to add mounts only when the project directory matches. Each file is sourced in lexical order <strong>after</strong> <code>sandbox.conf</code>, so use <code>+=</code> to append to the global arrays.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="c1"># conf.d/genomics.conf</span>
-</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a><span class="o">[[</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$_PROJECT_DIR</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">==</span><span class="w"> </span>/fh/fast/mylab/genomics/*<span class="w"> </span><span class="o">]]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="m">0</span>
-</span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a>
-</span><span id="__span-28-4"><a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a><span class="nv">READONLY_MOUNTS</span><span class="o">+=(</span>
-</span><span id="__span-28-5"><a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a><span class="w">    </span><span class="s2">&quot;/fh/fast/shared/reference_genomes&quot;</span>
-</span><span id="__span-28-6"><a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a><span class="o">)</span>
-</span><span id="__span-28-7"><a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a><span class="nv">EXTRA_WRITABLE_PATHS</span><span class="o">+=(</span>
-</span><span id="__span-28-8"><a id="__codelineno-28-8" name="__codelineno-28-8" href="#__codelineno-28-8"></a><span class="w">    </span><span class="s2">&quot;/fh/scratch/delete30/mylab/pipeline-output&quot;</span>
-</span><span id="__span-28-9"><a id="__codelineno-28-9" name="__codelineno-28-9" href="#__codelineno-28-9"></a><span class="o">)</span>
-</span><span id="__span-28-10"><a id="__codelineno-28-10" name="__codelineno-28-10" href="#__codelineno-28-10"></a><span class="nv">SANDBOX_ENV</span><span class="o">+=(</span>
-</span><span id="__span-28-11"><a id="__codelineno-28-11" name="__codelineno-28-11" href="#__codelineno-28-11"></a><span class="w">    </span><span class="s2">&quot;MY_PIPELINE_REF=/fh/fast/shared/reference_genomes/hg38&quot;</span>
-</span><span id="__span-28-12"><a id="__codelineno-28-12" name="__codelineno-28-12" href="#__codelineno-28-12"></a><span class="o">)</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="c1"># conf.d/genomics.conf</span>
+</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a><span class="o">[[</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$_PROJECT_DIR</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">==</span><span class="w"> </span>/fh/fast/mylab/genomics/*<span class="w"> </span><span class="o">]]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="m">0</span>
+</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>
+</span><span id="__span-29-4"><a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a><span class="nv">READONLY_MOUNTS</span><span class="o">+=(</span>
+</span><span id="__span-29-5"><a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a><span class="w">    </span><span class="s2">&quot;/fh/fast/shared/reference_genomes&quot;</span>
+</span><span id="__span-29-6"><a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a><span class="o">)</span>
+</span><span id="__span-29-7"><a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a><span class="nv">EXTRA_WRITABLE_PATHS</span><span class="o">+=(</span>
+</span><span id="__span-29-8"><a id="__codelineno-29-8" name="__codelineno-29-8" href="#__codelineno-29-8"></a><span class="w">    </span><span class="s2">&quot;/fh/scratch/delete30/mylab/pipeline-output&quot;</span>
+</span><span id="__span-29-9"><a id="__codelineno-29-9" name="__codelineno-29-9" href="#__codelineno-29-9"></a><span class="o">)</span>
+</span><span id="__span-29-10"><a id="__codelineno-29-10" name="__codelineno-29-10" href="#__codelineno-29-10"></a><span class="nv">SANDBOX_ENV</span><span class="o">+=(</span>
+</span><span id="__span-29-11"><a id="__codelineno-29-11" name="__codelineno-29-11" href="#__codelineno-29-11"></a><span class="w">    </span><span class="s2">&quot;MY_PIPELINE_REF=/fh/fast/shared/reference_genomes/hg38&quot;</span>
+</span><span id="__span-29-12"><a id="__codelineno-29-12" name="__codelineno-29-12" href="#__codelineno-29-12"></a><span class="o">)</span>
 </span></code></pre></div>
 <p>The <code>_PROJECT_DIR</code> variable is set by the sandbox before sourcing conf.d files. Returning early when the project doesn't match keeps the file a no-op for unrelated projects.</p>
 <p>See <code>conf.d/example.conf</code> in the install for a template.</p>
 <hr />
 <h2 id="common-customizations">Common customizations<a class="headerlink" href="#common-customizations" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="c1"># Add a read-only data directory</span>
-</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a><span class="nv">READONLY_MOUNTS</span><span class="o">+=(</span><span class="s2">&quot;/shared/other_lab/data&quot;</span><span class="o">)</span>
-</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>
-</span><span id="__span-29-4"><a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a><span class="c1"># Add a writable output directory beyond the project dir</span>
-</span><span id="__span-29-5"><a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a><span class="nv">EXTRA_WRITABLE_PATHS</span><span class="o">=(</span><span class="s2">&quot;/shared/scratch/agent-output&quot;</span><span class="o">)</span>
-</span><span id="__span-29-6"><a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a>
-</span><span id="__span-29-7"><a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a><span class="c1"># Block a sensitive subdirectory inside an otherwise-visible mount</span>
-</span><span id="__span-29-8"><a id="__codelineno-29-8" name="__codelineno-29-8" href="#__codelineno-29-8"></a><span class="nv">EXTRA_BLOCKED_PATHS</span><span class="o">=(</span><span class="s2">&quot;/shared/lab/clinical_restricted&quot;</span><span class="o">)</span>
-</span><span id="__span-29-9"><a id="__codelineno-29-9" name="__codelineno-29-9" href="#__codelineno-29-9"></a>
-</span><span id="__span-29-10"><a id="__codelineno-29-10" name="__codelineno-29-10" href="#__codelineno-29-10"></a><span class="c1"># Allow GitHub CLI inside the sandbox</span>
-</span><span id="__span-29-11"><a id="__codelineno-29-11" name="__codelineno-29-11" href="#__codelineno-29-11"></a><span class="nv">HOME_READONLY</span><span class="o">+=(</span><span class="s2">&quot;.config/gh&quot;</span><span class="o">)</span>
-</span><span id="__span-29-12"><a id="__codelineno-29-12" name="__codelineno-29-12" href="#__codelineno-29-12"></a><span class="nv">ALLOWED_ENV_VARS</span><span class="o">+=(</span><span class="s2">&quot;GITHUB_TOKEN&quot;</span><span class="w"> </span><span class="s2">&quot;GH_TOKEN&quot;</span><span class="o">)</span>
-</span><span id="__span-29-13"><a id="__codelineno-29-13" name="__codelineno-29-13" href="#__codelineno-29-13"></a>
-</span><span id="__span-29-14"><a id="__codelineno-29-14" name="__codelineno-29-14" href="#__codelineno-29-14"></a><span class="c1"># Open an extra device (audio + DRI render nodes)</span>
-</span><span id="__span-29-15"><a id="__codelineno-29-15" name="__codelineno-29-15" href="#__codelineno-29-15"></a><span class="nv">DEVICES</span><span class="o">+=(</span>/dev/snd<span class="w"> </span>/dev/dri/*<span class="o">)</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a><span class="c1"># Add a read-only data directory</span>
+</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a><span class="nv">READONLY_MOUNTS</span><span class="o">+=(</span><span class="s2">&quot;/shared/other_lab/data&quot;</span><span class="o">)</span>
+</span><span id="__span-30-3"><a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>
+</span><span id="__span-30-4"><a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a><span class="c1"># Add a writable output directory beyond the project dir</span>
+</span><span id="__span-30-5"><a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a><span class="nv">EXTRA_WRITABLE_PATHS</span><span class="o">=(</span><span class="s2">&quot;/shared/scratch/agent-output&quot;</span><span class="o">)</span>
+</span><span id="__span-30-6"><a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a>
+</span><span id="__span-30-7"><a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a><span class="c1"># Block a sensitive subdirectory inside an otherwise-visible mount</span>
+</span><span id="__span-30-8"><a id="__codelineno-30-8" name="__codelineno-30-8" href="#__codelineno-30-8"></a><span class="nv">EXTRA_BLOCKED_PATHS</span><span class="o">=(</span><span class="s2">&quot;/shared/lab/clinical_restricted&quot;</span><span class="o">)</span>
+</span><span id="__span-30-9"><a id="__codelineno-30-9" name="__codelineno-30-9" href="#__codelineno-30-9"></a>
+</span><span id="__span-30-10"><a id="__codelineno-30-10" name="__codelineno-30-10" href="#__codelineno-30-10"></a><span class="c1"># Allow GitHub CLI inside the sandbox</span>
+</span><span id="__span-30-11"><a id="__codelineno-30-11" name="__codelineno-30-11" href="#__codelineno-30-11"></a><span class="nv">HOME_READONLY</span><span class="o">+=(</span><span class="s2">&quot;.config/gh&quot;</span><span class="o">)</span>
+</span><span id="__span-30-12"><a id="__codelineno-30-12" name="__codelineno-30-12" href="#__codelineno-30-12"></a><span class="nv">ALLOWED_ENV_VARS</span><span class="o">+=(</span><span class="s2">&quot;GITHUB_TOKEN&quot;</span><span class="w"> </span><span class="s2">&quot;GH_TOKEN&quot;</span><span class="o">)</span>
+</span><span id="__span-30-13"><a id="__codelineno-30-13" name="__codelineno-30-13" href="#__codelineno-30-13"></a>
+</span><span id="__span-30-14"><a id="__codelineno-30-14" name="__codelineno-30-14" href="#__codelineno-30-14"></a><span class="c1"># Open an extra device (audio + DRI render nodes)</span>
+</span><span id="__span-30-15"><a id="__codelineno-30-15" name="__codelineno-30-15" href="#__codelineno-30-15"></a><span class="nv">DEVICES</span><span class="o">+=(</span>/dev/snd<span class="w"> </span>/dev/dri/*<span class="o">)</span>
 </span></code></pre></div>
 <blockquote>
 <p><strong>SSH keys.</strong> <code>~/.ssh</code> is excluded from <code>HOME_READONLY</code> by default — the agent cannot see it. <strong>Do not add it.</strong> On HPC clusters with passwordless SSH between nodes, an agent with access to <code>~/.ssh</code> can SSH to localhost for an unsandboxed shell. If the agent needs git access, prefer <a href="https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys">deploy keys</a> scoped to a single repo, or HTTPS with a fine-grained token (add the token var to <code>ALLOWED_ENV_VARS</code>).</p>

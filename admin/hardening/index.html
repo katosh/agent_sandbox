@@ -1006,6 +1006,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#outbound-mail-a-discrete-hardened-sub-policy-v0101" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Outbound mail — a discrete hardened sub-policy (v0.10.1)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1313,6 +1324,17 @@
     <span class="md-ellipsis">
       
         Comparison
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#outbound-mail-a-discrete-hardened-sub-policy-v0101" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Outbound mail — a discrete hardened sub-policy (v0.10.1)
       
     </span>
   </a>
@@ -1659,6 +1681,9 @@ for the full surface.</p>
 </table>
 <p>All three options use a <strong>default-allow</strong> policy for general web access (research, packages, papers) with <strong>targeted blocks</strong> on dangerous services (SSH, internal networks, metadata endpoints). The difference is where enforcement happens: in the kernel (A, B) or in a userspace proxy (C).</p>
 <p><strong>Recommendation:</strong> Option B is the best balance for admin-managed deployments — no dedicated accounts needed, transparent to processes, and works with all backends. Option C provides the deepest control (logging, rate-limiting, policy-as-code) and requires no admin, but needs proxy configuration. Option A is simplest if dedicated accounts (Section 3) are already deployed.</p>
+<h3 id="outbound-mail-a-discrete-hardened-sub-policy-v0101">Outbound mail — a discrete hardened sub-policy (v0.10.1)<a class="headerlink" href="#outbound-mail-a-discrete-hardened-sub-policy-v0101" title="Permanent link">&para;</a></h3>
+<p>The built-in <a href="../../reference/network-filter/#modes">network filter</a> closes SMTP submission ports (25 / 465 / 587 / 2525 / 24) at the namespace edge, plus the local-MTA loopback variants. v0.10.1 adds an <strong>upstream</strong> layer: <a href="../../reference/network-filter/#outbound-mail-policy"><code>NETWORK_MAIL_BLOCK</code></a> replaces every canonical mailer binary inside the sandbox (sendmail, mail, mailx, mutt, msmtp, ssmtp, s-nail, swaks, postfix admin tools, exim, dma, qmail clients) with a stub that prints a deterrent message addressed to the agent and exits 77 (sysexits <code>EX_NOPERM</code>). The stub catches the <code>execve</code> syscall, so the agent reads the policy in plain text before the kernel drops the connection — converting a 30-second SMTP timeout (which reads as transient and invites retry) into an immediate, intelligible refusal.</p>
+<p>The two layers compose: the stub catches every UNIX tool that respects the sendmail interface, the network filter catches application-level dialers (<code>python -c 'import smtplib...'</code>, <code>curl smtp://</code>, <code>nc &lt;host&gt; 25</code>). Default <code>auto</code> activates the stub whenever the configured <code>NETWORK_FILTER_MODE</code> OR the resolved one is anything other than <code>open</code> (strictest-of-both — so if a <code>filtered</code> request degrades to <code>open</code> under <code>NETWORK_FILTER_FALLBACK=open</code>, the user's configured intent still keeps mail-block engaged). Any of Options A / B / C above complements it cleanly: the sandbox-local stub layer fires inside the namespace, the host-side rules / proxy fire on the wire. Admins who want the layer on regardless of the user's network mode can pin <code>NETWORK_MAIL_BLOCK="on"</code> in <code>sandbox-admin.conf</code> (non-weakening; users can request equal or stricter).</p>
 <hr />
 <h2 id="5-audit-logging">5. Audit Logging<a class="headerlink" href="#5-audit-logging" title="Permanent link">&para;</a></h2>
 <p><strong>What it solves:</strong> Visibility into what the agent did — which files it accessed, which jobs it submitted, and what commands it ran. Useful for compliance, forensics, and debugging.</p>
