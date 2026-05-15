@@ -561,9 +561,21 @@ the policy in plain text; the kernel still enforces it on the wire.
 
 | Value | Behaviour |
 |---|---|
-| `auto` (default) | on whenever `NETWORK_FILTER_MODE` resolves to a value other than `open`. |
+| `auto` (default) | on whenever the configured `NETWORK_FILTER_MODE` OR the resolved one is anything other than `open` (strictest-of-both rule). Disengages only when BOTH are `open`. |
 | `on` | always on, regardless of `NETWORK_FILTER_MODE`. |
 | `off` | never on. Escape hatch for sites that legitimately need the canonical mailer binaries visible. |
+
+The strictest-of-both rule matters when `NETWORK_FILTER_FALLBACK=open`
+degrades a `filtered`/`proxied`/`isolated` request to `open` (e.g. on a
+kernel without `setcap cap_net_raw+ep` on pasta). The user's configured
+intent — "constrain outbound network" — is still in force; the fallback
+policy only authorises degrading the network layer, not withdrawing all
+egress concerns. Mail-block doesn't depend on the kernel features the
+network filter gated on, so it can still fire — and this is precisely
+when defense-in-depth earns its name. Symmetrically, under
+`NETWORK_FILTER_FALLBACK=stricter` a configured `open` can be walked up
+to `filtered` (or higher); the stricter realised state is what an
+outside observer would see, so the mail-block layer follows.
 
 Admin enforcement: harden-only. A user-configured value can be equal
 to or stricter than the admin pin (off < auto < on); attempts to

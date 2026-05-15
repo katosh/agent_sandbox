@@ -79,17 +79,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   themselves.
 
   Three-valued knob: `NETWORK_MAIL_BLOCK=auto|on|off`. Default
-  `auto` activates the stub whenever `NETWORK_FILTER_MODE` resolves
-  to a non-`open` value — so the stub is on for the default
-  configuration and steps aside under `MODE=open` (host-network
-  parity, where the host-side mail policy is shaped to handle
-  legitimate mail anyway). `on` activates regardless of the
-  network mode; `off` is the escape hatch for sites that
-  legitimately need the canonical mailer binaries visible (rare —
-  the v0.10.0 port filter already breaks them at the socket
-  layer; document the use case if you set this). Admin
-  enforcement is harden-only with strictness `off < auto < on`,
-  matching the model used by `NETWORK_FILTER_MODE` / `_FALLBACK`.
+  `auto` activates the stub whenever the configured
+  `NETWORK_FILTER_MODE` OR the resolved one is anything other than
+  `open` (strictest-of-both rule) — so the stub is on for the
+  default configuration AND stays on when `NETWORK_FILTER_FALLBACK=open`
+  degrades a `filtered` request to `open` because the host lacks
+  pasta. The fallback policy authorises a degraded network LAYER,
+  not a withdrawn egress CONCERN; mail-block doesn't depend on the
+  kernel features the network filter gated on, so defense-in-depth
+  earns its name precisely when the primary layer collapsed. The
+  layer steps aside only when BOTH the configured intent and the
+  resolved state are `open` (host-network parity, where the host-
+  side mail policy is shaped to handle legitimate mail). `on`
+  activates regardless of the network mode; `off` is the escape
+  hatch for sites that legitimately need the canonical mailer
+  binaries visible (rare — the v0.10.0 port filter already breaks
+  them at the socket layer; document the use case if you set
+  this). Admin enforcement is harden-only with strictness
+  `off < auto < on`, matching the model used by `NETWORK_FILTER_MODE`
+  / `_FALLBACK`.
 
   Backend support: bwrap only in 0.10.2. Firejail / landlock
   parity is mechanically straightforward (both support the same
