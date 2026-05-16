@@ -49,43 +49,48 @@ same.
 ## What is unique to agent-sandbox
 
 **Kernel-namespace-enforced network egress, not tool-cooperative.**
-v0.10.1 ships four [`NETWORK_FILTER_MODE`](network-filter.md#modes)
-values — `open` < `filtered` < `proxied` < `isolated` — and the three
-non-`open` modes run the sandboxed agent inside an `--unshare-net`
-network namespace. `filtered` (the shipped default) provisions a
-[pasta](https://passt.top/)-backed tap interface to the host network
-and closes the identity-bound port floor (SMTP submission
-24/25/465/587/2525, DoT 853, telnet/finger/ident/rexec/rlogin/rsh) at
-pasta's own `-T ~N` / `-U ~K` outbound-forwarding boundary — no
-nftables or iptables dependency. `proxied` (v0.10.1, the
-[fallback target for pasta-deficient hosts](network-filter.md#proxied-mode-host-side-http-connect-socks5-fallback))
-puts the empty netns behind a host-side HTTP CONNECT + SOCKS5 daemon
-(`tools/proxy/agent-sandbox-proxy.py`) reached via two bind-mounted
-Unix sockets, enforcing the full blocklist (hostname, wildcard, CIDR,
-bare port) at CONNECT time on top of a hardened IP floor the user
-cannot lift (RFC1918, link-local, CGNAT, cloud metadata, IPv6 ULA).
-`isolated` is `--unshare-net` with no helper.
+Egress restrictions in agent-sandbox are enforced by the Linux
+kernel: the sandboxed agent runs inside its own network namespace
+and cannot reach the host network except along the path the kernel
+routes for it. A jailbroken or compromised agent cannot widen the
+policy from inside — the kernel does not consult the agent's
+intent.
 
-The mechanism is the differentiator. A non-cooperating, jailbroken,
-or compromised agent inside the sandbox **cannot** reach the network
-outside the configured policy regardless of what its tool layer
-thinks about its permissions — the kernel does not consult the
-agent's tools list. Contrast with agent-layer permission gates
-(Claude Code's `--allowedTools` / `--dangerously-skip-permissions`
-/ per-action permission prompts, and similar permission systems in
-other CLI harnesses), which mediate the agent's *cooperation* with
-the gate and can be ignored once jailbroken. The mode-quartet and
-fallback resolver live in
-[`sandbox-lib.sh`](https://github.com/katosh/agent_sandbox/blob/main/sandbox-lib.sh)
-(`NETWORK_FILTER_MODE`, `NETWORK_FILTER_FALLBACK`,
-`_resolve_network_helper`); helper binaries under `tools/pasta/`
-(SHA256-pinned static pasta) and `tools/proxy/` (single-file Python
-helper). In the [feature matrix](#feature-matrix) below this puts
-`filtered`/`proxied` in the same enforcement class as Anthropic
-`sandbox-runtime`'s bwrap + proxy combination and Codex CLI's
-`unshare-net` + managed-proxy, and outside the enforcement class of
-cco / scode (no enforcement) and cooperative-tool-permission gates
-generally.
+[`NETWORK_FILTER_MODE`](network-filter.md#modes) has four values.
+Three run inside an `unshare-net` namespace and enforce a policy at
+the kernel boundary; the fourth (`open`) disables the layer.
+
+- **`filtered`** (default) — allowlisted ports reach the network.
+  The identity-bound port floor (SMTP submission 24/25/465/587/2525,
+  DoT 853, telnet/finger/ident/rexec/rlogin/rsh) is universally
+  closed.
+- **`proxied`** (v0.10.1, the
+  [host-side proxy fallback when `filtered` cannot run](network-filter.md#proxied-mode-host-side-http-connect-socks5-fallback))
+  — allowlisted hostnames reach the network through an HTTP CONNECT
+  + SOCKS5 daemon. The full blocklist (hostname, wildcard, CIDR,
+  bare port) is enforced at CONNECT time on top of a hardened IP
+  floor (RFC1918, link-local, CGNAT, cloud metadata, IPv6 ULA) that
+  the user cannot lift.
+- **`isolated`** — no network at all.
+
+The contrast with cooperative-tool permission gates — Claude Code's
+`--allowedTools` / `--dangerously-skip-permissions` / per-action
+permission prompts, and analogous mechanisms in other CLI harnesses
+— is the practical point. A cooperative gate lets the agent *ask*
+whether a network call is permitted before making it. agent-sandbox
+makes the call fail at the kernel level if the policy denies it,
+regardless of what the agent asks or claims to think. Once
+jailbroken, the agent can ignore cooperative gates; it cannot
+ignore the kernel.
+
+In the [feature matrix](#feature-matrix) below this places
+`filtered` / `proxied` in the same enforcement class as Anthropic
+`sandbox-runtime`'s bwrap-plus-proxy combination and Codex CLI's
+`unshare-net`-plus-managed-proxy, and outside the enforcement class
+of cco / scode (no enforcement) and cooperative-tool-permission
+gates generally. Implementation detail — the mode resolver, the
+in-tree pasta binary, the proxy daemon — lives in the
+[Network filter reference](network-filter.md).
 
 **HPC/Slurm awareness via the chaperon proxy.** Of the projects surveyed,
 agent-sandbox is the only one that targets shared-cluster multi-tenant
@@ -175,11 +180,17 @@ peer to a full agent-runtime PaaS).
 
 ## What this means for agent-sandbox's design
 
-agent-sandbox is opinionated about a narrow scenario — **a single AI
-coding agent running on a user's HPC login node, with kernel-enforced
-boundaries against credential and cross-project leakage** — and trades
-breadth for fit. The tools above sketch a few directions where the field
-has gone further; we have looked at each and recorded our current stance.
+agent-sandbox is opinionated about a narrow profile — **AI coding
+agents running on a user's HPC login node, with kernel-enforced
+boundaries against credential and cross-project leakage** — and
+trades breadth for fit. The setup scales from a single interactive
+`agent-sandbox claude` to a [nested-tmux](agents.md#agent-teams-tmux)
+session with multiple agent panes side by side: the outer tmux
+socket is blocked as an escape risk, the inner sandbox tmux uses
+`Ctrl-a` as its prefix, and the two layers compose without
+keystroke conflict. The tools above sketch a few directions where
+the field has gone further; we have looked at each and recorded
+our current stance.
 
 ### Closed since the v0.8.0 survey
 
