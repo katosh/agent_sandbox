@@ -1,5 +1,5 @@
 site_name: agent-sandbox
-site_description: Kernel-enforced filesystem isolation for AI coding agents on Linux.
+site_description: Kernel-enforced credential and network jail for untrusted Linux processes, with AI coding agents as the canonical use case.
 site_url: https://katosh.github.io/agent_sandbox/
 repo_url: https://github.com/katosh/agent_sandbox
 repo_name: katosh/agent_sandbox
