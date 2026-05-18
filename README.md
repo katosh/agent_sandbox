@@ -1,6 +1,6 @@
 # agent-sandbox
 
-**Kernel-enforced filesystem isolation for AI coding agents on Linux.**
+**Kernel-enforced credential and network jail for untrusted Linux processes — AI coding agents are the canonical use case.**
 
 [![CI](https://github.com/katosh/agent_sandbox/actions/workflows/ci.yml/badge.svg)](https://github.com/katosh/agent_sandbox/actions/workflows/ci.yml)
 [![Docs](https://github.com/katosh/agent_sandbox/actions/workflows/docs.yml/badge.svg)](https://github.com/katosh/agent_sandbox/actions/workflows/docs.yml)
@@ -10,7 +10,7 @@
 > [!WARNING]
 > **Disclaimer.** This sandbox is a best-effort, user-space isolation layer. It is **not** a security product and comes with **no guarantees**. It reduces the attack surface of AI coding agents on shared systems, but it cannot prevent all possible bypasses — see the [Security model](https://katosh.github.io/agent_sandbox/reference/security/) for documented limitations. Use at your own risk.
 
-Hides SSH keys, cloud credentials, GPG keys, and environment secrets from AI coding agents while letting them do their job. Backed by bubblewrap (with firejail and Landlock as fallbacks), six built-in agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode, pi-mono) with a one-line recipe for adding more, zero containers.
+Hides SSH keys, cloud credentials, GPG keys, and environment secrets from any process started inside the jail. Backed by bubblewrap (with firejail and Landlock as fallbacks), six built-in agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode, pi-mono) with a one-line recipe for adding more, zero containers. The shipped profiles and defaults are tuned for AI coding agents on HPC login nodes; the same jail wraps any other command — untrusted CLI tools, local CI / build steps, notebook kernels, or a collaborator's branch checked out for review.
 
 ## Why agent-sandbox?
 

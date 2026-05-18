@@ -1,12 +1,15 @@
 # agent-sandbox
 
-**Kernel-enforced filesystem and network isolation for AI coding agents on Linux.**
+**Kernel-enforced credential and network jail for untrusted Linux processes — AI coding agents are the canonical use case.**
 
-Hides SSH keys, cloud credentials, GPG keys, and environment secrets from AI coding agents while letting them do their job. Three backends (bubblewrap, firejail, Landlock), six built-in agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode, pi-mono) with a one-line recipe for adding more, zero containers. Network egress is enforced at the Linux network namespace (four [`NETWORK_FILTER_MODE`](reference/network-filter.md#modes) values — `open`/`filtered`/`proxied`/`isolated`), not via tool cooperation — a jailbroken agent cannot reach the network outside the configured policy regardless of what its tool layer thinks.
+Hides SSH keys, cloud credentials, GPG keys, and environment secrets from any process started inside the jail, while letting that process do its job. Three backends (bubblewrap, firejail, Landlock), six built-in agent profiles (Claude Code, Codex, Gemini, Aider, OpenCode, pi-mono) with a one-line recipe for adding more, zero containers. Network egress is enforced by the Linux kernel at the network-namespace boundary (four [`NETWORK_FILTER_MODE`](reference/network-filter.md#modes) values — `open`/`filtered`/`proxied`/`isolated`), not by the sandboxed process's own permission system: a jailbroken process cannot reach destinations outside the configured policy regardless of what its CLI tooling allows.
+
+The shipped profiles and defaults are tuned for AI coding agents on HPC login nodes; the same jail wraps any other command — untrusted CLI tools, local CI / build steps, notebook kernels, or a collaborator's branch checked out for review. See [What this means for agent-sandbox's design](reference/landscape-comparison.md#what-this-means-for-agent-sandboxs-design) for the wider profile.
 
 ```bash
-agent-sandbox claude          # Claude Code, sandboxed
+agent-sandbox claude          # Claude Code, the canonical use case
 agent-sandbox bash            # interactive shell, sandboxed
+agent-sandbox npm install     # any other command, same jail
 ```
 
 !!! warning "Disclaimer"
