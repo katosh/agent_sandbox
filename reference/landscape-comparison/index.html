@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Kernel-enforced filesystem isolation for AI coding agents on Linux.">
+        <meta name="description" content="Kernel-enforced credential and network jail for untrusted Linux processes, with AI coding agents as the canonical use case.">
       
       
       
@@ -1233,42 +1233,46 @@ compatibility — but the kernel primitives underneath are largely the
 same.</p>
 <h2 id="what-is-unique-to-agent-sandbox">What is unique to agent-sandbox<a class="headerlink" href="#what-is-unique-to-agent-sandbox" title="Permanent link">&para;</a></h2>
 <p><strong>Kernel-namespace-enforced network egress, not tool-cooperative.</strong>
-v0.10.1 ships four <a href="../network-filter/#modes"><code>NETWORK_FILTER_MODE</code></a>
-values — <code>open</code> &lt; <code>filtered</code> &lt; <code>proxied</code> &lt; <code>isolated</code> — and the three
-non-<code>open</code> modes run the sandboxed agent inside an <code>--unshare-net</code>
-network namespace. <code>filtered</code> (the shipped default) provisions a
-<a href="https://passt.top/">pasta</a>-backed tap interface to the host network
-and closes the identity-bound port floor (SMTP submission
-24/25/465/587/2525, DoT 853, telnet/finger/ident/rexec/rlogin/rsh) at
-pasta's own <code>-T ~N</code> / <code>-U ~K</code> outbound-forwarding boundary — no
-nftables or iptables dependency. <code>proxied</code> (v0.10.1, the
-<a href="../network-filter/#proxied-mode-host-side-http-connect-socks5-fallback">fallback target for pasta-deficient hosts</a>)
-puts the empty netns behind a host-side HTTP CONNECT + SOCKS5 daemon
-(<code>tools/proxy/agent-sandbox-proxy.py</code>) reached via two bind-mounted
-Unix sockets, enforcing the full blocklist (hostname, wildcard, CIDR,
-bare port) at CONNECT time on top of a hardened IP floor the user
-cannot lift (RFC1918, link-local, CGNAT, cloud metadata, IPv6 ULA).
-<code>isolated</code> is <code>--unshare-net</code> with no helper.</p>
-<p>The mechanism is the differentiator. A non-cooperating, jailbroken,
-or compromised agent inside the sandbox <strong>cannot</strong> reach the network
-outside the configured policy regardless of what its tool layer
-thinks about its permissions — the kernel does not consult the
-agent's tools list. Contrast with agent-layer permission gates
-(Claude Code's <code>--allowedTools</code> / <code>--dangerously-skip-permissions</code>
-/ per-action permission prompts, and similar permission systems in
-other CLI harnesses), which mediate the agent's <em>cooperation</em> with
-the gate and can be ignored once jailbroken. The mode-quartet and
-fallback resolver live in
-<a href="https://github.com/katosh/agent_sandbox/blob/main/sandbox-lib.sh"><code>sandbox-lib.sh</code></a>
-(<code>NETWORK_FILTER_MODE</code>, <code>NETWORK_FILTER_FALLBACK</code>,
-<code>_resolve_network_helper</code>); helper binaries under <code>tools/pasta/</code>
-(SHA256-pinned static pasta) and <code>tools/proxy/</code> (single-file Python
-helper). In the <a href="#feature-matrix">feature matrix</a> below this puts
-<code>filtered</code>/<code>proxied</code> in the same enforcement class as Anthropic
-<code>sandbox-runtime</code>'s bwrap + proxy combination and Codex CLI's
-<code>unshare-net</code> + managed-proxy, and outside the enforcement class of
-cco / scode (no enforcement) and cooperative-tool-permission gates
-generally.</p>
+Egress restrictions in agent-sandbox are enforced by the Linux
+kernel: the sandboxed process runs inside its own network namespace
+and cannot reach the host network except along the path the kernel
+routes for it. A jailbroken or compromised process cannot widen the
+policy from inside — the kernel does not consult the sandboxed
+process's intent.</p>
+<p><a href="../network-filter/#modes"><code>NETWORK_FILTER_MODE</code></a> has four values.
+Three run inside an <code>unshare-net</code> namespace and enforce a policy at
+the kernel boundary; the fourth (<code>open</code>) disables the layer.</p>
+<ul>
+<li><strong><code>filtered</code></strong> (default) — allowlisted ports reach the network.
+  The identity-bound port floor (SMTP submission 24/25/465/587/2525,
+  DoT 853, telnet/finger/ident/rexec/rlogin/rsh) is universally
+  closed.</li>
+<li><strong><code>proxied</code></strong> (v0.10.1, the
+  <a href="../network-filter/#proxied-mode-host-side-http-connect-socks5-fallback">host-side proxy fallback when <code>filtered</code> cannot run</a>)
+  — allowlisted hostnames reach the network through an HTTP CONNECT</li>
+<li>SOCKS5 daemon. The full blocklist (hostname, wildcard, CIDR,
+  bare port) is enforced at CONNECT time on top of a hardened IP
+  floor (RFC1918, link-local, CGNAT, cloud metadata, IPv6 ULA) that
+  the user cannot lift.</li>
+<li><strong><code>isolated</code></strong> — no network at all.</li>
+</ul>
+<p>The contrast with cooperative-tool permission gates — Claude Code's
+<code>--allowedTools</code> / <code>--dangerously-skip-permissions</code> / per-action
+permission prompts, and analogous mechanisms in other CLI harnesses
+— is the practical point. A cooperative gate lets the agent <em>ask</em>
+whether a network call is permitted before making it. agent-sandbox
+makes the call fail at the kernel level if the policy denies it,
+regardless of what the agent asks or claims to think. Once
+jailbroken, the agent can ignore cooperative gates; it cannot
+ignore the kernel.</p>
+<p>In the <a href="#feature-matrix">feature matrix</a> below this places
+<code>filtered</code> / <code>proxied</code> in the same enforcement class as Anthropic
+<code>sandbox-runtime</code>'s bwrap-plus-proxy combination and Codex CLI's
+<code>unshare-net</code>-plus-managed-proxy, and outside the enforcement class
+of cco / scode (no enforcement) and cooperative-tool-permission
+gates generally. Implementation detail — the mode resolver, the
+in-tree pasta binary, the proxy daemon — lives in the
+<a href="../network-filter/">Network filter reference</a>.</p>
 <p><strong>HPC/Slurm awareness via the chaperon proxy.</strong> Of the projects surveyed,
 agent-sandbox is the only one that targets shared-cluster multi-tenant
 deployments as a first-class scenario. The <a href="../chaperon/">chaperon</a> is a
@@ -1452,11 +1456,39 @@ containers, AGPL-3.0), <a href="https://vercel.com/docs/vercel-sandbox">Vercel S
 (Apache-2.0; OCI + gVisor + Kata + Firecracker, the closest open-source
 peer to a full agent-runtime PaaS).</p>
 <h2 id="what-this-means-for-agent-sandboxs-design">What this means for agent-sandbox's design<a class="headerlink" href="#what-this-means-for-agent-sandboxs-design" title="Permanent link">&para;</a></h2>
-<p>agent-sandbox is opinionated about a narrow scenario — <strong>a single AI
-coding agent running on a user's HPC login node, with kernel-enforced
-boundaries against credential and cross-project leakage</strong> — and trades
-breadth for fit. The tools above sketch a few directions where the field
-has gone further; we have looked at each and recorded our current stance.</p>
+<p>agent-sandbox is a <strong>kernel-enforced credential and network jail
+for untrusted Linux processes on a single user's host</strong>. The
+boundary itself — mount namespace, network namespace, chaperon-
+mediated Slurm — is the design centre; the process running inside
+it is not.</p>
+<p>AI coding agents are the canonical use case the project ships
+against: the six built-in profiles (Claude Code, Codex, Gemini,
+Aider, OpenCode, pi-mono), the per-agent config-dir overlays, the
+<a href="../agents/#agent-teams-tmux">nested-tmux multi-agent layout</a> (outer
+tmux blocked as escape risk, inner <code>Ctrl-a</code>), and most shipped
+defaults are tuned for that workflow on shared HPC login nodes. The
+mechanism, however, is not agent-specific: any command invoked
+through <code>agent-sandbox &lt;cmd&gt;</code> inherits the same boundary. Concrete
+adjacent uses the same jail covers:</p>
+<ul>
+<li><strong>Untrusted CLI binaries</strong> — running a third-party tool without
+  exposing <code>~/.ssh</code>, cloud credentials, or sibling-project trees.</li>
+<li><strong>Local CI / build-job isolation</strong> — confining <code>make</code>,
+  <code>npm install</code>, <code>pip install</code>, or vendored build scripts that
+  execute untrusted code paths to the project directory and an
+  explicit egress policy.</li>
+<li><strong>Notebook / REPL kernel sandboxing</strong> — running a Jupyter or R
+  kernel under the same FS and network policy, so a stray cell
+  cannot reach credentials or unallowlisted endpoints.</li>
+<li><strong>Reviewing a collaborator's branch</strong> — checking out and
+  executing someone else's code in a session that cannot reach
+  your identity-bound surface.</li>
+</ul>
+<p>The trade-off is <strong>breadth for fit on the local-process-isolation
+model</strong> — a single user's host, namespace-level enforcement, no
+daemon, no multi-host or container orchestration. The tools above
+sketch a few directions where the field has gone further; we have
+looked at each and recorded our current stance.</p>
 <h3 id="closed-since-the-v080-survey">Closed since the v0.8.0 survey<a class="headerlink" href="#closed-since-the-v080-survey" title="Permanent link">&para;</a></h3>
 <p><strong>Network-namespace isolation and egress enforcement.</strong> The original
 survey (v0.8.0) listed "agent-sandbox does not isolate the network
