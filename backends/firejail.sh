@@ -82,10 +82,16 @@ backend_prepare() {
     esac
 
     # --- Build firejail arguments ---
+    # --private-cwd target mirrors bwrap's --chdir: honor an inherited
+    # $SLURM_SUBMIT_DIR when it canonicalizes under $project_dir (see
+    # sandbox-lib.sh::_resolve_inherited_cwd). Keeps the two namespace
+    # backends in sync.
+    local _firejail_cwd
+    _firejail_cwd="$(_resolve_inherited_cwd "$project_dir")"
     FIREJAIL_ARGS=(
         --noprofile
         --quiet
-        --private-cwd="$project_dir"
+        --private-cwd="$_firejail_cwd"
         --caps.drop=all
         --nonewprivs
         --seccomp.drop=io_uring_setup,io_uring_enter,io_uring_register,userfaultfd,kexec_load,kexec_file_load

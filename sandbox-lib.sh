@@ -871,6 +871,41 @@ _path_under() {
     [[ "$_child" == "$_parent" || "$_child" == "$_parent/"* ]]
 }
 
+# _resolve_inherited_cwd: choose a backend chdir target that honors
+# Slurm's inherited submission cwd when it canonicalizes under the
+# project dir, falling back to $project_dir otherwise. Echoes the
+# resolved path on stdout.
+#
+# Called from bwrap and firejail backends so a compute-node wrapper
+# launched as `sandbox-exec.sh --project-dir $project_dir -- bash …`
+# lands in `$SLURM_SUBMIT_DIR` instead of being snapped back to
+# `$project_dir` — matching native Slurm's cwd inheritance for jobs
+# submitted from a subdir. Without this, `sbatch --wrap='bash
+# relpath.sh'` from `$project_dir/sub/` runs the wrap content in
+# `$project_dir`, and any relative path resolves against the wrong
+# directory (issue #65).
+#
+# Security envelope is identical to the chaperon's submission-side
+# `validate_cwd` (`chaperon/handlers/_handler_lib.sh::validate_cwd`):
+# the cwd must canonicalize under $project_dir. Symlink-based escapes
+# are rejected by the realpath canonicalization step. When
+# $SLURM_SUBMIT_DIR is unset, missing on disk, or escapes the project
+# envelope, the function returns $project_dir unchanged — the
+# pre-existing (safe) behavior.
+_resolve_inherited_cwd() {
+    local _project_dir="$1"
+    local _chdir_target="$_project_dir"
+    if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+        local _submit_canon _project_canon
+        _submit_canon="$(_resolve_path "$SLURM_SUBMIT_DIR")"
+        _project_canon="$(_resolve_path "$_project_dir")"
+        if [[ -d "$_submit_canon" ]] && _path_under "$_submit_canon" "$_project_canon"; then
+            _chdir_target="$_submit_canon"
+        fi
+    fi
+    printf '%s' "$_chdir_target"
+}
+
 # _narrow_allowed_project_parents: filter user-requested project parents
 # to those admissible under admin's allow-list.
 #

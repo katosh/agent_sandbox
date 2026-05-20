@@ -438,6 +438,16 @@ create_wrapped_script() {
             printf '%s' "$safe_directives"
         fi
         printf '\n# --- Chaperon wrapper (auto-generated) ---\n'
+        # Restore Slurm's submission cwd on the compute node before
+        # exec'ing into the sandbox. Pairs with each backend's
+        # `_resolve_inherited_cwd` chdir target: backends that *can*
+        # enforce cwd via --chdir (bwrap, firejail) read $SLURM_SUBMIT_DIR
+        # directly, so this `cd` is redundant for them. Backends that
+        # cannot (landlock has no --chdir surface — it inherits cwd from
+        # the parent) rely on this line to land in the submission dir on
+        # clusters whose prolog drops cwd to $HOME. `:-.` no-ops cleanly
+        # when SLURM_SUBMIT_DIR is unset; `|| true` swallows a stale dir.
+        printf 'cd "${SLURM_SUBMIT_DIR:-.}" 2>/dev/null || true\n'
         printf '_SCRIPT=$(cat <<'"'"'%s'"'"'\n' "$eof_marker"
         printf '%s\n' "$script_body"
         printf '%s\n' "$eof_marker"
