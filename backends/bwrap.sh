@@ -662,7 +662,10 @@ backend_prepare() {
         fi
     fi
 
-    BWRAP_ARGS+=(--chdir "$project_dir")
+    # Honor an inherited $SLURM_SUBMIT_DIR when it canonicalizes under
+    # $project_dir — see sandbox-lib.sh::_resolve_inherited_cwd. Falls
+    # back to $project_dir otherwise (unset, missing, or out-of-envelope).
+    BWRAP_ARGS+=(--chdir "$(_resolve_inherited_cwd "$project_dir")")
 
     # --- Environment ---
     # Inherit the host environment, then block sensitive vars.

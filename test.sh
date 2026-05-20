@@ -2750,6 +2750,116 @@ SCRIPT
     fi
     rm -rf "$_cwd_subdir"
 
+    # 6c-quinquies-bis. Compute-node cwd inside --wrap matches the
+    # agent's submission subdir, not $project_dir. Before #65's fix,
+    # the bwrap/firejail backends forced --chdir/--private-cwd to
+    # $project_dir unconditionally, so `sbatch --wrap='bash relpath.sh'`
+    # from a subdir resolved relative paths against the wrong directory
+    # and died exit 127 in ~6s. Closes the gap left by 6c-quinquies
+    # (which only checked the SLURM_SUBMIT_DIR env var, not pwd).
+    _pwd_subdir="$PROJECT_DIR/.test-pwd-$$"
+    mkdir -p "$_pwd_subdir"
+    _TEST_TEMP_FILES+=("$_pwd_subdir")
+    _pwd_expected="$(cd "$_pwd_subdir" && pwd -P)"
+    _pwd_jobout=$(mktemp)
+    _TEST_TEMP_FILES+=("$_pwd_jobout")
+    _pwd_submit_out=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- \
+        bash -c "cd '$_pwd_subdir' && sbatch --wait --output='$_pwd_jobout' \
+            --wrap='echo PWD=\$(pwd -P)'" 2>&1)
+    _pwd_submit_rc=$?
+    _pwd_check() {
+        [[ -s "$_pwd_jobout" ]] && grep -q "^PWD=${_pwd_expected}\$" "$_pwd_jobout"
+    }
+    if [[ $_pwd_submit_rc -eq 0 ]] && _pwd_check; then
+        pass "Compute-node cwd inside --wrap matches submission subdir (#65)"
+    else
+        _pwd_jobid=$(echo "$_pwd_submit_out" | grep -oE "Submitted batch job [0-9]+" | awk '{print $4}')
+        if [[ -n "$_pwd_jobid" ]]; then
+            for _i in $(seq 1 20); do
+                if sandbox bash -c "squeue -j $_pwd_jobid -h 2>/dev/null" && [[ -z "$OUTPUT" ]]; then
+                    sleep 1
+                    break
+                fi
+                sleep 1
+            done
+            if _pwd_check; then
+                pass "Compute-node cwd inside --wrap matches submission subdir (#65)"
+            else
+                skip "Compute-node cwd assertion inconclusive (output: $(cat "$_pwd_jobout" 2>/dev/null || echo 'no file'))"
+            fi
+        else
+            skip "Compute-node cwd assertion inconclusive (no jobid captured: $_pwd_submit_out)"
+        fi
+    fi
+    rm -rf "$_pwd_subdir"
+
+    # 6c-quinquies-ter. Dry-run unit test: verify the backend's chdir
+    # target honors $SLURM_SUBMIT_DIR when it canonicalizes under
+    # $project_dir, and falls back to $project_dir otherwise.
+    # Bypasses the Slurm submission round-trip — exercises the backend
+    # layer (`_resolve_inherited_cwd` in sandbox-lib.sh) directly via
+    # --dry-run. Landlock has no --chdir surface, so skipped there.
+    if is_bwrap || is_firejail; then
+        _dry_sub="$PROJECT_DIR/.test-dry-cwd-$$"
+        mkdir -p "$_dry_sub"
+        _TEST_TEMP_FILES+=("$_dry_sub")
+        _dry_sub_canon="$(cd "$_dry_sub" && pwd -P)"
+
+        # bwrap emits "--chdir <path>" on two lines; firejail emits
+        # "--private-cwd=<path>" on one. Match either form for the
+        # expected target.
+        _dry_grep_for() {
+            local _expected="$1" _output="$2"
+            if is_bwrap; then
+                printf '%s\n' "$_output" | grep -qE "^[[:space:]]*${_expected}[[:space:]]*\\\\?$"
+            else
+                printf '%s\n' "$_output" | grep -qE "^[[:space:]]*--private-cwd=${_expected}[[:space:]]*\\\\?$"
+            fi
+        }
+
+        # (a) SLURM_SUBMIT_DIR under $PROJECT_DIR → honored.
+        _dry_under=$(SLURM_SUBMIT_DIR="$_dry_sub" \
+            "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+            --project-dir "$PROJECT_DIR" --dry-run -- true 2>&1)
+        if _dry_grep_for "$_dry_sub_canon" "$_dry_under"; then
+            pass "Backend honors \$SLURM_SUBMIT_DIR under \$project_dir (#65)"
+        else
+            fail "Backend dropped \$SLURM_SUBMIT_DIR under \$project_dir" \
+                "expected chdir target $_dry_sub_canon in dry-run output"
+        fi
+
+        # (b) SLURM_SUBMIT_DIR outside $PROJECT_DIR → falls back to
+        # $project_dir. The security guardrail: prefix check via
+        # realpath rejects the escape. /tmp is reliably outside any
+        # plausible $PROJECT_DIR on the test runner.
+        _project_canon="$(cd "$PROJECT_DIR" && pwd -P)"
+        _dry_outside=$(SLURM_SUBMIT_DIR="/tmp" \
+            "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+            --project-dir "$PROJECT_DIR" --dry-run -- true 2>&1)
+        if _dry_grep_for "$_project_canon" "$_dry_outside"; then
+            pass "Backend falls back to \$project_dir when \$SLURM_SUBMIT_DIR escapes (#65)"
+        else
+            fail "Backend honored an out-of-envelope \$SLURM_SUBMIT_DIR" \
+                "expected chdir target $_project_canon in dry-run output"
+        fi
+
+        # (c) SLURM_SUBMIT_DIR unset → falls back to $project_dir.
+        # Confirms the pre-existing (safe) default path is intact.
+        _dry_unset=$(unset SLURM_SUBMIT_DIR; \
+            "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+            --project-dir "$PROJECT_DIR" --dry-run -- true 2>&1)
+        if _dry_grep_for "$_project_canon" "$_dry_unset"; then
+            pass "Backend defaults to \$project_dir when \$SLURM_SUBMIT_DIR unset (#65)"
+        else
+            fail "Backend chdir target wrong when \$SLURM_SUBMIT_DIR unset" \
+                "expected $_project_canon in dry-run output"
+        fi
+
+        unset -f _dry_grep_for
+        rm -rf "$_dry_sub"
+    fi
+
     # 6c-sexies. sbatch script positional args reach $1/$@/$#.
     # Before the fix, the chaperon dropped `sbatch script.sh arg1 arg2`
     # positionals: the stub captured SCRIPT_ARGS but never forwarded them

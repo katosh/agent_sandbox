@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Preserve Slurm submission cwd inside the sandbox (#65).** The
+  bwrap and firejail backends forced `--chdir $project_dir` /
+  `--private-cwd=$project_dir` unconditionally, discarding the cwd
+  Slurm preserves natively on the compute node. Result:
+  `sbatch --wrap='bash relpath.sh'` submitted from a project
+  subdirectory ran the wrap content from `$project_dir`, not the
+  submission dir, and exited 127 in ~6s with
+  `No such file or directory`. Both backends now route their cwd
+  target through a new `_resolve_inherited_cwd` helper in
+  `sandbox-lib.sh` that honors `$SLURM_SUBMIT_DIR` when it
+  canonicalizes under `$project_dir` (the same security envelope
+  `chaperon/handlers/_handler_lib.sh::validate_cwd` enforces on the
+  submission side), and falls back to `$project_dir` otherwise.
+  `realpath` canonicalization rejects symlink-based prefix-check
+  bypass. The Landlock backend is unchanged (it never had a
+  `--chdir` surface), but the chaperon-generated wrapper now
+  prepends `cd "${SLURM_SUBMIT_DIR:-.}"` before exec'ing into the
+  sandbox, so Landlock also lands in the submission dir on
+  clusters whose prolog drops cwd to `$HOME`. Makes
+  slurm-inside-sandbox indistinguishable from native slurm for
+  the cwd surface, without jeopardizing project-dir confinement.
+
 ## [0.10.1] - 2026-05-15
 
 ### Added
