@@ -331,6 +331,18 @@ backend_prepare() {
         FIREJAIL_ARGS+=(--read-only="$SANDBOX_DIR")
     fi
 
+    # .sandbox-state/ — chaperon-owned state subdir, RO-overlaid AFTER
+    # the writable project dir so the agent can't tamper with the
+    # chaperon's slurm-log staging area or the chaperon diagnostic log.
+    # Mirrors bwrap's --ro-bind; threat-model framing + the distinction
+    # from reverted PR #50 documented in sandbox-lib.sh's
+    # `.sandbox-state/` section. Only overlay when the dir exists —
+    # the chaperon mkdir's it lazily on first slurm submission.
+    local _state_dir="$project_dir/.sandbox-state"
+    if [[ -d "$_state_dir" ]]; then
+        FIREJAIL_ARGS+=(--read-only="$_state_dir")
+    fi
+
     # Additional writable directories
     for _extra_rw in "${EXTRA_WRITABLE_PATHS[@]}"; do
         if [[ -d "$_extra_rw" ]]; then

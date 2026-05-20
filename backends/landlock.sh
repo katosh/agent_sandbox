@@ -232,6 +232,22 @@ backend_prepare() {
         export _CHAPERON_FIFO_DIR
     fi
 
+    # .sandbox-state/ — chaperon-owned state subdir. On bwrap/firejail
+    # this gets a RO overlay to defend slurmstepd's open(--output)
+    # against in-sandbox symlink-plant. Landlock cannot make a subtree
+    # RO under a writable parent (additive-rules limitation), so the
+    # symlink-plant defense is unavailable here. The chaperon-side
+    # handler detects $SANDBOX_BACKEND=landlock and disables the
+    # path-transformation feature entirely (no transformation, no
+    # symlink, no chaperon log under .sandbox-state). One-time warning
+    # so operators on landlock know about the missing defense.
+    local _state_dir="$project_dir/.sandbox-state"
+    if [[ -d "$_state_dir" ]] && ! _is_true "${SANDBOX_QUIET:-false}"; then
+        echo "sandbox: NOTE — .sandbox-state/ exists at '$_state_dir' but landlock cannot RO-overlay it." >&2
+        echo "  Slurm --output / --error path-transformation feature is disabled on landlock." >&2
+        echo "  Use bwrap or firejail backend for the symlink-plant defense against slurmstepd." >&2
+    fi
+
 }
 
 backend_exec() {

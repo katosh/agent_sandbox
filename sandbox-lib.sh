@@ -853,6 +853,61 @@ _resolve_path() {
     fi
 }
 
+# ── .sandbox-state/ — hidden chaperon-owned state subdir ─────────
+#
+# A hidden subdir of $project_dir that holds chaperon-managed state
+# the sandbox needs to read but must not be able to tamper with:
+#
+#   .sandbox-state/slurm-logs/<transformed>   — slurmstepd writes job
+#                                                logs here; the wrapper
+#                                                inside the sandbox creates
+#                                                relative symlinks from
+#                                                user-intended paths to
+#                                                here.
+#   .sandbox-state/chaperon/<session-id>/log  — chaperon's diagnostic
+#                                                log (bwrap/firejail
+#                                                only; stderr fallback
+#                                                on landlock).
+#
+# Threat-model framing (the load-bearing distinction from reverted
+# PR #50):
+#
+#   "Yes, it should be considered hostile, even the now non-directly-
+#   writable .sandbox-state. After all the submitted job determines
+#   what is written, and we just prevent symlink injection."
+#                                — operator, 2026-05-20 design discussion
+#
+# Content under .sandbox-state IS hostile. The submitted job decides
+# what slurmstepd writes there. The bwrap/firejail RO overlay's only
+# job is to prevent symlink-plant against slurmstepd's open(--output)
+# — without it, an agent could `ln -sf /etc/passwd
+# $project_dir/.sandbox-state/slurm-logs/<known-path>` between the
+# chaperon's mkdir -p and slurmstepd's open, causing slurmstepd to
+# write job output to /etc/passwd. The chaperon NEVER trusts content
+# read back from .sandbox-state/ for any security decision.
+#
+# This is the explicit distinction from reverted PR #50 (which wanted
+# to RO-protect user-owned content the agent legitimately writes to,
+# e.g. .git/): .sandbox-state/ is chaperon-owned content the agent
+# never wrote, so RO-protecting it costs no legitimate capability and
+# adds a real security property. The "project dir is entirely hostile"
+# framing from the PR #50 revert still holds for every other path
+# under $project_dir.
+#
+# Landlock: cannot mount a RO subtree under a RW parent (rules are
+# additive at the kernel level). The .sandbox-state/ overlay is
+# skipped on landlock; the chaperon side detects this via
+# $SANDBOX_BACKEND and disables the path-transformation feature
+# entirely (no transformation, no symlink, no chaperon log file).
+# See docs/reference/sandbox-state-dir.md for the full convention.
+#
+# The path is `$project_dir/.sandbox-state`. Backends (bwrap, firejail)
+# compose this inline rather than calling a helper because the chaperon
+# (which runs in a separate bash process and DOES need helpers — see
+# `chaperon/handlers/_handler_lib.sh::_ensure_sandbox_state_dir`) does
+# not source `sandbox-lib.sh`. Keeping the path literal here avoids the
+# duplicate-function-definition smell at the cost of a string.
+
 # _path_under: returns 0 if CHILD is identical to PARENT or is a proper
 # subdirectory of PARENT.  Trailing slashes are stripped.  The "/"
 # boundary check prevents false positives like /etc vs /etcetera.

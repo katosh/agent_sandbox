@@ -49,19 +49,53 @@ chaperon_log_init() {
         _CHAPERON_LOG_LEVEL_NUM=1  # fallback to info
     fi
 
-    # Log directory (XDG-compliant, owner-only permissions).
-    # Logs may contain argument values and handler denial details that
-    # could reveal project structure or resource requests. Restrict to
-    # owner-only to prevent group/other access on shared NFS.
-    _CHAPERON_LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/agent-sandbox/chaperon"
-    if ! mkdir -p "$_CHAPERON_LOG_DIR" 2>/dev/null; then
-        # Primary log dir unreachable (e.g., $HOME is tmpfs inside bwrap).
-        # Fall back to FIFO dir which is guaranteed to exist and be writable.
-        if [[ -n "$fifo_dir" && -d "$fifo_dir" ]]; then
-            _CHAPERON_LOG_DIR="$fifo_dir"
-        else
-            _CHAPERON_LOG_FILE=""
-            return 0
+    # Log directory selection:
+    #
+    # 1) On bwrap/firejail with PROJECT_DIR set, prefer the
+    #    .sandbox-state/chaperon/ subdir under the project. This puts
+    #    the chaperon log inside the sandbox-readable area (the RO
+    #    bind-mount overlay protects it from in-sandbox tampering), so
+    #    an agent debugging "why was my sbatch denied?" can read the
+    #    chaperon's audit messages from inside its own session.
+    #    Threat-model is identical to the slurm-output staging case
+    #    (see chaperon/handlers/_handler_lib.sh): content is hostile,
+    #    but the RO overlay prevents symlink-plant against the
+    #    chaperon's own write.
+    #
+    # 2) Otherwise (landlock, or no PROJECT_DIR), use the XDG-compliant
+    #    NFS-shared location for cross-host aggregation. Existing
+    #    behavior — predates the .sandbox-state convention.
+    #
+    # 3) Final fallback: FIFO dir (when neither above can be mkdir'd,
+    #    e.g. HOME is tmpfs inside an unusual sandbox config).
+    _CHAPERON_LOG_DIR=""
+    case "${SANDBOX_BACKEND:-}" in
+        bwrap|firejail)
+            if [[ -n "$project_dir" && -d "$project_dir" ]]; then
+                local _state_chap="$project_dir/.sandbox-state/chaperon"
+                if mkdir -p "$_state_chap" 2>/dev/null; then
+                    _CHAPERON_LOG_DIR="$_state_chap"
+                fi
+            fi
+            ;;
+    esac
+
+    if [[ -z "$_CHAPERON_LOG_DIR" ]]; then
+        # Owner-only permissions: logs may contain argument values and
+        # handler denial details that could reveal project structure or
+        # resource requests. Restrict to owner-only to prevent
+        # group/other access on shared NFS.
+        _CHAPERON_LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/agent-sandbox/chaperon"
+        if ! mkdir -p "$_CHAPERON_LOG_DIR" 2>/dev/null; then
+            # Primary log dir unreachable (e.g., $HOME is tmpfs inside bwrap
+            # AND the .sandbox-state branch didn't apply). Fall back to FIFO
+            # dir which is guaranteed to exist and be writable.
+            if [[ -n "$fifo_dir" && -d "$fifo_dir" ]]; then
+                _CHAPERON_LOG_DIR="$fifo_dir"
+            else
+                _CHAPERON_LOG_FILE=""
+                return 0
+            fi
         fi
     fi
     chmod 700 "$_CHAPERON_LOG_DIR" 2>/dev/null || true

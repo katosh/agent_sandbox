@@ -162,6 +162,14 @@ _load_sandbox_modules
 detect_backend
 _BACKEND_DETECTED=true
 
+# Export so the chaperon process (spawned below as a child) sees which
+# backend it's running under. Used by chaperon/handlers/_handler_lib.sh
+# to gate features that depend on backend capabilities — e.g. the Slurm
+# --output / --error path transformation requires a RO-overlayable
+# .sandbox-state/, which landlock cannot provide (additive-rules
+# limitation), so the chaperon disables that feature on landlock.
+export SANDBOX_BACKEND
+
 # Apply per-agent grants. For each name in ENABLED_AGENTS, fold its
 # declared writable/readable/blocked paths (from agents/<name>/config.conf)
 # into the sandbox permission arrays. Must run after all config has

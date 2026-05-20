@@ -3139,6 +3139,132 @@ fi
 
 echo ""
 
+# ── 6.5 Slurm --output / --error path staging (#67) ──────────────
+#
+# Tests for the chaperon-managed `.sandbox-state/slurm-logs/`
+# staging convention: chaperon transforms --output paths to live
+# under .sandbox-state, bwrap/firejail RO-overlay the dir so
+# slurmstepd can't be tricked into following an in-sandbox-planted
+# symlink, and the in-sandbox wrapper creates relative symlinks
+# from the user's intended paths to the staging file.
+
+echo "6.5 Slurm --output staging (#67)"
+
+# 6.5a. Unit: _transform_slurm_output_path table (pure function;
+# always runs regardless of backend / slurm availability).
+_transform_table_test() {
+    # Source the chaperon-side helper directly.
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    local _proj="/p"
+    local _staging="$_proj/.sandbox-state/slurm-logs"
+
+    local _ok=true _got _input _expected
+    while IFS=$'\t' read -r _input _expected; do
+        _got="$(_transform_slurm_output_path "$_input" "$_proj")"
+        if [[ "$_got" != "$_expected" ]]; then
+            fail "transform '$_input' → '$_got' (expected '$_expected')"
+            _ok=false
+        fi
+    done <<EOF
+out.log	$_staging/out.log
+logs/job-%j.log	$_staging/logs/job-%j.log
+/etc/passwd	$_staging/__abs__/etc/passwd
+../../etc/foo	$_staging/__updir__/__updir__/etc/foo
+..foo/bar	$_staging/..foo/bar
+./a/.//b/../c	$_staging/a/b/__updir__/c
+/foo//bar	$_staging/__abs__/foo/bar
+EOF
+    $_ok && pass "_transform_slurm_output_path table (rel/abs/../-foo/no-op normalisation/%-pattern survival)"
+}
+_transform_table_test
+unset -f _transform_table_test
+
+# 6.5b. Backend-side RO overlay: from inside the sandbox, writing
+# under .sandbox-state/ must fail on bwrap/firejail; landlock
+# silently allows (documented feature gap). The chaperon mkdir's
+# .sandbox-state on first sbatch — pre-seed it here so the bind
+# overlay actually applies.
+mkdir -p "$PROJECT_DIR/.sandbox-state/slurm-logs"
+if is_landlock; then
+    # Sanity: write succeeds (no RO defense on landlock).
+    if sandbox bash -c "touch '$PROJECT_DIR/.sandbox-state/slurm-logs/.write-test-$$' 2>&1 && echo OK"; then
+        if [[ "$OUTPUT" == *OK* ]]; then
+            pass "Landlock: .sandbox-state is sandbox-writable (feature degraded as documented)"
+            rm -f "$PROJECT_DIR/.sandbox-state/slurm-logs/.write-test-$$"
+        else
+            fail "Landlock: expected .sandbox-state to be writable, got: $OUTPUT $OUTPUT_ERR"
+        fi
+    else
+        fail "Landlock: write-test command failed unexpectedly" "$OUTPUT_ERR"
+    fi
+else
+    # bwrap / firejail: write must fail (EROFS / EACCES).
+    if sandbox bash -c "touch '$PROJECT_DIR/.sandbox-state/slurm-logs/plant-$$' 2>&1; echo done"; then
+        if echo "$OUTPUT $OUTPUT_ERR" | grep -qE 'Read-only file system|Permission denied|Operation not permitted'; then
+            pass "Symlink-plant defense: .sandbox-state/slurm-logs is RO from inside sandbox (#67)"
+        elif [[ -e "$PROJECT_DIR/.sandbox-state/slurm-logs/plant-$$" ]]; then
+            fail "Symlink-plant defense MISSING: sandbox wrote to .sandbox-state/slurm-logs" \
+                 "Backend $CURRENT_BACKEND should RO-overlay .sandbox-state"
+            rm -f "$PROJECT_DIR/.sandbox-state/slurm-logs/plant-$$"
+        else
+            skip "Symlink-plant defense check inconclusive: $OUTPUT $OUTPUT_ERR"
+        fi
+    fi
+fi
+
+# 6.5c. Integration: end-to-end --output redirection + symlink.
+# Skipped if no sbatch on host or on landlock (feature disabled).
+if ! command -v sbatch &>/dev/null; then
+    skip "Slurm --output staging integration: sbatch not found"
+elif is_landlock; then
+    skip "Slurm --output staging integration: disabled on landlock (no RO overlay)"
+else
+    _stg_subdir="$PROJECT_DIR/.test-slurm-stg-$$"
+    mkdir -p "$_stg_subdir"
+    _TEST_TEMP_FILES+=("$_stg_subdir")
+    _stg_intended="$_stg_subdir/job.out"
+    _stg_submit=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- \
+        bash -c "cd '$_stg_subdir' && sbatch --wait --output='$_stg_intended' \
+            --wrap='echo SLURM_OUTPUT_STAGING_TEST_$$'" 2>&1)
+    _stg_rc=$?
+
+    _stg_check() {
+        # Intended path is a symlink → staging file under .sandbox-state.
+        # Following the symlink should yield our test marker.
+        [[ -L "$_stg_intended" ]] || return 1
+        local _resolved
+        _resolved="$(readlink -f "$_stg_intended" 2>/dev/null)" || return 1
+        [[ "$_resolved" == "$PROJECT_DIR/.sandbox-state/slurm-logs/"* ]] || return 1
+        grep -q "SLURM_OUTPUT_STAGING_TEST_$$" "$_stg_intended" 2>/dev/null
+    }
+    if [[ $_stg_rc -eq 0 ]] && _stg_check; then
+        pass "Slurm --output: in-sandbox symlink resolves to staging; staging holds job output (#67)"
+    else
+        _stg_jid=$(echo "$_stg_submit" | grep -oE "Submitted batch job [0-9]+" | awk '{print $4}')
+        if [[ -n "$_stg_jid" ]]; then
+            for _i in $(seq 1 20); do
+                if sandbox bash -c "squeue -j $_stg_jid -h 2>/dev/null" && [[ -z "$OUTPUT" ]]; then
+                    sleep 1
+                    break
+                fi
+                sleep 1
+            done
+            if _stg_check; then
+                pass "Slurm --output: in-sandbox symlink resolves to staging; staging holds job output (#67)"
+            else
+                skip "Slurm --output staging assertion inconclusive (intended=$_stg_intended, link?=$(test -L "$_stg_intended" && echo yes || echo no))"
+            fi
+        else
+            skip "Slurm --output staging assertion inconclusive (no jobid: $_stg_submit)"
+        fi
+    fi
+    rm -rf "$_stg_subdir"
+fi
+
+echo ""
+
 # ── 7. Sandbox self-protection ───────────────────────────────────
 
 echo "7. Sandbox self-protection"

@@ -563,6 +563,18 @@ backend_prepare() {
         BWRAP_ARGS+=(--bind "$project_dir" "$project_dir")
     fi
 
+    # .sandbox-state/ — chaperon-owned state subdir, RO-overlaid AFTER
+    # the writable project bind (path-keyed, later wins) so the agent
+    # can't tamper with the chaperon's slurm-log staging area or the
+    # chaperon diagnostic log. Threat-model framing + the distinction
+    # from reverted PR #50 is documented at sandbox-lib.sh's
+    # `.sandbox-state/` section. Only overlay when the dir exists —
+    # the chaperon mkdir's it lazily on first slurm submission.
+    local _state_dir="$project_dir/.sandbox-state"
+    if [[ -d "$_state_dir" ]]; then
+        BWRAP_ARGS+=(--ro-bind "$_state_dir" "$_state_dir")
+    fi
+
     # Additional writable directories
     for _extra_rw in "${EXTRA_WRITABLE_PATHS[@]}"; do
         if [[ -d "$_extra_rw" ]]; then

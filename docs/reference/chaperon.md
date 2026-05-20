@@ -249,11 +249,12 @@ This design makes it trivial to add support for new commands (drop a handler fil
 
 ### sbatch Handler
 
-The sbatch handler (`handlers/sbatch.sh`) performs three validation steps before submission:
+The sbatch handler (`handlers/sbatch.sh`) performs four validation/transformation steps before submission:
 
 1. **CWD validation**: The requested working directory must be a physical path under the project directory (resolves symlinks to prevent escape). Both sbatch and srun (allocation mode) validate CWD.
 2. **Argument whitelisting**: Every flag is checked against `_SBATCH_ALLOWED_FLAGS` (~40 safe flags). Denied flags cause immediate rejection with a clear error message.
-3. **Job wrapping**: The user's script is written to a temp file, and a wrapper script is generated that runs it inside `sandbox-exec.sh --project-dir $PROJECT_DIR`. The wrapper is submitted to the real sbatch.
+3. **`--output` / `--error` path transformation** (bwrap/firejail only): values are redirected to `$project_dir/.sandbox-state/slurm-logs/`; the in-sandbox wrapper creates a relative symlink from the user's intended path to the staging file. Closes the slurmstepd-side `O_NOFOLLOW`-absence escape (e.g., `sbatch --output=/etc/cron.d/evil`). Disabled on landlock — see [`docs/reference/chaperon-output-staging.md`](chaperon-output-staging.md).
+4. **Job wrapping**: The user's script is written to a temp file, and a wrapper script is generated that runs it inside `sandbox-exec.sh --project-dir $PROJECT_DIR`. The wrapper is submitted to the real sbatch.
 
 ### Job Tagging and Scoping via `--comment`
 

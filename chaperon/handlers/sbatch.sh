@@ -30,7 +30,14 @@ handle_sbatch() {
         return 1
     fi
 
-    # Validate arguments (also captures _USER_COMMENT if --comment was given)
+    # Expose PROJECT_DIR to validate_sbatch_args (which calls
+    # _transform_slurm_output_path) — declared local in the caller
+    # scope here so it doesn't leak across chaperon iterations.
+    local PROJECT_DIR="$project_dir"
+
+    # Validate arguments (also captures _USER_COMMENT if --comment was given,
+    # and _USER_SLURM_OUTPUT / _STAGING_SLURM_OUTPUT for the --output /
+    # --error path-transformation feature on bwrap/firejail).
     if ! validate_sbatch_args; then
         return 1
     fi
@@ -39,6 +46,24 @@ handle_sbatch() {
     local chaperon_comment
     chaperon_comment="$(_build_chaperon_comment "$project_dir")"
     VALIDATED_ARGS+=("--comment=$chaperon_comment")
+
+    # Ensure .sandbox-state/ exists and mkdir -p the parent dirs of the
+    # transformed staging paths. Slurm doesn't do `mkdir -p` for
+    # --output / --error dir components, so slurmstepd's `open()` would
+    # fail without these dirs. Done in the chaperon (outside the
+    # sandbox) where we have full FS access. For paths containing
+    # %-patterns in directory components (e.g., `--output=job-%j/out`,
+    # uncommon), this only creates the literal-component parent — the
+    # user needs to handle %-dir creation themselves if they hit it.
+    if [[ -n "${_STAGING_SLURM_OUTPUT:-}" || -n "${_STAGING_SLURM_ERROR:-}" ]]; then
+        _ensure_sandbox_state_dir "$project_dir"
+        if [[ -n "${_STAGING_SLURM_OUTPUT:-}" ]]; then
+            mkdir -p -- "$(dirname -- "$_STAGING_SLURM_OUTPUT")" 2>/dev/null || true
+        fi
+        if [[ -n "${_STAGING_SLURM_ERROR:-}" ]]; then
+            mkdir -p -- "$(dirname -- "$_STAGING_SLURM_ERROR")" 2>/dev/null || true
+        fi
+    fi
 
     # Change to the agent's CWD so Slurm sees the correct working directory.
     # This ensures SLURM_SUBMIT_DIR and relative --output/--error paths
