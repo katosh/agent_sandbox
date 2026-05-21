@@ -2683,7 +2683,15 @@ SCRIPT
     # inherits sandbox isolation; sandbox-exec.sh sets SANDBOX_ACTIVE=1.
     # If wrapping silently breaks, the existing "Submitted batch job N"
     # check in 6a would still pass — this closes that gap.
-    _jobout=$(mktemp)
+    #
+    # Output path lives under $PROJECT_DIR, not /tmp: after #67 the
+    # chaperon redirects --output to .sandbox-state/slurm-logs/ and the
+    # in-sandbox prelude creates a symlink from the user's intended path
+    # to staging. /tmp is the sandbox's private tmpfs (bwrap/firejail),
+    # so a symlink there would never reach the host-side assertion.
+    # Keeping the intended path in the project bind makes the symlink
+    # visible on the host, which then reads through it to staging.
+    _jobout=$(mktemp -p "$PROJECT_DIR" .test-jobout-XXXXXX)
     _TEST_TEMP_FILES+=("$_jobout")
     _submit_out=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
         --project-dir "$PROJECT_DIR" -- \
@@ -2720,7 +2728,9 @@ SCRIPT
     _cwd_subdir="$PROJECT_DIR/.test-cwd-$$"
     mkdir -p "$_cwd_subdir"
     _TEST_TEMP_FILES+=("$_cwd_subdir")
-    _cwd_jobout=$(mktemp)
+    # $_cwd_jobout must live under $PROJECT_DIR — see 6c-quater note
+    # on #67's --output redirect + private-tmpfs visibility.
+    _cwd_jobout=$(mktemp -p "$PROJECT_DIR" .test-cwd-out-XXXXXX)
     _TEST_TEMP_FILES+=("$_cwd_jobout")
     _cwd_submit_out=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
         --project-dir "$PROJECT_DIR" -- \
@@ -2761,7 +2771,9 @@ SCRIPT
     mkdir -p "$_pwd_subdir"
     _TEST_TEMP_FILES+=("$_pwd_subdir")
     _pwd_expected="$(cd "$_pwd_subdir" && pwd -P)"
-    _pwd_jobout=$(mktemp)
+    # $_pwd_jobout must live under $PROJECT_DIR — see 6c-quater note
+    # on #67's --output redirect + private-tmpfs visibility.
+    _pwd_jobout=$(mktemp -p "$PROJECT_DIR" .test-pwd-out-XXXXXX)
     _TEST_TEMP_FILES+=("$_pwd_jobout")
     _pwd_submit_out=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
         --project-dir "$PROJECT_DIR" -- \
