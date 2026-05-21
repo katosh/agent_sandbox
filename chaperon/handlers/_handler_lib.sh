@@ -79,8 +79,12 @@ _slurm_output_feature_enabled() {
 _ensure_sandbox_state_dir() {
     local _project_dir="$1"
     local _state_dir="$_project_dir/.sandbox-state"
-    [[ -d "$_state_dir" ]] && return 0
 
+    # Do NOT short-circuit on `[[ -d $_state_dir ]]`: chaperon/logging.sh
+    # mkdir's `.sandbox-state/chaperon/` early in chaperon startup, which
+    # creates `.sandbox-state/` itself. Short-circuiting then would skip
+    # mkdir'ing `slurm-logs/` and slurmstepd's open(--output) would fail
+    # with ENOENT. `mkdir -p` is already idempotent — re-run is cheap.
     mkdir -p "$_state_dir/slurm-logs" "$_state_dir/chaperon" 2>/dev/null || return 1
     chmod 700 "$_state_dir" "$_state_dir/slurm-logs" "$_state_dir/chaperon" 2>/dev/null || true
 
@@ -348,34 +352,50 @@ _is_value_flag() {
 
 # _maybe_transform_slurm_output_arg <flag> <value> <project_dir>
 #
-# Helper for validate_sbatch_args. Given an --output / --error
-# flag-name and raw value, returns the value-to-forward-to-sbatch
-# on stdout AND captures the (user-template, staging-template) pair
-# in `_USER_SLURM_<STREAM>` / `_STAGING_SLURM_<STREAM>` for later
-# env-var passing to the wrapper. Multiple occurrences: later wins
-# (matches Slurm's last-occurrence-wins semantics).
+# Pure-stdout helper for validate_sbatch_args and the #SBATCH-directive
+# filter in create_wrapped_script. Given an --output / --error flag-name
+# and raw value, returns the value-to-forward-to-sbatch on stdout.
 #
-# If the feature is disabled (landlock) or value is empty, returns
-# the value unchanged and skips capture — the user's path flows
-# verbatim to real sbatch.
+# Deliberately side-effect-free: callers invoke via $(...) command
+# substitution, which would lose any global-variable side-effects to a
+# subshell. The (user, staging) pair is recorded by the caller via
+# `_capture_slurm_output_pair` in the caller's own scope.
+#
+# If the feature is disabled (landlock) or value is empty, returns the
+# value unchanged — the user's path flows verbatim to real sbatch.
 _maybe_transform_slurm_output_arg() {
     local _flag="$1" _value="$2" _project_dir="$3"
     if ! _slurm_output_feature_enabled || [[ -z "$_value" ]]; then
         printf '%s' "$_value"
         return
     fi
-    local _stream
     case "$_flag" in
-        -o|--output) _stream="OUTPUT" ;;
-        -e|--error)  _stream="ERROR"  ;;
+        -o|--output|-e|--error) ;;
         *) printf '%s' "$_value"; return ;;
     esac
-    local _transformed
-    _transformed="$(_transform_slurm_output_path "$_value" "$_project_dir")"
-    # Capture for env-var passing (printf %q-safe; consumers wrap as needed).
-    printf -v "_USER_SLURM_$_stream"    '%s' "$_value"
-    printf -v "_STAGING_SLURM_$_stream" '%s' "$_transformed"
-    printf '%s' "$_transformed"
+    _transform_slurm_output_path "$_value" "$_project_dir"
+}
+
+# _capture_slurm_output_pair <flag> <user_value> <staging_value>
+#
+# Caller-scope companion to _maybe_transform_slurm_output_arg. Records
+# the (user-template, staging-template) pair into the per-stream capture
+# vars that `create_wrapped_script` reads to emit the in-sandbox symlink
+# prelude. Multiple occurrences: later wins (matches Slurm's
+# last-occurrence semantics).
+#
+# Must be called in the caller's scope (NOT inside `$(...)`), since the
+# whole point is to mutate variables visible to the wrapper-building code.
+# Silently no-ops when the feature is disabled or the user value is empty
+# — same gates as the transform helper.
+_capture_slurm_output_pair() {
+    local _flag="$1" _user="$2" _staging="$3"
+    _slurm_output_feature_enabled || return 0
+    [[ -z "$_user" ]] && return 0
+    case "$_flag" in
+        -o|--output) _USER_SLURM_OUTPUT="$_user"; _STAGING_SLURM_OUTPUT="$_staging" ;;
+        -e|--error)  _USER_SLURM_ERROR="$_user";  _STAGING_SLURM_ERROR="$_staging"  ;;
+    esac
 }
 
 # Validate and filter sbatch arguments.
@@ -405,18 +425,14 @@ validate_sbatch_args() {
                 _sandbox_warn "sbatch '--chdir' is not allowed — the working directory is set automatically to your current directory."
                 return 1
                 ;;
-            --output=*|-o=*)
-                # `=` form: extract value, transform, re-pack.
+            --output=*|-o=*|--error=*|-e=*)
+                # `=` form: extract value, transform, capture, re-pack.
+                local _flag="${arg%%=*}"
                 local _v="${arg#*=}"
                 local _t
-                _t="$(_maybe_transform_slurm_output_arg "${arg%%=*}" "$_v" "$_project_dir")"
-                VALIDATED_ARGS+=("${arg%%=*}=$_t")
-                ;;
-            --error=*|-e=*)
-                local _v="${arg#*=}"
-                local _t
-                _t="$(_maybe_transform_slurm_output_arg "${arg%%=*}" "$_v" "$_project_dir")"
-                VALIDATED_ARGS+=("${arg%%=*}=$_t")
+                _t="$(_maybe_transform_slurm_output_arg "$_flag" "$_v" "$_project_dir")"
+                _capture_slurm_output_pair "$_flag" "$_v" "$_t"
+                VALIDATED_ARGS+=("$_flag=$_t")
                 ;;
             --output|-o|--error|-e)
                 # space form: --output <value>.
@@ -425,6 +441,7 @@ validate_sbatch_args() {
                     local _v="${REQ_ARGS[$i]}"
                     local _t
                     _t="$(_maybe_transform_slurm_output_arg "$arg" "$_v" "$_project_dir")"
+                    _capture_slurm_output_pair "$arg" "$_v" "$_t"
                     VALIDATED_ARGS+=("$arg" "$_t")
                 else
                     _sandbox_warn "sbatch '$arg' requires a value."
@@ -639,16 +656,7 @@ create_wrapped_script() {
                             _new_line="#SBATCH $flag_name=$_new_val"
                             # Capture for env-var passing — last directive wins,
                             # matching command-line `validate_sbatch_args` semantics.
-                            case "$flag_name" in
-                                --output|-o)
-                                    _USER_SLURM_OUTPUT="$_dval"
-                                    _STAGING_SLURM_OUTPUT="$_new_val"
-                                    ;;
-                                --error|-e)
-                                    _USER_SLURM_ERROR="$_dval"
-                                    _STAGING_SLURM_ERROR="$_new_val"
-                                    ;;
-                            esac
+                            _capture_slurm_output_pair "$flag_name" "$_dval" "$_new_val"
                             safe_directives+="$_new_line"$'\n'
                         else
                             safe_directives+="$line"$'\n'

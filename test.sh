@@ -3230,18 +3230,27 @@ else
             --wrap='echo SLURM_OUTPUT_STAGING_TEST_$$'" 2>&1)
     _stg_rc=$?
 
-    _stg_check() {
+    # _stg_marker_in_staging — search the chaperon-managed staging tree
+    # for our unique test marker. If found, the job ran to completion and
+    # slurmstepd wrote into the redirected path → the feature's host-side
+    # half worked. The symlink is then the only remaining contract.
+    _stg_marker_in_staging() {
+        grep -rl "SLURM_OUTPUT_STAGING_TEST_$$" \
+            "$PROJECT_DIR/.sandbox-state/slurm-logs/" 2>/dev/null | head -1
+    }
+    _stg_check_symlink() {
         # Intended path is a symlink → staging file under .sandbox-state.
-        # Following the symlink should yield our test marker.
         [[ -L "$_stg_intended" ]] || return 1
         local _resolved
         _resolved="$(readlink -f "$_stg_intended" 2>/dev/null)" || return 1
         [[ "$_resolved" == "$PROJECT_DIR/.sandbox-state/slurm-logs/"* ]] || return 1
         grep -q "SLURM_OUTPUT_STAGING_TEST_$$" "$_stg_intended" 2>/dev/null
     }
-    if [[ $_stg_rc -eq 0 ]] && _stg_check; then
-        pass "Slurm --output: in-sandbox symlink resolves to staging; staging holds job output (#67)"
-    else
+
+    # If --wait returned but the symlink isn't there yet, give Slurm a
+    # short post-completion grace window for the wrapper's in-sandbox
+    # symlink prelude to land before deciding.
+    if [[ $_stg_rc -ne 0 ]] || ! _stg_check_symlink; then
         _stg_jid=$(echo "$_stg_submit" | grep -oE "Submitted batch job [0-9]+" | awk '{print $4}')
         if [[ -n "$_stg_jid" ]]; then
             for _i in $(seq 1 20); do
@@ -3251,13 +3260,28 @@ else
                 fi
                 sleep 1
             done
-            if _stg_check; then
-                pass "Slurm --output: in-sandbox symlink resolves to staging; staging holds job output (#67)"
-            else
-                skip "Slurm --output staging assertion inconclusive (intended=$_stg_intended, link?=$(test -L "$_stg_intended" && echo yes || echo no))"
-            fi
+        fi
+    fi
+
+    if _stg_check_symlink; then
+        pass "Slurm --output: in-sandbox symlink resolves to staging; staging holds job output (#67)"
+    else
+        _stg_staging_file="$(_stg_marker_in_staging)"
+        if [[ -n "$_stg_staging_file" ]]; then
+            # The job DID run and DID write to the chaperon-redirected
+            # staging path — proving the host-side half. Missing symlink
+            # is the in-sandbox wrapper prelude failing to emit (or
+            # failing to `ln -s`) — that's a feature regression, not an
+            # env issue. Fail loudly so this can't be silently masked
+            # again (see CHANGELOG entry for #67).
+            fail "Slurm --output: staging holds marker ($_stg_staging_file) but in-sandbox symlink missing at $_stg_intended — wrapper prelude regression"
+        elif [[ -z "$_stg_submit" ]] || ! echo "$_stg_submit" | grep -q "Submitted batch job"; then
+            skip "Slurm --output staging integration: sbatch did not submit ($_stg_submit)"
         else
-            skip "Slurm --output staging assertion inconclusive (no jobid: $_stg_submit)"
+            # Job submitted but no marker in staging → wrapper script
+            # likely didn't reach the user's command (host-Slurm issue,
+            # e.g., broken JobSubmitPlugin path). Skip rather than fail.
+            skip "Slurm --output staging integration: job submitted but did not write marker (host slurm config?)"
         fi
     fi
     rm -rf "$_stg_subdir"

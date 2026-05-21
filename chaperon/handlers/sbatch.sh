@@ -47,24 +47,6 @@ handle_sbatch() {
     chaperon_comment="$(_build_chaperon_comment "$project_dir")"
     VALIDATED_ARGS+=("--comment=$chaperon_comment")
 
-    # Ensure .sandbox-state/ exists and mkdir -p the parent dirs of the
-    # transformed staging paths. Slurm doesn't do `mkdir -p` for
-    # --output / --error dir components, so slurmstepd's `open()` would
-    # fail without these dirs. Done in the chaperon (outside the
-    # sandbox) where we have full FS access. For paths containing
-    # %-patterns in directory components (e.g., `--output=job-%j/out`,
-    # uncommon), this only creates the literal-component parent — the
-    # user needs to handle %-dir creation themselves if they hit it.
-    if [[ -n "${_STAGING_SLURM_OUTPUT:-}" || -n "${_STAGING_SLURM_ERROR:-}" ]]; then
-        _ensure_sandbox_state_dir "$project_dir"
-        if [[ -n "${_STAGING_SLURM_OUTPUT:-}" ]]; then
-            mkdir -p -- "$(dirname -- "$_STAGING_SLURM_OUTPUT")" 2>/dev/null || true
-        fi
-        if [[ -n "${_STAGING_SLURM_ERROR:-}" ]]; then
-            mkdir -p -- "$(dirname -- "$_STAGING_SLURM_ERROR")" 2>/dev/null || true
-        fi
-    fi
-
     # Change to the agent's CWD so Slurm sees the correct working directory.
     # This ensures SLURM_SUBMIT_DIR and relative --output/--error paths
     # resolve from the agent's directory, not the chaperon's.
@@ -73,15 +55,41 @@ handle_sbatch() {
         cd "$REQ_CWD"
     fi
 
+    # _materialise_staging_dirs — Ensure .sandbox-state/ exists and
+    # mkdir -p the parent dirs of the transformed staging paths.
+    # slurmstepd does not `mkdir -p` --output/--error parents, so it
+    # would fail with ENOENT without these. For paths containing
+    # %-patterns in directory components (e.g., `--output=job-%j/out`,
+    # uncommon), this only creates the literal-component parent — the
+    # user must handle %-dir creation themselves if they hit it.
+    #
+    # MUST run AFTER both validate_sbatch_args (command-line --output /
+    # --error) AND create_wrapped_script (#SBATCH-directive --output /
+    # --error) have populated _STAGING_SLURM_*. Per-caller invocation
+    # below.
+    _materialise_staging_dirs() {
+        [[ -z "${_STAGING_SLURM_OUTPUT:-}" && -z "${_STAGING_SLURM_ERROR:-}" ]] && return 0
+        _ensure_sandbox_state_dir "$project_dir"
+        [[ -n "${_STAGING_SLURM_OUTPUT:-}" ]] && \
+            mkdir -p -- "$(dirname -- "$_STAGING_SLURM_OUTPUT")" 2>/dev/null
+        [[ -n "${_STAGING_SLURM_ERROR:-}" ]] && \
+            mkdir -p -- "$(dirname -- "$_STAGING_SLURM_ERROR")" 2>/dev/null
+        return 0
+    }
+
     # Determine submission mode: SCRIPT or --wrap
     if [[ -n "$REQ_SCRIPT" ]]; then
         # Script mode: build a self-contained wrapper with the script
         # inlined via heredoc (no temp files on NFS needed).
+        # create_wrapped_script may itself populate _STAGING_SLURM_*
+        # via the #SBATCH-directive filter, so materialise AFTER.
         local wrapper
         wrapper="$(mktemp "${TMPDIR:-/tmp}/chaperon-wrapper-XXXXXX.sh")"
 
         create_wrapped_script "$sandbox_exec" "$project_dir" "$REQ_SCRIPT" "$wrapper" \
             "${REQ_SCRIPT_ARGS[@]+"${REQ_SCRIPT_ARGS[@]}"}"
+
+        _materialise_staging_dirs
 
         # Submit and clean up the local wrapper (only needed on login node).
         local rc=0
@@ -89,7 +97,10 @@ handle_sbatch() {
         rm -f "$wrapper"
         return "$rc"
     else
-        # No script: pass through flags (e.g., --help, --version, --test-only)
+        # No script: pass through flags (e.g., --help, --version, --test-only).
+        # Only validate_sbatch_args could have populated captures here.
+        _materialise_staging_dirs
+
         local rc=0
         "$real_sbatch" "${VALIDATED_ARGS[@]}" || rc=$?
         return "$rc"
