@@ -2387,10 +2387,11 @@
 <p>Filesystem-based: when a request for command <code>X</code> arrives, the chaperon looks for <code>handlers/X.sh</code> and calls <code>handle_X()</code>. If no handler exists, <code>handlers/blocked.sh</code> is used.</p>
 <p>This design makes it trivial to add support for new commands (drop a handler file) or block them (they're blocked by default).</p>
 <h3 id="sbatch-handler">sbatch Handler<a class="headerlink" href="#sbatch-handler" title="Permanent link">&para;</a></h3>
-<p>The sbatch handler (<code>handlers/sbatch.sh</code>) performs three validation steps before submission:</p>
+<p>The sbatch handler (<code>handlers/sbatch.sh</code>) performs four validation/transformation steps before submission:</p>
 <ol>
 <li><strong>CWD validation</strong>: The requested working directory must be a physical path under the project directory (resolves symlinks to prevent escape). Both sbatch and srun (allocation mode) validate CWD.</li>
 <li><strong>Argument whitelisting</strong>: Every flag is checked against <code>_SBATCH_ALLOWED_FLAGS</code> (~40 safe flags). Denied flags cause immediate rejection with a clear error message.</li>
+<li><strong><code>--output</code> / <code>--error</code> path transformation</strong> (bwrap/firejail only): values are redirected to <code>$project_dir/.sandbox-state/slurm-logs/</code>; the in-sandbox wrapper creates a relative symlink from the user's intended path to the staging file. Closes the slurmstepd-side <code>O_NOFOLLOW</code>-absence escape (e.g., <code>sbatch --output=/etc/cron.d/evil</code>). Disabled on landlock — see <a href="../chaperon-output-staging/"><code>docs/reference/chaperon-output-staging.md</code></a>.</li>
 <li><strong>Job wrapping</strong>: The user's script is written to a temp file, and a wrapper script is generated that runs it inside <code>sandbox-exec.sh --project-dir $PROJECT_DIR</code>. The wrapper is submitted to the real sbatch.</li>
 </ol>
 <h3 id="job-tagging-and-scoping-via-comment">Job Tagging and Scoping via <code>--comment</code><a class="headerlink" href="#job-tagging-and-scoping-via-comment" title="Permanent link">&para;</a></h3>
