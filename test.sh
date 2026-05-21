@@ -2893,8 +2893,11 @@ SCRIPT
     }
 
     # Bash shebang — assert $#, $@, and individual positionals.
+    # Output path under $PROJECT_DIR so #67's prelude-symlink lands in
+    # the writable project bind (host-visible) rather than the sandbox's
+    # private /tmp tmpfs — see 6c-quater note.
     _argscript="$PROJECT_DIR/.sbatch-args-bash-$$.sh"
-    _argout=$(mktemp)
+    _argout=$(mktemp -p "$PROJECT_DIR" .sbatch-args-bash-out-XXXXXX)
     _TEST_TEMP_FILES+=("$_argscript" "$_argout")
     cat > "$_argscript" <<'BASH_ARGSCRIPT'
 #!/bin/bash
@@ -2938,7 +2941,8 @@ BASH_ARGSCRIPT
     # Python shebang — argv[0] should be the script path, argv[1:] the user args.
     if command -v python3 &>/dev/null; then
         _pyscript="$PROJECT_DIR/.sbatch-args-py-$$.py"
-        _pyout=$(mktemp)
+        # See 6c-quater note: --output target must live under $PROJECT_DIR.
+        _pyout=$(mktemp -p "$PROJECT_DIR" .sbatch-args-py-out-XXXXXX)
         _TEST_TEMP_FILES+=("$_pyscript" "$_pyout")
         cat > "$_pyscript" <<'PY_ARGSCRIPT'
 #!/usr/bin/env python3
@@ -2982,7 +2986,8 @@ PY_ARGSCRIPT
 
     # No args — script still runs (no `--` after `-s`, $#=0).
     _noargscript="$PROJECT_DIR/.sbatch-noargs-$$.sh"
-    _noargout=$(mktemp)
+    # See 6c-quater note: --output target must live under $PROJECT_DIR.
+    _noargout=$(mktemp -p "$PROJECT_DIR" .sbatch-noargs-out-XXXXXX)
     _TEST_TEMP_FILES+=("$_noargscript" "$_noargout")
     cat > "$_noargscript" <<'NOARGSCRIPT'
 #!/bin/bash
