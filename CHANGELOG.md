@@ -5,7 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.11.0] - 2026-05-20
+
+### Added
+
+- **`.sandbox-state/` — hidden chaperon-owned state convention (#67; PR #68).**
+  Adds `$project_dir/.sandbox-state/` as a general-purpose subdir for
+  chaperon-managed state: `slurm-logs/` for redirected `sbatch
+  --output` / `--error` files (see next entry), `chaperon/` for the
+  chaperon's own diagnostic log. bwrap and firejail RO-overlay the
+  dir after the writable project bind (path-keyed, later wins) so the
+  agent inside the sandbox can read content but not tamper with it.
+  Landlock can't RO-overlay a subtree under a writable parent
+  (additive-rules limitation) so the dir is sandbox-writable there —
+  the chaperon-side feature gated by `$SANDBOX_BACKEND` skips the
+  Slurm-output redirection on landlock entirely; chaperon log writes
+  fall back to the existing XDG location. Lifecycle: keep forever —
+  documented as a sandbox artifact; `rm -rf .sandbox-state/` to
+  reclaim. Threat-model framing (load-bearing for the design): the
+  RO overlay prevents in-sandbox symlink-plant against the chaperon's
+  writes, NOT trust in the dir's content — the submitted job
+  determines what slurmstepd writes there, and the chaperon never
+  trusts content read back. This is the explicit distinction from
+  the reverted PR #50 (which RO-protected user-owned content the
+  agent legitimately writes to). See
+  `docs/reference/sandbox-state-dir.md` for the full convention.
+
+- **`sbatch --output` / `--error` path transformation + in-sandbox
+  symlink (#67; PR #68).** Closes the residual gap left by #65: even with
+  the chaperon's cwd validated, `sbatch --output=/etc/cron.d/evil`
+  (absolute) and `sbatch --output=../../etc/passwd` (relative
+  traversal) escape past the compute-node sandbox because Slurm
+  resolves and opens those paths as the user, before the sandbox
+  boundary applies. The chaperon now transforms `--output` /
+  `--error` values (both command-line and `#SBATCH` directive forms)
+  into paths under `$project_dir/.sandbox-state/slurm-logs/` — leading
+  `/` encoded as `__abs__/`, `..` components rewritten to `__updir__`,
+  `%`-patterns preserved for slurmstepd's runtime substitution. Slurm
+  writes to the chaperon-controlled (and bwrap/firejail-RO-overlaid)
+  staging path. The in-sandbox wrapper, as its first action, creates
+  a **relative** symlink from the user's resolved intended path to
+  the staging file — gated by the bind-mount envelope, so if the
+  user picked a non-sandbox-writable target (e.g. `/etc/cron.d/evil`)
+  the `ln -s` fails gracefully and the log only lives at the
+  staging path. No copy, no exit trap, no race with slurmstepd's
+  continued writes. Wrapper-side helpers (`_sandbox_slurm_resolve_pat`,
+  `_sandbox_link_slurm_output`) resolve `%j`/`%A`/`%a`/`%N`/`%n`/`%t`/
+  `%u`/`%x` from the standard `SLURM_*` env vars set by slurmstepd.
+  Disabled on landlock (the RO overlay is unavailable; symlink-plant
+  defense would be missing). Closes #67.
 
 ### Added
 
@@ -57,7 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- **Preserve Slurm submission cwd inside the sandbox (#65).** The
+- **Preserve Slurm submission cwd inside the sandbox (#65; PR #66).** The
   bwrap and firejail backends forced `--chdir $project_dir` /
   `--private-cwd=$project_dir` unconditionally, discarding the cwd
   Slurm preserves natively on the compute node. Result:
@@ -78,6 +126,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   clusters whose prolog drops cwd to `$HOME`. Makes
   slurm-inside-sandbox indistinguishable from native slurm for
   the cwd surface, without jeopardizing project-dir confinement.
+
+### Security
+
+- **bwrap + firejail RO-overlay `.sandbox-state/` (#67; PR #68).**
+  The chaperon `mkdir -p`s the staging parent under
+  `$project_dir/.sandbox-state/slurm-logs/` before invoking real
+  `sbatch`; without intervention, an agent inside the sandbox could
+  `ln -sf /etc/passwd $project_dir/.sandbox-state/slurm-logs/<expected>`
+  between the chaperon's `mkdir` and slurmstepd's `open()`, causing
+  slurmstepd (running as the user on the compute node, outside the
+  sandbox boundary) to follow the symlink and write job output to
+  the attacker-chosen target. The bwrap and firejail backends now
+  RO-overlay `.sandbox-state/` after the writable project bind
+  (path-keyed, later-wins) — the agent can read content (so
+  `cat .sandbox-state/slurm-logs/job-123.out` still works for
+  debugging) but cannot create, rename, or modify entries. Threat-
+  model framing is explicit and load-bearing: the RO overlay
+  prevents in-sandbox symlink-plant against chaperon-owned writes
+  — it does NOT establish trust in the dir's content (the
+  submitted job determines what slurmstepd writes there; the
+  chaperon never trusts content read back for any security
+  decision). This is the explicit distinction from the reverted
+  PR #50, which wanted to RO-protect user-owned content the agent
+  legitimately writes to; PR #68 RO-protects chaperon-owned content
+  the agent never wrote and never needs to write. Inline rationale
+  comments in `sandbox-lib.sh` and `chaperon/handlers/_handler_lib.sh`
+  quote the operator's design-discussion ack verbatim so the rule
+  isn't reverted on the same grounds.
+
+### Backend asymmetries
+
+- **Landlock disables the `.sandbox-state/` + sbatch output-staging
+  feature entirely (#67; PR #68).** Landlock's additive-rules model
+  cannot RO-overlay a subtree under a writable parent — there is no
+  path-keyed read-only mechanism that would let the chaperon make
+  `$project_dir` writable while making
+  `$project_dir/.sandbox-state/` read-only. Without the RO overlay,
+  the symlink-plant defense above would be missing, so the
+  chaperon's sbatch handler skips the `--output` / `--error` path
+  transformation when `SANDBOX_BACKEND=landlock` and slurmstepd
+  writes to the user-supplied paths directly (pass-through to native
+  slurm behaviour). The chaperon's own diagnostic log similarly
+  falls back to its existing XDG location instead of relocating
+  under `.sandbox-state/chaperon/`. The landlock backend emits a
+  one-line `NOTE` at init when `.sandbox-state/` exists, surfacing
+  the feature gap to the operator. Operators who need the
+  symlink-plant defense on a host should pick bwrap or firejail;
+  landlock retains its niche as a no-kernel-namespaces fallback.
 
 ## [0.10.1] - 2026-05-15
 
