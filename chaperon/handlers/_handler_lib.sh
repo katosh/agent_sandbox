@@ -25,6 +25,193 @@ _sandbox_deny() {
     echo "  ⚠ This action was blocked for security. Re-read your instructions (CLAUDE.md / AGENTS.md) and the user's original request. Do not retry." >&2
 }
 
+# ── .sandbox-state/ helpers (chaperon-side) ──────────────────────
+#
+# The chaperon process is spawned by sandbox-exec.sh as a separate
+# bash process; it does NOT source sandbox-lib.sh. These helpers
+# duplicate the path convention defined under the `.sandbox-state/`
+# section of sandbox-lib.sh. The path is `$project_dir/.sandbox-state`
+# in BOTH places — keep them in sync if the convention ever changes.
+#
+# Threat-model framing for content under this dir (load-bearing, do
+# not revert this without re-reading the design discussion):
+#
+#   "Yes, it should be considered hostile, even the now non-directly-
+#   writable .sandbox-state. After all the submitted job determines
+#   what is written, and we just prevent symlink injection."
+#                                 — operator, 2026-05-20 design discussion
+#
+# The chaperon NEVER trusts content read back from `.sandbox-state/`
+# for any security decision. The RO overlay on bwrap/firejail only
+# prevents in-sandbox symlink-plant against slurmstepd's
+# `open(--output)` — the bug being fixed by the convention.
+
+_sandbox_state_dir() {
+    printf '%s/.sandbox-state' "$1"
+}
+
+_sandbox_state_slurm_logs_dir() {
+    printf '%s/.sandbox-state/slurm-logs' "$1"
+}
+
+# _slurm_output_feature_enabled
+#
+# Returns 0 if the Slurm --output / --error path-transformation
+# feature should be active for this chaperon process. Disabled on
+# landlock (no RO-overlay mechanism — symlink-plant defense
+# unavailable, see backends/landlock.sh's note). $SANDBOX_BACKEND
+# is exported by sandbox-exec.sh after detect_backend specifically
+# so the chaperon can branch on it here.
+_slurm_output_feature_enabled() {
+    case "${SANDBOX_BACKEND:-}" in
+        bwrap|firejail) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# _ensure_sandbox_state_dir <project_dir>
+#
+# Idempotent mkdir of `.sandbox-state/{slurm-logs,chaperon}` with a
+# README.md marker so operators encountering the dir for the first
+# time can decode it without grepping. Called from sbatch.sh before
+# computing the staging path. Owner-only perms — these dirs hold log
+# content that may carry user data.
+_ensure_sandbox_state_dir() {
+    local _project_dir="$1"
+    local _state_dir="$_project_dir/.sandbox-state"
+
+    # Do NOT short-circuit on `[[ -d $_state_dir ]]`: chaperon/logging.sh
+    # mkdir's `.sandbox-state/chaperon/` early in chaperon startup, which
+    # creates `.sandbox-state/` itself. Short-circuiting then would skip
+    # mkdir'ing `slurm-logs/` and slurmstepd's open(--output) would fail
+    # with ENOENT. `mkdir -p` is already idempotent — re-run is cheap.
+    mkdir -p "$_state_dir/slurm-logs" "$_state_dir/chaperon" 2>/dev/null || return 1
+    chmod 700 "$_state_dir" "$_state_dir/slurm-logs" "$_state_dir/chaperon" 2>/dev/null || true
+
+    local _marker="$_state_dir/README.md"
+    if [[ ! -e "$_marker" ]]; then
+        cat > "$_marker" <<'_SANDBOX_STATE_README' 2>/dev/null || true
+# .sandbox-state/
+
+Hidden chaperon-owned state directory created by `agent-sandbox`.
+Do not modify by hand — content is managed by the chaperon process
+running outside the sandbox.
+
+## Contents
+
+- `slurm-logs/<path>` — `sbatch --output` / `--error` are redirected
+  here so slurmstepd writes inside the project tree (cross-node
+  accessible via NFS) while the bwrap/firejail bind-mount layer
+  prevents in-sandbox symlink-plant against slurmstepd's `open()`.
+  The wrapper inside the sandbox creates relative symlinks from the
+  user's intended output paths to files here.
+
+- `chaperon/<session-id>/log` — chaperon diagnostic log (one
+  subdirectory per chaperon process; disambiguates concurrent
+  sandboxes in the same project).
+
+## Writability matrix
+
+| Principal | Permission | Why |
+|---|---|---|
+| host (chaperon, slurmstepd) | read+write | chaperon mkdir's; slurmstepd writes |
+| sandbox (bwrap/firejail)    | read-only  | bind-mount overlay; prevents symlink-plant |
+| sandbox (landlock)          | writable   | landlock can't make subdir RO under RW parent; the slurm-output feature is disabled there |
+
+## Lifecycle
+
+Keep forever (sandbox artifact). To reclaim: `rm -rf .sandbox-state/`.
+
+See `docs/reference/sandbox-state-dir.md` in the agent-sandbox source
+tree for the full convention and the threat-model framing.
+_SANDBOX_STATE_README
+        chmod 644 "$_marker" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# ── Slurm --output / --error path transformation ─────────────────
+#
+# Transform a user-supplied --output / --error value into an absolute
+# path under `$project_dir/.sandbox-state/slurm-logs/` such that:
+#
+#   - Absolute paths are encoded under `__abs__/` (escape encoded so
+#     the wrapper can reverse the transform and re-prepend `/`).
+#   - `..` path components are renamed to `__updir__` (escape
+#     contained — `__updir__` is a literal directory name, can't
+#     traverse out of the staging subtree).
+#   - `.` and empty components are dropped (path normalisation).
+#   - `%`-patterns (`%j`, `%A`, `%a`, `%N`, `%u`, `%x`, `%t`) survive
+#     intact; slurmstepd substitutes them at file-open time, so the
+#     resolved on-disk staging path becomes the runtime location.
+#
+# Why transform rather than validate-and-reject: the staging dir is
+# bind-mounted read-only inside the sandbox (bwrap/firejail), so an
+# agent can't symlink-plant against slurmstepd's `open(--output)` —
+# the actual escape vector this closes. Validation would still be
+# brittle for `%`-patterns and produces a UX cliff when the user
+# innocently submits `--output=/scratch/foo` (rejected vs. silently
+# redirected, with a symlink at the intended path resolving to the
+# staging file for the cases the agent CAN write to).
+#
+# Echoes the transformed absolute path on stdout. Pure function;
+# table-testable via test.sh.
+_transform_slurm_output_path() {
+    local _value="$1"
+    local _project_dir="$2"
+
+    # Trim ambient whitespace (defensive).
+    _value="${_value#"${_value%%[![:space:]]*}"}"
+    _value="${_value%"${_value##*[![:space:]]}"}"
+
+    local _state_logs="$_project_dir/.sandbox-state/slurm-logs"
+
+    # Empty input: caller is expected to skip the transform; defensive
+    # return of the staging root keeps the function total.
+    [[ -z "$_value" ]] && { printf '%s' "$_state_logs"; return; }
+
+    # Detect absolute → encode original-was-absolute as `__abs__/`
+    # prefix so the wrapper can re-prepend `/` on the way out.
+    local _is_abs=false
+    if [[ "$_value" == /* ]]; then
+        _is_abs=true
+        while [[ "$_value" == /* ]]; do _value="${_value#/}"; done
+    fi
+
+    # Split on / and process each component. `..` → `__updir__` only
+    # at exact-component match; `..foo` is left alone (legitimate
+    # filename).
+    local _out_components=()
+    if $_is_abs; then
+        _out_components+=("__abs__")
+    fi
+    local _saved_ifs="$IFS"
+    IFS='/'
+    # shellcheck disable=SC2206  # split on / is intentional
+    local _parts=( $_value )
+    IFS="$_saved_ifs"
+    local _p
+    for _p in "${_parts[@]}"; do
+        case "$_p" in
+            "")  ;;                                  # collapse //
+            ".") ;;                                  # drop no-op
+            "..") _out_components+=("__updir__") ;;  # contain escape
+            *)   _out_components+=("$_p") ;;
+        esac
+    done
+
+    local _saved_ifs2="$IFS"
+    IFS='/'
+    local _transformed="${_out_components[*]}"
+    IFS="$_saved_ifs2"
+
+    if [[ -z "$_transformed" ]]; then
+        printf '%s' "$_state_logs"
+    else
+        printf '%s/%s' "$_state_logs" "$_transformed"
+    fi
+}
+
 # ── Whitelisted sbatch flags ────────────────────────────────────
 # Only these flags are forwarded to the real sbatch. This is a security
 # boundary: flags that could bypass sandboxing are excluded.
@@ -163,13 +350,69 @@ _is_value_flag() {
 
 # ── Argument validation ─────────────────────────────────────────
 
+# _maybe_transform_slurm_output_arg <flag> <value> <project_dir>
+#
+# Pure-stdout helper for validate_sbatch_args and the #SBATCH-directive
+# filter in create_wrapped_script. Given an --output / --error flag-name
+# and raw value, returns the value-to-forward-to-sbatch on stdout.
+#
+# Deliberately side-effect-free: callers invoke via $(...) command
+# substitution, which would lose any global-variable side-effects to a
+# subshell. The (user, staging) pair is recorded by the caller via
+# `_capture_slurm_output_pair` in the caller's own scope.
+#
+# If the feature is disabled (landlock) or value is empty, returns the
+# value unchanged — the user's path flows verbatim to real sbatch.
+_maybe_transform_slurm_output_arg() {
+    local _flag="$1" _value="$2" _project_dir="$3"
+    if ! _slurm_output_feature_enabled || [[ -z "$_value" ]]; then
+        printf '%s' "$_value"
+        return
+    fi
+    case "$_flag" in
+        -o|--output|-e|--error) ;;
+        *) printf '%s' "$_value"; return ;;
+    esac
+    _transform_slurm_output_path "$_value" "$_project_dir"
+}
+
+# _capture_slurm_output_pair <flag> <user_value> <staging_value>
+#
+# Caller-scope companion to _maybe_transform_slurm_output_arg. Records
+# the (user-template, staging-template) pair into the per-stream capture
+# vars that `create_wrapped_script` reads to emit the in-sandbox symlink
+# prelude. Multiple occurrences: later wins (matches Slurm's
+# last-occurrence semantics).
+#
+# Must be called in the caller's scope (NOT inside `$(...)`), since the
+# whole point is to mutate variables visible to the wrapper-building code.
+# Silently no-ops when the feature is disabled or the user value is empty
+# — same gates as the transform helper.
+_capture_slurm_output_pair() {
+    local _flag="$1" _user="$2" _staging="$3"
+    _slurm_output_feature_enabled || return 0
+    [[ -z "$_user" ]] && return 0
+    case "$_flag" in
+        -o|--output) _USER_SLURM_OUTPUT="$_user"; _STAGING_SLURM_OUTPUT="$_staging" ;;
+        -e|--error)  _USER_SLURM_ERROR="$_user";  _STAGING_SLURM_ERROR="$_staging"  ;;
+    esac
+}
+
 # Validate and filter sbatch arguments.
-# Input:  REQ_ARGS array (from protocol)
+# Input:  REQ_ARGS array (from protocol), PROJECT_DIR (caller scope)
 # Output: VALIDATED_ARGS array (safe to pass to real sbatch)
+#         _USER_SLURM_OUTPUT / _STAGING_SLURM_OUTPUT (and ERROR
+#         counterparts) — populated when --output / --error are
+#         present AND the feature is enabled (bwrap/firejail).
 # Returns 1 if a denied flag is found.
 validate_sbatch_args() {
     VALIDATED_ARGS=()
     _USER_COMMENT=""   # Captured here, injected by sbatch handler with chaperon tag
+    _USER_SLURM_OUTPUT=""
+    _USER_SLURM_ERROR=""
+    _STAGING_SLURM_OUTPUT=""
+    _STAGING_SLURM_ERROR=""
+    local _project_dir="${PROJECT_DIR:-}"
     local i=0
     while (( i < ${#REQ_ARGS[@]} )); do
         local arg="${REQ_ARGS[$i]}"
@@ -181,6 +424,29 @@ validate_sbatch_args() {
             --chdir|--chdir=*|-D)
                 _sandbox_warn "sbatch '--chdir' is not allowed — the working directory is set automatically to your current directory."
                 return 1
+                ;;
+            --output=*|-o=*|--error=*|-e=*)
+                # `=` form: extract value, transform, capture, re-pack.
+                local _flag="${arg%%=*}"
+                local _v="${arg#*=}"
+                local _t
+                _t="$(_maybe_transform_slurm_output_arg "$_flag" "$_v" "$_project_dir")"
+                _capture_slurm_output_pair "$_flag" "$_v" "$_t"
+                VALIDATED_ARGS+=("$_flag=$_t")
+                ;;
+            --output|-o|--error|-e)
+                # space form: --output <value>.
+                if (( i + 1 < ${#REQ_ARGS[@]} )); then
+                    (( i++ ))
+                    local _v="${REQ_ARGS[$i]}"
+                    local _t
+                    _t="$(_maybe_transform_slurm_output_arg "$arg" "$_v" "$_project_dir")"
+                    _capture_slurm_output_pair "$arg" "$_v" "$_t"
+                    VALIDATED_ARGS+=("$arg" "$_t")
+                else
+                    _sandbox_warn "sbatch '$arg' requires a value."
+                    return 1
+                fi
                 ;;
             --uid|--uid=*|--gid|--gid=*)
                 _sandbox_deny "sbatch '--uid/--gid' is not allowed — jobs must run as your own user."
@@ -366,7 +632,40 @@ create_wrapped_script() {
                 *)     flag_name="" ;;
             esac
             if [[ -n "$flag_name" ]] && _is_allowed_flag "$flag_name"; then
-                safe_directives+="$line"$'\n'
+                # Transform --output / --error values inside #SBATCH
+                # directives so the redirect-to-staging contract applies
+                # to BOTH command-line flags AND in-script directives.
+                # Otherwise the user could bypass via
+                # `#SBATCH --output=/etc/foo` (which validate_sbatch_args
+                # never sees). Only transforms when the feature is
+                # enabled (bwrap/firejail) — landlock passes through.
+                case "$flag_name" in
+                    --output|--error|-o|-e)
+                        if _slurm_output_feature_enabled; then
+                            local _dval _new_val _new_line
+                            case "$directive_body" in
+                                --*=*) _dval="${directive_body#*=}" ;;
+                                --*)   _dval="${directive_body#* }" ;;
+                                *)     _dval="${directive_body:3}"  ;;  # -o val / -e val
+                            esac
+                            # Trim trailing whitespace / comments — defensive.
+                            _dval="${_dval%%#*}"
+                            _dval="${_dval%"${_dval##*[![:space:]]}"}"
+                            _new_val="$(_transform_slurm_output_path "$_dval" "$project_dir")"
+                            # Reconstruct as `#SBATCH <flag>=<new_val>` (canonical form).
+                            _new_line="#SBATCH $flag_name=$_new_val"
+                            # Capture for env-var passing — last directive wins,
+                            # matching command-line `validate_sbatch_args` semantics.
+                            _capture_slurm_output_pair "$flag_name" "$_dval" "$_new_val"
+                            safe_directives+="$_new_line"$'\n'
+                        else
+                            safe_directives+="$line"$'\n'
+                        fi
+                        ;;
+                    *)
+                        safe_directives+="$line"$'\n'
+                        ;;
+                esac
             else
                 stripped_count=$((stripped_count + 1))
             fi
@@ -432,6 +731,73 @@ create_wrapped_script() {
         done
     fi
 
+    # Compose the in-sandbox prelude that creates relative symlinks
+    # from the user's intended --output/--error paths to the
+    # chaperon-managed staging files. The prelude runs INSIDE the
+    # sandbox so its filesystem writes are governed by the bind-mount
+    # envelope — that's what makes the user's path the permission
+    # check (if intended is not sandbox-writable, the symlink fails
+    # and the log only lives at the staging path, which is always
+    # reachable for reading).
+    #
+    # Only emitted when the feature captured something (validate_sbatch_args
+    # or the #SBATCH directive filter populated _STAGING_SLURM_*). Empty on
+    # landlock because _slurm_output_feature_enabled gates the chaperon-side
+    # transform — no captures, no prelude.
+    local _slurm_link_prelude=""
+    if [[ -n "${_STAGING_SLURM_OUTPUT:-}" || -n "${_STAGING_SLURM_ERROR:-}" ]]; then
+        local _q_user_out _q_stage_out _q_user_err _q_stage_err
+        printf -v _q_user_out  '%q' "${_USER_SLURM_OUTPUT:-}"
+        printf -v _q_stage_out '%q' "${_STAGING_SLURM_OUTPUT:-}"
+        printf -v _q_user_err  '%q' "${_USER_SLURM_ERROR:-}"
+        printf -v _q_stage_err '%q' "${_STAGING_SLURM_ERROR:-}"
+        # heredoc-style assembly — values pre-quoted via printf %q so they
+        # survive embedding regardless of special chars. The prelude is
+        # bash syntax; emitted only into bash contexts (see embedding
+        # below — non-bash shell scripts skip it).
+        _slurm_link_prelude="$(cat <<EOF
+# --- agent-sandbox: link intended slurm output paths to staging ---
+_sandbox_slurm_resolve_pat() {
+    local _p="\$1"
+    local _array_id="\${SLURM_ARRAY_JOB_ID:-\${SLURM_JOB_ID:-}}"
+    _p="\${_p//%j/\${SLURM_JOB_ID:-}}"
+    _p="\${_p//%A/\$_array_id}"
+    _p="\${_p//%a/\${SLURM_ARRAY_TASK_ID:-}}"
+    _p="\${_p//%N/\${SLURMD_NODENAME:-\${HOSTNAME:-}}}"
+    _p="\${_p//%n/\${SLURM_NODEID:-0}}"
+    _p="\${_p//%t/\${SLURM_PROCID:-0}}"
+    _p="\${_p//%u/\${USER:-}}"
+    _p="\${_p//%x/\${SLURM_JOB_NAME:-}}"
+    printf '%s' "\$_p"
+}
+_sandbox_link_slurm_output() {
+    local _stream="\$1" _intended_template="\$2" _staging_template="\$3"
+    [[ -z "\$_intended_template" || -z "\$_staging_template" ]] && return 0
+    local _intended _staging
+    _intended="\$(_sandbox_slurm_resolve_pat "\$_intended_template")"
+    _staging="\$(_sandbox_slurm_resolve_pat "\$_staging_template")"
+    [[ "\$_intended" != /* ]] && _intended="\$PWD/\$_intended"
+    [[ "\$_intended" == "\$_staging" ]] && return 0
+    if ! mkdir -p -- "\$(dirname -- "\$_intended")" 2>/dev/null; then
+        echo "sandbox: \$_stream-symlink: parent dir of '\$_intended' not sandbox-writable; log lives at \$_staging" >&2
+        return 0
+    fi
+    local _rel
+    _rel="\$(realpath --relative-to="\$(dirname -- "\$_intended")" "\$_staging" 2>/dev/null)" \\
+        || _rel="\$_staging"
+    rm -f -- "\$_intended" 2>/dev/null
+    if ! ln -s -- "\$_rel" "\$_intended" 2>/dev/null; then
+        echo "sandbox: \$_stream-symlink to '\$_intended' failed; log lives at \$_staging" >&2
+    fi
+}
+_sandbox_link_slurm_output stdout $_q_user_out $_q_stage_out
+_sandbox_link_slurm_output stderr $_q_user_err $_q_stage_err
+unset -f _sandbox_link_slurm_output _sandbox_slurm_resolve_pat
+# --- end agent-sandbox prelude ---
+EOF
+)"
+    fi
+
     {
         printf '#!/bin/bash --\n'
         if [[ -n "$safe_directives" ]]; then
@@ -475,8 +841,24 @@ create_wrapped_script() {
             if (( ${#script_args[@]} > 0 )); then
                 sep=" --"
             fi
-            printf 'printf '"'"'%%s\\n'"'"' "$_SCRIPT" | exec %q --project-dir %q -- %s -s%s%s\n' \
-                "$sandbox_exec" "$project_dir" "$interp_clean" "$sep" "$quoted_script_args"
+            # When the slurm-output prelude is non-empty (bwrap/firejail
+            # + at least one --output/--error captured), wrap the
+            # inside-sandbox invocation in `bash -c '<prelude>; exec
+            # <interp> -s ...'`. The outer bash runs the prelude (which
+            # creates the relative symlinks under sandbox bind-mount
+            # control), then exec's the user's chosen shell with the
+            # script piped to stdin still intact. Without the prelude
+            # (landlock or no --output/--error), keep the original
+            # direct-exec form.
+            if [[ -n "$_slurm_link_prelude" ]]; then
+                local _inside="$_slurm_link_prelude"$'\n'"exec $interp_clean -s$sep \"\$@\""
+                local _inside_q="${_inside//\'/\'\\\'\'}"
+                printf 'printf '"'"'%%s\\n'"'"' "$_SCRIPT" | exec %q --project-dir %q -- bash -c '"'"'%s'"'"' _chaperon%s\n' \
+                    "$sandbox_exec" "$project_dir" "$_inside_q" "$quoted_script_args"
+            else
+                printf 'printf '"'"'%%s\\n'"'"' "$_SCRIPT" | exec %q --project-dir %q -- %s -s%s%s\n' \
+                    "$sandbox_exec" "$project_dir" "$interp_clean" "$sep" "$quoted_script_args"
+            fi
         else
             # Non-shell path: inside the sandbox, materialise the script to
             # a private tmpfs file, chmod +x, exec it with the positionals.
@@ -489,7 +871,14 @@ create_wrapped_script() {
             # concatenation so we don't have to fight nested quoting:
             # everything between '...' is literal except for double-quote
             # boundaries we open to embed a literal single quote ('"'"').
-            local runner='set -e
+            #
+            # The slurm-output prelude (when non-empty) goes BEFORE
+            # `set -e` so a prelude failure doesn't abort the user's
+            # script — graceful degradation: no symlink, log only at
+            # the staging path.
+            local runner=""
+            [[ -n "$_slurm_link_prelude" ]] && runner="$_slurm_link_prelude"$'\n'
+            runner+='set -e
 _t=$(mktemp /tmp/.chaperon-script-XXXXXX) || exit 1
 trap '"'"'rm -f "$_t"'"'"' EXIT
 printf '"'"'%s\n'"'"' "$1" > "$_t"

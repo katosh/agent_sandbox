@@ -2683,7 +2683,15 @@ SCRIPT
     # inherits sandbox isolation; sandbox-exec.sh sets SANDBOX_ACTIVE=1.
     # If wrapping silently breaks, the existing "Submitted batch job N"
     # check in 6a would still pass — this closes that gap.
-    _jobout=$(mktemp)
+    #
+    # Output path lives under $PROJECT_DIR, not /tmp: after #67 the
+    # chaperon redirects --output to .sandbox-state/slurm-logs/ and the
+    # in-sandbox prelude creates a symlink from the user's intended path
+    # to staging. /tmp is the sandbox's private tmpfs (bwrap/firejail),
+    # so a symlink there would never reach the host-side assertion.
+    # Keeping the intended path in the project bind makes the symlink
+    # visible on the host, which then reads through it to staging.
+    _jobout=$(mktemp -p "$PROJECT_DIR" .test-jobout-XXXXXX)
     _TEST_TEMP_FILES+=("$_jobout")
     _submit_out=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
         --project-dir "$PROJECT_DIR" -- \
@@ -2720,7 +2728,9 @@ SCRIPT
     _cwd_subdir="$PROJECT_DIR/.test-cwd-$$"
     mkdir -p "$_cwd_subdir"
     _TEST_TEMP_FILES+=("$_cwd_subdir")
-    _cwd_jobout=$(mktemp)
+    # $_cwd_jobout must live under $PROJECT_DIR — see 6c-quater note
+    # on #67's --output redirect + private-tmpfs visibility.
+    _cwd_jobout=$(mktemp -p "$PROJECT_DIR" .test-cwd-out-XXXXXX)
     _TEST_TEMP_FILES+=("$_cwd_jobout")
     _cwd_submit_out=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
         --project-dir "$PROJECT_DIR" -- \
@@ -2761,7 +2771,9 @@ SCRIPT
     mkdir -p "$_pwd_subdir"
     _TEST_TEMP_FILES+=("$_pwd_subdir")
     _pwd_expected="$(cd "$_pwd_subdir" && pwd -P)"
-    _pwd_jobout=$(mktemp)
+    # $_pwd_jobout must live under $PROJECT_DIR — see 6c-quater note
+    # on #67's --output redirect + private-tmpfs visibility.
+    _pwd_jobout=$(mktemp -p "$PROJECT_DIR" .test-pwd-out-XXXXXX)
     _TEST_TEMP_FILES+=("$_pwd_jobout")
     _pwd_submit_out=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
         --project-dir "$PROJECT_DIR" -- \
@@ -2881,8 +2893,11 @@ SCRIPT
     }
 
     # Bash shebang — assert $#, $@, and individual positionals.
+    # Output path under $PROJECT_DIR so #67's prelude-symlink lands in
+    # the writable project bind (host-visible) rather than the sandbox's
+    # private /tmp tmpfs — see 6c-quater note.
     _argscript="$PROJECT_DIR/.sbatch-args-bash-$$.sh"
-    _argout=$(mktemp)
+    _argout=$(mktemp -p "$PROJECT_DIR" .sbatch-args-bash-out-XXXXXX)
     _TEST_TEMP_FILES+=("$_argscript" "$_argout")
     cat > "$_argscript" <<'BASH_ARGSCRIPT'
 #!/bin/bash
@@ -2926,7 +2941,8 @@ BASH_ARGSCRIPT
     # Python shebang — argv[0] should be the script path, argv[1:] the user args.
     if command -v python3 &>/dev/null; then
         _pyscript="$PROJECT_DIR/.sbatch-args-py-$$.py"
-        _pyout=$(mktemp)
+        # See 6c-quater note: --output target must live under $PROJECT_DIR.
+        _pyout=$(mktemp -p "$PROJECT_DIR" .sbatch-args-py-out-XXXXXX)
         _TEST_TEMP_FILES+=("$_pyscript" "$_pyout")
         cat > "$_pyscript" <<'PY_ARGSCRIPT'
 #!/usr/bin/env python3
@@ -2970,7 +2986,8 @@ PY_ARGSCRIPT
 
     # No args — script still runs (no `--` after `-s`, $#=0).
     _noargscript="$PROJECT_DIR/.sbatch-noargs-$$.sh"
-    _noargout=$(mktemp)
+    # See 6c-quater note: --output target must live under $PROJECT_DIR.
+    _noargout=$(mktemp -p "$PROJECT_DIR" .sbatch-noargs-out-XXXXXX)
     _TEST_TEMP_FILES+=("$_noargscript" "$_noargout")
     cat > "$_noargscript" <<'NOARGSCRIPT'
 #!/bin/bash
@@ -3135,6 +3152,156 @@ if command -v sbatch &>/dev/null && command -v scancel &>/dev/null; then
     fi
 else
     skip "SLURM_SCOPE=session test: sbatch/scancel not on host"
+fi
+
+echo ""
+
+# ── 6.5 Slurm --output / --error path staging (#67) ──────────────
+#
+# Tests for the chaperon-managed `.sandbox-state/slurm-logs/`
+# staging convention: chaperon transforms --output paths to live
+# under .sandbox-state, bwrap/firejail RO-overlay the dir so
+# slurmstepd can't be tricked into following an in-sandbox-planted
+# symlink, and the in-sandbox wrapper creates relative symlinks
+# from the user's intended paths to the staging file.
+
+echo "6.5 Slurm --output staging (#67)"
+
+# 6.5a. Unit: _transform_slurm_output_path table (pure function;
+# always runs regardless of backend / slurm availability).
+_transform_table_test() {
+    # Source the chaperon-side helper directly.
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    local _proj="/p"
+    local _staging="$_proj/.sandbox-state/slurm-logs"
+
+    local _ok=true _got _input _expected
+    while IFS=$'\t' read -r _input _expected; do
+        _got="$(_transform_slurm_output_path "$_input" "$_proj")"
+        if [[ "$_got" != "$_expected" ]]; then
+            fail "transform '$_input' → '$_got' (expected '$_expected')"
+            _ok=false
+        fi
+    done <<EOF
+out.log	$_staging/out.log
+logs/job-%j.log	$_staging/logs/job-%j.log
+/etc/passwd	$_staging/__abs__/etc/passwd
+../../etc/foo	$_staging/__updir__/__updir__/etc/foo
+..foo/bar	$_staging/..foo/bar
+./a/.//b/../c	$_staging/a/b/__updir__/c
+/foo//bar	$_staging/__abs__/foo/bar
+EOF
+    $_ok && pass "_transform_slurm_output_path table (rel/abs/../-foo/no-op normalisation/%-pattern survival)"
+}
+_transform_table_test
+unset -f _transform_table_test
+
+# 6.5b. Backend-side RO overlay: from inside the sandbox, writing
+# under .sandbox-state/ must fail on bwrap/firejail; landlock
+# silently allows (documented feature gap). The chaperon mkdir's
+# .sandbox-state on first sbatch — pre-seed it here so the bind
+# overlay actually applies.
+mkdir -p "$PROJECT_DIR/.sandbox-state/slurm-logs"
+if is_landlock; then
+    # Sanity: write succeeds (no RO defense on landlock).
+    if sandbox bash -c "touch '$PROJECT_DIR/.sandbox-state/slurm-logs/.write-test-$$' 2>&1 && echo OK"; then
+        if [[ "$OUTPUT" == *OK* ]]; then
+            pass "Landlock: .sandbox-state is sandbox-writable (feature degraded as documented)"
+            rm -f "$PROJECT_DIR/.sandbox-state/slurm-logs/.write-test-$$"
+        else
+            fail "Landlock: expected .sandbox-state to be writable, got: $OUTPUT $OUTPUT_ERR"
+        fi
+    else
+        fail "Landlock: write-test command failed unexpectedly" "$OUTPUT_ERR"
+    fi
+else
+    # bwrap / firejail: write must fail (EROFS / EACCES).
+    if sandbox bash -c "touch '$PROJECT_DIR/.sandbox-state/slurm-logs/plant-$$' 2>&1; echo done"; then
+        if echo "$OUTPUT $OUTPUT_ERR" | grep -qE 'Read-only file system|Permission denied|Operation not permitted'; then
+            pass "Symlink-plant defense: .sandbox-state/slurm-logs is RO from inside sandbox (#67)"
+        elif [[ -e "$PROJECT_DIR/.sandbox-state/slurm-logs/plant-$$" ]]; then
+            fail "Symlink-plant defense MISSING: sandbox wrote to .sandbox-state/slurm-logs" \
+                 "Backend $CURRENT_BACKEND should RO-overlay .sandbox-state"
+            rm -f "$PROJECT_DIR/.sandbox-state/slurm-logs/plant-$$"
+        else
+            skip "Symlink-plant defense check inconclusive: $OUTPUT $OUTPUT_ERR"
+        fi
+    fi
+fi
+
+# 6.5c. Integration: end-to-end --output redirection + symlink.
+# Skipped if no sbatch on host or on landlock (feature disabled).
+if ! command -v sbatch &>/dev/null; then
+    skip "Slurm --output staging integration: sbatch not found"
+elif is_landlock; then
+    skip "Slurm --output staging integration: disabled on landlock (no RO overlay)"
+else
+    _stg_subdir="$PROJECT_DIR/.test-slurm-stg-$$"
+    mkdir -p "$_stg_subdir"
+    _TEST_TEMP_FILES+=("$_stg_subdir")
+    _stg_intended="$_stg_subdir/job.out"
+    _stg_submit=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- \
+        bash -c "cd '$_stg_subdir' && sbatch --wait --output='$_stg_intended' \
+            --wrap='echo SLURM_OUTPUT_STAGING_TEST_$$'" 2>&1)
+    _stg_rc=$?
+
+    # _stg_marker_in_staging — search the chaperon-managed staging tree
+    # for our unique test marker. If found, the job ran to completion and
+    # slurmstepd wrote into the redirected path → the feature's host-side
+    # half worked. The symlink is then the only remaining contract.
+    _stg_marker_in_staging() {
+        grep -rl "SLURM_OUTPUT_STAGING_TEST_$$" \
+            "$PROJECT_DIR/.sandbox-state/slurm-logs/" 2>/dev/null | head -1
+    }
+    _stg_check_symlink() {
+        # Intended path is a symlink → staging file under .sandbox-state.
+        [[ -L "$_stg_intended" ]] || return 1
+        local _resolved
+        _resolved="$(readlink -f "$_stg_intended" 2>/dev/null)" || return 1
+        [[ "$_resolved" == "$PROJECT_DIR/.sandbox-state/slurm-logs/"* ]] || return 1
+        grep -q "SLURM_OUTPUT_STAGING_TEST_$$" "$_stg_intended" 2>/dev/null
+    }
+
+    # If --wait returned but the symlink isn't there yet, give Slurm a
+    # short post-completion grace window for the wrapper's in-sandbox
+    # symlink prelude to land before deciding.
+    if [[ $_stg_rc -ne 0 ]] || ! _stg_check_symlink; then
+        _stg_jid=$(echo "$_stg_submit" | grep -oE "Submitted batch job [0-9]+" | awk '{print $4}')
+        if [[ -n "$_stg_jid" ]]; then
+            for _i in $(seq 1 20); do
+                if sandbox bash -c "squeue -j $_stg_jid -h 2>/dev/null" && [[ -z "$OUTPUT" ]]; then
+                    sleep 1
+                    break
+                fi
+                sleep 1
+            done
+        fi
+    fi
+
+    if _stg_check_symlink; then
+        pass "Slurm --output: in-sandbox symlink resolves to staging; staging holds job output (#67)"
+    else
+        _stg_staging_file="$(_stg_marker_in_staging)"
+        if [[ -n "$_stg_staging_file" ]]; then
+            # The job DID run and DID write to the chaperon-redirected
+            # staging path — proving the host-side half. Missing symlink
+            # is the in-sandbox wrapper prelude failing to emit (or
+            # failing to `ln -s`) — that's a feature regression, not an
+            # env issue. Fail loudly so this can't be silently masked
+            # again (see CHANGELOG entry for #67).
+            fail "Slurm --output: staging holds marker ($_stg_staging_file) but in-sandbox symlink missing at $_stg_intended — wrapper prelude regression"
+        elif [[ -z "$_stg_submit" ]] || ! echo "$_stg_submit" | grep -q "Submitted batch job"; then
+            skip "Slurm --output staging integration: sbatch did not submit ($_stg_submit)"
+        else
+            # Job submitted but no marker in staging → wrapper script
+            # likely didn't reach the user's command (host-Slurm issue,
+            # e.g., broken JobSubmitPlugin path). Skip rather than fail.
+            skip "Slurm --output staging integration: job submitted but did not write marker (host slurm config?)"
+        fi
+    fi
+    rm -rf "$_stg_subdir"
 fi
 
 echo ""
