@@ -676,6 +676,44 @@ create_wrapped_script() {
         _sandbox_deny "stripped $stripped_count unsafe #SBATCH directive(s) from script (denied flags are not allowed in directives either)"
     fi
 
+    # Default --output injection: extend the staging + symlink contract to
+    # the implicit `slurm-<jobid>.out` path. Without this, an in-sandbox
+    # agent could symlink-plant `<cwd>/slurm-<next-jobid>.out` before
+    # slurmstepd opens it (cwd is sandbox-writable; the staging dir is not).
+    #
+    # Fires only when:
+    #   - the feature is on (bwrap/firejail; landlock has no RO-overlay)
+    #   - AND neither validate_sbatch_args (CLI -o/--output) nor the
+    #     directive loop above (#SBATCH --output=) populated the capture.
+    #
+    # Pattern matches stock sbatch: `slurm-%A_%a.out` for arrays (detected
+    # by --array in VALIDATED_ARGS), `slurm-%j.out` otherwise. Stderr is
+    # untouched — stock Slurm merges stderr into stdout when only --output
+    # is set, and the prelude's stderr-symlink branch no-ops on empty
+    # capture, so no `--error` injection is needed.
+    #
+    # Injected as a #SBATCH directive (not a CLI flag) so the precedence
+    # ordering stays correct: an explicit CLI flag on a future submission
+    # would still win. Goes through `_capture_slurm_output_pair` so the
+    # prelude built below picks up the same values it would for any other
+    # captured path.
+    if _slurm_output_feature_enabled && [[ -z "${_USER_SLURM_OUTPUT:-}" ]]; then
+        local _default_pat _default_staging _is_array=false _va
+        for _va in "${VALIDATED_ARGS[@]}"; do
+            case "$_va" in
+                -a|--array|--array=*) _is_array=true; break ;;
+            esac
+        done
+        if $_is_array; then
+            _default_pat="slurm-%A_%a.out"
+        else
+            _default_pat="slurm-%j.out"
+        fi
+        _default_staging="$(_transform_slurm_output_path "$_default_pat" "$project_dir")"
+        _capture_slurm_output_pair "--output" "$_default_pat" "$_default_staging"
+        safe_directives+="#SBATCH --output=$_default_staging"$'\n'
+    fi
+
     # Strip #SBATCH directives from script body — they're in the wrapper header.
     local script_body
     script_body="$(printf '%s\n' "$script_content" | grep -vE '^[[:space:]]*#SBATCH' || true)"

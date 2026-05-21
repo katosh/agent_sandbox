@@ -3304,6 +3304,168 @@ else
     rm -rf "$_stg_subdir"
 fi
 
+# 6.5d. Integration: default --output (no flag, no env, no directive) gets
+# the same staging + symlink contract via the chaperon's default-injection.
+# Without this, an in-sandbox agent could symlink-plant the predictable
+# `<cwd>/slurm-<next-jobid>.out` path before slurmstepd opens it.
+if ! command -v sbatch &>/dev/null; then
+    skip "Slurm default --output staging: sbatch not found"
+elif is_landlock; then
+    skip "Slurm default --output staging: disabled on landlock (no RO overlay)"
+else
+    _stg_subdir="$PROJECT_DIR/.test-slurm-default-$$"
+    mkdir -p "$_stg_subdir"
+    _TEST_TEMP_FILES+=("$_stg_subdir")
+    _stg_submit=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- \
+        bash -c "cd '$_stg_subdir' && sbatch --wait \
+            --wrap='echo SLURM_DEFAULT_STAGING_TEST_$$'" 2>&1)
+    _stg_rc=$?
+    _stg_jid=$(echo "$_stg_submit" | grep -oE "Submitted batch job [0-9]+" | awk '{print $4}')
+
+    _default_intended="$_stg_subdir/slurm-${_stg_jid}.out"
+    _default_check_symlink() {
+        [[ -L "$_default_intended" ]] || return 1
+        local _resolved
+        _resolved="$(readlink -f "$_default_intended" 2>/dev/null)" || return 1
+        [[ "$_resolved" == "$PROJECT_DIR/.sandbox-state/slurm-logs/"* ]] || return 1
+        grep -q "SLURM_DEFAULT_STAGING_TEST_$$" "$_default_intended" 2>/dev/null
+    }
+
+    if [[ -z "$_stg_jid" ]]; then
+        skip "Slurm default --output staging: sbatch did not submit ($_stg_submit)"
+    else
+        # Grace window for the in-sandbox prelude to plant the symlink.
+        if ! _default_check_symlink; then
+            for _i in $(seq 1 20); do
+                if sandbox bash -c "squeue -j $_stg_jid -h 2>/dev/null" && [[ -z "$OUTPUT" ]]; then
+                    sleep 1
+                    break
+                fi
+                sleep 1
+            done
+        fi
+
+        if _default_check_symlink; then
+            pass "Slurm default --output: <cwd>/slurm-<jobid>.out is a symlink to staging when no --output supplied"
+        elif [[ -e "$_default_intended" && ! -L "$_default_intended" ]]; then
+            fail "Slurm default --output: $_default_intended exists but is a regular file — chaperon default-injection MISSING"
+        elif grep -rql "SLURM_DEFAULT_STAGING_TEST_$$" "$PROJECT_DIR/.sandbox-state/slurm-logs/" 2>/dev/null; then
+            fail "Slurm default --output: staging holds marker but no symlink at $_default_intended — wrapper prelude regression"
+        else
+            skip "Slurm default --output staging: job submitted but neither symlink nor staging marker landed ($_stg_submit)"
+        fi
+    fi
+    rm -rf "$_stg_subdir"
+fi
+
+# 6.5e. Integration: #SBATCH --output= directive (no CLI, no env) wins
+# over the default-injection — i.e., when a directive supplies a value,
+# the chaperon must NOT inject `slurm-%j.out` on top of it.
+if ! command -v sbatch &>/dev/null; then
+    skip "Slurm #SBATCH --output directive staging: sbatch not found"
+elif is_landlock; then
+    skip "Slurm #SBATCH --output directive staging: disabled on landlock"
+else
+    _stg_subdir="$PROJECT_DIR/.test-slurm-directive-$$"
+    mkdir -p "$_stg_subdir"
+    _TEST_TEMP_FILES+=("$_stg_subdir")
+    _stg_script="$_stg_subdir/job.sh"
+    cat > "$_stg_script" <<EOF
+#!/bin/bash
+#SBATCH --output=directive-wins.out
+echo SLURM_DIRECTIVE_STAGING_TEST_$$
+EOF
+    chmod +x "$_stg_script"
+    _stg_submit=$(timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- \
+        bash -c "cd '$_stg_subdir' && sbatch --wait '$_stg_script'" 2>&1)
+    _stg_jid=$(echo "$_stg_submit" | grep -oE "Submitted batch job [0-9]+" | awk '{print $4}')
+    _directive_intended="$_stg_subdir/directive-wins.out"
+    _default_collision="$_stg_subdir/slurm-${_stg_jid}.out"
+    _directive_check_symlink() {
+        [[ -L "$_directive_intended" ]] || return 1
+        grep -q "SLURM_DIRECTIVE_STAGING_TEST_$$" "$_directive_intended" 2>/dev/null
+    }
+
+    if [[ -z "$_stg_jid" ]]; then
+        skip "Slurm #SBATCH --output directive staging: sbatch did not submit ($_stg_submit)"
+    else
+        if ! _directive_check_symlink; then
+            for _i in $(seq 1 20); do
+                if sandbox bash -c "squeue -j $_stg_jid -h 2>/dev/null" && [[ -z "$OUTPUT" ]]; then
+                    sleep 1
+                    break
+                fi
+                sleep 1
+            done
+        fi
+
+        if _directive_check_symlink; then
+            # And the default-name path must NOT exist (no double-injection).
+            if [[ -e "$_default_collision" ]]; then
+                fail "Slurm #SBATCH --output directive: directive symlink works BUT default-injection ALSO landed at $_default_collision — double-injection"
+            else
+                pass "Slurm #SBATCH --output directive: directive value wins; no default-injection collision"
+            fi
+        else
+            skip "Slurm #SBATCH --output directive staging: directive symlink did not land ($_stg_submit)"
+        fi
+    fi
+    rm -rf "$_stg_subdir"
+fi
+
+# 6.5f. Integration: array job default → slurm-%A_%a.out pattern (not
+# slurm-%j.out). Each task gets its own symlink + staging pair.
+if ! command -v sbatch &>/dev/null; then
+    skip "Slurm array default --output staging: sbatch not found"
+elif is_landlock; then
+    skip "Slurm array default --output staging: disabled on landlock"
+else
+    _stg_subdir="$PROJECT_DIR/.test-slurm-array-$$"
+    mkdir -p "$_stg_subdir"
+    _TEST_TEMP_FILES+=("$_stg_subdir")
+    _stg_submit=$(timeout 60 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- \
+        bash -c "cd '$_stg_subdir' && sbatch --wait --array=1-2 \
+            --wrap='echo SLURM_ARRAY_DEFAULT_TEST_${$}_task=\$SLURM_ARRAY_TASK_ID'" 2>&1)
+    _stg_jid=$(echo "$_stg_submit" | grep -oE "Submitted batch job [0-9]+" | awk '{print $4}')
+
+    if [[ -z "$_stg_jid" ]]; then
+        skip "Slurm array default --output staging: sbatch did not submit ($_stg_submit)"
+    else
+        # Pattern resolves to slurm-<jobid>_<taskid>.out per task.
+        _array_t1="$_stg_subdir/slurm-${_stg_jid}_1.out"
+        _array_t2="$_stg_subdir/slurm-${_stg_jid}_2.out"
+        _array_check_pair() {
+            [[ -L "$_array_t1" ]] || return 1
+            [[ -L "$_array_t2" ]] || return 1
+            grep -q "SLURM_ARRAY_DEFAULT_TEST_${$}_task=1" "$_array_t1" 2>/dev/null || return 1
+            grep -q "SLURM_ARRAY_DEFAULT_TEST_${$}_task=2" "$_array_t2" 2>/dev/null || return 1
+            local _r1 _r2
+            _r1="$(readlink -f "$_array_t1" 2>/dev/null)"
+            _r2="$(readlink -f "$_array_t2" 2>/dev/null)"
+            [[ "$_r1" == "$PROJECT_DIR/.sandbox-state/slurm-logs/"* ]] || return 1
+            [[ "$_r2" == "$PROJECT_DIR/.sandbox-state/slurm-logs/"* ]] || return 1
+        }
+        if ! _array_check_pair; then
+            for _i in $(seq 1 30); do
+                if sandbox bash -c "squeue -j $_stg_jid -h 2>/dev/null" && [[ -z "$OUTPUT" ]]; then
+                    sleep 1
+                    break
+                fi
+                sleep 1
+            done
+        fi
+        if _array_check_pair; then
+            pass "Slurm array default --output: slurm-%A_%a.out pattern lands per-task symlink + staging"
+        else
+            skip "Slurm array default --output staging: tasks ran but symlinks did not land ($_stg_submit)"
+        fi
+    fi
+    rm -rf "$_stg_subdir"
+fi
+
 echo ""
 
 # ── 7. Sandbox self-protection ───────────────────────────────────

@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Default `sbatch --output` now stages + symlinks like an explicit value.**
+  Previously, omitting `--output` (and not setting it via `#SBATCH`
+  directive) fell through to stock Slurm: `<submit-cwd>/slurm-<jobid>.out`
+  written directly by slurmstepd, no chaperon staging, no symlink-plant
+  defense. An in-sandbox agent could pre-create
+  `slurm-<next-jobid>.out` as a symlink at the predictable cwd path and
+  slurmstepd would follow it. `create_wrapped_script` now injects a
+  `#SBATCH --output=<staging-path>` directive when neither the CLI nor a
+  `#SBATCH` directive supplied one, picking `slurm-%A_%a.out` for array
+  jobs (detected by `--array` in `VALIDATED_ARGS`) and `slurm-%j.out`
+  otherwise — matching stock Slurm's defaults. The in-sandbox prelude
+  plants the symlink at the resolved user path the same way it does for
+  explicit `--output` values; the staging file lives in the RO-overlaid
+  `.sandbox-state/slurm-logs/` subtree. CLI flag and `#SBATCH` directive
+  values still win — the injection only fires when both captures are
+  empty. Stderr is not injected separately; stock Slurm merges stderr
+  into stdout when only `--output` is set, and the prelude's
+  stderr-symlink branch no-ops on empty capture. `srun --output`
+  remains out of scope — srun has no staging in 0.11.0 (separate
+  follow-on work).
+
 ## [0.11.0] - 2026-05-20
 
 ### Added
