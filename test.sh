@@ -3468,6 +3468,148 @@ fi
 
 echo ""
 
+# ── 6.6 #SBATCH directive whitespace-smuggling (ASB-2026-001) ────
+#
+# Regression suite for ASB-2026-001 (HIGH; settylab/dotto-nexus#139).
+# Baseline flag-name extraction in `create_wrapped_script` stops at
+# the first `=`, so `#SBATCH --time=00:01:00 --task-prolog=/evil.sh`
+# is classified as a `--time` directive and the smuggled tail rides
+# through. Slurm's directive parser then whitespace-tokenizes the
+# rebuilt line and applies both flags — the `--task-prolog` runs
+# user-controlled code on the compute node BEFORE sandbox-exec.sh
+# wraps the job. CLI deny-list at _handler_lib.sh:451-478 is
+# bypassed via this path.
+#
+# These tests live at the unit layer (source _handler_lib.sh, call
+# create_wrapped_script with crafted script content, assert on the
+# emitted wrapper + return code). End-to-end empirical verification
+# on a real Slurm cluster is out of scope for the test harness.
+
+echo "6.6 #SBATCH directive smuggling (ASB-2026-001)"
+
+# _smuggle_unit_test <test-label> <script-body> <expect-rejected> <forbidden-substr>
+#
+# Runs create_wrapped_script in a subshell, captures stdout/stderr,
+# and returns:
+#   0 — emitted wrapper does NOT contain <forbidden-substr> AND
+#       (when <expect-rejected>=1) the function signaled rejection
+#       via _sandbox_deny on stderr OR non-zero return.
+#   1 — vulnerability present (smuggled token survived) OR the
+#       positive control was rejected.
+_smuggle_unit_run() {
+    local _label="$1" _script="$2" _expect_rej="$3" _forbidden="$4"
+    local _tmpdir _wrapper _err _rc _wrapper_text
+    _tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/asb-2026-001-XXXXXX")
+    _wrapper="$_tmpdir/wrap.sh"
+    _err="$_tmpdir/err"
+    (
+        set +e
+        export PROJECT_DIR="$_tmpdir"
+        # shellcheck disable=SC1091
+        source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+        create_wrapped_script /bin/true "$_tmpdir" "$_script" "$_wrapper"
+    ) 2>"$_err"
+    _rc=$?
+    _wrapper_text="$(cat "$_wrapper" 2>/dev/null || true)"
+    local _err_text
+    _err_text="$(cat "$_err" 2>/dev/null || true)"
+
+    if [[ "$_expect_rej" == "1" ]]; then
+        # Smuggling case: forbidden token must NOT appear in the
+        # wrapper's #SBATCH header. Anything that lands in the
+        # wrapper as a directive is what slurmstepd will see.
+        local _header
+        _header="$(printf '%s\n' "$_wrapper_text" | sed -n '/^# --- Chaperon wrapper/q;p')"
+        if printf '%s' "$_header" | grep -qF -- "$_forbidden"; then
+            fail "$_label: smuggled '$_forbidden' survived into wrapper #SBATCH header" \
+                 "header: $_header | stderr: $_err_text | rc=$_rc"
+            rm -rf "$_tmpdir"
+            return 1
+        fi
+        # And the chaperon must have surfaced a security message
+        # (matches the wording the CLI deny-list uses, so operators
+        # can grep both paths identically).
+        if echo "$_err_text" | grep -qiE "is not allowed|blocked for security|denied|unsafe"; then
+            pass "$_label"
+            rm -rf "$_tmpdir"
+            return 0
+        else
+            fail "$_label: smuggled token stripped but no security message emitted" \
+                 "stderr: $_err_text | rc=$_rc"
+            rm -rf "$_tmpdir"
+            return 1
+        fi
+    else
+        # Positive control: the directive should survive AND no
+        # security message should fire.
+        if ! printf '%s' "$_wrapper_text" | grep -qE '^#SBATCH '; then
+            fail "$_label: clean directive missing from wrapper" \
+                 "wrapper: $_wrapper_text | stderr: $_err_text"
+            rm -rf "$_tmpdir"
+            return 1
+        fi
+        if echo "$_err_text" | grep -qiE "is not allowed|blocked for security|denied|unsafe"; then
+            fail "$_label: clean directive triggered a security message (false positive)" \
+                 "stderr: $_err_text"
+            rm -rf "$_tmpdir"
+            return 1
+        fi
+        pass "$_label"
+        rm -rf "$_tmpdir"
+        return 0
+    fi
+}
+
+# Per-flag smuggling vectors. Each test runs against the form
+# `#SBATCH --time=00:01:00 --<denied>=/evil.sh\necho job`.
+for _flag in --task-prolog --prolog --get-user-env --bcast --container; do
+    _smuggle_script="#!/bin/bash
+#SBATCH --time=00:01:00 ${_flag}=/evil.sh
+echo job"
+    _smuggle_unit_run \
+        "Chaperon rejects '${_flag}' smuggled via #SBATCH directive body" \
+        "$_smuggle_script" 1 "${_flag}"
+done
+
+# Short-form smuggling: `-o foo --task-prolog=/evil`.
+_short_smuggle="#!/bin/bash
+#SBATCH -o foo --task-prolog=/evil.sh
+echo job"
+_smuggle_unit_run \
+    "Chaperon rejects '--task-prolog' smuggled after short-form '-o'" \
+    "$_short_smuggle" 1 "--task-prolog"
+
+# Generic smuggling-shape: an allowed flag followed by an allowed
+# flag still smells like the attack pattern (whitespace-then-`--`
+# in the directive body). The defense-in-depth rule rejects the
+# whole directive even when every smuggled flag is benign.
+_pair_smuggle="#!/bin/bash
+#SBATCH --time=00:01:00 --partition=foo
+echo job"
+_smuggle_unit_run \
+    "Chaperon rejects multi-flag #SBATCH directive shape (defense-in-depth)" \
+    "$_pair_smuggle" 1 "--partition"
+
+# Positive control: a clean single-flag directive must still pass.
+_clean_directive="#!/bin/bash
+#SBATCH --time=00:01:00
+echo job"
+_smuggle_unit_run \
+    "Chaperon accepts clean single-flag #SBATCH --time directive" \
+    "$_clean_directive" 0 ""
+
+# Positive control: --output=path rewrite path must still produce
+# a wrapper that submits cleanly (no false-positive smuggling
+# rejection on the rebuild path).
+_clean_output="#!/bin/bash
+#SBATCH --output=out.log
+echo job"
+_smuggle_unit_run \
+    "Chaperon accepts clean #SBATCH --output= directive (rebuild path)" \
+    "$_clean_output" 0 ""
+
+echo ""
+
 # ── 7. Sandbox self-protection ───────────────────────────────────
 
 echo "7. Sandbox self-protection"
@@ -5632,34 +5774,47 @@ else
     fail "Network filter (v1.1): pasta generator regressed (rc=$?)"
 fi
 
-# Hostname entries, wildcards, and '*' deny-all cannot be enforced
-# at pasta's port-level layer — they're silently skipped by default,
-# and emit stderr notes when NETWORK_FILTER_VERBOSE=1.
+# Hostname-shape entries (wildcard hostname, bare hostname/CIDR-
+# without-port) cannot be enforced at pasta's port-level layer.
+# Post-ASB-2026-002 they emit NOTEs at DEFAULT verbosity (vocal-by-
+# default — operator-configured restrictions that are silently a
+# no-op are an operator-error indicator, not a feature). The '*'
+# deny-all NOTE remains verbose-gated because the literal '*' in
+# NETWORK_BLOCKLIST is the conventional "implicit-allowlist"
+# idiom (paired with NETWORK_BLOCKLIST_EXCEPT), where the operator
+# already knows pasta cannot enforce '*' and doesn't want a NOTE
+# on every launch.
 if (
     set -uo pipefail
     export _SANDBOX_LIB_NO_INIT=1
     source "$SCRIPT_DIR/sandbox-lib.sh"
     NETWORK_BLOCKLIST=("*" "*.cloudflare-dns.com" "api.mailgun.net" "25")
     NETWORK_BLOCKLIST_EXCEPT=()
-    # Default (quiet): zero stderr, port 25 still excluded.
+    # Default verbosity (ASB-2026-002 vocal-by-default): exactly
+    # two stderr lines — the wildcard-hostname NOTE and the bare-
+    # hostname NOTE. The '*' deny-all NOTE remains verbose-gated.
+    # Port 25 still excluded.
     _stderr="$(mktemp "${TMPDIR:-/tmp}/test-pasta-quiet.XXXXXX")"
     _trap_files=("$_stderr")
     _specs="$(generate_pasta_port_exclusions 2>"$_stderr")"
     _tcp_line="$(grep '^TCP:' <<< "$_specs")"
     grep -q '~25' <<< "$_tcp_line" || { echo "FAIL: ~25 missing"; exit 1; }
-    [[ "$(wc -l <"$_stderr")" -eq 0 ]] || { echo "FAIL: stderr non-empty when verbose=off (got $(wc -l <"$_stderr") lines)"; exit 1; }
+    _lines="$(wc -l <"$_stderr")"
+    [[ "$_lines" -eq 2 ]] || { echo "FAIL: default-verbosity stderr expected 2 lines, got $_lines"; cat "$_stderr" >&2; exit 1; }
+    grep -q "wildcard hostname entry '[*]\.cloudflare-dns.com'" "$_stderr" || { echo "FAIL: default-verbosity wildcard NOTE missing"; cat "$_stderr" >&2; exit 1; }
+    grep -q "hostname/CIDR entry 'api.mailgun.net'" "$_stderr" || { echo "FAIL: default-verbosity hostname NOTE missing"; cat "$_stderr" >&2; exit 1; }
+    grep -q "'[*]' cannot be enforced" "$_stderr" && { echo "FAIL: '*' NOTE leaked at default verbosity (should be verbose-gated)"; exit 1; }
     rm -f "$_stderr"
-    # Verbose: notes name '*' + wildcard + hostname entries.
+    # Verbose mode adds the '*' deny-all NOTE on top of the two
+    # always-on NOTEs above.
     _stderr="$(mktemp "${TMPDIR:-/tmp}/test-pasta-verbose.XXXXXX")"
     _trap_files=("$_stderr")
     NETWORK_FILTER_VERBOSE=1 _specs="$(generate_pasta_port_exclusions 2>"$_stderr")"
-    grep -q "'[*]' cannot be enforced" "$_stderr" || { echo "FAIL: '*' note missing"; exit 1; }
-    grep -q "wildcard hostname entry '[*]\.cloudflare-dns.com'" "$_stderr" || { echo "FAIL: wildcard note missing"; exit 1; }
-    grep -q "hostname/CIDR entry 'api.mailgun.net'" "$_stderr" || { echo "FAIL: hostname note missing"; exit 1; }
+    grep -q "'[*]' cannot be enforced" "$_stderr" || { echo "FAIL: verbose '*' note missing"; cat "$_stderr" >&2; exit 1; }
     rm -f "$_stderr"
     exit 0
 ); then
-    pass "Network filter (v1.1): pasta generator skips hostname/wildcard entries (verbose-on-demand notes)"
+    pass "Network filter (v1.1): pasta generator hostname/wildcard NOTEs (vocal-by-default for hostname-shape, verbose-gated for '*')"
 else
     fail "Network filter (v1.1): pasta generator hostname-skip regressed (rc=$?)"
 fi
@@ -5748,6 +5903,108 @@ else
     fi
 fi
 unset _has_pasta
+
+# ── 11.4.asb-2026-002 filtered-mode hostname-entry vocal-by-default ──
+#
+# Regression suite for ASB-2026-002 (MEDIUM; settylab/dotto-nexus#140).
+# pasta's port-exclusion model cannot enforce hostname-shape blocklist
+# entries (*.example.com, evil.com, host:443). Baseline silently
+# dropped them, gated every skip-note on NETWORK_FILTER_VERBOSE=1.
+# Operator-side experience: write `NETWORK_BLOCKLIST+=("*.evil.com")`,
+# see the entry in the config, reasonably assume it is enforced —
+# it is not, and the failure is silent at default verbosity.
+#
+# Fix policy (option-a per issue suggestion, with the operator's
+# subsequent refinement):
+#   * Hostname-shape entries (wildcard-hostname `*.foo.com`, bare
+#     hostname `foo.com`, CIDR-without-port) emit NOTEs UNCONDITIONALLY
+#     — these are operator-error indicators, not deliberate idioms.
+#   * The literal `*` deny-all NOTE remains VERBOSE-gated — `*` in
+#     NETWORK_BLOCKLIST is the conventional "implicit-allowlist"
+#     idiom paired with NETWORK_BLOCKLIST_EXCEPT, and operators
+#     using it already know pasta cannot enforce `*` directly.
+
+# Test A1: wildcard-hostname entry emits NOTE at default verbosity.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    unset NETWORK_FILTER_VERBOSE
+    declare -A _asb_tcp _asb_udp
+    _err=$(_classify_pasta_port_entry "*.example.com" _asb_tcp _asb_udp 2>&1 >/dev/null)
+    echo "$_err" | grep -qE "wildcard hostname entry .*example.com.* cannot be enforced"
+); then
+    pass "Network filter: wildcard hostname entry emits NOTE at default verbosity (ASB-2026-002)"
+else
+    fail "Network filter: wildcard hostname blocklist entry silently dropped at default verbosity (ASB-2026-002)"
+fi
+
+# Test A2: bare-hostname entry emits NOTE at default verbosity.
+# Same vocal-by-default policy as the wildcard case — operator-
+# configured restrictions that are no-ops should surface.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    unset NETWORK_FILTER_VERBOSE
+    declare -A _asb_tcp _asb_udp
+    _err=$(_classify_pasta_port_entry "evil.com" _asb_tcp _asb_udp 2>&1 >/dev/null)
+    echo "$_err" | grep -qE "hostname/CIDR entry 'evil.com' cannot be enforced"
+); then
+    pass "Network filter: bare-hostname entry emits NOTE at default verbosity (ASB-2026-002)"
+else
+    fail "Network filter: bare-hostname blocklist entry silently dropped at default verbosity (ASB-2026-002)"
+fi
+
+# Test A3: '*' deny-all entry is STILL verbose-gated — operators
+# using the implicit-allowlist idiom (`NETWORK_BLOCKLIST=("*")` +
+# NETWORK_BLOCKLIST_EXCEPT) already know pasta cannot enforce it.
+# Two halves: silent at default verbosity, vocal under
+# NETWORK_FILTER_VERBOSE=1.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    declare -A _asb_tcp _asb_udp
+    unset NETWORK_FILTER_VERBOSE
+    _quiet=$(_classify_pasta_port_entry "*" _asb_tcp _asb_udp 2>&1 >/dev/null)
+    [[ -z "$_quiet" ]] || { echo "FAIL: '*' note leaked at default verbosity: $_quiet"; exit 1; }
+    NETWORK_FILTER_VERBOSE=1
+    _verbose=$(_classify_pasta_port_entry "*" _asb_tcp _asb_udp 2>&1 >/dev/null)
+    echo "$_verbose" | grep -qE "'\*' cannot be enforced" || { echo "FAIL: '*' note missing under VERBOSE=1"; exit 1; }
+); then
+    pass "Network filter: '*' deny-all NOTE stays verbose-gated (implicit-allowlist idiom; ASB-2026-002)"
+else
+    fail "Network filter: '*' deny-all NOTE policy regressed (rc=$?)"
+fi
+
+# Test A4 (negative control): a bare-port entry produces no
+# hostname-shape NOTE — pasta CAN enforce these, so the warning is
+# not appropriate. Guards against an over-broad fix that fires on
+# every entry shape.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    unset NETWORK_FILTER_VERBOSE
+    declare -A _asb_tcp _asb_udp
+    _err=$(_classify_pasta_port_entry "25" _asb_tcp _asb_udp 2>&1 >/dev/null)
+    # No "cannot be enforced" message should fire — bare ports ARE
+    # enforced at the pasta layer.
+    ! echo "$_err" | grep -qE "cannot be enforced"
+); then
+    pass "Network filter: bare-port blocklist entry produces no unenforceable-NOTE (negative control)"
+else
+    fail "Network filter: bare-port entry incorrectly produced an unenforceable-NOTE (ASB-2026-002 over-fire)"
+fi
 
 
 # ── 11.4.mailblock NETWORK_MAIL_BLOCK layer (v0.10.1) ──────────────
