@@ -2168,18 +2168,23 @@ _classify_pasta_port_entry() {
     local _port
 
     # "*" deny-all — unenforceable; operators wanting deny-all should
-    # use isolated mode. NOTE fires unconditionally so the operator
-    # sees that their configured entry is a no-op at this layer
-    # (ASB-2026-002; previously gated on NETWORK_FILTER_VERBOSE=1,
-    # which silently dropped operator-configured restrictions at
-    # default verbosity).
+    # use isolated mode. Remains verbose-gated: a literal '*' in
+    # NETWORK_BLOCKLIST is conventionally the "implicit-allowlist"
+    # idiom (see sandbox.conf "Implicit-allowlist idiom" block),
+    # where operators deliberately combine `*` with an EXCEPT list
+    # and don't want a NOTE on every launch reminding them. The
+    # explicit-hostname forms below (wildcard-hostname, bare
+    # hostname) fire unconditionally per ASB-2026-002 because those
+    # shapes are operator-error indicators ("I asked for a block,
+    # the block is silently a no-op"), not deliberate idioms.
     if [[ "$_entry" == "*" ]]; then
-        echo "sandbox: NOTE — network-filter entry '*' cannot be enforced at pasta's port-level layer (would block DNS); use NETWORK_FILTER_MODE=isolated for deny-all semantics. Skipping." >&2
+        [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" ]] && \
+            echo "sandbox: NOTE — network-filter entry '*' cannot be enforced at pasta's port-level layer (would block DNS); use NETWORK_FILTER_MODE=isolated for deny-all semantics. Skipping." >&2
         return 0
     fi
 
     # Wildcard hostname — needs SNI inspection (v1.2 L7 scope). NOTE
-    # fires unconditionally (ASB-2026-002).
+    # fires unconditionally (ASB-2026-002, vocal-by-default).
     if [[ "$_entry" == \** ]]; then
         echo "sandbox: NOTE — wildcard hostname entry '${_entry}' cannot be enforced at pasta's port-level layer (requires SNI inspection; v1.2 L7 proxy scope). Skipping." >&2
         return 0
@@ -2217,9 +2222,11 @@ _classify_pasta_port_entry() {
     fi
 
     # Bare hostname, CIDR-without-port, or unrecognized form — no
-    # enforcement at this layer.
-    [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" ]] && \
-        echo "sandbox: NOTE — hostname/CIDR entry '${_entry}' cannot be enforced at pasta's port-level layer (no port to exclude); use the v1.2 L7 proxy for SNI-aware filtering or isolated mode for hard deny-all. Skipping." >&2
+    # enforcement at this layer. NOTE fires unconditionally
+    # (ASB-2026-002, vocal-by-default): operators writing
+    # `NETWORK_BLOCKLIST+=("evil.com")` should not silently
+    # discover their configured restriction is a no-op.
+    echo "sandbox: NOTE — hostname/CIDR entry '${_entry}' cannot be enforced at pasta's port-level layer (no port to exclude); use the v1.2 L7 proxy for SNI-aware filtering or isolated mode for hard deny-all. Skipping." >&2
 }
 
 # ── Test-harness early-return ────────────────────────────────────
