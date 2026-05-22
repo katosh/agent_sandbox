@@ -343,6 +343,28 @@ _is_allowed_flag() {
     [[ "$_SBATCH_ALLOWED_FLAGS" == *" $base "* ]]
 }
 
+# Security-critical deny-list (ASB-2026-001). Shared between
+# validate_sbatch_args (CLI) and create_wrapped_script (#SBATCH
+# directive filter) so both entry points reject identically. An
+# attacker who can put `--task-prolog` on the CLI is blocked by
+# validate_sbatch_args; an attacker who hides `--task-prolog`
+# inside a #SBATCH directive body must be blocked here too.
+_is_denied_flag() {
+    local base="${1%%=*}"
+    case "$base" in
+        --prolog|--epilog|--task-prolog|--task-epilog) return 0 ;;
+        --get-user-env)                                return 0 ;;
+        --bcast)                                       return 0 ;;
+        --container)                                   return 0 ;;
+        --uid|--gid)                                   return 0 ;;
+        --propagate)                                   return 0 ;;
+        --burst-buffer-file|--bbf)                     return 0 ;;
+        --wrap)                                        return 0 ;;
+        --chdir|-D)                                    return 0 ;;
+    esac
+    return 1
+}
+
 # Check if a flag consumes a value argument.
 _is_value_flag() {
     [[ "$_SBATCH_VALUE_FLAGS" == *" $1 "* ]]
@@ -631,6 +653,34 @@ create_wrapped_script() {
                 -*)    flag_name="${directive_body:0:2}" ;;
                 *)     flag_name="" ;;
             esac
+
+            # ── ASB-2026-001 defense-in-depth ──────────────────────
+            # Slurm's #SBATCH directive parser whitespace-tokenizes
+            # the body, so `#SBATCH --time=01 --task-prolog=/evil.sh`
+            # would apply BOTH flags despite our flag-name extraction
+            # stopping at the first `=`. Refuse any directive whose
+            # body contains `[[:space:]]--` — the smuggling-shape
+            # signature. Single-flag-per-directive is the Slurm
+            # convention; multi-flag lines are rare in practice and
+            # always recoverable by splitting onto separate lines.
+            if [[ "$directive_body" == *[[:space:]]--* ]]; then
+                _sandbox_deny "#SBATCH directive '${directive_body}' contains multiple flag tokens; only one flag per #SBATCH line is allowed (whitespace-smuggling defense, ASB-2026-001)."
+                stripped_count=$((stripped_count + 1))
+                continue
+            fi
+
+            # Explicit security-critical deny-list parity with the
+            # CLI surface (validate_sbatch_args). Without this a
+            # bare `#SBATCH --task-prolog=/x` would be silently
+            # stripped via the allow-list miss below — operators
+            # deserve a specific message, and a future allow-list
+            # expansion must not silently re-admit a denied flag.
+            if [[ -n "$flag_name" ]] && _is_denied_flag "$flag_name"; then
+                _sandbox_deny "#SBATCH '${flag_name}' is not allowed — denied by the chaperon's security flag list."
+                stripped_count=$((stripped_count + 1))
+                continue
+            fi
+
             if [[ -n "$flag_name" ]] && _is_allowed_flag "$flag_name"; then
                 # Transform --output / --error values inside #SBATCH
                 # directives so the redirect-to-staging contract applies
@@ -652,8 +702,15 @@ create_wrapped_script() {
                             _dval="${_dval%%#*}"
                             _dval="${_dval%"${_dval##*[![:space:]]}"}"
                             _new_val="$(_transform_slurm_output_path "$_dval" "$project_dir")"
-                            # Reconstruct as `#SBATCH <flag>=<new_val>` (canonical form).
-                            _new_line="#SBATCH $flag_name=$_new_val"
+                            # Reconstruct as `#SBATCH <flag>=<new_val>` (canonical
+                            # form). Quote the value via printf %q so a path with
+                            # special characters cannot be interpreted by Slurm's
+                            # directive tokenizer as a flag boundary (ASB-2026-001
+                            # belt-and-braces — the whitespace-smuggling defense
+                            # above already rejects the attack at the body level).
+                            local _new_val_quoted
+                            printf -v _new_val_quoted '%q' "$_new_val"
+                            _new_line="#SBATCH $flag_name=$_new_val_quoted"
                             # Capture for env-var passing — last directive wins,
                             # matching command-line `validate_sbatch_args` semantics.
                             _capture_slurm_output_pair "$flag_name" "$_dval" "$_new_val"

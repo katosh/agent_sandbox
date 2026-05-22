@@ -2168,17 +2168,20 @@ _classify_pasta_port_entry() {
     local _port
 
     # "*" deny-all — unenforceable; operators wanting deny-all should
-    # use isolated mode.
+    # use isolated mode. NOTE fires unconditionally so the operator
+    # sees that their configured entry is a no-op at this layer
+    # (ASB-2026-002; previously gated on NETWORK_FILTER_VERBOSE=1,
+    # which silently dropped operator-configured restrictions at
+    # default verbosity).
     if [[ "$_entry" == "*" ]]; then
-        [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" ]] && \
-            echo "sandbox: NOTE — network-filter entry '*' cannot be enforced at pasta's port-level layer (would block DNS); use NETWORK_FILTER_MODE=isolated for deny-all semantics. Skipping." >&2
+        echo "sandbox: NOTE — network-filter entry '*' cannot be enforced at pasta's port-level layer (would block DNS); use NETWORK_FILTER_MODE=isolated for deny-all semantics. Skipping." >&2
         return 0
     fi
 
-    # Wildcard hostname — needs SNI inspection (v1.2 L7 scope).
+    # Wildcard hostname — needs SNI inspection (v1.2 L7 scope). NOTE
+    # fires unconditionally (ASB-2026-002).
     if [[ "$_entry" == \** ]]; then
-        [[ "${NETWORK_FILTER_VERBOSE:-0}" == "1" ]] && \
-            echo "sandbox: NOTE — wildcard hostname entry '${_entry}' cannot be enforced at pasta's port-level layer (requires SNI inspection; v1.2 L7 proxy scope). Skipping." >&2
+        echo "sandbox: NOTE — wildcard hostname entry '${_entry}' cannot be enforced at pasta's port-level layer (requires SNI inspection; v1.2 L7 proxy scope). Skipping." >&2
         return 0
     fi
 
