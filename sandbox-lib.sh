@@ -496,12 +496,34 @@ _is_allowed_env() {
 # ── Helper: check if an env var matches a hardcoded credential pattern ──
 # Returns 0 (true) if the variable should be blocked by pattern.
 # ALLOWED_ENV_VARS overrides pattern matches.
+#
+# Pattern syntax: shell-style globs, case-sensitive by default. A trailing
+# `/i` flag on an entry opts that entry into case-insensitive matching —
+# same convention as sed (`s/.../.../i`), Perl (`qr/.../i`), and JavaScript
+# regex (`/.../i`). Env-var names are restricted to [A-Za-z0-9_] (POSIX
+# IEEE Std 1003.1, Sec. 8.1) and cannot legitimately contain `/`, so the
+# suffix is unambiguous. Default is case-sensitive so admin baselines
+# upgrading across versions keep their existing semantics.
 _is_blocked_by_pattern() {
     local _var="$1"
     _is_allowed_env "$_var" && return 1
+    local _glob _pat _matched
     for _glob in "${BLOCKED_ENV_PATTERNS[@]}"; do
-        # shellcheck disable=SC2254
-        case "$_var" in $_glob) return 0 ;; esac
+        _matched=false
+        if [[ "$_glob" == */i ]]; then
+            _pat="${_glob%/i}"
+            # nocasematch is per-shell-option, restored after this entry's
+            # match attempt so callers and other globs in the loop see the
+            # default (case-sensitive) behaviour.
+            shopt -s nocasematch
+            # shellcheck disable=SC2254
+            case "$_var" in $_pat) _matched=true ;; esac
+            shopt -u nocasematch
+        else
+            # shellcheck disable=SC2254
+            case "$_var" in $_glob) _matched=true ;; esac
+        fi
+        $_matched && return 0
     done
     return 1
 }

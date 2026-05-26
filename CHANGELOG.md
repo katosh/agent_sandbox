@@ -30,6 +30,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   remains out of scope — srun has no staging in 0.11.0 (separate
   follow-on work).
 
+- **`BLOCKED_ENV_PATTERNS` case-insensitivity opt-in via trailing `/i`
+  flag.** Patterns stay case-sensitive by default (no admin-baseline
+  semantics change on upgrade); appending the industry-standard `/i`
+  flag — same convention as sed (`s/.../.../i`), Perl (`qr/.../i`),
+  and JavaScript regex (`/.../i`) — opts a single entry into
+  case-insensitive matching. Env-var names are restricted to
+  `[A-Za-z0-9_]` (POSIX IEEE Std 1003.1 §8.1) and cannot legitimately
+  contain `/`, so the suffix is unambiguous. Implemented as a
+  per-entry parse in `_is_blocked_by_pattern`: when the glob ends in
+  `/i`, the suffix is stripped and `shopt -s nocasematch` is enabled
+  for that entry's `case` match, then disabled before the next loop
+  iteration. `ALLOWED_ENV_VARS` continues to override pattern
+  matches regardless of the case-sensitivity flag.
+
+  Example: `BLOCKED_ENV_PATTERNS+=("app_secret_*/i")` blocks
+  `APP_SECRET_X`, `app_secret_x`, and `App_Secret_X`; the same
+  pattern without `/i` blocks only the exact-case form.
+
+### Documentation
+
+- **`BLOCKED_FILES` reference expanded** in `docs/reference/security.md`
+  with semantics (at-launch vs at-create — same precedence model as
+  bind/mount), per-backend enforcement detail (bwrap dual-bind for
+  symlink-bypass class, firejail `--blacklist`, landlock unsupported),
+  and version-pinned code permalinks (`blob/v0.11.0/...#L<n>-L<m>`)
+  so the references survive code drift on `main`.
+
 ## [0.11.0] - 2026-05-20
 
 ### Added

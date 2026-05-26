@@ -362,6 +362,15 @@ BLOCKED_ENV_PATTERNS=(
 
 Glob patterns that block any matching env var. Patterns catch the common credential conventions automatically. Use [`ALLOWED_ENV_VARS`](#allowed_env_vars) to exempt a specific variable matched by these patterns.
 
+**Case sensitivity.** Patterns are case-sensitive by default. Append the trailing `/i` flag — the industry-standard regex convention from sed (`s/.../.../i`), Perl (`qr/.../i`), and JavaScript (`/.../i`) — to opt one entry into case-insensitive matching. Env-var names are restricted to `[A-Za-z0-9_]` (POSIX IEEE Std 1003.1 §8.1) and cannot legitimately contain `/`, so the suffix is unambiguous. Default remains case-sensitive so admin baselines upgrading across versions keep their existing semantics.
+
+```bash
+BLOCKED_ENV_PATTERNS+=(
+    "APP_SECRET_*"      # only blocks APP_SECRET_X (uppercase exact)
+    "app_secret_*/i"    # blocks APP_SECRET_X, app_secret_x, App_Secret_X, …
+)
+```
+
 The startup banner (unless [`SANDBOX_QUIET=true`](#sandbox_quiet)) reports how many env vars were blocked by pattern, so missing vars are diagnosable without leaking the names of credentials.
 
 ### `ALLOWED_ENV_VARS`
