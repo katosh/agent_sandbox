@@ -48,6 +48,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `APP_SECRET_X`, `app_secret_x`, and `App_Secret_X`; the same
   pattern without `/i` blocks only the exact-case form.
 
+- **`BLOCKED_ENV_PATTERNS` skeleton ships with `*password*/i`** as
+  the default `/i` demonstration entry. The case-sensitive
+  `*_PASSWORD` baseline still covers the canonical
+  `DB_PASSWORD` / `SMTP_PASSWORD` UPPER-suffix convention; the
+  new `*password*/i` sweep also catches the mixed-case and
+  lowercase variants that Python `pydantic-settings`, Node
+  `dotenv`, and Ruby `dotenv` routinely surface
+  (`DB_password`, `password_hash`, `SmtpPassword`). Each
+  default pattern group now carries an inline rationale comment
+  so a site editing `sandbox.conf` can audit what each entry
+  sweeps before keeping or overriding it. `ALLOWED_ENV_VARS`
+  precedence preserved — any specific name caught by the new
+  pattern can still be exempted explicitly.
+
 ## [0.11.0] - 2026-05-20
 
 ### Security
