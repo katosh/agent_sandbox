@@ -48,15 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `APP_SECRET_X`, `app_secret_x`, and `App_Secret_X`; the same
   pattern without `/i` blocks only the exact-case form.
 
-### Documentation
-
-- **`BLOCKED_FILES` reference expanded** in `docs/reference/security.md`
-  with semantics (at-launch vs at-create — same precedence model as
-  bind/mount), per-backend enforcement detail (bwrap dual-bind for
-  symlink-bypass class, firejail `--blacklist`, landlock unsupported),
-  and version-pinned code permalinks (`blob/v0.11.0/...#L<n>-L<m>`)
-  so the references survive code drift on `main`.
-
 ## [0.11.0] - 2026-05-20
 
 ### Added
