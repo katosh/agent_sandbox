@@ -50,6 +50,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.11.0] - 2026-05-20
 
+### Security
+
+- **ASB-2026-001 (HIGH) — close `#SBATCH` directive whitespace-smuggling
+  on the chaperon's directive filter (PR #71).** Before the fix,
+  `create_wrapped_script` extracted the directive flag name by stripping
+  at the first `=`, so a line like
+  `#SBATCH --time=01:00 --task-prolog=/evil.sh` was classified as a
+  `--time` directive and the smuggled tail was rebuilt verbatim into
+  the wrapped script. Slurm's directive parser then whitespace-
+  tokenized that body and applied both flags, executing attacker-
+  controlled code on the compute node *before* `sandbox-exec.sh` could
+  wrap the job — bypassing the CLI deny-list at
+  `chaperon/handlers/_handler_lib.sh:451-478`. Three-layer fix in
+  `_handler_lib.sh`: (a) a new `_is_denied_flag` helper centralizes the
+  security-critical deny-list (`--prolog`, `--epilog`, `--task-prolog`,
+  `--task-epilog`, `--get-user-env`, `--bcast`, `--container`,
+  `--uid`/`--gid`, `--propagate`, `--burst-buffer-file`/`--bbf`,
+  `--wrap`, `--chdir`/`-D`) so both the CLI path
+  (`validate_sbatch_args`) and the script-directive path
+  (`create_wrapped_script`) consult one source of truth; (b)
+  defense-in-depth — any `#SBATCH` directive whose body contains
+  `[[:space:]]--` after the leading flag is refused outright with a
+  "whitespace-smuggling defense" message, since Slurm whitespace-
+  tokenizes the body and one-flag-per-line is the only safe shape; (c)
+  the `--output`/`--error` rebuild path now quotes the transformed
+  value with `printf %q` so special characters in the value cannot be
+  interpreted as flag boundaries by Slurm's tokenizer (belt-and-braces
+  behind the body-level rejection).
+
+- **ASB-2026-002 (MEDIUM) — `NETWORK_BLOCKLIST` wildcard-hostname
+  entries no longer silently drop in filtered mode (PR #71).** The
+  pasta port-exclusion resolver skipped wildcard hostname entries
+  (`*.example.com`) and the `*` deny-all entry because they cannot be
+  enforced at pasta's port-level layer. The skip-notes at
+  `sandbox-lib.sh:2173` (`*` deny-all) and `:2180` (wildcard hostname)
+  were gated on `NETWORK_FILTER_VERBOSE=1`, so an operator writing
+  `NETWORK_BLOCKLIST+=("*.evil.com")` would reasonably assume
+  enforcement and never see a signal that it was a no-op. The fix
+  removes both verbose gates so the unenforceable-entry NOTE fires on
+  every launch when such entries are present; message wording is
+  unchanged so operator-side greps for the existing text keep working.
+
 ### Added
 
 - **`.sandbox-state/` — hidden chaperon-owned state convention (#67; PR #68).**
