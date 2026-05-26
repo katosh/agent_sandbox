@@ -1385,6 +1385,40 @@ fi
 unset MY_CUSTOM_TOKEN
 rm -f "$_pattern_conf"
 
+# BLOCKED_ENV_PATTERNS case-insensitivity (`/i` suffix, sed/Perl/JS-regex style).
+# Default behaviour is case-sensitive (matches the convention where `/i` is an
+# explicit opt-in flag). Two assertions: baseline (case-sensitive without `/i`)
+# and opt-in (case-insensitive with `/i`).
+_nocase_conf="$HOME/.config/agent-sandbox/conf.d/test-nocase-pattern-$$.conf"
+_TEST_TEMP_FILES+=("$_nocase_conf")
+mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+
+# Without /i: lowercase glob must NOT match an uppercase var (case-sensitive default).
+echo 'BLOCKED_ENV_PATTERNS+=("nocase_baseline_*")' > "$_nocase_conf"
+export NOCASE_BASELINE_VAR="should-leak-case-sensitive"
+if sandbox bash -c 'echo ${NOCASE_BASELINE_VAR:-UNSET}'; then
+    if [[ "$OUTPUT" == "should-leak-case-sensitive" ]]; then
+        pass "BLOCKED_ENV_PATTERNS default is case-sensitive (lowercase glob does not match uppercase var)"
+    else
+        fail "BLOCKED_ENV_PATTERNS unexpectedly case-insensitive without /i flag" "$OUTPUT"
+    fi
+fi
+unset NOCASE_BASELINE_VAR
+rm -f "$_nocase_conf"
+
+# With /i: lowercase glob MUST match an uppercase var (case-insensitive opt-in).
+echo 'BLOCKED_ENV_PATTERNS+=("nocase_demo_*/i")' > "$_nocase_conf"
+export NOCASE_DEMO_VAR="should-be-blocked-nocase"
+if sandbox bash -c 'echo ${NOCASE_DEMO_VAR:-UNSET}'; then
+    if [[ "$OUTPUT" == "UNSET" ]]; then
+        pass "BLOCKED_ENV_PATTERNS /i suffix: lowercase glob blocks uppercase var"
+    else
+        fail "BLOCKED_ENV_PATTERNS /i suffix did not enable case-insensitive matching" "$OUTPUT"
+    fi
+fi
+unset NOCASE_DEMO_VAR
+rm -f "$_nocase_conf"
+
 # Passthrough vars
 if sandbox bash -c 'echo ${USER:-UNSET}'; then
     if [[ "$OUTPUT" != "UNSET" ]]; then
