@@ -3973,6 +3973,77 @@ else
     skip "S05: Symlinked-ancestor BLOCKED_FILES test is bwrap-specific"
 fi
 
+# ── S06: BLOCKED_FILES non-existent path under writable parent ──
+# When a BLOCKED_FILES entry points at a path that doesn't exist on host
+# (e.g. ~/.claude/CLAUDE.md on a fresh install), the sandbox should
+# materialize an empty placeholder at config-load time and bind /dev/null
+# over it. Closes the gap where the previous [[ -e ]] skip left such
+# entries silently unenforced.
+# landlock: BLOCKED_FILES has no effect, validation skipped — skip the test.
+if has_mount_ns; then
+    local _s06_target="$HOME/.test-blockfiles-missing-$$"
+    local _s06_conf="$HOME/.config/agent-sandbox/conf.d/test-blockfiles-missing-$$.conf"
+    _TEST_TEMP_FILES+=("$_s06_conf" "$_s06_target")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    rm -f "$_s06_target"
+    [[ -e "$_s06_target" ]] && { fail "S06: pre-existing target (test bug)" "$_s06_target"; }
+    echo "BLOCKED_FILES+=( \"$_s06_target\" )" > "$_s06_conf"
+    if sandbox_must_run bash -c "[ -e '$_s06_target' ] && wc -c < '$_s06_target' 2>&1 || echo MISSING; echo EXIT=\$?"; then
+        # Placeholder should have been created on host (empty stub), and
+        # bound to /dev/null inside the sandbox → in-sandbox wc -c == 0.
+        if [[ -e "$_s06_target" ]]; then
+            local _host_size
+            _host_size=$(stat -c %s "$_s06_target" 2>/dev/null)
+            if [[ "$_host_size" == "0" ]] && echo "$OUTPUT" | grep -qE "^0$|^[[:space:]]*0[[:space:]]*$"; then
+                pass "S06: Missing BLOCKED_FILES entry materialized as empty placeholder and bound to /dev/null"
+            else
+                fail "S06: Placeholder created but content not /dev/null-bound (host_size=$_host_size, OUTPUT=$OUTPUT)" "$OUTPUT"
+            fi
+        else
+            fail "S06: Sandbox launched but didn't materialize the missing BLOCKED_FILES entry on host" "$OUTPUT"
+        fi
+    else
+        fail "S06: Sandbox refused to start for missing BLOCKED_FILES entry under writable parent" "$OUTPUT_ERR"
+    fi
+    rm -f "$_s06_conf" "$_s06_target"
+else
+    skip "S06: BLOCKED_FILES has no effect on Landlock (no mount namespace)"
+fi
+
+# ── S07: BLOCKED_FILES non-existent path under non-writable parent ──
+# When the entry can't be materialized (e.g. /etc/something-the-user-cant-touch),
+# the sandbox must refuse to start with a clear error naming the failing
+# entry. This is operator's question 2: what happens for a path under a
+# directory the user can't write?
+if has_mount_ns; then
+    local _s07_target="/etc/agent-sandbox-test-blockfiles-$$"
+    local _s07_conf="$HOME/.config/agent-sandbox/conf.d/test-blockfiles-noaccess-$$.conf"
+    _TEST_TEMP_FILES+=("$_s07_conf")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    [[ -e "$_s07_target" ]] && { fail "S07: pre-existing target (test bug)" "$_s07_target"; }
+    # Sanity: caller can't write to /etc as non-root — required for the test.
+    if touch "$_s07_target" 2>/dev/null; then
+        rm -f "$_s07_target" 2>/dev/null
+        skip "S07: /etc is writable by this user — cannot test the EACCES path"
+    else
+        echo "BLOCKED_FILES+=( \"$_s07_target\" )" > "$_s07_conf"
+        sandbox bash -c "echo IF-WE-GOT-HERE-SANDBOX-WAS-NOT-FAIL-LOUD"
+        if [[ -e "$_s07_target" ]]; then
+            fail "S07: Sandbox somehow created /etc placeholder (should be EACCES)" "host stub at $_s07_target"
+            sudo rm -f "$_s07_target" 2>/dev/null || rm -f "$_s07_target" 2>/dev/null
+        elif echo "$OUTPUT_ERR" | grep -qE "BLOCKED_FILES.*does not exist|cannot create.*BLOCKED_FILES|cannot materialize"; then
+            pass "S07: Sandbox refused to start with clear error for un-materializable BLOCKED_FILES entry"
+        elif echo "$OUTPUT" | grep -q "IF-WE-GOT-HERE-SANDBOX-WAS-NOT-FAIL-LOUD"; then
+            fail "S07: Sandbox launched silently even though BLOCKED_FILES entry was un-materializable" "$OUTPUT"
+        else
+            fail "S07: Sandbox refused to start, but error didn't name BLOCKED_FILES — expected diagnostic missing" "$OUTPUT_ERR"
+        fi
+        rm -f "$_s07_conf"
+    fi
+else
+    skip "S07: BLOCKED_FILES has no effect on Landlock (no mount namespace)"
+fi
+
 # ── H01: Hardlink /etc/passwd into project dir ──
 local _hlink="$PROJECT_DIR/.test-passwd-hardlink-$$"
 if ln /etc/passwd "$_hlink" 2>/dev/null; then
