@@ -251,11 +251,19 @@ Per-agent instruction files (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, etc.) 
 
 **Backend limitation:** only respected by bwrap and firejail. Landlock cannot block individual files under directories it has already granted access to (no mount namespace, no overlays).
 
-**Existence requirement (bwrap/firejail).** Every `BLOCKED_FILES` entry must resolve to a path the sandbox can materialize on host before launch. Entries that don't exist on host are auto-created as zero-byte placeholders (with `mkdir -p` for parents) so the backend has a clean target for the `/dev/null` overlay. If an entry can't be materialized — non-writable parent, read-only mount, parent dir can't be created — `sandbox-exec.sh` refuses to start and prints the full list of failing entries.
+**bwrap masking needs a real file on host.** When the bwrap backend implements `BLOCKED_FILES` via `--ro-bind /dev/null <path>`, the host path must already exist as a regular file: bwrap's `ensure_file → create_file → creat()` (see [`utils.c` in v0.11.0](https://github.com/containers/bubblewrap/blob/v0.11.0/utils.c#L480-L498)) opens the target with `O_CREAT` during mount setup. If the target's parent is a writable host path, bwrap creates a zero-byte stub on host before binding `/dev/null` over it; if intermediate parent directories are missing, bwrap creates those too. The stub persists after sandbox exit unless explicitly removed. Firejail's `--blacklist` does not have this requirement (the path may be absent at launch). Landlock does not enforce `BLOCKED_FILES` at all — file-level masking needs a mount namespace, which Landlock doesn't have.
 
-This closes a class of silent-no-op bugs where a non-existent entry was simply skipped, leaving the path unenforced if the user later created it. It also prevents bwrap's own `ensure_file → creat()` from leaving a host stub during mount setup, which was indistinguishable from a real file and persisted after sandbox exit. See [#73](https://github.com/katosh/agent_sandbox/issues/73).
+To make masking visible and controllable, `sandbox-exec.sh` materializes every missing `BLOCKED_FILES` entry itself at config-load (after `_apply_agent_profiles`, before `backend_prepare`):
 
-To opt out of the protection for a specific entry, remove it from `BLOCKED_FILES`. To make an entry exist, run `mkdir -p "$(dirname X)" && touch X` (the sandbox does this automatically when it can).
+- `mkdir -p "$(dirname X)"` for any missing parents,
+- `touch X` to create a zero-byte placeholder under user-controlled permissions,
+- one `WARNING:` line per materialized path on stderr — and one per parent directory it had to create — so you can see exactly what host-side state the launcher touched.
+
+If the materialization fails (non-writable parent like `/etc`, read-only mount), `sandbox-exec.sh` refuses to start and prints the full list of failing entries with a remediation hint. Silent skip would leave the path unenforced — the failure case is unrecoverable without user action, so we surface it.
+
+Pass `--cleanup-materialized` (or set `CLEANUP_MATERIALIZED_BLOCKED_FILES=1` in the environment or config) to have the launcher remove the placeholders post-exit. Cleanup is conservative: a file is removed only if it's still 0 bytes; a directory is removed only if it's still empty. Anything that grew (a real edit between launch and exit) is retained with a `kept` note on stderr.
+
+To opt out of the protection for a specific entry, remove it from `BLOCKED_FILES`. To make an entry permanently exist (no warning on each launch), run `mkdir -p "$(dirname X)" && touch X` once outside the sandbox.
 
 ```bash
 BLOCKED_FILES+=(
