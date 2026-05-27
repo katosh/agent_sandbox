@@ -1682,6 +1682,11 @@
 <td><strong>Hard</strong> (bwrap) / Path-based (firejail) / N/A (Landlock — <code>BLOCKED_FILES</code> has no effect)</td>
 </tr>
 <tr>
+<td><code>BLOCKED_FILES</code> entry doesn't exist on host (silent no-op)</td>
+<td>At config-load, <code>sandbox-exec.sh</code> materializes a zero-byte placeholder for every missing entry under writable parents (with a per-path <code>WARNING:</code> on stderr) and refuses to start (with the full list of failing entries) when materialization fails. Closes a pre-v0.12.0 gap where the bwrap/firejail backends skipped the bind for missing entries, leaving the path unenforced; also pre-empts bwrap's own <code>ensure_file → creat()</code> (<a href="https://github.com/containers/bubblewrap/blob/v0.11.0/utils.c#L480-L498">utils.c, v0.11.0</a>) from creating a host stub during mount setup. Opt-in <code>--cleanup-materialized</code> removes empty placeholders on sandbox exit. See <a href="https://github.com/katosh/agent_sandbox/issues/73">#73</a></td>
+<td><strong>Hard</strong> (bwrap/firejail; materialize-warn or fail-loud) / N/A (Landlock)</td>
+</tr>
+<tr>
 <td>SSH escape (if <code>~/.ssh</code> exposed)</td>
 <td>Not protected — sandbox does not restrict network</td>
 <td><strong>None</strong> — agent can SSH to localhost or other nodes to get an unsandboxed shell. <strong>Do not expose <code>~/.ssh</code></strong> unless you understand this risk.</td>
