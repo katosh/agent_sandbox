@@ -5,7 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.12.0] - 2026-05-27
+
+### Changed
+
+- **`BLOCKED_FILES` entries: materialize + warn + track, with opt-in
+  cleanup (#73).** Before the fix, the bwrap and firejail backends
+  silently skipped any `BLOCKED_FILES` entry that didn't exist on host
+  (`[[ -e $blocked ]]` guard in `backends/bwrap.sh:525-537` and
+  `backends/firejail.sh:360-371`). A user adding `~/secret-future-file`
+  to `BLOCKED_FILES` to pre-emptively protect a path they might later
+  create got NO enforcement until they touched the file themselves —
+  silent no-op disguised as protection. Removing the guard (the
+  obvious fix) was rejected because bwrap's `ensure_file → create_file
+  → creat()` (called for every `SETUP_RO_BIND_MOUNT` op via
+  `bubblewrap.c:1247`) writes to the host backing filesystem during
+  mount setup for any path under a host RW bind — empirically
+  confirmed for cases 1, 4, 6 in the agent_container CI probe
+  (`ci/blockfiles-stub-probe` branch): host stub created, intermediate
+  dirs auto-created on host, /tmp leak. Instead, `sandbox-exec.sh` now
+  calls `_ensure_blocked_files_exist` (defined in `sandbox-lib.sh`)
+  after `_apply_agent_profiles` and before `backend_prepare`. For each
+  entry not present on host, the function:
+  - runs `mkdir -p "$(dirname X)"` + `touch X` to create a zero-byte
+    placeholder under user-controlled permissions,
+  - emits a `WARNING:` line on stderr naming every materialized file
+    (and every parent directory it had to create), so the user knows
+    exactly what host-side state we touched,
+  - tracks the created paths in launcher-scoped arrays so an opt-in
+    cleanup pass can remove them post-exit.
+
+  If a materialization is impossible (non-writable parent, read-only
+  mount), the sandbox refuses to start and prints the full list of
+  failing entries with a one-line remediation hint — that case is
+  unrecoverable without user action and silent skip would defeat the
+  feature.
+
+  `sandbox-exec.sh` accepts a new `--cleanup-materialized` flag (also
+  `CLEANUP_MATERIALIZED_BLOCKED_FILES=1` in env or config). When set,
+  the launcher does NOT exec into the sandbox; it forks bwrap/firejail
+  as a foreground child and runs `_cleanup_materialized_blocked_files`
+  in its `EXIT` trap. The cleanup is conservative: a file is removed
+  only if it's still 0 bytes; a directory is removed only if `rmdir`
+  succeeds (empty). Retentions are reported on stderr with a `kept`
+  note. Skipped under Landlock (BLOCKED_FILES has no enforcement
+  effect; existing config-load warning is the only signal). Four new
+  test sections (S06, S08, S09, S10 in `test.sh`) cover the warn,
+  track, cleanup-empty and cleanup-retains paths; S07 covers the
+  fail-loud branch for un-materializable entries. The `[[ -e $blocked
+  ]]` skip guards in both backends have been removed as dead code.
 
 ### Added
 
@@ -30,7 +78,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   remains out of scope — srun has no staging in 0.11.0 (separate
   follow-on work).
 
+- **`BLOCKED_ENV_PATTERNS` case-insensitivity opt-in via trailing `/i`
+  flag.** Patterns stay case-sensitive by default (no admin-baseline
+  semantics change on upgrade); appending the industry-standard `/i`
+  flag — same convention as sed (`s/.../.../i`), Perl (`qr/.../i`),
+  and JavaScript regex (`/.../i`) — opts a single entry into
+  case-insensitive matching. Env-var names are restricted to
+  `[A-Za-z0-9_]` (POSIX IEEE Std 1003.1 §8.1) and cannot legitimately
+  contain `/`, so the suffix is unambiguous. Implemented as a
+  per-entry parse in `_is_blocked_by_pattern`: when the glob ends in
+  `/i`, the suffix is stripped and `shopt -s nocasematch` is enabled
+  for that entry's `case` match, then disabled before the next loop
+  iteration. `ALLOWED_ENV_VARS` continues to override pattern
+  matches regardless of the case-sensitivity flag.
+
+  Example: `BLOCKED_ENV_PATTERNS+=("app_secret_*/i")` blocks
+  `APP_SECRET_X`, `app_secret_x`, and `App_Secret_X`; the same
+  pattern without `/i` blocks only the exact-case form.
+
+- **`BLOCKED_ENV_PATTERNS` skeleton ships with `*password*/i`** as
+  the default `/i` demonstration entry. The case-sensitive
+  `*_PASSWORD` baseline still covers the canonical
+  `DB_PASSWORD` / `SMTP_PASSWORD` UPPER-suffix convention; the
+  new `*password*/i` sweep also catches the mixed-case and
+  lowercase variants that Python `pydantic-settings`, Node
+  `dotenv`, and Ruby `dotenv` routinely surface
+  (`DB_password`, `password_hash`, `SmtpPassword`). Each
+  default pattern group now carries an inline rationale comment
+  so a site editing `sandbox.conf` can audit what each entry
+  sweeps before keeping or overriding it. `ALLOWED_ENV_VARS`
+  precedence preserved — any specific name caught by the new
+  pattern can still be exempted explicitly.
+
 ## [0.11.0] - 2026-05-20
+
+### Security
+
+- **ASB-2026-001 (HIGH) — close `#SBATCH` directive whitespace-smuggling
+  on the chaperon's directive filter (PR #71).** Before the fix,
+  `create_wrapped_script` extracted the directive flag name by stripping
+  at the first `=`, so a line like
+  `#SBATCH --time=01:00 --task-prolog=/evil.sh` was classified as a
+  `--time` directive and the smuggled tail was rebuilt verbatim into
+  the wrapped script. Slurm's directive parser then whitespace-
+  tokenized that body and applied both flags, executing attacker-
+  controlled code on the compute node *before* `sandbox-exec.sh` could
+  wrap the job — bypassing the CLI deny-list at
+  `chaperon/handlers/_handler_lib.sh:451-478`. Three-layer fix in
+  `_handler_lib.sh`: (a) a new `_is_denied_flag` helper centralizes the
+  security-critical deny-list (`--prolog`, `--epilog`, `--task-prolog`,
+  `--task-epilog`, `--get-user-env`, `--bcast`, `--container`,
+  `--uid`/`--gid`, `--propagate`, `--burst-buffer-file`/`--bbf`,
+  `--wrap`, `--chdir`/`-D`) so both the CLI path
+  (`validate_sbatch_args`) and the script-directive path
+  (`create_wrapped_script`) consult one source of truth; (b)
+  defense-in-depth — any `#SBATCH` directive whose body contains
+  `[[:space:]]--` after the leading flag is refused outright with a
+  "whitespace-smuggling defense" message, since Slurm whitespace-
+  tokenizes the body and one-flag-per-line is the only safe shape; (c)
+  the `--output`/`--error` rebuild path now quotes the transformed
+  value with `printf %q` so special characters in the value cannot be
+  interpreted as flag boundaries by Slurm's tokenizer (belt-and-braces
+  behind the body-level rejection).
+
+- **ASB-2026-002 (MEDIUM) — `NETWORK_BLOCKLIST` wildcard-hostname
+  entries no longer silently drop in filtered mode (PR #71).** The
+  pasta port-exclusion resolver skipped wildcard hostname entries
+  (`*.example.com`) and the `*` deny-all entry because they cannot be
+  enforced at pasta's port-level layer. The skip-notes at
+  `sandbox-lib.sh:2173` (`*` deny-all) and `:2180` (wildcard hostname)
+  were gated on `NETWORK_FILTER_VERBOSE=1`, so an operator writing
+  `NETWORK_BLOCKLIST+=("*.evil.com")` would reasonably assume
+  enforcement and never see a signal that it was a no-op. The fix
+  removes both verbose gates so the unenforceable-entry NOTE fires on
+  every launch when such entries are present; message wording is
+  unchanged so operator-side greps for the existing text keep working.
 
 ### Added
 
@@ -58,54 +180,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **`sbatch --output` / `--error` path transformation + in-sandbox
   symlink (#67; PR #68).** Closes the residual gap left by #65: even with
-  the chaperon's cwd validated, `sbatch --output=/etc/cron.d/evil`
-  (absolute) and `sbatch --output=../../etc/passwd` (relative
-  traversal) escape past the compute-node sandbox because Slurm
-  resolves and opens those paths as the user, before the sandbox
-  boundary applies. The chaperon now transforms `--output` /
-  `--error` values (both command-line and `#SBATCH` directive forms)
-  into paths under `$project_dir/.sandbox-state/slurm-logs/` — leading
-  `/` encoded as `__abs__/`, `..` components rewritten to `__updir__`,
-  `%`-patterns preserved for slurmstepd's runtime substitution. Slurm
-  writes to the chaperon-controlled (and bwrap/firejail-RO-overlaid)
-  staging path. The in-sandbox wrapper, as its first action, creates
-  a **relative** symlink from the user's resolved intended path to
-  the staging file — gated by the bind-mount envelope, so if the
-  user picked a non-sandbox-writable target (e.g. `/etc/cron.d/evil`)
-  the `ln -s` fails gracefully and the log only lives at the
-  staging path. No copy, no exit trap, no race with slurmstepd's
-  continued writes. Wrapper-side helpers (`_sandbox_slurm_resolve_pat`,
-  `_sandbox_link_slurm_output`) resolve `%j`/`%A`/`%a`/`%N`/`%n`/`%t`/
-  `%u`/`%x` from the standard `SLURM_*` env vars set by slurmstepd.
-  Disabled on landlock (the RO overlay is unavailable; symlink-plant
-  defense would be missing). Closes #67.
-
-### Added
-
-- **`.sandbox-state/` — hidden chaperon-owned state convention (#67).**
-  Adds `$project_dir/.sandbox-state/` as a general-purpose subdir for
-  chaperon-managed state: `slurm-logs/` for redirected `sbatch
-  --output` / `--error` files (see next entry), `chaperon/` for the
-  chaperon's own diagnostic log. bwrap and firejail RO-overlay the
-  dir after the writable project bind (path-keyed, later wins) so the
-  agent inside the sandbox can read content but not tamper with it.
-  Landlock can't RO-overlay a subtree under a writable parent
-  (additive-rules limitation) so the dir is sandbox-writable there —
-  the chaperon-side feature gated by `$SANDBOX_BACKEND` skips the
-  Slurm-output redirection on landlock entirely; chaperon log writes
-  fall back to the existing XDG location. Lifecycle: keep forever —
-  documented as a sandbox artifact; `rm -rf .sandbox-state/` to
-  reclaim. Threat-model framing (load-bearing for the design): the
-  RO overlay prevents in-sandbox symlink-plant against the chaperon's
-  writes, NOT trust in the dir's content — the submitted job
-  determines what slurmstepd writes there, and the chaperon never
-  trusts content read back. This is the explicit distinction from
-  the reverted PR #50 (which RO-protected user-owned content the
-  agent legitimately writes to). See
-  `docs/reference/sandbox-state-dir.md` for the full convention.
-
-- **`sbatch --output` / `--error` path transformation + in-sandbox
-  symlink (#67).** Closes the residual gap left by #65: even with
   the chaperon's cwd validated, `sbatch --output=/etc/cron.d/evil`
   (absolute) and `sbatch --output=../../etc/passwd` (relative
   traversal) escape past the compute-node sandbox because Slurm

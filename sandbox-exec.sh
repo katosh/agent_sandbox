@@ -5,10 +5,12 @@
 #   sandbox-exec.sh [OPTIONS] -- CMD [ARGS...]
 #
 # Options:
-#   --project-dir DIR   Directory with write access (default: $PWD)
-#   --backend BACKEND   Force a specific backend (bwrap, landlock, auto)
-#   --dry-run           Print the sandbox command without executing
-#   --help              Show this help
+#   --project-dir DIR         Directory with write access (default: $PWD)
+#   --backend BACKEND         Force a specific backend (bwrap, landlock, auto)
+#   --dry-run                 Print the sandbox command without executing
+#   --cleanup-materialized    Remove BLOCKED_FILES placeholders we created
+#                             at launch if they're still empty on exit.
+#   --help                    Show this help
 #
 # Examples:
 #   sandbox-exec.sh -- claude                        # Claude Code sandboxed
@@ -22,20 +24,24 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_DIR=""
 DRY_RUN=false
 BACKEND_OVERRIDE=""
+CLEANUP_MATERIALIZED_FLAG=""
 
 VERSION="$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo "unknown")"
 
 usage() {
     echo "agent-sandbox $VERSION — kernel-enforced isolation for AI coding agents"
     echo ""
-    echo "Usage: sandbox-exec.sh [--project-dir DIR] [--backend BACKEND] [--dry-run] -- CMD [ARGS...]"
+    echo "Usage: sandbox-exec.sh [OPTIONS] -- CMD [ARGS...]"
     echo ""
     echo "Options:"
-    echo "  --project-dir DIR   Directory with write access (default: \$PWD)"
-    echo "  --backend BACKEND   Force backend: bwrap, landlock, auto (default: auto)"
-    echo "  --dry-run           Print the sandbox command without executing"
-    echo "  --version           Show version"
-    echo "  --help              Show this help"
+    echo "  --project-dir DIR         Directory with write access (default: \$PWD)"
+    echo "  --backend BACKEND         Force backend: bwrap, landlock, auto (default: auto)"
+    echo "  --dry-run                 Print the sandbox command without executing"
+    echo "  --cleanup-materialized    Remove BLOCKED_FILES placeholders created at"
+    echo "                            launch when they're still empty on sandbox exit."
+    echo "                            (Also enabled by CLEANUP_MATERIALIZED_BLOCKED_FILES=1.)"
+    echo "  --version                 Show version"
+    echo "  --help                    Show this help"
     echo ""
     echo "Examples:"
     echo "  sandbox-exec.sh -- claude              # Claude Code in sandbox"
@@ -55,6 +61,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dry-run)
             DRY_RUN=true
+            shift
+            ;;
+        --cleanup-materialized)
+            CLEANUP_MATERIALIZED_FLAG=1
             shift
             ;;
         --version)
@@ -182,6 +192,23 @@ _apply_agent_profiles
 # if declared credentials/paths look unreachable.
 _check_agent_requirements
 prepare_agent_configs "$PROJECT_DIR"
+
+# Materialize BLOCKED_FILES placeholders, warn on each one we created,
+# and track them so the EXIT trap can optionally clean up post-exit.
+# Must run AFTER _apply_agent_profiles (so agent-added entries are
+# folded in) and BEFORE backend_prepare (so backends see all targets
+# as existing). See sandbox-lib.sh §_ensure_blocked_files_exist.
+_ensure_blocked_files_exist
+
+# Resolve --cleanup-materialized opt-in. Flag wins; env var is the
+# config-file equivalent. Default off. Only meaningful when something
+# was actually materialized this launch (the cleanup function is a
+# no-op otherwise).
+_CLEANUP_MATERIALIZED=0
+if [[ "$CLEANUP_MATERIALIZED_FLAG" == "1" ]] \
+   || _is_true "${CLEANUP_MATERIALIZED_BLOCKED_FILES:-false}"; then
+    _CLEANUP_MATERIALIZED=1
+fi
 
 # ── Chaperon: create FIFO directory ───────────────────────────────
 # Create the FIFO directory BEFORE backend_prepare so backends can
@@ -336,6 +363,13 @@ _sandbox_cleanup() {
     fi
     if [[ -n "${_MAIL_BLOCK_STUBS_DIR:-}" ]]; then
         rm -rf "$_MAIL_BLOCK_STUBS_DIR" 2>/dev/null || true
+    fi
+    # Materialized BLOCKED_FILES cleanup. The function early-returns
+    # when nothing was materialized this launch, so it's safe to call
+    # unconditionally. Only reachable in the no-exec path (cleanup
+    # mode); the exec'd path never runs the trap.
+    if [[ "${_CLEANUP_MATERIALIZED:-0}" == "1" ]]; then
+        _cleanup_materialized_blocked_files
     fi
 }
 trap _sandbox_cleanup EXIT

@@ -251,6 +251,20 @@ Per-agent instruction files (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, etc.) 
 
 **Backend limitation:** only respected by bwrap and firejail. Landlock cannot block individual files under directories it has already granted access to (no mount namespace, no overlays).
 
+**bwrap masking needs a real file on host.** When the bwrap backend implements `BLOCKED_FILES` via `--ro-bind /dev/null <path>`, the host path must already exist as a regular file: bwrap's `ensure_file → create_file → creat()` (see [`utils.c` in v0.11.0](https://github.com/containers/bubblewrap/blob/v0.11.0/utils.c#L480-L498)) opens the target with `O_CREAT` during mount setup. If the target's parent is a writable host path, bwrap creates a zero-byte stub on host before binding `/dev/null` over it; if intermediate parent directories are missing, bwrap creates those too. The stub persists after sandbox exit unless explicitly removed. Firejail's `--blacklist` does not have this requirement (the path may be absent at launch). Landlock does not enforce `BLOCKED_FILES` at all — file-level masking needs a mount namespace, which Landlock doesn't have.
+
+To make masking visible and controllable, `sandbox-exec.sh` materializes every missing `BLOCKED_FILES` entry itself at config-load (after `_apply_agent_profiles`, before `backend_prepare`):
+
+- `mkdir -p "$(dirname X)"` for any missing parents,
+- `touch X` to create a zero-byte placeholder under user-controlled permissions,
+- one `WARNING:` line per materialized path on stderr — and one per parent directory it had to create — so you can see exactly what host-side state the launcher touched.
+
+If the materialization fails (non-writable parent like `/etc`, read-only mount), `sandbox-exec.sh` refuses to start and prints the full list of failing entries with a remediation hint. Silent skip would leave the path unenforced — the failure case is unrecoverable without user action, so we surface it.
+
+Pass `--cleanup-materialized` (or set `CLEANUP_MATERIALIZED_BLOCKED_FILES=1` in the environment or config) to have the launcher remove the placeholders post-exit. Cleanup is conservative: a file is removed only if it's still 0 bytes; a directory is removed only if it's still empty. Anything that grew (a real edit between launch and exit) is retained with a `kept` note on stderr.
+
+To opt out of the protection for a specific entry, remove it from `BLOCKED_FILES`. To make an entry permanently exist (no warning on each launch), run `mkdir -p "$(dirname X)" && touch X` once outside the sandbox.
+
 ```bash
 BLOCKED_FILES+=(
     "$HOME/notes/secret.md"
@@ -361,6 +375,15 @@ BLOCKED_ENV_PATTERNS=(
 ```
 
 Glob patterns that block any matching env var. Patterns catch the common credential conventions automatically. Use [`ALLOWED_ENV_VARS`](#allowed_env_vars) to exempt a specific variable matched by these patterns.
+
+**Case sensitivity.** Patterns are case-sensitive by default. Append the trailing `/i` flag — the industry-standard regex convention from sed (`s/.../.../i`), Perl (`qr/.../i`), and JavaScript (`/.../i`) — to opt one entry into case-insensitive matching. Env-var names are restricted to `[A-Za-z0-9_]` (POSIX IEEE Std 1003.1 §8.1) and cannot legitimately contain `/`, so the suffix is unambiguous. Default remains case-sensitive so admin baselines upgrading across versions keep their existing semantics.
+
+```bash
+BLOCKED_ENV_PATTERNS+=(
+    "APP_SECRET_*"      # only blocks APP_SECRET_X (uppercase exact)
+    "app_secret_*/i"    # blocks APP_SECRET_X, app_secret_x, App_Secret_X, …
+)
+```
 
 The startup banner (unless [`SANDBOX_QUIET=true`](#sandbox_quiet)) reports how many env vars were blocked by pattern, so missing vars are diagnosable without leaking the names of credentials.
 

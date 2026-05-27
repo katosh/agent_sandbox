@@ -357,16 +357,18 @@ backend_prepare() {
     # by BLOCKED_FILES, populated from agents/*/config.conf by _apply_agent_profiles().
 
     # --- Blocked files ---
+    # No [[ -e ]] guard: sandbox-lib's _ensure_blocked_files_exist (called
+    # from sandbox-exec.sh before backend_prepare) has already either
+    # materialized a placeholder for every entry or refused to start.
+    # See #73.
     for blocked in "${BLOCKED_FILES[@]}"; do
-        if [[ -e "$blocked" ]]; then
-            # Resolve symlinks — firejail --blacklist may not follow them.
-            # Blocking both the symlink and its target ensures coverage.
-            FIREJAIL_ARGS+=(--blacklist="$blocked")
-            if [[ -L "$blocked" ]]; then
-                local _resolved
-                _resolved="$(readlink -f "$blocked")"
-                [[ "$_resolved" != "$blocked" ]] && FIREJAIL_ARGS+=(--blacklist="$_resolved")
-            fi
+        # Resolve symlinks — firejail --blacklist may not follow them.
+        # Blocking both the symlink and its target ensures coverage.
+        FIREJAIL_ARGS+=(--blacklist="$blocked")
+        if [[ -L "$blocked" ]]; then
+            local _resolved
+            _resolved="$(readlink -f "$blocked")"
+            [[ "$_resolved" != "$blocked" ]] && FIREJAIL_ARGS+=(--blacklist="$_resolved")
         fi
     done
 

@@ -483,12 +483,6 @@ backend_prepare() {
         BWRAP_ARGS+=(--bind "$project_dir" "$project_dir")
     fi
 
-    # In restricted mode, lock down the tmpfs HOME as read-only.
-    # In tmpwrite mode, the tmpfs stays writable (ephemeral writes).
-    if [[ "${HOME_ACCESS:-restricted}" == "restricted" ]]; then
-        BWRAP_ARGS+=(--remount-ro "$HOME")
-    fi
-
     # Agent-specific file hiding (e.g., CLAUDE.md, AGENTS.md) is handled
     # by BLOCKED_FILES, populated from agents/*/config.conf by _apply_agent_profiles().
     #
@@ -521,20 +515,39 @@ backend_prepare() {
     # literal bind is itself skipped when the leaf is a symlink, since
     # bwrap rejects ensure_file on S_IFLNK; the resolved bind covers
     # that case.
+    #
+    # No [[ -e ]] guard: sandbox-lib's _ensure_blocked_files_exist (called
+    # from sandbox-exec.sh before backend_prepare) has already either
+    # materialized a placeholder for every entry or refused to start.
+    # See #73.
+    #
+    # Ordering: this loop MUST run BEFORE the `--remount-ro $HOME` op
+    # below. bwrap processes setup ops in order; once the tmpfs $HOME is
+    # remounted read-only, a subsequent `--ro-bind /dev/null <path-under-HOME>`
+    # cannot ensure_file in the RO tmpfs and the bind silently no-ops on
+    # bwrap 0.9.x (ubuntu-latest's apt version) — the overlay never
+    # materializes inside the sandbox. Empirically verified in
+    # settylab/agent_container CI on 2026-05-27.
     local _bf_literal _bf_resolved
     for blocked in "${BLOCKED_FILES[@]}"; do
-        if [[ -e "$blocked" ]]; then
-            _bf_literal="$blocked"
-            _bf_resolved="$(readlink -f "$blocked")"
+        _bf_literal="$blocked"
+        _bf_resolved="$(readlink -f "$blocked")"
 
-            if [[ ! -L "$_bf_literal" ]]; then
-                BWRAP_ARGS+=(--ro-bind /dev/null "$_bf_literal")
-            fi
-            if [[ "$_bf_resolved" != "$_bf_literal" ]]; then
-                BWRAP_ARGS+=(--ro-bind /dev/null "$_bf_resolved")
-            fi
+        if [[ ! -L "$_bf_literal" ]]; then
+            BWRAP_ARGS+=(--ro-bind /dev/null "$_bf_literal")
+        fi
+        if [[ "$_bf_resolved" != "$_bf_literal" ]]; then
+            BWRAP_ARGS+=(--ro-bind /dev/null "$_bf_resolved")
         fi
     done
+
+    # In restricted mode, lock down the tmpfs HOME as read-only.
+    # In tmpwrite mode, the tmpfs stays writable (ephemeral writes).
+    # Must come AFTER the BLOCKED_FILES loop above so the per-entry
+    # /dev/null binds can ensure_file in the still-RW tmpfs.
+    if [[ "${HOME_ACCESS:-restricted}" == "restricted" ]]; then
+        BWRAP_ARGS+=(--remount-ro "$HOME")
+    fi
 
     # Mount agent sandbox-config directories writable so the agent can
     # create lock files, session data, caches, etc.  Then overlay the
@@ -815,7 +828,8 @@ backend_exec() {
         if [[ "$(basename -- "$_pasta")" == "slirp4netns"* ]]; then
             echo "sandbox: WARNING — slirp4netns helper detected but v1.1 only wires the pasta path; degrading to isolated mode." >&2
             BWRAP_ARGS+=(--unshare-net)
-            exec "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
+            _exec_or_run_sandbox "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
+            exit $?
         fi
 
         local _pasta_args=(--foreground --quiet)
@@ -825,8 +839,9 @@ backend_exec() {
         if [[ -n "${_NETWORK_FILTER_PASTA_UDP_SPEC:-}" ]]; then
             _pasta_args+=(-U "$_NETWORK_FILTER_PASTA_UDP_SPEC")
         fi
-        exec "$_pasta" "${_pasta_args[@]}" -- \
+        _exec_or_run_sandbox "$_pasta" "${_pasta_args[@]}" -- \
             "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
+        exit $?
     fi
 
     # ── proxied-mode composition: in-sandbox bridge wraps agent ────
@@ -841,16 +856,18 @@ backend_exec() {
     # bind-mounted Unix sockets. The agent runs as the bridge's child
     # and uses HTTP_PROXY / HTTPS_PROXY / ALL_PROXY to reach the bridge.
     if [[ "${_NETWORK_FILTER_PROXIED_PENDING:-0}" == "1" ]]; then
-        exec "$BWRAP" "${BWRAP_ARGS[@]}" -- \
+        _exec_or_run_sandbox "$BWRAP" "${BWRAP_ARGS[@]}" -- \
             python3 "$SANDBOX_DIR/tools/proxy/agent-sandbox-proxy.py" \
                 --bridge \
                 --socket-dir "$_NETWORK_PROXY_DIR" \
                 --http-port 44889 \
                 --socks-port 44890 \
                 -- "$@"
+        exit $?
     fi
 
-    exec "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
+    _exec_or_run_sandbox "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
+    exit $?
 }
 
 backend_dry_run() {

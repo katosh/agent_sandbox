@@ -496,12 +496,34 @@ _is_allowed_env() {
 # ── Helper: check if an env var matches a hardcoded credential pattern ──
 # Returns 0 (true) if the variable should be blocked by pattern.
 # ALLOWED_ENV_VARS overrides pattern matches.
+#
+# Pattern syntax: shell-style globs, case-sensitive by default. A trailing
+# `/i` flag on an entry opts that entry into case-insensitive matching —
+# same convention as sed (`s/.../.../i`), Perl (`qr/.../i`), and JavaScript
+# regex (`/.../i`). Env-var names are restricted to [A-Za-z0-9_] (POSIX
+# IEEE Std 1003.1, Sec. 8.1) and cannot legitimately contain `/`, so the
+# suffix is unambiguous. Default is case-sensitive so admin baselines
+# upgrading across versions keep their existing semantics.
 _is_blocked_by_pattern() {
     local _var="$1"
     _is_allowed_env "$_var" && return 1
+    local _glob _pat _matched
     for _glob in "${BLOCKED_ENV_PATTERNS[@]}"; do
-        # shellcheck disable=SC2254
-        case "$_var" in $_glob) return 0 ;; esac
+        _matched=false
+        if [[ "$_glob" == */i ]]; then
+            _pat="${_glob%/i}"
+            # nocasematch is per-shell-option, restored after this entry's
+            # match attempt so callers and other globs in the loop see the
+            # default (case-sensitive) behaviour.
+            shopt -s nocasematch
+            # shellcheck disable=SC2254
+            case "$_var" in $_pat) _matched=true ;; esac
+            shopt -u nocasematch
+        else
+            # shellcheck disable=SC2254
+            case "$_var" in $_glob) _matched=true ;; esac
+        fi
+        $_matched && return 0
     done
     return 1
 }
@@ -2358,6 +2380,181 @@ if [[ -n "$_ADMIN_CONF" ]]; then
 fi
 
 # ── Validate config ──────────────────────────────────────────────
+
+# Tracking arrays populated by `_ensure_blocked_files_exist`: paths we
+# created on host so the sandbox could --ro-bind /dev/null over them.
+# `_cleanup_materialized_blocked_files` (sandbox-exec.sh trap) reads
+# these to remove placeholders post-exit when `--cleanup-materialized`
+# was passed. Both arrays are launch-scoped — cleared on each invocation.
+_MATERIALIZED_FILES=()
+_MATERIALIZED_DIRS=()
+
+# Materialize each BLOCKED_FILES entry as an empty placeholder if it
+# doesn't exist on host. Closes the gap (#73) where the previous
+# launch-time `[[ -e $blocked ]]` guard in backends/bwrap.sh and
+# backends/firejail.sh silently skipped missing entries — leaving them
+# unenforced — AND avoids bwrap's own ensure_file → creat() side effect
+# (which creates a host stub during mount-setup with no visibility or
+# permission control by the sandbox).
+#
+# Why materialize rather than fail outright? The default agent configs
+# (agents/*/config.conf) seed BLOCKED_FILES with canonical paths like
+# $HOME/.claude/CLAUDE.md that may legitimately not exist on a fresh
+# install. Pure refuse-to-start would break the out-of-the-box launch
+# for every fresh user. Materializing a zero-byte placeholder where the
+# user has write access preserves UX and gives the bind a clean target.
+# Where the user CAN'T materialize the path (non-writable parent,
+# read-only mount, parent doesn't exist and can't be created), we fail
+# loud with a list of every un-materializable entry so the user knows
+# exactly what to fix.
+#
+# Loudness: every materialized path triggers a `WARNING:` line on stderr
+# so the user knows exactly what host-side state we touched. With opt-in
+# `--cleanup-materialized` (or `CLEANUP_MATERIALIZED_BLOCKED_FILES=1`),
+# the EXIT trap in sandbox-exec.sh removes these placeholders post-exit
+# IFF they're still empty (file size 0; directory empty). A
+# user/agent write between launch and exit retains the file with a
+# `kept` note on stderr.
+#
+# Skipped under Landlock: BLOCKED_FILES has no effect there (additive-
+# rules model — no per-file hiding), so the existing config-load
+# warning ("BLOCKED_FILES has no effect with the Landlock backend") is
+# the only signal. Creating placeholders in places the user marked for
+# blocking, when blocking won't happen, would be gratuitous host
+# pollution.
+_ensure_blocked_files_exist() {
+    _MATERIALIZED_FILES=()
+    _MATERIALIZED_DIRS=()
+
+    [[ "${SANDBOX_BACKEND:-auto}" == "landlock" ]] && return 0
+    [[ ${#BLOCKED_FILES[@]} -gt 0 ]] || return 0
+
+    local _missing=()
+    local _entry _parent _dir _dirs_created _ancestor
+    for _entry in "${BLOCKED_FILES[@]}"; do
+        [[ -e "$_entry" || -L "$_entry" ]] && continue
+        _parent="$(dirname "$_entry")"
+        # Walk up the missing ancestors so we can record exactly which
+        # directories we created (for symmetric cleanup later). Order:
+        # shallowest-missing first, so deepest is last → cleanup-reverse
+        # removes leaf-first.
+        _dirs_created=()
+        if [[ ! -d "$_parent" ]]; then
+            _ancestor="$_parent"
+            while [[ -n "$_ancestor" && "$_ancestor" != "/" && ! -d "$_ancestor" ]]; do
+                _dirs_created=("$_ancestor" "${_dirs_created[@]}")
+                _ancestor="$(dirname "$_ancestor")"
+            done
+            mkdir -p "$_parent" 2>/dev/null || true
+        fi
+        if ! touch "$_entry" 2>/dev/null; then
+            _missing+=("$_entry")
+            continue
+        fi
+        # Successful materialization: track + warn.
+        _MATERIALIZED_FILES+=("$_entry")
+        if [[ ${#_dirs_created[@]} -gt 0 ]]; then
+            _MATERIALIZED_DIRS+=("${_dirs_created[@]}")
+        fi
+        echo "WARNING: agent_sandbox materialized empty placeholder at '$_entry' for BLOCKED_FILES masking. To prevent this, ensure the file exists before launch, or remove it from BLOCKED_FILES." >&2
+        if [[ ${#_dirs_created[@]} -gt 0 ]]; then
+            local _d
+            for _d in "${_dirs_created[@]}"; do
+                echo "WARNING:   also created parent directory '$_d' (will be removed by --cleanup-materialized only if still empty)." >&2
+            done
+        fi
+    done
+
+    if [[ ${#_missing[@]} -gt 0 ]]; then
+        echo "Error: BLOCKED_FILES entries do not exist and cannot be created on host:" >&2
+        local _m
+        for _m in "${_missing[@]}"; do
+            echo "  $_m" >&2
+        done
+        echo "" >&2
+        echo "Each entry must either exist on host (e.g., 'touch \"$_m\"')" >&2
+        echo "or be removed from BLOCKED_FILES. See docs/configure.md §BLOCKED_FILES." >&2
+        exit 1
+    fi
+}
+
+# Launcher-vs-exec dispatcher used by backend_exec sites.
+#
+# Normal path: the launcher exec's into bwrap/firejail. Once exec
+# happens, the launcher process is gone and no post-exit hook can fire.
+# That's fine for steady-state, but it makes --cleanup-materialized
+# impossible: there's no surviving process to run cleanup when the
+# sandbox exits.
+#
+# When _CLEANUP_MATERIALIZED=1 (or some other future post-exit hook is
+# armed), we instead run the sandbox as a foreground CHILD of the
+# launcher, wait, and return its exit code so the launcher's existing
+# EXIT trap can fire cleanup. SIGTERM / SIGINT are forwarded to the
+# child so signal-driven termination stays well-defined.
+_SANDBOX_CHILD_PID=""
+_sandbox_forward_signal() {
+    [[ -n "${_SANDBOX_CHILD_PID:-}" ]] || return 0
+    kill -"$1" "$_SANDBOX_CHILD_PID" 2>/dev/null || true
+}
+
+_exec_or_run_sandbox() {
+    if [[ "${_CLEANUP_MATERIALIZED:-0}" != "1" ]]; then
+        exec "$@"
+    fi
+    "$@" &
+    _SANDBOX_CHILD_PID=$!
+    trap '_sandbox_forward_signal TERM' TERM
+    trap '_sandbox_forward_signal INT'  INT
+    trap '_sandbox_forward_signal HUP'  HUP
+    wait "$_SANDBOX_CHILD_PID" 2>/dev/null
+    local _rc=$?
+    trap - TERM INT HUP
+    _SANDBOX_CHILD_PID=""
+    return "$_rc"
+}
+
+# Remove placeholders + parent dirs created during the just-finished
+# launch. Called by the EXIT trap in sandbox-exec.sh when the user
+# opted into --cleanup-materialized (or CLEANUP_MATERIALIZED_BLOCKED_FILES=1).
+#
+# Conservative on purpose:
+#   - Files: removed iff still 0 bytes. Anything that grew is retained
+#     (the user or an agent wrote real content between launch and exit).
+#   - Dirs:  removed iff still empty. `rmdir` fails closed; if the
+#     directory accumulated state, it stays. Iterated leaf-first so a
+#     created chain like /a/b/c collapses fully when nothing else lives
+#     inside.
+# Both retentions are reported on stderr with a 'kept' note so the user
+# can see why.
+_cleanup_materialized_blocked_files() {
+    [[ ${#_MATERIALIZED_FILES[@]} -eq 0 && ${#_MATERIALIZED_DIRS[@]} -eq 0 ]] && return 0
+
+    local _f _d _size _i
+    for _f in "${_MATERIALIZED_FILES[@]}"; do
+        if [[ ! -e "$_f" ]]; then
+            continue
+        fi
+        _size=$(stat -c %s "$_f" 2>/dev/null || echo unknown)
+        if [[ "$_size" == "0" ]]; then
+            rm -f "$_f" 2>/dev/null || \
+                echo "WARNING: kept '$_f': could not remove ($_size bytes, rm failed)." >&2
+        else
+            echo "WARNING: kept '$_f': no longer empty ($_size bytes)." >&2
+        fi
+    done
+
+    # Iterate dirs deepest-first (we appended shallowest→deepest above,
+    # so a reverse walk gives leaf-first removal).
+    if [[ ${#_MATERIALIZED_DIRS[@]} -gt 0 ]]; then
+        for ((_i = ${#_MATERIALIZED_DIRS[@]} - 1; _i >= 0; _i--)); do
+            _d="${_MATERIALIZED_DIRS[$_i]}"
+            [[ -d "$_d" ]] || continue
+            if ! rmdir "$_d" 2>/dev/null; then
+                echo "WARNING: kept '$_d': directory not empty." >&2
+            fi
+        done
+    fi
+}
 
 # Reject command substitution or backticks in path arrays (defense in depth).
 _validate_path_array() {
