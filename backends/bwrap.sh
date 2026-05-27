@@ -483,12 +483,6 @@ backend_prepare() {
         BWRAP_ARGS+=(--bind "$project_dir" "$project_dir")
     fi
 
-    # In restricted mode, lock down the tmpfs HOME as read-only.
-    # In tmpwrite mode, the tmpfs stays writable (ephemeral writes).
-    if [[ "${HOME_ACCESS:-restricted}" == "restricted" ]]; then
-        BWRAP_ARGS+=(--remount-ro "$HOME")
-    fi
-
     # Agent-specific file hiding (e.g., CLAUDE.md, AGENTS.md) is handled
     # by BLOCKED_FILES, populated from agents/*/config.conf by _apply_agent_profiles().
     #
@@ -526,6 +520,14 @@ backend_prepare() {
     # from sandbox-exec.sh before backend_prepare) has already either
     # materialized a placeholder for every entry or refused to start.
     # See #73.
+    #
+    # Ordering: this loop MUST run BEFORE the `--remount-ro $HOME` op
+    # below. bwrap processes setup ops in order; once the tmpfs $HOME is
+    # remounted read-only, a subsequent `--ro-bind /dev/null <path-under-HOME>`
+    # cannot ensure_file in the RO tmpfs and the bind silently no-ops on
+    # bwrap 0.9.x (ubuntu-latest's apt version) — the overlay never
+    # materializes inside the sandbox. Empirically verified in
+    # settylab/agent_container CI on 2026-05-27.
     local _bf_literal _bf_resolved
     for blocked in "${BLOCKED_FILES[@]}"; do
         _bf_literal="$blocked"
@@ -538,6 +540,14 @@ backend_prepare() {
             BWRAP_ARGS+=(--ro-bind /dev/null "$_bf_resolved")
         fi
     done
+
+    # In restricted mode, lock down the tmpfs HOME as read-only.
+    # In tmpwrite mode, the tmpfs stays writable (ephemeral writes).
+    # Must come AFTER the BLOCKED_FILES loop above so the per-entry
+    # /dev/null binds can ensure_file in the still-RW tmpfs.
+    if [[ "${HOME_ACCESS:-restricted}" == "restricted" ]]; then
+        BWRAP_ARGS+=(--remount-ro "$HOME")
+    fi
 
     # Mount agent sandbox-config directories writable so the agent can
     # create lock files, session data, caches, etc.  Then overlay the

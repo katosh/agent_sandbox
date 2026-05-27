@@ -3974,27 +3974,33 @@ else
 fi
 
 # ── S06: BLOCKED_FILES non-existent path under writable parent ──
-# When a BLOCKED_FILES entry points at a path that doesn't exist on host
-# (e.g. ~/.claude/CLAUDE.md on a fresh install), the sandbox should
-# materialize an empty placeholder at config-load time and bind /dev/null
-# over it. Closes the gap where the previous [[ -e ]] skip left such
-# entries silently unenforced.
+# When a BLOCKED_FILES entry points at a path that doesn't exist on host,
+# the sandbox should materialize an empty placeholder at config-load time
+# and bind /dev/null over it. Closes the gap where the previous [[ -e ]]
+# skip left such entries silently unenforced.
+#
+# We anchor the target under PROJECT_DIR (not $HOME): PROJECT_DIR is bound
+# writable into the sandbox uniformly by bwrap and firejail, so the host
+# placeholder is visible inside the sandbox at the same path. Anchoring
+# under $HOME would mean fighting tmpfs/private-home wipes that differ
+# per backend and per HOME_ACCESS mode — orthogonal to what S06 is
+# actually testing.
 # landlock: BLOCKED_FILES has no effect, validation skipped — skip the test.
 if has_mount_ns; then
-    local _s06_target="$HOME/.test-blockfiles-missing-$$"
+    local _s06_target="$PROJECT_DIR/.test-blockfiles-missing-$$"
     local _s06_conf="$HOME/.config/agent-sandbox/conf.d/test-blockfiles-missing-$$.conf"
     _TEST_TEMP_FILES+=("$_s06_conf" "$_s06_target")
     mkdir -p "$HOME/.config/agent-sandbox/conf.d"
     rm -f "$_s06_target"
     [[ -e "$_s06_target" ]] && { fail "S06: pre-existing target (test bug)" "$_s06_target"; }
     echo "BLOCKED_FILES+=( \"$_s06_target\" )" > "$_s06_conf"
-    if sandbox_must_run bash -c "[ -e '$_s06_target' ] && wc -c < '$_s06_target' 2>&1 || echo MISSING; echo EXIT=\$?"; then
+    if sandbox_must_run bash -c "if [ -e '$_s06_target' ]; then wc -c < '$_s06_target' 2>&1; else echo MISSING; fi"; then
         # Placeholder should have been created on host (empty stub), and
         # bound to /dev/null inside the sandbox → in-sandbox wc -c == 0.
         if [[ -e "$_s06_target" ]]; then
             local _host_size
             _host_size=$(stat -c %s "$_s06_target" 2>/dev/null)
-            if [[ "$_host_size" == "0" ]] && echo "$OUTPUT" | grep -qE "^0$|^[[:space:]]*0[[:space:]]*$"; then
+            if [[ "$_host_size" == "0" ]] && echo "$OUTPUT" | grep -qE "^[[:space:]]*0[[:space:]]*$"; then
                 pass "S06: Missing BLOCKED_FILES entry materialized as empty placeholder and bound to /dev/null"
             else
                 fail "S06: Placeholder created but content not /dev/null-bound (host_size=$_host_size, OUTPUT=$OUTPUT)" "$OUTPUT"
@@ -4031,7 +4037,7 @@ if has_mount_ns; then
         if [[ -e "$_s07_target" ]]; then
             fail "S07: Sandbox somehow created /etc placeholder (should be EACCES)" "host stub at $_s07_target"
             sudo rm -f "$_s07_target" 2>/dev/null || rm -f "$_s07_target" 2>/dev/null
-        elif echo "$OUTPUT_ERR" | grep -qE "BLOCKED_FILES.*does not exist|cannot create.*BLOCKED_FILES|cannot materialize"; then
+        elif echo "$OUTPUT_ERR" | grep -qE "BLOCKED_FILES.*(do|does) not exist|cannot create.*BLOCKED_FILES|cannot materialize"; then
             pass "S07: Sandbox refused to start with clear error for un-materializable BLOCKED_FILES entry"
         elif echo "$OUTPUT" | grep -q "IF-WE-GOT-HERE-SANDBOX-WAS-NOT-FAIL-LOUD"; then
             fail "S07: Sandbox launched silently even though BLOCKED_FILES entry was un-materializable" "$OUTPUT"
