@@ -251,6 +251,12 @@ Per-agent instruction files (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, etc.) 
 
 **Backend limitation:** only respected by bwrap and firejail. Landlock cannot block individual files under directories it has already granted access to (no mount namespace, no overlays).
 
+**Existence requirement (bwrap/firejail).** Every `BLOCKED_FILES` entry must resolve to a path the sandbox can materialize on host before launch. Entries that don't exist on host are auto-created as zero-byte placeholders (with `mkdir -p` for parents) so the backend has a clean target for the `/dev/null` overlay. If an entry can't be materialized — non-writable parent, read-only mount, parent dir can't be created — `sandbox-exec.sh` refuses to start and prints the full list of failing entries.
+
+This closes a class of silent-no-op bugs where a non-existent entry was simply skipped, leaving the path unenforced if the user later created it. It also prevents bwrap's own `ensure_file → creat()` from leaving a host stub during mount setup, which was indistinguishable from a real file and persisted after sandbox exit. See [#73](https://github.com/katosh/agent_sandbox/issues/73).
+
+To opt out of the protection for a specific entry, remove it from `BLOCKED_FILES`. To make an entry exist, run `mkdir -p "$(dirname X)" && touch X` (the sandbox does this automatically when it can).
+
 ```bash
 BLOCKED_FILES+=(
     "$HOME/notes/secret.md"

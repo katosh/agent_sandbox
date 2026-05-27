@@ -521,18 +521,21 @@ backend_prepare() {
     # literal bind is itself skipped when the leaf is a symlink, since
     # bwrap rejects ensure_file on S_IFLNK; the resolved bind covers
     # that case.
+    #
+    # No [[ -e ]] guard: sandbox-lib's _ensure_blocked_files_exist (called
+    # from sandbox-exec.sh before backend_prepare) has already either
+    # materialized a placeholder for every entry or refused to start.
+    # See #73.
     local _bf_literal _bf_resolved
     for blocked in "${BLOCKED_FILES[@]}"; do
-        if [[ -e "$blocked" ]]; then
-            _bf_literal="$blocked"
-            _bf_resolved="$(readlink -f "$blocked")"
+        _bf_literal="$blocked"
+        _bf_resolved="$(readlink -f "$blocked")"
 
-            if [[ ! -L "$_bf_literal" ]]; then
-                BWRAP_ARGS+=(--ro-bind /dev/null "$_bf_literal")
-            fi
-            if [[ "$_bf_resolved" != "$_bf_literal" ]]; then
-                BWRAP_ARGS+=(--ro-bind /dev/null "$_bf_resolved")
-            fi
+        if [[ ! -L "$_bf_literal" ]]; then
+            BWRAP_ARGS+=(--ro-bind /dev/null "$_bf_literal")
+        fi
+        if [[ "$_bf_resolved" != "$_bf_literal" ]]; then
+            BWRAP_ARGS+=(--ro-bind /dev/null "$_bf_resolved")
         fi
     done
 

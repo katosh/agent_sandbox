@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`BLOCKED_FILES` entries are now materialized-or-fail-loud at
+  config-load (#73).** Before the fix, the bwrap and firejail backends
+  silently skipped any `BLOCKED_FILES` entry that didn't exist on host
+  (`[[ -e $blocked ]]` guard in `backends/bwrap.sh:525-537` and
+  `backends/firejail.sh:360-371`). A user adding `~/secret-future-file`
+  to `BLOCKED_FILES` to pre-emptively protect a path they might later
+  create got NO enforcement until they touched the file themselves —
+  silent no-op disguised as protection. Removing the guard (the
+  obvious fix) was rejected because bwrap's `ensure_file → create_file
+  → creat()` (called for every `SETUP_RO_BIND_MOUNT` op via
+  `bubblewrap.c:1247`) writes to the host backing filesystem during
+  mount setup for any path under a host RW bind — empirically
+  confirmed for cases 1, 4, 6 in the agent_container CI probe
+  (`ci/blockfiles-stub-probe` branch, run 26491711435): host stub
+  created, intermediate dirs auto-created on host, /tmp leak. Instead,
+  `sandbox-exec.sh` now calls `_ensure_blocked_files_exist` (defined
+  in `sandbox-lib.sh`) after `_apply_agent_profiles` and before
+  `backend_prepare`. For each entry not present on host, the function
+  runs `mkdir -p "$(dirname X)"` + `touch X` to create a zero-byte
+  placeholder under user-controlled permissions. If any entry can't
+  be materialized — non-writable parent, read-only mount, or the
+  parent directory itself can't be created — the sandbox refuses to
+  start and prints the full list of failing entries with a one-line
+  remediation hint. Skipped under Landlock (BLOCKED_FILES has no
+  enforcement effect there; existing config-load warning is the only
+  signal). Two new test sections (S06 + S07 in `test.sh`) cover the
+  materialize and fail-loud branches across bwrap/firejail. The
+  `[[ -e $blocked ]]` skip guards in both backends have been removed
+  as dead code — validation has already ensured the path exists by
+  the time backend_prepare runs.
+
 ### Added
 
 - **Default `sbatch --output` now stages + symlinks like an explicit value.**

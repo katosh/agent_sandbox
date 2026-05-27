@@ -183,6 +183,11 @@ _apply_agent_profiles
 _check_agent_requirements
 prepare_agent_configs "$PROJECT_DIR"
 
+# Materialize BLOCKED_FILES placeholders or fail loud (#73). Must run
+# AFTER _apply_agent_profiles (so agent-added entries are folded in)
+# and BEFORE backend_prepare (so backends see all targets as existing).
+_ensure_blocked_files_exist
+
 # ── Chaperon: create FIFO directory ───────────────────────────────
 # Create the FIFO directory BEFORE backend_prepare so backends can
 # add bind-mounts for it. The chaperon process is started AFTER

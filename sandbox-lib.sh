@@ -2381,6 +2381,62 @@ fi
 
 # ── Validate config ──────────────────────────────────────────────
 
+# Materialize each BLOCKED_FILES entry as an empty placeholder if it
+# doesn't exist on host. Closes the gap (#73) where the previous
+# launch-time `[[ -e $blocked ]]` guard in backends/bwrap.sh and
+# backends/firejail.sh silently skipped missing entries — leaving them
+# unenforced — AND avoids bwrap's own ensure_file → creat() side effect
+# (which creates a host stub during mount-setup with no visibility or
+# permission control by the sandbox).
+#
+# Why materialize rather than fail outright? The default agent configs
+# (agents/*/config.conf) seed BLOCKED_FILES with canonical paths like
+# $HOME/.claude/CLAUDE.md that may legitimately not exist on a fresh
+# install. Pure refuse-to-start would break the out-of-the-box launch
+# for every fresh user. Materializing a zero-byte placeholder where the
+# user has write access preserves UX and gives the bind a clean target.
+# Where the user CAN'T materialize the path (non-writable parent,
+# read-only mount, parent doesn't exist and can't be created), we fail
+# loud with a list of every un-materializable entry so the user knows
+# exactly what to fix.
+#
+# Skipped under Landlock: BLOCKED_FILES has no effect there (additive-
+# rules model — no per-file hiding), so the existing config-load
+# warning ("BLOCKED_FILES has no effect with the Landlock backend") is
+# the only signal. Creating placeholders in places the user marked for
+# blocking, when blocking won't happen, would be gratuitous host
+# pollution.
+_ensure_blocked_files_exist() {
+    [[ "${SANDBOX_BACKEND:-auto}" == "landlock" ]] && return 0
+    [[ ${#BLOCKED_FILES[@]} -gt 0 ]] || return 0
+
+    local _missing=()
+    local _entry _parent
+    for _entry in "${BLOCKED_FILES[@]}"; do
+        [[ -e "$_entry" || -L "$_entry" ]] && continue
+        _parent="$(dirname "$_entry")"
+        # Try to create parents (no-op if they already exist). Failure
+        # here is the most common cause of the touch failing below; we
+        # let the touch error speak for itself.
+        mkdir -p "$_parent" 2>/dev/null || true
+        if ! touch "$_entry" 2>/dev/null; then
+            _missing+=("$_entry")
+        fi
+    done
+
+    if [[ ${#_missing[@]} -gt 0 ]]; then
+        echo "Error: BLOCKED_FILES entries do not exist and cannot be created on host:" >&2
+        local _m
+        for _m in "${_missing[@]}"; do
+            echo "  $_m" >&2
+        done
+        echo "" >&2
+        echo "Each entry must either exist on host (e.g., 'touch \"$_m\"')" >&2
+        echo "or be removed from BLOCKED_FILES. See docs/configure.md §BLOCKED_FILES." >&2
+        exit 1
+    fi
+}
+
 # Reject command substitution or backticks in path arrays (defense in depth).
 _validate_path_array() {
     local name="$1"; shift
