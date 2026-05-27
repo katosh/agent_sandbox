@@ -4131,11 +4131,13 @@ else
 fi
 
 # ── S10: --cleanup-materialized RETAINS a non-empty placeholder ──
-# If the host placeholder was written to by something else (e.g., a
-# legitimate user edit, an agent that learned to write its instruction
-# file post-launch), the cleanup pass must NOT delete it. The signal
-# that the cleanup was conservative is twofold: (a) file still exists
-# post-exit, (b) stderr notes "kept" with the path.
+# Race-controlled single launch: the launcher materializes (0 bytes,
+# tracks the path). A host-side background writer waits ~0.4s then
+# overwrites the placeholder via the host mnt-ns (bypassing bwrap's
+# in-sandbox /dev/null bind — that bind only affects the sandbox view,
+# not the host). The in-sandbox cmd sleeps 1.2s so the writer wins.
+# When the launcher exits, cleanup sees the file is no longer empty
+# and retains it with a 'kept' note.
 if has_mount_ns; then
     local _s10_target="$PROJECT_DIR/.test-blockfiles-s10-$$"
     local _s10_conf="$HOME/.config/agent-sandbox/conf.d/test-blockfiles-s10-$$.conf"
@@ -4143,27 +4145,24 @@ if has_mount_ns; then
     mkdir -p "$HOME/.config/agent-sandbox/conf.d"
     rm -f "$_s10_target"
     echo "BLOCKED_FILES+=( \"$_s10_target\" )" > "$_s10_conf"
-    # Run a sandbox cmd that, from inside, can't write to the bound
-    # /dev/null overlay (read-only) — so we simulate the "user edited
-    # outside" case by writing to the host path BEFORE invoking the
-    # sandbox … no, that defeats materialize. Instead: invoke the
-    # sandbox first to materialize, then write to the host path between
-    # materialize and exit. The launcher's foreground-child pattern
-    # under --cleanup-materialized makes this race-controlled: the
-    # in-sandbox cmd blocks on a sentinel that we touch from outside
-    # AFTER writing to the host placeholder.
-    #
-    # Simpler model: invoke twice. First launch with default flags
-    # (materialize, no cleanup). Then write content to the host
-    # placeholder. Then second launch with --cleanup-materialized —
-    # cleanup should retain (non-empty) AND warn "kept".
-    "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- bash -c "true" >/dev/null 2>&1
-    [[ -e "$_s10_target" ]] || { fail "S10: first launch failed to materialize" "$_s10_target"; }
-    echo "user-content" > "$_s10_target"
-    OUTPUT_ERR="$("$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --cleanup-materialized --project-dir "$PROJECT_DIR" -- bash -c "true" 2>&1 1>/dev/null)"
+    (
+        # Host-side concurrent writer: wait for the materialize step
+        # to land the 0-byte placeholder (size 0 → poll), then write
+        # content via the host mnt-ns. Truncate-and-write preserves the
+        # inode so bwrap's bind keeps holding inside the sandbox.
+        for _i in $(seq 1 60); do
+            [[ -e "$_s10_target" ]] && break
+            sleep 0.05
+        done
+        sleep 0.2
+        printf 'user-edit\n' > "$_s10_target"
+    ) &
+    local _s10_writer_pid=$!
+    OUTPUT_ERR="$("$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --cleanup-materialized --project-dir "$PROJECT_DIR" -- bash -c "sleep 1.2; true" 2>&1 1>/dev/null)"
+    wait "$_s10_writer_pid" 2>/dev/null || true
     if [[ -e "$_s10_target" ]] \
        && [[ "$(stat -c %s "$_s10_target" 2>/dev/null)" != "0" ]] \
-       && echo "$OUTPUT_ERR" | grep -qE "kept.*$_s10_target|$_s10_target.*kept|$_s10_target.*not empty"; then
+       && echo "$OUTPUT_ERR" | grep -qE "kept.*$_s10_target|$_s10_target.*kept|$_s10_target.*not empty|$_s10_target.*no longer empty"; then
         pass "S10: --cleanup-materialized retained non-empty placeholder and noted 'kept'"
     else
         fail "S10: Cleanup pass either deleted non-empty file or didn't note retention" "exists=$([ -e "$_s10_target" ] && echo yes || echo no), size=$(stat -c %s "$_s10_target" 2>/dev/null), ERR=$OUTPUT_ERR"
