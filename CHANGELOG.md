@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **`BLOCKED_FILES` entries are now materialized-or-fail-loud at
-  config-load (#73).** Before the fix, the bwrap and firejail backends
+- **`BLOCKED_FILES` entries: materialize + warn + track, with opt-in
+  cleanup (#73).** Before the fix, the bwrap and firejail backends
   silently skipped any `BLOCKED_FILES` entry that didn't exist on host
   (`[[ -e $blocked ]]` guard in `backends/bwrap.sh:525-537` and
   `backends/firejail.sh:360-371`). A user adding `~/secret-future-file`
@@ -22,23 +22,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `bubblewrap.c:1247`) writes to the host backing filesystem during
   mount setup for any path under a host RW bind — empirically
   confirmed for cases 1, 4, 6 in the agent_container CI probe
-  (`ci/blockfiles-stub-probe` branch, run 26491711435): host stub
-  created, intermediate dirs auto-created on host, /tmp leak. Instead,
-  `sandbox-exec.sh` now calls `_ensure_blocked_files_exist` (defined
-  in `sandbox-lib.sh`) after `_apply_agent_profiles` and before
-  `backend_prepare`. For each entry not present on host, the function
-  runs `mkdir -p "$(dirname X)"` + `touch X` to create a zero-byte
-  placeholder under user-controlled permissions. If any entry can't
-  be materialized — non-writable parent, read-only mount, or the
-  parent directory itself can't be created — the sandbox refuses to
-  start and prints the full list of failing entries with a one-line
-  remediation hint. Skipped under Landlock (BLOCKED_FILES has no
-  enforcement effect there; existing config-load warning is the only
-  signal). Two new test sections (S06 + S07 in `test.sh`) cover the
-  materialize and fail-loud branches across bwrap/firejail. The
-  `[[ -e $blocked ]]` skip guards in both backends have been removed
-  as dead code — validation has already ensured the path exists by
-  the time backend_prepare runs.
+  (`ci/blockfiles-stub-probe` branch): host stub created, intermediate
+  dirs auto-created on host, /tmp leak. Instead, `sandbox-exec.sh` now
+  calls `_ensure_blocked_files_exist` (defined in `sandbox-lib.sh`)
+  after `_apply_agent_profiles` and before `backend_prepare`. For each
+  entry not present on host, the function:
+  - runs `mkdir -p "$(dirname X)"` + `touch X` to create a zero-byte
+    placeholder under user-controlled permissions,
+  - emits a `WARNING:` line on stderr naming every materialized file
+    (and every parent directory it had to create), so the user knows
+    exactly what host-side state we touched,
+  - tracks the created paths in launcher-scoped arrays so an opt-in
+    cleanup pass can remove them post-exit.
+
+  If a materialization is impossible (non-writable parent, read-only
+  mount), the sandbox refuses to start and prints the full list of
+  failing entries with a one-line remediation hint — that case is
+  unrecoverable without user action and silent skip would defeat the
+  feature.
+
+  `sandbox-exec.sh` accepts a new `--cleanup-materialized` flag (also
+  `CLEANUP_MATERIALIZED_BLOCKED_FILES=1` in env or config). When set,
+  the launcher does NOT exec into the sandbox; it forks bwrap/firejail
+  as a foreground child and runs `_cleanup_materialized_blocked_files`
+  in its `EXIT` trap. The cleanup is conservative: a file is removed
+  only if it's still 0 bytes; a directory is removed only if `rmdir`
+  succeeds (empty). Retentions are reported on stderr with a `kept`
+  note. Skipped under Landlock (BLOCKED_FILES has no enforcement
+  effect; existing config-load warning is the only signal). Four new
+  test sections (S06, S08, S09, S10 in `test.sh`) cover the warn,
+  track, cleanup-empty and cleanup-retains paths; S07 covers the
+  fail-loud branch for un-materializable entries. The `[[ -e $blocked
+  ]]` skip guards in both backends have been removed as dead code.
 
 ### Added
 

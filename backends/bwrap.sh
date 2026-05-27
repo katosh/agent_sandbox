@@ -828,7 +828,8 @@ backend_exec() {
         if [[ "$(basename -- "$_pasta")" == "slirp4netns"* ]]; then
             echo "sandbox: WARNING — slirp4netns helper detected but v1.1 only wires the pasta path; degrading to isolated mode." >&2
             BWRAP_ARGS+=(--unshare-net)
-            exec "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
+            _exec_or_run_sandbox "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
+            exit $?
         fi
 
         local _pasta_args=(--foreground --quiet)
@@ -838,8 +839,9 @@ backend_exec() {
         if [[ -n "${_NETWORK_FILTER_PASTA_UDP_SPEC:-}" ]]; then
             _pasta_args+=(-U "$_NETWORK_FILTER_PASTA_UDP_SPEC")
         fi
-        exec "$_pasta" "${_pasta_args[@]}" -- \
+        _exec_or_run_sandbox "$_pasta" "${_pasta_args[@]}" -- \
             "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
+        exit $?
     fi
 
     # ── proxied-mode composition: in-sandbox bridge wraps agent ────
@@ -854,16 +856,18 @@ backend_exec() {
     # bind-mounted Unix sockets. The agent runs as the bridge's child
     # and uses HTTP_PROXY / HTTPS_PROXY / ALL_PROXY to reach the bridge.
     if [[ "${_NETWORK_FILTER_PROXIED_PENDING:-0}" == "1" ]]; then
-        exec "$BWRAP" "${BWRAP_ARGS[@]}" -- \
+        _exec_or_run_sandbox "$BWRAP" "${BWRAP_ARGS[@]}" -- \
             python3 "$SANDBOX_DIR/tools/proxy/agent-sandbox-proxy.py" \
                 --bridge \
                 --socket-dir "$_NETWORK_PROXY_DIR" \
                 --http-port 44889 \
                 --socks-port 44890 \
                 -- "$@"
+        exit $?
     fi
 
-    exec "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
+    _exec_or_run_sandbox "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
+    exit $?
 }
 
 backend_dry_run() {
