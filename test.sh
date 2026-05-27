@@ -3975,9 +3975,12 @@ fi
 
 # ── S06: BLOCKED_FILES non-existent path under writable parent ──
 # When a BLOCKED_FILES entry points at a path that doesn't exist on host,
-# the sandbox should materialize an empty placeholder at config-load time
-# and bind /dev/null over it. Closes the gap where the previous [[ -e ]]
-# skip left such entries silently unenforced.
+# the sandbox should:
+#   1. Materialize an empty placeholder at config-load time.
+#   2. Emit a WARNING to stderr naming the materialized path.
+#   3. Bind /dev/null over it inside the sandbox (read returns 0 bytes).
+# Closes the gap where the previous [[ -e ]] skip left such entries
+# silently unenforced.
 #
 # We anchor the target under PROJECT_DIR (not $HOME): PROJECT_DIR is bound
 # writable into the sandbox uniformly by bwrap and firejail, so the host
@@ -4004,13 +4007,15 @@ if has_mount_ns; then
         # overlay applied cleanly) or echo MISSING fired (no overlay).
         if [[ ! -e "$_s06_target" ]]; then
             fail "S06: Host placeholder not created by validator" "$OUTPUT"
+        elif ! echo "$OUTPUT_ERR" | grep -qE "WARNING:.*materializ.*$_s06_target"; then
+            fail "S06: Materialize warning missing from stderr" "$OUTPUT_ERR"
         else
             local _host_size
             _host_size=$(stat -c %s "$_s06_target" 2>/dev/null)
             if [[ "$_host_size" != "0" ]]; then
                 fail "S06: Placeholder size mismatch (host_size=$_host_size, expected 0)" "$OUTPUT"
             elif echo "$OUTPUT" | grep -qE "^[[:space:]]*0[[:space:]]*$"; then
-                pass "S06: Missing BLOCKED_FILES entry materialized + /dev/null-bound (wc -c == 0)"
+                pass "S06: Materialized + warned + /dev/null-bound (wc -c == 0)"
             elif echo "$OUTPUT" | grep -q "MISSING"; then
                 fail "S06: Sandbox booted but BLOCKED_FILES overlay not visible inside" "$OUTPUT"
             else
@@ -4021,12 +4026,14 @@ if has_mount_ns; then
         # Inner cmd exit non-zero — bash redirect failed (likely firejail
         # blacklist blocked the read with EACCES). That's a valid PASS
         # signal as long as the host placeholder was still materialized.
-        if [[ -e "$_s06_target" ]] && echo "$OUTPUT_ERR" | grep -qE "Permission denied|No such file or directory"; then
-            pass "S06: Missing BLOCKED_FILES entry materialized + read blocked inside sandbox (EACCES)"
+        if [[ -e "$_s06_target" ]] \
+           && echo "$OUTPUT_ERR" | grep -qE "WARNING:.*materializ.*$_s06_target" \
+           && echo "$OUTPUT_ERR" | grep -qE "Permission denied|No such file or directory"; then
+            pass "S06: Materialized + warned + read blocked inside sandbox (EACCES)"
         else
             local _ec_host_size
             _ec_host_size=$(stat -c %s "$_s06_target" 2>/dev/null || echo "missing")
-            fail "S06: Inner cmd failed but not via blacklist EACCES (host_size=$_ec_host_size, ERR=$OUTPUT_ERR)" "$OUTPUT_ERR"
+            fail "S06: Inner cmd failed but expected warning+EACCES (host_size=$_ec_host_size, ERR=$OUTPUT_ERR)" "$OUTPUT_ERR"
         fi
     fi
     rm -f "$_s06_conf" "$_s06_target"
@@ -4035,10 +4042,12 @@ else
 fi
 
 # ── S07: BLOCKED_FILES non-existent path under non-writable parent ──
-# When the entry can't be materialized (e.g. /etc/something-the-user-cant-touch),
-# the sandbox must refuse to start with a clear error naming the failing
-# entry. This is operator's question 2: what happens for a path under a
-# directory the user can't write?
+# When the entry CAN'T be materialized (e.g. /etc/something-the-user-cant-touch),
+# the sandbox must STILL refuse to start with a clear error naming the
+# failing entry — materialize-warn-track is a best-effort happy path;
+# when materialize fails outright we fall back to the fail-loud behavior
+# operator asked for in round-4 (otherwise the BLOCKED_FILES entry would
+# be silently unenforced).
 if has_mount_ns; then
     local _s07_target="/etc/agent-sandbox-test-blockfiles-$$"
     local _s07_conf="$HOME/.config/agent-sandbox/conf.d/test-blockfiles-noaccess-$$.conf"
@@ -4066,6 +4075,102 @@ if has_mount_ns; then
     fi
 else
     skip "S07: BLOCKED_FILES has no effect on Landlock (no mount namespace)"
+fi
+
+# ── S08: BLOCKED_FILES materialize emits tracking entry ──
+# After materializing a missing BLOCKED_FILES entry, the sandbox must
+# write a tracking record so an explicit cleanup pass can remove it
+# safely. We don't probe the file format here (impl detail) — we probe
+# the visible behaviour: with --cleanup-materialized, the placeholder
+# disappears post-exit (covered in S09). S08's narrower job is to
+# confirm the warning fires exactly once per materialization, naming
+# the path.
+if has_mount_ns; then
+    local _s08_target="$PROJECT_DIR/.test-blockfiles-s08-$$"
+    local _s08_conf="$HOME/.config/agent-sandbox/conf.d/test-blockfiles-s08-$$.conf"
+    _TEST_TEMP_FILES+=("$_s08_conf" "$_s08_target")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    rm -f "$_s08_target"
+    echo "BLOCKED_FILES+=( \"$_s08_target\" )" > "$_s08_conf"
+    sandbox bash -c "true"
+    local _s08_warn_count
+    _s08_warn_count=$(echo "$OUTPUT_ERR" | grep -cE "WARNING:.*materializ.*$_s08_target" || true)
+    if [[ "$_s08_warn_count" == "1" ]] && [[ -e "$_s08_target" ]]; then
+        pass "S08: Materialize emits exactly one warning per missing BLOCKED_FILES entry"
+    else
+        fail "S08: Expected exactly one materialize warning (got $_s08_warn_count), file_exists=$([ -e "$_s08_target" ] && echo yes || echo no)" "$OUTPUT_ERR"
+    fi
+    rm -f "$_s08_conf" "$_s08_target"
+else
+    skip "S08: BLOCKED_FILES has no effect on Landlock (no mount namespace)"
+fi
+
+# ── S09: --cleanup-materialized removes a still-empty placeholder ──
+# When the launcher is invoked with --cleanup-materialized AND the
+# materialized placeholder is still 0 bytes after sandbox exit, the
+# placeholder must be removed.
+if has_mount_ns; then
+    local _s09_target="$PROJECT_DIR/.test-blockfiles-s09-$$"
+    local _s09_conf="$HOME/.config/agent-sandbox/conf.d/test-blockfiles-s09-$$.conf"
+    _TEST_TEMP_FILES+=("$_s09_conf" "$_s09_target")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    rm -f "$_s09_target"
+    echo "BLOCKED_FILES+=( \"$_s09_target\" )" > "$_s09_conf"
+    # Use the lower-level sandbox-exec.sh directly so we can pass the
+    # new --cleanup-materialized flag (the `sandbox` test helper wraps
+    # for the default flag set).
+    OUTPUT="$("$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --cleanup-materialized --project-dir "$PROJECT_DIR" -- bash -c "true" 2>&1)"
+    if [[ ! -e "$_s09_target" ]]; then
+        pass "S09: --cleanup-materialized removed 0-byte placeholder on exit"
+    else
+        fail "S09: Placeholder retained despite --cleanup-materialized (size=$(stat -c %s "$_s09_target" 2>/dev/null))" "$OUTPUT"
+    fi
+    rm -f "$_s09_conf" "$_s09_target"
+else
+    skip "S09: BLOCKED_FILES has no effect on Landlock (no mount namespace)"
+fi
+
+# ── S10: --cleanup-materialized RETAINS a non-empty placeholder ──
+# If the host placeholder was written to by something else (e.g., a
+# legitimate user edit, an agent that learned to write its instruction
+# file post-launch), the cleanup pass must NOT delete it. The signal
+# that the cleanup was conservative is twofold: (a) file still exists
+# post-exit, (b) stderr notes "kept" with the path.
+if has_mount_ns; then
+    local _s10_target="$PROJECT_DIR/.test-blockfiles-s10-$$"
+    local _s10_conf="$HOME/.config/agent-sandbox/conf.d/test-blockfiles-s10-$$.conf"
+    _TEST_TEMP_FILES+=("$_s10_conf" "$_s10_target")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    rm -f "$_s10_target"
+    echo "BLOCKED_FILES+=( \"$_s10_target\" )" > "$_s10_conf"
+    # Run a sandbox cmd that, from inside, can't write to the bound
+    # /dev/null overlay (read-only) — so we simulate the "user edited
+    # outside" case by writing to the host path BEFORE invoking the
+    # sandbox … no, that defeats materialize. Instead: invoke the
+    # sandbox first to materialize, then write to the host path between
+    # materialize and exit. The launcher's foreground-child pattern
+    # under --cleanup-materialized makes this race-controlled: the
+    # in-sandbox cmd blocks on a sentinel that we touch from outside
+    # AFTER writing to the host placeholder.
+    #
+    # Simpler model: invoke twice. First launch with default flags
+    # (materialize, no cleanup). Then write content to the host
+    # placeholder. Then second launch with --cleanup-materialized —
+    # cleanup should retain (non-empty) AND warn "kept".
+    "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- bash -c "true" >/dev/null 2>&1
+    [[ -e "$_s10_target" ]] || { fail "S10: first launch failed to materialize" "$_s10_target"; }
+    echo "user-content" > "$_s10_target"
+    OUTPUT_ERR="$("$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --cleanup-materialized --project-dir "$PROJECT_DIR" -- bash -c "true" 2>&1 1>/dev/null)"
+    if [[ -e "$_s10_target" ]] \
+       && [[ "$(stat -c %s "$_s10_target" 2>/dev/null)" != "0" ]] \
+       && echo "$OUTPUT_ERR" | grep -qE "kept.*$_s10_target|$_s10_target.*kept|$_s10_target.*not empty"; then
+        pass "S10: --cleanup-materialized retained non-empty placeholder and noted 'kept'"
+    else
+        fail "S10: Cleanup pass either deleted non-empty file or didn't note retention" "exists=$([ -e "$_s10_target" ] && echo yes || echo no), size=$(stat -c %s "$_s10_target" 2>/dev/null), ERR=$OUTPUT_ERR"
+    fi
+    rm -f "$_s10_conf" "$_s10_target"
+else
+    skip "S10: BLOCKED_FILES has no effect on Landlock (no mount namespace)"
 fi
 
 # ── H01: Hardlink /etc/passwd into project dir ──
