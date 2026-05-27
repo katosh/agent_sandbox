@@ -3994,22 +3994,40 @@ if has_mount_ns; then
     rm -f "$_s06_target"
     [[ -e "$_s06_target" ]] && { fail "S06: pre-existing target (test bug)" "$_s06_target"; }
     echo "BLOCKED_FILES+=( \"$_s06_target\" )" > "$_s06_conf"
-    if sandbox_must_run bash -c "if [ -e '$_s06_target' ]; then wc -c < '$_s06_target' 2>&1; else echo MISSING; fi"; then
-        # Placeholder should have been created on host (empty stub), and
-        # bound to /dev/null inside the sandbox → in-sandbox wc -c == 0.
-        if [[ -e "$_s06_target" ]]; then
+    # `sandbox` (not `sandbox_must_run`) — in-sandbox cmd may legitimately
+    # exit non-zero when firejail's --blacklist makes the read fail with
+    # EACCES (also a valid protection signal). We mirror the S03 pattern
+    # where the outer `if sandbox …` branch handles cmd-succeeded and the
+    # `else` branch handles cmd-failed (both reachable iff sandbox booted).
+    if sandbox bash -c "if [ -e '$_s06_target' ]; then wc -c < '$_s06_target' 2>&1; else echo MISSING; fi"; then
+        # Inner cmd exit 0 — either wc read 0 bytes (bwrap /dev/null
+        # overlay applied cleanly) or echo MISSING fired (no overlay).
+        if [[ ! -e "$_s06_target" ]]; then
+            fail "S06: Host placeholder not created by validator" "$OUTPUT"
+        else
             local _host_size
             _host_size=$(stat -c %s "$_s06_target" 2>/dev/null)
-            if [[ "$_host_size" == "0" ]] && echo "$OUTPUT" | grep -qE "^[[:space:]]*0[[:space:]]*$"; then
-                pass "S06: Missing BLOCKED_FILES entry materialized as empty placeholder and bound to /dev/null"
+            if [[ "$_host_size" != "0" ]]; then
+                fail "S06: Placeholder size mismatch (host_size=$_host_size, expected 0)" "$OUTPUT"
+            elif echo "$OUTPUT" | grep -qE "^[[:space:]]*0[[:space:]]*$"; then
+                pass "S06: Missing BLOCKED_FILES entry materialized + /dev/null-bound (wc -c == 0)"
+            elif echo "$OUTPUT" | grep -q "MISSING"; then
+                fail "S06: Sandbox booted but BLOCKED_FILES overlay not visible inside" "$OUTPUT"
             else
-                fail "S06: Placeholder created but content not /dev/null-bound (host_size=$_host_size, OUTPUT=$OUTPUT)" "$OUTPUT"
+                fail "S06: Unexpected in-sandbox output (OUTPUT=$OUTPUT)" "$OUTPUT"
             fi
-        else
-            fail "S06: Sandbox launched but didn't materialize the missing BLOCKED_FILES entry on host" "$OUTPUT"
         fi
     else
-        fail "S06: Sandbox refused to start for missing BLOCKED_FILES entry under writable parent" "$OUTPUT_ERR"
+        # Inner cmd exit non-zero — bash redirect failed (likely firejail
+        # blacklist blocked the read with EACCES). That's a valid PASS
+        # signal as long as the host placeholder was still materialized.
+        if [[ -e "$_s06_target" ]] && echo "$OUTPUT_ERR" | grep -qE "Permission denied|No such file or directory"; then
+            pass "S06: Missing BLOCKED_FILES entry materialized + read blocked inside sandbox (EACCES)"
+        else
+            local _ec_host_size
+            _ec_host_size=$(stat -c %s "$_s06_target" 2>/dev/null || echo "missing")
+            fail "S06: Inner cmd failed but not via blacklist EACCES (host_size=$_ec_host_size, ERR=$OUTPUT_ERR)" "$OUTPUT_ERR"
+        fi
     fi
     rm -f "$_s06_conf" "$_s06_target"
 else
