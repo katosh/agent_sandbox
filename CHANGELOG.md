@@ -100,6 +100,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   itself) as defense in depth. Subdirectories of `$HOME` are
   unaffected and keep their credential masks.
 
+- **Deny `srun --multi-prog` — critical compute-node sandbox bypass.**
+  The chaperon's srun handler sandboxes a job by appending
+  `-- sandbox-exec.sh --project-dir … -- <command>` to the real srun
+  invocation, relying on srun exec'ing `sandbox-exec.sh`. But
+  `--multi-prog <cfg>` changes srun's execution model: it launches the
+  per-task executables listed in the **agent-supplied config file**,
+  so the appended `sandbox-exec.sh …` degrades to inert
+  `%`-substitution data and is never exec'd. The config's programs run
+  directly under `slurmstepd` on the compute node, unsandboxed, as the
+  host user — a full escape. `--multi-prog` is now removed from the
+  srun flag whitelist and explicitly denied with an actionable message.
+
+- **Restrict `srun --output` / `--error` / `--input` to the project
+  directory.** Slurm's `slurmstepd` opens these files OUTSIDE the
+  sandbox, as the host user, before the compute-node sandbox boundary
+  applies. An unrestricted path meant the task's (agent-controlled)
+  stdout could be written to any host-writable path
+  (`--output=~/.ssh/authorized_keys`, `--output=~/.bashrc`) and any
+  host-readable file could be piped into the job
+  (`--input=~/.aws/credentials`), defeating project-dir confinement
+  even though the task itself is sandboxed. The srun handler now
+  canonicalizes each `-o/-e/-i` path against the validated submission
+  cwd and rejects any that resolve outside the project directory
+  (`..`-traversal and sibling-prefix tricks included). Project-relative
+  paths — the common case — are unchanged. (The sbatch handler already
+  contained these via its `.sandbox-state/slurm-logs` staging
+  transform; srun had been missed.)
+
 ## [0.10.1] - 2026-05-15
 
 ### Added
