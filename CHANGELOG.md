@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Claude Code compatibility settings in the injected
+  `sandbox-tmux.conf`.** Running Claude Code inside the nested sandbox
+  tmux dropped its desktop notifications and progress bar (tmux
+  swallows the passthrough escape sequences by default) and couldn't
+  distinguish Shift+Enter (newline) from Enter (submit). Per Claude
+  Code's [terminal-config docs](https://code.claude.com/docs/en/terminal-config),
+  the injected config now sets `allow-passthrough on` (notifications /
+  progress reach the outer terminal), `extended-keys on` +
+  `terminal-features xterm*:extkeys` (Shift+Enter multiline input),
+  `terminal-features *:RGB` (24-bit colour for any outer terminal, not
+  just `xterm-256color`), `set-clipboard on` (OSC 52 copy over
+  SSH/tmux), and `mouse on` (wheel-scroll / click-to-expand of
+  full-screen tool output). The newer option names are wrapped in a
+  `%if "#{>=:#{version},3.3}"` guard so older tmux (the sandbox still
+  supports back to ~2.6) skips them instead of erroring. Customize in
+  `~/.config/agent-sandbox/sandbox-tmux.conf`.
+
 - **`.sandbox-state/` — hidden chaperon-owned state convention (#67).**
   Adds `$project_dir/.sandbox-state/` as a general-purpose subdir for
   chaperon-managed state: `slurm-logs/` for redirected `sbatch
