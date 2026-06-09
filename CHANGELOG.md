@@ -151,6 +151,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   on are not stripped). Applied to both `sandbox-lib.sh` defaults and
   the shipped `sandbox.conf`.
 
+- **Seccomp: block the new mount API (bwrap).** The generated BPF
+  filter blocked `mount(2)` as defense-in-depth (for the "if a kernel
+  bug or misconfig ever leaks `CAP_SYS_ADMIN`" case the denylist
+  targets) but left its functional replacement — the kernel 5.2+ mount
+  API (`open_tree`, `move_mount`, `fsopen`, `fsconfig`, `fsmount`,
+  `fspick`, `mount_setattr`) — open. A leaked capability could have
+  mounted via `fsopen`+`fsconfig`+`fsmount`+`move_mount` instead,
+  defeating the `mount(2)` block. All seven are now denied on both
+  x86_64 and aarch64 (verified: they return EPERM inside the sandbox
+  vs EFAULT/EINVAL outside). Same `CAP_SYS_ADMIN` gating, zero effect
+  on HPC/ML workloads.
+
 ## [0.10.1] - 2026-05-15
 
 ### Added

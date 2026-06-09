@@ -124,6 +124,16 @@ AUDIT_ARCH_AARCH64 = 0xC00000B7
 #               contexts.  Defense in depth against userns + cap-leak
 #               chains.
 #
+# open_tree / move_mount / fsopen / fsconfig / fsmount / fspick /
+# mount_setattr:  the "new mount API" (kernel 5.2+).  These are
+#               distinct syscall numbers that together provide the
+#               same filesystem-mutation capability as mount(2).
+#               Blocking mount(2) for the cap-leak DiD case above but
+#               leaving these open would defeat the purpose — a leaked
+#               CAP_SYS_ADMIN could mount via fsopen+fsconfig+fsmount+
+#               move_mount instead.  Same CAP_SYS_ADMIN gating, same
+#               zero effect on HPC/ML workloads.
+#
 # reboot:       halts the machine.  CAP_SYS_BOOT-gated.
 #
 # swapon / swapoff:  swap-space manipulation.  CAP_SYS_ADMIN-gated.
@@ -182,6 +192,15 @@ _BLOCKED_SYSCALLS = {
         "mount":             165,   # syscall_64.tbl: 165 common mount
         "umount2":           166,   # syscall_64.tbl: 166 common umount2
         "pivot_root":        155,   # syscall_64.tbl: 155 common pivot_root
+        # New mount API (kernel 5.2+): functional replacement for mount(2).
+        # Blocking mount(2) but not these would leave the same DiD gap open.
+        "open_tree":         428,   # syscall_64.tbl: 428 common open_tree
+        "move_mount":        429,   # syscall_64.tbl: 429 common move_mount
+        "fsopen":            430,   # syscall_64.tbl: 430 common fsopen
+        "fsconfig":          431,   # syscall_64.tbl: 431 common fsconfig
+        "fsmount":           432,   # syscall_64.tbl: 432 common fsmount
+        "fspick":            433,   # syscall_64.tbl: 433 common fspick
+        "mount_setattr":     442,   # syscall_64.tbl: 442 common mount_setattr
         "reboot":            169,   # syscall_64.tbl: 169 common reboot
         "swapon":            167,   # syscall_64.tbl: 167 common swapon
         "swapoff":           168,   # syscall_64.tbl: 168 common swapoff
@@ -205,6 +224,15 @@ _BLOCKED_SYSCALLS = {
         "mount":              40,   # asm-generic/unistd.h: __NR_mount              40
         "umount2":            39,   # asm-generic/unistd.h: __NR_umount2            39
         "pivot_root":         41,   # asm-generic/unistd.h: __NR_pivot_root         41
+        # New mount API (kernel 5.2+): functional replacement for mount(2).
+        # Same numbers as x86_64 (aarch64 uses the generic syscall table).
+        "open_tree":         428,   # asm-generic/unistd.h: __NR_open_tree        428
+        "move_mount":        429,   # asm-generic/unistd.h: __NR_move_mount       429
+        "fsopen":            430,   # asm-generic/unistd.h: __NR_fsopen           430
+        "fsconfig":          431,   # asm-generic/unistd.h: __NR_fsconfig         431
+        "fsmount":           432,   # asm-generic/unistd.h: __NR_fsmount          432
+        "fspick":            433,   # asm-generic/unistd.h: __NR_fspick           433
+        "mount_setattr":     442,   # asm-generic/unistd.h: __NR_mount_setattr    442
         "reboot":            142,   # asm-generic/unistd.h: __NR_reboot            142
         "swapon":            224,   # asm-generic/unistd.h: __NR_swapon            224
         "swapoff":           225,   # asm-generic/unistd.h: __NR_swapoff           225
