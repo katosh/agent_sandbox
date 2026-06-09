@@ -128,6 +128,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   contained these via its `.sandbox-state/slurm-logs` staging
   transform; srun had been missed.)
 
+- **Bind the project dir before the `BLOCKED_FILES` /
+  `EXTRA_BLOCKED_PATHS` overlays (bwrap).** For a project directory
+  *outside* `$HOME`, the bwrap backend emitted the writable project
+  bind *after* the protective overlays. bwrap's last-wins precedence
+  meant any `BLOCKED_FILES` or `EXTRA_BLOCKED_PATHS` entry that lived
+  inside that project tree was silently re-exposed (writable),
+  defeating the block — while the same entries were correctly masked
+  for projects under `$HOME` (which were bound earlier). The project
+  bind is now emitted once, before the overlays, for both cases, so
+  blocked paths inside the project stay masked regardless of the
+  project's location. `.sandbox-state/` continues to RO-overlay after
+  the project bind.
+
 ## [0.10.1] - 2026-05-15
 
 ### Added
