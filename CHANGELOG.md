@@ -79,6 +79,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   slurm-inside-sandbox indistinguishable from native slurm for
   the cwd surface, without jeopardizing project-dir confinement.
 
+### Security
+
+- **Reject `--project-dir $HOME` — critical home-directory credential
+  bypass.** When the project directory was the user's home directory
+  itself (the default when an agent is launched from `~`), the bwrap
+  backend bound all of `$HOME` writable *after* emitting the
+  home-isolation masks (the `--tmpfs $HOME` blank slate in
+  restricted/tmpwrite mode, and the `--tmpfs $HOME/.ssh|.aws|.gnupg`
+  credential masks in read/write mode). Because bwrap applies its
+  arguments left-to-right with last-wins precedence, the project bind
+  overlaid those masks and re-exposed the real `~/.ssh/id_rsa`,
+  `~/.aws/credentials`, etc. — readable in every mode and *writable*
+  in the default `tmpwrite` mode (confirmed: a write to `~/.config/`
+  and to `~/.ssh/` persisted to the host, enabling `authorized_keys`
+  / `.bashrc` persistence escapes). `validate_project_dir` now
+  rejects a project dir that resolves to `$HOME` exactly (it must be a
+  subdirectory), with an actionable error; the bwrap backend also
+  guards the home-relative project bind (`"$HOME"/*`, never `$HOME`
+  itself) as defense in depth. Subdirectories of `$HOME` are
+  unaffected and keep their credential masks.
+
 ## [0.10.1] - 2026-05-15
 
 ### Added

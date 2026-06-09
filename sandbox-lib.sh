@@ -2550,6 +2550,29 @@ validate_project_dir() {
         fi
     done
 
+    # 1b. Reject the project dir being exactly $HOME (literal or resolved).
+    #     $HOME is an ALLOWED_PROJECT_PARENTS entry so that subdirectories
+    #     of it pass check (2) below, but $HOME *itself* must never be the
+    #     project dir: the project dir is bind-mounted writable, and binding
+    #     all of $HOME re-exposes the credential dirs (~/.ssh, ~/.aws,
+    #     ~/.gnupg) and shell-startup files (~/.bashrc, ~/.profile) that the
+    #     home-isolation masks hide.  bwrap applies args left-to-right
+    #     (last wins), so the project bind overlays those earlier masks —
+    #     a full read+write credential bypass, confirmed in the default
+    #     (tmpwrite) mode when launched from the home directory.  Require a
+    #     subdirectory instead.
+    local _home_resolved
+    _home_resolved="$(_resolve_path "$HOME")"
+    if [[ "$dir" == "$HOME" || "$dir_resolved" == "$HOME" \
+          || "$dir" == "$_home_resolved" || "$dir_resolved" == "$_home_resolved" ]]; then
+        echo "Error: The project directory cannot be your home directory ($HOME)." >&2
+        echo "  Running an agent with all of \$HOME writable would re-expose ~/.ssh," >&2
+        echo "  ~/.aws, ~/.gnupg, and shell startup files the sandbox is meant to hide." >&2
+        echo "  Use a subdirectory instead, e.g.:" >&2
+        echo "    mkdir -p ~/projects/work && cd ~/projects/work && agent-sandbox claude" >&2
+        return 1
+    fi
+
     # 2. Require the project dir (literal or resolved) to be under an
     #    allowed parent.  Matching either form lets admins express the
     #    allowlist in terms of either the canonical path or a commonly

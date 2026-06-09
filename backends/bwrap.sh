@@ -478,8 +478,13 @@ backend_prepare() {
 
     BWRAP_ARGS+=(--ro-bind "$SANDBOX_DIR" "$SANDBOX_DIR")
 
-    # If the project dir is under $HOME, bind it writable
-    if [[ "$project_dir" == "$HOME"* ]]; then
+    # If the project dir is under $HOME, bind it writable.
+    # Guard against project_dir == $HOME exactly: binding all of $HOME
+    # here would overlay (last-wins) the credential masks and tmpfs-home
+    # blank slate set up above, re-exposing ~/.ssh etc. validate_project_dir
+    # already rejects project_dir == $HOME; this is defense-in-depth so a
+    # bypass of that check still cannot re-bind the whole home.
+    if [[ "$project_dir" == "$HOME"/* && "$project_dir" != "$HOME" ]]; then
         BWRAP_ARGS+=(--bind "$project_dir" "$project_dir")
     fi
 
