@@ -456,7 +456,7 @@ BLOCKED_ENV_VARS=(
 # VAULT_ADDR, …) without requiring per-key opt-in.
 BLOCKED_ENV_PATTERNS=(
     "SSH_*"
-    "*_TOKEN"  "*_SECRET"  "*_PASSWORD"  "*_CREDENTIAL"
+    "*_TOKEN"  "*_SECRET"  "*_PASSWORD"  "*_CREDENTIAL"  "*_CREDENTIALS"
     "*_API_KEY"  "*_SECRET_KEY"  "*_PRIVATE_KEY"
     # AWS / Amazon (scode:117 — full-prefix sweep for the long tail
     # beyond AWS_ACCESS_KEY_ID and AWS_SESSION_TOKEN)
@@ -468,6 +468,12 @@ BLOCKED_ENV_PATTERNS=(
     # HashiCorp Vault — VAULT_TOKEN already caught by *_TOKEN; this
     # also blocks VAULT_ADDR/VAULT_NAMESPACE which leak server topology.
     "VAULT_*"
+    # Kubernetes — KUBECONFIG points at a file holding cluster
+    # credentials/tokens; KUBE_* sweeps KUBE_TOKEN/KUBE_BEARER_TOKEN etc.
+    "KUBECONFIG"  "KUBE_*"
+    # Slurm REST API auth token (HPC). NOT "SLURM_*": that would strip
+    # the legitimate SLURM_JOB_*/SLURM_NTASKS runtime vars jobs rely on.
+    "SLURM_JWT"
     "DOCKER_*"  "REGISTRY_*"
     "CI_*"  "GITLAB_*"  "JENKINS_*"  "BUILDKITE_*"  "CIRCLECI_*"
 )

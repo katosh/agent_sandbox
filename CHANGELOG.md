@@ -141,6 +141,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   project's location. `.sandbox-state/` continues to RO-overlay after
   the project bind.
 
+- **Close credential env-var scrub gaps.** Added to the default
+  `BLOCKED_ENV_PATTERNS`: `*_CREDENTIALS` (plural — the existing
+  `*_CREDENTIAL` missed `GOOGLE_CREDENTIALS` / `OPENAI_CREDENTIALS`,
+  which carry inline service-account JSON), `KUBECONFIG` + `KUBE_*`
+  (Kubernetes cluster credentials), and `SLURM_JWT` (Slurm REST API
+  token — deliberately the specific name, *not* `SLURM_*`, so the
+  legitimate `SLURM_JOB_*` / `SLURM_NTASKS` runtime vars jobs depend
+  on are not stripped). Applied to both `sandbox-lib.sh` defaults and
+  the shipped `sandbox.conf`.
+
 ## [0.10.1] - 2026-05-15
 
 ### Added
