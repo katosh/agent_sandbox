@@ -385,7 +385,8 @@ jobs:
         run: |
           out=$(./sandbox-exec.sh --version)
           echo "$out"
-          echo "$out" | grep -qE '^agent-sandbox [0-9]+\.[0-9]+\.[0-9]+$'
+          # Allow a pre-release suffix (e.g. 0.13.0-rc.1) so RC tags stay green
+          echo "$out" | grep -qE '^agent-sandbox [0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$'
 
       - name: "--version matches VERSION file"
         run: |
