@@ -456,7 +456,7 @@ BLOCKED_ENV_VARS=(
 # VAULT_ADDR, …) without requiring per-key opt-in.
 BLOCKED_ENV_PATTERNS=(
     "SSH_*"
-    "*_TOKEN"  "*_SECRET"  "*_PASSWORD"  "*_CREDENTIAL"
+    "*_TOKEN"  "*_SECRET"  "*_PASSWORD"  "*_CREDENTIAL"  "*_CREDENTIALS"
     "*_API_KEY"  "*_SECRET_KEY"  "*_PRIVATE_KEY"
     # AWS / Amazon (scode:117 — full-prefix sweep for the long tail
     # beyond AWS_ACCESS_KEY_ID and AWS_SESSION_TOKEN)
@@ -468,6 +468,12 @@ BLOCKED_ENV_PATTERNS=(
     # HashiCorp Vault — VAULT_TOKEN already caught by *_TOKEN; this
     # also blocks VAULT_ADDR/VAULT_NAMESPACE which leak server topology.
     "VAULT_*"
+    # Kubernetes — KUBECONFIG points at a file holding cluster
+    # credentials/tokens; KUBE_* sweeps KUBE_TOKEN/KUBE_BEARER_TOKEN etc.
+    "KUBECONFIG"  "KUBE_*"
+    # Slurm REST API auth token (HPC). NOT "SLURM_*": that would strip
+    # the legitimate SLURM_JOB_*/SLURM_NTASKS runtime vars jobs rely on.
+    "SLURM_JWT"
     "DOCKER_*"  "REGISTRY_*"
     "CI_*"  "GITLAB_*"  "JENKINS_*"  "BUILDKITE_*"  "CIRCLECI_*"
 )
@@ -2756,6 +2762,29 @@ validate_project_dir() {
             return 1
         fi
     done
+
+    # 1b. Reject the project dir being exactly $HOME (literal or resolved).
+    #     $HOME is an ALLOWED_PROJECT_PARENTS entry so that subdirectories
+    #     of it pass check (2) below, but $HOME *itself* must never be the
+    #     project dir: the project dir is bind-mounted writable, and binding
+    #     all of $HOME re-exposes the credential dirs (~/.ssh, ~/.aws,
+    #     ~/.gnupg) and shell-startup files (~/.bashrc, ~/.profile) that the
+    #     home-isolation masks hide.  bwrap applies args left-to-right
+    #     (last wins), so the project bind overlays those earlier masks —
+    #     a full read+write credential bypass, confirmed in the default
+    #     (tmpwrite) mode when launched from the home directory.  Require a
+    #     subdirectory instead.
+    local _home_resolved
+    _home_resolved="$(_resolve_path "$HOME")"
+    if [[ "$dir" == "$HOME" || "$dir_resolved" == "$HOME" \
+          || "$dir" == "$_home_resolved" || "$dir_resolved" == "$_home_resolved" ]]; then
+        echo "Error: The project directory cannot be your home directory ($HOME)." >&2
+        echo "  Running an agent with all of \$HOME writable would re-expose ~/.ssh," >&2
+        echo "  ~/.aws, ~/.gnupg, and shell startup files the sandbox is meant to hide." >&2
+        echo "  Use a subdirectory instead, e.g.:" >&2
+        echo "    mkdir -p ~/projects/work && cd ~/projects/work && agent-sandbox claude" >&2
+        return 1
+    fi
 
     # 2. Require the project dir (literal or resolved) to be under an
     #    allowed parent.  Matching either form lets admins express the

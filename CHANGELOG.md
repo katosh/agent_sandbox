@@ -202,6 +202,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Disabled on landlock (the RO overlay is unavailable; symlink-plant
   defense would be missing). Closes #67.
 
+### Added
+
+- **Claude Code compatibility settings in the injected
+  `sandbox-tmux.conf`.** Running Claude Code inside the nested sandbox
+  tmux dropped its desktop notifications and progress bar (tmux
+  swallows the passthrough escape sequences by default) and couldn't
+  distinguish Shift+Enter (newline) from Enter (submit). Per Claude
+  Code's [terminal-config docs](https://code.claude.com/docs/en/terminal-config),
+  the injected config now sets `allow-passthrough on` (notifications /
+  progress reach the outer terminal), `extended-keys on` +
+  `terminal-features xterm*:extkeys` (Shift+Enter multiline input),
+  `terminal-features *:RGB` (24-bit colour for any outer terminal, not
+  just `xterm-256color`), `set-clipboard on` (OSC 52 copy over
+  SSH/tmux), and `mouse on` (wheel-scroll / click-to-expand of
+  full-screen tool output). The newer option names are wrapped in a
+  `%if "#{>=:#{version},3.3}"` guard so older tmux (the sandbox still
+  supports back to ~2.6) skips them instead of erroring. Customize in
+  `~/.config/agent-sandbox/sandbox-tmux.conf`.
+
+- **`.sandbox-state/` — hidden chaperon-owned state convention (#67).**
+  Adds `$project_dir/.sandbox-state/` as a general-purpose subdir for
+  chaperon-managed state: `slurm-logs/` for redirected `sbatch
+  --output` / `--error` files (see next entry), `chaperon/` for the
+  chaperon's own diagnostic log. bwrap and firejail RO-overlay the
+  dir after the writable project bind (path-keyed, later wins) so the
+  agent inside the sandbox can read content but not tamper with it.
+  Landlock can't RO-overlay a subtree under a writable parent
+  (additive-rules limitation) so the dir is sandbox-writable there —
+  the chaperon-side feature gated by `$SANDBOX_BACKEND` skips the
+  Slurm-output redirection on landlock entirely; chaperon log writes
+  fall back to the existing XDG location. Lifecycle: keep forever —
+  documented as a sandbox artifact; `rm -rf .sandbox-state/` to
+  reclaim. Threat-model framing (load-bearing for the design): the
+  RO overlay prevents in-sandbox symlink-plant against the chaperon's
+  writes, NOT trust in the dir's content — the submitted job
+  determines what slurmstepd writes there, and the chaperon never
+  trusts content read back. This is the explicit distinction from
+  the reverted PR #50 (which RO-protected user-owned content the
+  agent legitimately writes to). See
+  `docs/reference/sandbox-state-dir.md` for the full convention.
+
+- **`sbatch --output` / `--error` path transformation + in-sandbox
+  symlink (#67).** Closes the residual gap left by #65: even with
+  the chaperon's cwd validated, `sbatch --output=/etc/cron.d/evil`
+  (absolute) and `sbatch --output=../../etc/passwd` (relative
+  traversal) escape past the compute-node sandbox because Slurm
+  resolves and opens those paths as the user, before the sandbox
+  boundary applies. The chaperon now transforms `--output` /
+  `--error` values (both command-line and `#SBATCH` directive forms)
+  into paths under `$project_dir/.sandbox-state/slurm-logs/` — leading
+  `/` encoded as `__abs__/`, `..` components rewritten to `__updir__`,
+  `%`-patterns preserved for slurmstepd's runtime substitution. Slurm
+  writes to the chaperon-controlled (and bwrap/firejail-RO-overlaid)
+  staging path. The in-sandbox wrapper, as its first action, creates
+  a **relative** symlink from the user's resolved intended path to
+  the staging file — gated by the bind-mount envelope, so if the
+  user picked a non-sandbox-writable target (e.g. `/etc/cron.d/evil`)
+  the `ln -s` fails gracefully and the log only lives at the
+  staging path. No copy, no exit trap, no race with slurmstepd's
+  continued writes. Wrapper-side helpers (`_sandbox_slurm_resolve_pat`,
+  `_sandbox_link_slurm_output`) resolve `%j`/`%A`/`%a`/`%N`/`%n`/`%t`/
+  `%u`/`%x` from the standard `SLURM_*` env vars set by slurmstepd.
+  Disabled on landlock (the RO overlay is unavailable; symlink-plant
+  defense would be missing). Closes #67.
+
 ### Fixed
 
 - **Preserve Slurm submission cwd inside the sandbox (#65; PR #66).** The
@@ -254,6 +319,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   quote the operator's design-discussion ack verbatim so the rule
   isn't reverted on the same grounds.
 
+- **Reject `--project-dir $HOME` — critical home-directory credential
+  bypass.** When the project directory was the user's home directory
+  itself (the default when an agent is launched from `~`), the bwrap
+  backend bound all of `$HOME` writable *after* emitting the
+  home-isolation masks (the `--tmpfs $HOME` blank slate in
+  restricted/tmpwrite mode, and the `--tmpfs $HOME/.ssh|.aws|.gnupg`
+  credential masks in read/write mode). Because bwrap applies its
+  arguments left-to-right with last-wins precedence, the project bind
+  overlaid those masks and re-exposed the real `~/.ssh/id_rsa`,
+  `~/.aws/credentials`, etc. — readable in every mode and *writable*
+  in the default `tmpwrite` mode (confirmed: a write to `~/.config/`
+  and to `~/.ssh/` persisted to the host, enabling `authorized_keys`
+  / `.bashrc` persistence escapes). `validate_project_dir` now
+  rejects a project dir that resolves to `$HOME` exactly (it must be a
+  subdirectory), with an actionable error; the bwrap backend also
+  guards the home-relative project bind (`"$HOME"/*`, never `$HOME`
+  itself) as defense in depth. Subdirectories of `$HOME` are
+  unaffected and keep their credential masks.
+
+- **Deny `srun --multi-prog` — critical compute-node sandbox bypass.**
+  The chaperon's srun handler sandboxes a job by appending
+  `-- sandbox-exec.sh --project-dir … -- <command>` to the real srun
+  invocation, relying on srun exec'ing `sandbox-exec.sh`. But
+  `--multi-prog <cfg>` changes srun's execution model: it launches the
+  per-task executables listed in the **agent-supplied config file**,
+  so the appended `sandbox-exec.sh …` degrades to inert
+  `%`-substitution data and is never exec'd. The config's programs run
+  directly under `slurmstepd` on the compute node, unsandboxed, as the
+  host user — a full escape. `--multi-prog` is now removed from the
+  srun flag whitelist and explicitly denied with an actionable message.
+
+- **Restrict `srun --output` / `--error` / `--input` to the project
+  directory.** Slurm's `slurmstepd` opens these files OUTSIDE the
+  sandbox, as the host user, before the compute-node sandbox boundary
+  applies. An unrestricted path meant the task's (agent-controlled)
+  stdout could be written to any host-writable path
+  (`--output=~/.ssh/authorized_keys`, `--output=~/.bashrc`) and any
+  host-readable file could be piped into the job
+  (`--input=~/.aws/credentials`), defeating project-dir confinement
+  even though the task itself is sandboxed. The srun handler now
+  canonicalizes each `-o/-e/-i` path against the validated submission
+  cwd and rejects any that resolve outside the project directory
+  (`..`-traversal and sibling-prefix tricks included). Project-relative
+  paths — the common case — are unchanged. (The sbatch handler already
+  contained these via its `.sandbox-state/slurm-logs` staging
+  transform; srun had been missed.)
+
+- **Bind the project dir before the `BLOCKED_FILES` /
+  `EXTRA_BLOCKED_PATHS` overlays (bwrap).** For a project directory
+  *outside* `$HOME`, the bwrap backend emitted the writable project
+  bind *after* the protective overlays. bwrap's last-wins precedence
+  meant any `BLOCKED_FILES` or `EXTRA_BLOCKED_PATHS` entry that lived
+  inside that project tree was silently re-exposed (writable),
+  defeating the block — while the same entries were correctly masked
+  for projects under `$HOME` (which were bound earlier). The project
+  bind is now emitted once, before the overlays, for both cases, so
+  blocked paths inside the project stay masked regardless of the
+  project's location. `.sandbox-state/` continues to RO-overlay after
+  the project bind.
+
+- **Close credential env-var scrub gaps.** Added to the default
+  `BLOCKED_ENV_PATTERNS`: `*_CREDENTIALS` (plural — the existing
+  `*_CREDENTIAL` missed `GOOGLE_CREDENTIALS` / `OPENAI_CREDENTIALS`,
+  which carry inline service-account JSON), `KUBECONFIG` + `KUBE_*`
+  (Kubernetes cluster credentials), and `SLURM_JWT` (Slurm REST API
+  token — deliberately the specific name, *not* `SLURM_*`, so the
+  legitimate `SLURM_JOB_*` / `SLURM_NTASKS` runtime vars jobs depend
+  on are not stripped). Applied to both `sandbox-lib.sh` defaults and
+  the shipped `sandbox.conf`.
+
+- **Seccomp: block the new mount API (bwrap).** The generated BPF
+  filter blocked `mount(2)` as defense-in-depth (for the "if a kernel
+  bug or misconfig ever leaks `CAP_SYS_ADMIN`" case the denylist
+  targets) but left its functional replacement — the kernel 5.2+ mount
+  API (`open_tree`, `move_mount`, `fsopen`, `fsconfig`, `fsmount`,
+  `fspick`, `mount_setattr`) — open. A leaked capability could have
+  mounted via `fsopen`+`fsconfig`+`fsmount`+`move_mount` instead,
+  defeating the `mount(2)` block. All seven are now denied on both
+  x86_64 and aarch64 (verified: they return EPERM inside the sandbox
+  vs EFAULT/EINVAL outside). Same `CAP_SYS_ADMIN` gating, zero effect
+  on HPC/ML workloads.
+
 ### Backend asymmetries
 
 - **Landlock disables the `.sandbox-state/` + sbatch output-staging
@@ -273,6 +420,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the feature gap to the operator. Operators who need the
   symlink-plant defense on a host should pick bwrap or firejail;
   landlock retains its niche as a no-kernel-namespaces fallback.
+
+### Security
+
+- **Reject `--project-dir $HOME` — critical home-directory credential
+  bypass.** When the project directory was the user's home directory
+  itself (the default when an agent is launched from `~`), the bwrap
+  backend bound all of `$HOME` writable *after* emitting the
+  home-isolation masks (the `--tmpfs $HOME` blank slate in
+  restricted/tmpwrite mode, and the `--tmpfs $HOME/.ssh|.aws|.gnupg`
+  credential masks in read/write mode). Because bwrap applies its
+  arguments left-to-right with last-wins precedence, the project bind
+  overlaid those masks and re-exposed the real `~/.ssh/id_rsa`,
+  `~/.aws/credentials`, etc. — readable in every mode and *writable*
+  in the default `tmpwrite` mode (confirmed: a write to `~/.config/`
+  and to `~/.ssh/` persisted to the host, enabling `authorized_keys`
+  / `.bashrc` persistence escapes). `validate_project_dir` now
+  rejects a project dir that resolves to `$HOME` exactly (it must be a
+  subdirectory), with an actionable error; the bwrap backend also
+  guards the home-relative project bind (`"$HOME"/*`, never `$HOME`
+  itself) as defense in depth. Subdirectories of `$HOME` are
+  unaffected and keep their credential masks.
+
+- **Deny `srun --multi-prog` — critical compute-node sandbox bypass.**
+  The chaperon's srun handler sandboxes a job by appending
+  `-- sandbox-exec.sh --project-dir … -- <command>` to the real srun
+  invocation, relying on srun exec'ing `sandbox-exec.sh`. But
+  `--multi-prog <cfg>` changes srun's execution model: it launches the
+  per-task executables listed in the **agent-supplied config file**,
+  so the appended `sandbox-exec.sh …` degrades to inert
+  `%`-substitution data and is never exec'd. The config's programs run
+  directly under `slurmstepd` on the compute node, unsandboxed, as the
+  host user — a full escape. `--multi-prog` is now removed from the
+  srun flag whitelist and explicitly denied with an actionable message.
+
+- **Restrict `srun --output` / `--error` / `--input` to the project
+  directory.** Slurm's `slurmstepd` opens these files OUTSIDE the
+  sandbox, as the host user, before the compute-node sandbox boundary
+  applies. An unrestricted path meant the task's (agent-controlled)
+  stdout could be written to any host-writable path
+  (`--output=~/.ssh/authorized_keys`, `--output=~/.bashrc`) and any
+  host-readable file could be piped into the job
+  (`--input=~/.aws/credentials`), defeating project-dir confinement
+  even though the task itself is sandboxed. The srun handler now
+  canonicalizes each `-o/-e/-i` path against the validated submission
+  cwd and rejects any that resolve outside the project directory
+  (`..`-traversal and sibling-prefix tricks included). Project-relative
+  paths — the common case — are unchanged. (The sbatch handler already
+  contained these via its `.sandbox-state/slurm-logs` staging
+  transform; srun had been missed.)
+
+- **Bind the project dir before the `BLOCKED_FILES` /
+  `EXTRA_BLOCKED_PATHS` overlays (bwrap).** For a project directory
+  *outside* `$HOME`, the bwrap backend emitted the writable project
+  bind *after* the protective overlays. bwrap's last-wins precedence
+  meant any `BLOCKED_FILES` or `EXTRA_BLOCKED_PATHS` entry that lived
+  inside that project tree was silently re-exposed (writable),
+  defeating the block — while the same entries were correctly masked
+  for projects under `$HOME` (which were bound earlier). The project
+  bind is now emitted once, before the overlays, for both cases, so
+  blocked paths inside the project stay masked regardless of the
+  project's location. `.sandbox-state/` continues to RO-overlay after
+  the project bind.
+
+- **Close credential env-var scrub gaps.** Added to the default
+  `BLOCKED_ENV_PATTERNS`: `*_CREDENTIALS` (plural — the existing
+  `*_CREDENTIAL` missed `GOOGLE_CREDENTIALS` / `OPENAI_CREDENTIALS`,
+  which carry inline service-account JSON), `KUBECONFIG` + `KUBE_*`
+  (Kubernetes cluster credentials), and `SLURM_JWT` (Slurm REST API
+  token — deliberately the specific name, *not* `SLURM_*`, so the
+  legitimate `SLURM_JOB_*` / `SLURM_NTASKS` runtime vars jobs depend
+  on are not stripped). Applied to both `sandbox-lib.sh` defaults and
+  the shipped `sandbox.conf`.
+
+- **Seccomp: block the new mount API (bwrap).** The generated BPF
+  filter blocked `mount(2)` as defense-in-depth (for the "if a kernel
+  bug or misconfig ever leaks `CAP_SYS_ADMIN`" case the denylist
+  targets) but left its functional replacement — the kernel 5.2+ mount
+  API (`open_tree`, `move_mount`, `fsopen`, `fsconfig`, `fsmount`,
+  `fspick`, `mount_setattr`) — open. A leaked capability could have
+  mounted via `fsopen`+`fsconfig`+`fsmount`+`move_mount` instead,
+  defeating the `mount(2)` block. All seven are now denied on both
+  x86_64 and aarch64 (verified: they return EPERM inside the sandbox
+  vs EFAULT/EINVAL outside). Same `CAP_SYS_ADMIN` gating, zero effect
+  on HPC/ML workloads.
 
 ## [0.10.1] - 2026-05-15
 

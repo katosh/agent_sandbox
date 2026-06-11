@@ -478,8 +478,22 @@ backend_prepare() {
 
     BWRAP_ARGS+=(--ro-bind "$SANDBOX_DIR" "$SANDBOX_DIR")
 
-    # If the project dir is under $HOME, bind it writable
-    if [[ "$project_dir" == "$HOME"* ]]; then
+    # Bind the project dir writable. Emitted HERE — before the
+    # BLOCKED_FILES / EXTRA_BLOCKED_PATHS overlays and the .sandbox-state
+    # RO-overlay below — so those protective overlays win at an
+    # overlapping path (bwrap applies args left-to-right, last wins),
+    # whether or not the project is under $HOME. Previously a project
+    # OUTSIDE $HOME was bound later (after the overlays), which silently
+    # re-exposed any BLOCKED_FILES / EXTRA_BLOCKED_PATHS that lived
+    # inside the project tree. Comes after the READONLY_MOUNTS above, so
+    # it still overlays a read-only ancestor correctly.
+    #
+    # Guard against project_dir == $HOME exactly: binding all of $HOME
+    # would overlay the credential masks and tmpfs-home blank slate set
+    # up above, re-exposing ~/.ssh etc. validate_project_dir already
+    # rejects project_dir == $HOME; this is defense-in-depth so a bypass
+    # of that check still cannot re-bind the whole home.
+    if [[ "$project_dir" != "$HOME" ]]; then
         BWRAP_ARGS+=(--bind "$project_dir" "$project_dir")
     fi
 
@@ -571,9 +585,19 @@ backend_prepare() {
         fi
     done
 
-    # Project dir outside $HOME — bind after read-only mounts so it overlays correctly
-    if [[ "$project_dir" != "$HOME"* ]]; then
-        BWRAP_ARGS+=(--bind "$project_dir" "$project_dir")
+    # (Project dir is bound writable earlier — before the overlays — so
+    # BLOCKED_FILES / EXTRA_BLOCKED_PATHS inside it stay masked.)
+
+    # .sandbox-state/ — chaperon-owned state subdir, RO-overlaid AFTER
+    # the writable project bind (path-keyed, later wins) so the agent
+    # can't tamper with the chaperon's slurm-log staging area or the
+    # chaperon diagnostic log. Threat-model framing + the distinction
+    # from reverted PR #50 is documented at sandbox-lib.sh's
+    # `.sandbox-state/` section. Only overlay when the dir exists —
+    # the chaperon mkdir's it lazily on first slurm submission.
+    local _state_dir="$project_dir/.sandbox-state"
+    if [[ -d "$_state_dir" ]]; then
+        BWRAP_ARGS+=(--ro-bind "$_state_dir" "$_state_dir")
     fi
 
     # .sandbox-state/ — chaperon-owned state subdir, RO-overlaid AFTER

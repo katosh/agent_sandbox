@@ -5,6 +5,8 @@
 .srun-overlay
 .passwd-filter/
 .host-libs/
+# Chaperon-owned per-project state (slurm-log staging, chaperon log)
+.sandbox-state/
 
 # Slurm job output from testing
 slurm-*.out
