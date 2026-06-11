@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.13.0-rc.2] - 2026-06-11
+
+Pre-release for 0.13.0.
+
+### Fixed
+
+- **Injected `sandbox-tmux.conf` errored on tmux < 3.3 (rc.1
+  regression).** The Claude Code compatibility block was guarded with
+  `%if "#{>=:#{version},3.3}"`, but the `>=` format comparison itself
+  only exists in tmux >= 3.1 — exactly the versions the guard was
+  meant to protect fell through it and hit
+  `invalid option: allow-passthrough` / `extended-keys` /
+  `terminal-features` at startup. The guard is gone; the newer option
+  names now use `set -q` (suppress unknown-option errors, honored
+  since tmux 1.8), so old tmux skips them silently and tmux >= 3.2/3.3
+  applies them as before.
+
 ## [0.13.0-rc.1] - 2026-06-11
 
 Pre-release for 0.13.0.
