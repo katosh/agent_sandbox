@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **User configs deployed by the sandbox are now writable by the user —
+  fixes read-only `sandbox.conf` under Homebrew.** The runtime auto-init
+  deploys `~/.config/agent-sandbox/sandbox.conf` (and the per-agent
+  `agent.md` / `settings.json`) by copying the installed template with
+  plain `cp`, which propagates the template's mode. Homebrew's `Cleaner`
+  strips the write bit from every file in the Cellar after `make install`,
+  so the templates land at mode `0444`; `cp` then produced a `0444` user
+  config that the user could not edit (and a subsequent upgrade `cp` over
+  the read-only copy would fail outright). The deploy now forces the
+  user's copy owner-writable (`chmod u+w`) — on first deploy and, for the
+  upgrade path, before overwriting a copy an older version may have left
+  read-only. Installs via `make install` (mode `0644`) were unaffected;
+  this only bit read-only-template install paths such as Homebrew.
+
+### Changed
+
+- **`sandbox.conf` reordered by how often you edit it, with the network
+  egress filter moved to the bottom and condensed.** The example config
+  now leads with the access-model settings users actually tune
+  (read-only mounts, project dir, home access, enabled agents), followed
+  by common toggles and advanced tweaks. The network filter / mail-block
+  / blocklist-exception sections — often inert and rarely changed — moved
+  to the bottom alongside the HPC infra knobs, and their explanatory prose
+  was trimmed (~110 lines of mode/fallback essay and ~45 lines of
+  mail-block prose condensed), pointing to `docs/reference/network-filter.md`
+  for the full rationale. No setting values or defaults changed; the
+  blocklist entries are byte-identical.
+
 ## [0.13.0] - 2026-06-11
 
 ### Security

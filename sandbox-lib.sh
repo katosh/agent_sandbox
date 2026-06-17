@@ -654,6 +654,10 @@ if [[ -f "$_user_conf_template" ]]; then
         # First run — deploy
         mkdir -p "$_USER_DATA_DIR"
         cp "$_user_conf_template" "$_user_conf_target"
+        # The template may be read-only (e.g. Homebrew's Cleaner strips the
+        # write bit from Cellar files; plain `cp` propagates that mode). The
+        # user must be able to edit their own config, so force owner-write.
+        chmod u+w "$_user_conf_target"
         echo "$_src_sha" > "$_user_conf_sha"
         echo "sandbox: created sandbox.conf in $_USER_DATA_DIR" >&2
         echo "  edit to customize: \$EDITOR $_user_conf_target" >&2
@@ -662,6 +666,10 @@ if [[ -f "$_user_conf_template" ]]; then
         _dest_sha="$(sha256sum "$_user_conf_target" | cut -d' ' -f1)"
         _origin_sha="$(cat "$_user_conf_sha" 2>/dev/null)"
         if [[ "$_dest_sha" == "$_origin_sha" && "$_dest_sha" != "$_src_sha" ]]; then
+            # Pre-existing target may be read-only (left by an older version
+            # that copied a read-only template) — make it writable so the
+            # overwrite succeeds and the user can keep editing it.
+            chmod u+w "$_user_conf_target"
             cp "$_user_conf_template" "$_user_conf_target"
             echo "$_src_sha" > "$_user_conf_sha"
             _is_true "${SANDBOX_QUIET:-false}" || \
@@ -3054,7 +3062,11 @@ _deploy_agent_files() {
                     dest_sha="$(sha256sum "$dest" | cut -d' ' -f1)"
                     if [[ "$dest_sha" == "$origin_sha" ]]; then
                         if [[ "$src_sha" != "$origin_sha" ]]; then
-                            # Unmodified + new version available — update
+                            # Unmodified + new version available — update.
+                            # Make a possibly read-only existing copy writable
+                            # first so the overwrite succeeds (older versions
+                            # propagated read-only template perms here).
+                            chmod u+w "$dest"
                             cp "$src" "$dest"
                             echo "$src_sha" > "$sha_file"
                         fi
@@ -3068,6 +3080,9 @@ _deploy_agent_files() {
                 # First deploy
                 mkdir -p "$dest_dir"
                 cp "$src" "$dest"
+                # Template may be read-only (Homebrew Cleaner strips write
+                # bit; cp propagates it) — ensure the user can edit their copy.
+                chmod u+w "$dest"
                 echo "$src_sha" > "$sha_file"
             fi
         done
