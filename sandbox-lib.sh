@@ -659,8 +659,10 @@ if [[ -f "$_user_conf_template" ]]; then
         # user must be able to edit their own config, so force owner-write.
         chmod u+w "$_user_conf_target"
         echo "$_src_sha" > "$_user_conf_sha"
-        echo "sandbox: created sandbox.conf in $_USER_DATA_DIR" >&2
-        echo "  edit to customize: \$EDITOR $_user_conf_target" >&2
+        if ! _is_true "${SANDBOX_QUIET:-false}"; then
+            echo "sandbox: created sandbox.conf in $_USER_DATA_DIR" >&2
+            echo "  edit to customize: \$EDITOR $_user_conf_target" >&2
+        fi
     elif [[ -f "$_user_conf_sha" ]]; then
         # Upgrade — overwrite only if user hasn't modified
         _dest_sha="$(sha256sum "$_user_conf_target" | cut -d' ' -f1)"

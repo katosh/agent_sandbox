@@ -335,6 +335,23 @@ if [[ -n "$_CHAPERON_DIR" ]]; then
     export CHAPERON_LOG_LEVEL="${CHAPERON_LOG_LEVEL:-info}"
     export CHAPERON_LOG_RETAIN_DAYS="${CHAPERON_LOG_RETAIN_DAYS:-7}"
 
+    # Propagate the RESOLVED quiet decision (env > config > default,
+    # already settled above) to the chaperon so the jobs it submits stay
+    # quiet on the compute node. The chaperon bakes this into the job
+    # wrapper as a literal `export SANDBOX_QUIET=...`, which the in-sandbox
+    # agent cannot strip (the wrapper runs outside the sandbox, before the
+    # agent's script) and `--export=NONE` cannot drop. This is both a
+    # UX guarantee ("quiet stays quiet") and a security boundary: it stops
+    # an agent from recovering the suppressed startup banner — backend,
+    # project dir, home mode, blocked-var counts — by submitting a job and
+    # reading its log. Canonicalize to true/false so the chaperon (which
+    # does not source sandbox-lib.sh) needs no _is_true helper.
+    if _is_true "${SANDBOX_QUIET:-false}"; then
+        export SANDBOX_QUIET=true
+    else
+        export SANDBOX_QUIET=false
+    fi
+
     "$SCRIPT_DIR/chaperon/chaperon.sh" \
         "$_CHAPERON_DIR" "$PROJECT_DIR" "$SCRIPT_DIR/sandbox-exec.sh" \
         >/dev/null 2>"$_CHAPERON_DIR/chaperon.err" &

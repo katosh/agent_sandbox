@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`SANDBOX_QUIET` formalized into a first-class, conf.d-safe option, and
+  the chaperon now retains it across Slurm submission.** The pre-existing
+  half-wired `SANDBOX_QUIET` is now a complete option "just like the
+  others" (`HOME_ACCESS`, `SLURM_SCOPE`), with precedence **env var >
+  `conf.d`/`sandbox.conf` > default (`false`)**:
+  - **conf.d-safe:** `SANDBOX_QUIET` is a registered `_CONFIG_SCALARS`
+    entry, so setting it in a `conf.d/*.conf` snippet loads cleanly
+    through the validated loader instead of tripping the unknown-variable
+    WARNING or the strict round-trip `FATAL: … refusing to load`.
+  - **Default set in the proper place:** the default (`false`/off) is
+    established before conf.d sourcing and is `set -u`-safe; the env-var
+    override is preserved across config load, so an explicit
+    `SANDBOX_QUIET` in the launch environment wins over config.
+  - **Complete output gating:** the last ungated informational startup
+    line — the "created `sandbox.conf`" first-run notice — is now gated
+    like the rest. Quiet suppresses only *informational* output (banner,
+    blocked-env-var count, created/updated-config notices); errors,
+    `FATAL:`/`WARNING:` config-integrity messages, blocked-credential
+    warnings, and any failure-path output still print.
+  - **Chaperon retains quiet across `sbatch`/`srun` (confidentiality
+    boundary):** when a session is quiet, the chaperon — which brokers
+    Slurm submission from *outside* the sandbox — bakes the quiet decision
+    into every job wrapper it generates, so the compute-node
+    `sandbox-exec.sh` re-entry stays quiet even if the in-sandbox process
+    unsets `SANDBOX_QUIET` or submits with `--export=NONE`. This prevents
+    a process inside the sandbox from recovering the suppressed banner
+    (backend, project dir, home mode, blocked-var counts) by submitting a
+    job and reading its log. Documented in `sandbox.conf`,
+    `conf.d/example.conf`, `sandbox-admin.conf`, and `docs/configure.md`;
+    covered by unit + launch tests in §4.9 of `test.sh`.
+
 ### Fixed
 
 - **User configs deployed by the sandbox are now writable by the user —
