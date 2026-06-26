@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.1-rc.1] - 2026-06-26
+
 ### Added
 
 - **`SANDBOX_QUIET` formalized into a first-class, conf.d-safe option, and
