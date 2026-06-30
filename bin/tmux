@@ -2,7 +2,8 @@
 # Sandbox tmux — shadows /usr/bin/tmux inside the sandbox.
 # Uses sandbox-tmux.conf which sets the prefix key to Ctrl-a for clean
 # nesting within an outer tmux.
-_sandbox_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/.."
+_self="$(readlink -f "${BASH_SOURCE[0]}")"
+_sandbox_dir="$(cd "$(dirname "$_self")" && pwd)/.."
 _conf="$_sandbox_dir/sandbox-tmux.conf"
 
 # Fall back to xterm-256color when the current TERM has no terminfo
@@ -17,8 +18,55 @@ fi
 _sockdir="/tmp/tmux-$(id -u)"
 [[ -d "$_sockdir" ]] || mkdir -m 700 -p "$_sockdir"
 
-if [[ -f "$_conf" ]]; then
-    exec /usr/bin/tmux -f "$_conf" "$@"
+# ── Prefer a newer tmux when one is installed ──────────────────────
+# Many hosts ship an ancient system tmux (e.g. 2.6, 2017) that lacks the
+# escape-sequence proxying modern full-screen TUIs rely on — synchronized
+# output (DCS ?2026), RGB negotiation, DCS passthrough — so a TUI like
+# Claude Code renders with intermittent garbling/tearing. The injected
+# sandbox-tmux.conf is written to be valid on both old and new tmux (the
+# version-only options use `set -q` so old tmux ignores them silently),
+# but the only durable fix for the rendering itself is to RUN a newer
+# tmux. So if a newer binary is reachable (e.g. after `brew install tmux`
+# OUTSIDE the sandbox), prefer it automatically; otherwise fall back to
+# /usr/bin/tmux. Set SANDBOX_TMUX_BIN to pin a specific binary.
+_tmux_ver_num() {
+    # Print an integer (major*100 + minor) for the tmux at $1, else fail.
+    local v maj min
+    v="$("$1" -V 2>/dev/null)" || return 1   # "tmux 3.5a", "tmux next-3.4"
+    v="${v#tmux }"; v="${v#next-}"
+    maj="${v%%.*}"
+    min="${v#*.}"; min="${min%%[!0-9]*}"
+    [[ "$maj" =~ ^[0-9]+$ ]] || return 1
+    [[ "$min" =~ ^[0-9]+$ ]] || min=0
+    printf '%d' $(( maj * 100 + min ))
+}
+
+_TMUX_BIN="/usr/bin/tmux"
+_best="$(_tmux_ver_num "$_TMUX_BIN")" || _best=0
+
+if [[ -n "$SANDBOX_TMUX_BIN" && -x "$SANDBOX_TMUX_BIN" ]]; then
+    # Explicit override wins, no version check.
+    _TMUX_BIN="$SANDBOX_TMUX_BIN"
 else
-    exec /usr/bin/tmux "$@"
+    for _cand in \
+        ${HOMEBREW_PREFIX:+"$HOMEBREW_PREFIX/bin/tmux"} \
+        "$HOME/.linuxbrew/bin/tmux" \
+        "/home/linuxbrew/.linuxbrew/bin/tmux" \
+        "/opt/homebrew/bin/tmux" \
+        "/usr/local/bin/tmux"; do
+        [[ -x "$_cand" ]] || continue
+        # Never re-invoke this very wrapper (it shadows `tmux` on PATH).
+        [[ "$(readlink -f "$_cand")" == "$_self" ]] && continue
+        _cv="$(_tmux_ver_num "$_cand")" || continue
+        if (( _cv > _best )); then
+            _best="$_cv"
+            _TMUX_BIN="$_cand"
+        fi
+    done
+fi
+
+if [[ -f "$_conf" ]]; then
+    exec "$_TMUX_BIN" -f "$_conf" "$@"
+else
+    exec "$_TMUX_BIN" "$@"
 fi
