@@ -492,7 +492,18 @@ SANDBOX_NPROC_LIMIT="4096"
 
 **Type** scalar · **Admin-enforced** no · **Default** `false`
 
-Suppress the one-line startup banner that shows backend, project dir, and home-access mode, plus the count of env vars blocked by pattern. Useful inside scripts and CI where the banner is noise.
+Suppress the sandbox's **informational** startup output — the one-line banner (backend, project dir, home-access mode), the count of env vars blocked by pattern, and the "created/updated `sandbox.conf`" notices. Useful inside scripts and CI where the chatter is noise.
+
+Quiet silences noise, never safety output: errors, `FATAL:`/`WARNING:` config-integrity messages, per-agent blocked-credential warnings, and anything on a failure path still print under `SANDBOX_QUIET=true`.
+
+```bash
+SANDBOX_QUIET=true               # in sandbox.conf or conf.d/*.conf
+SANDBOX_QUIET=true sandbox-exec.sh -- claude   # or as an env override
+```
+
+**Precedence:** env var > `conf.d`/`sandbox.conf` > default (`false`). An explicit `SANDBOX_QUIET` in the launch environment wins over any config-file value, matching the other launch-overridable scalars ([`HOME_ACCESS`](#home_access), [`SLURM_SCOPE`](#slurm_scope)).
+
+**Chaperon retains quiet across Slurm submission.** When a session is quiet, the chaperon (which brokers `sbatch`/`srun` from inside the sandbox, running *outside* it) bakes the quiet decision into every job it submits, so the compute-node re-entry stays quiet too. This holds even if the in-sandbox process unsets `SANDBOX_QUIET` or submits with `--export=NONE`. Beyond consistency this is a confidentiality boundary: it stops a process inside the sandbox from recovering the suppressed banner — backend, project dir, home mode, blocked-var counts — by submitting a job and reading its log.
 
 ---
 

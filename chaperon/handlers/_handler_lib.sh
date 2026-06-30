@@ -909,6 +909,19 @@ EOF
         # clusters whose prolog drops cwd to $HOME. `:-.` no-ops cleanly
         # when SLURM_SUBMIT_DIR is unset; `|| true` swallows a stale dir.
         printf 'cd "${SLURM_SUBMIT_DIR:-.}" 2>/dev/null || true\n'
+        # Retain the submitting session's quiet decision on the compute
+        # node. SANDBOX_QUIET is exported (canonicalized to true/false) to
+        # the chaperon by sandbox-exec.sh; bake it LITERALLY into the
+        # wrapper here so the compute-node sandbox-exec.sh re-entry stays
+        # quiet even when `--export=NONE` drops it from the job env or an
+        # in-sandbox agent unset it. Only forced when quiet is active — a
+        # non-quiet session lets the compute node resolve normally. This
+        # runs OUTSIDE the sandbox (before the agent's script), so the
+        # agent cannot suppress it. Security: prevents recovering the
+        # suppressed banner via a submitted job's log.
+        case "${SANDBOX_QUIET:-false}" in
+            [Tt]rue|[Yy]es|1) printf 'export SANDBOX_QUIET=true\n' ;;
+        esac
         printf '_SCRIPT=$(cat <<'"'"'%s'"'"'\n' "$eof_marker"
         printf '%s\n' "$script_body"
         printf '%s\n' "$eof_marker"
@@ -995,8 +1008,17 @@ shift
 # Prints the --wrap argument value to stdout.
 create_wrapped_command() {
     local sandbox_exec="$1" project_dir="$2" wrap_cmd="$3"
-    printf '%q --project-dir %q -- sh -c %q' \
-        "$sandbox_exec" "$project_dir" "$wrap_cmd"
+    # Retain the session's quiet decision (see create_wrapped_script). When
+    # the chaperon was launched quiet, prefix an env assignment so the
+    # compute-node sandbox-exec.sh re-entry stays quiet regardless of
+    # --export. Only when active; otherwise the compute node resolves
+    # normally.
+    local _quiet_prefix=""
+    case "${SANDBOX_QUIET:-false}" in
+        [Tt]rue|[Yy]es|1) _quiet_prefix="SANDBOX_QUIET=true " ;;
+    esac
+    printf '%s%q --project-dir %q -- sh -c %q' \
+        "$_quiet_prefix" "$sandbox_exec" "$project_dir" "$wrap_cmd"
 }
 
 # ── Job tagging via --comment (for scancel/squeue scoping) ───────

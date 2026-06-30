@@ -358,12 +358,25 @@ handle_srun() {
     else
         # Allocation mode: wrap the command in sandbox-exec.sh so
         # compute-node processes inherit sandbox restrictions.
-        # srun [flags] -- sandbox-exec.sh --project-dir $DIR -- <command>
+        # srun [flags] -- [env SANDBOX_QUIET=true] sandbox-exec.sh --project-dir $DIR -- <command>
+        #
+        # Retain the session's quiet decision (see create_wrapped_script in
+        # _handler_lib.sh). When the chaperon was launched quiet, srun
+        # launches the command directly (no shell), so an `env` prefix
+        # carries SANDBOX_QUIET to the compute-node sandbox-exec.sh re-entry
+        # — surviving `--export=NONE` and any in-sandbox unset. Only forced
+        # when active; otherwise the compute node resolves normally.
+        local _quiet_env=()
+        case "${SANDBOX_QUIET:-false}" in
+            [Tt]rue|[Yy]es|1) _quiet_env=(env SANDBOX_QUIET=true) ;;
+        esac
         if [[ -n "$REQ_CWD" ]]; then
             (cd "$REQ_CWD" && "$real_srun" "${validated_flags[@]}" -- \
+                "${_quiet_env[@]+"${_quiet_env[@]}"}" \
                 "$sandbox_exec" --project-dir "$project_dir" -- "${command_args[@]}") || rc=$?
         else
             "$real_srun" "${validated_flags[@]}" -- \
+                "${_quiet_env[@]+"${_quiet_env[@]}"}" \
                 "$sandbox_exec" --project-dir "$project_dir" -- "${command_args[@]}" || rc=$?
         fi
     fi

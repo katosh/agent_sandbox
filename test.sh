@@ -1912,6 +1912,209 @@ fi
 
 echo ""
 
+# ── 4.9 SANDBOX_QUIET quiet startup mode ──────────────────────────
+#
+# SANDBOX_QUIET suppresses INFORMATIONAL startup output (the banner,
+# the "created/updated sandbox.conf" notices, the blocked-env-var
+# count) while NEVER silencing errors, FATAL/WARNING config-integrity
+# messages, or anything on a failure path. Precedence: env var >
+# conf.d/sandbox.conf > default (off). It must be conf.d-safe (a
+# registered config scalar) and the chaperon must RETAIN the quiet
+# decision across a Slurm submission so the suppressed banner cannot be
+# recovered from a compute-node job log.
+#
+# The first block is pure-unit (no sandbox launch) so it runs under
+# every backend job and locally; the second block drives the real
+# startup path via sandbox-exec.sh (runs in CI's backend jobs).
+
+echo "4.9. SANDBOX_QUIET quiet startup mode"
+
+# 4.9.1 — Registered as a known config scalar (conf.d round-trip safe).
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    printf ' %s ' "${_CONFIG_SCALARS[@]}" | grep -q ' SANDBOX_QUIET '
+); then
+    pass "SANDBOX_QUIET is a registered _CONFIG_SCALARS entry (conf.d-safe)"
+else
+    fail "SANDBOX_QUIET missing from _CONFIG_SCALARS — conf.d would WARN/FATAL on it"
+fi
+
+# 4.9.2 — Default is off (unset reads as false after a clean source).
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    unset SANDBOX_QUIET
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    [[ "${SANDBOX_QUIET:-unset}" == "false" ]]
+); then
+    pass "SANDBOX_QUIET default is off (false)"
+else
+    fail "SANDBOX_QUIET default is not 'false'"
+fi
+
+# 4.9.3 — A conf.d snippet setting SANDBOX_QUIET=true loads through the
+# validated loader with NO unknown-variable WARNING and NO round-trip
+# FATAL, and the value is applied to global scope.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _cf="$(mktemp "${TMPDIR:-/tmp}/test-quiet-confd.XXXXXX.conf")"
+    printf 'SANDBOX_QUIET=true\n' > "$_cf"
+    _errf="$(mktemp)"
+    # Direct call (NOT $()) so declare -g reaches this subshell's scope.
+    _load_untrusted_config "$_cf" "quiet conf.d probe" 2>"$_errf"
+    _err="$(cat "$_errf")"
+    rm -f "$_cf" "$_errf"
+    [[ "$SANDBOX_QUIET" == "true" ]] || { echo "value not applied: $SANDBOX_QUIET"; exit 1; }
+    ! echo "$_err" | grep -qiE 'unknown variable|FATAL|refusing to load'
+); then
+    pass "conf.d SANDBOX_QUIET=true loads clean (no WARNING/FATAL) and applies"
+else
+    fail "conf.d SANDBOX_QUIET=true rejected or not applied"
+fi
+
+# 4.9.4 — Quiet must NOT suppress the config-integrity WARNING: a
+# genuinely unknown variable in a conf.d snippet still warns even with
+# SANDBOX_QUIET=true. (Quiet silences noise, never safety output.)
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _cf="$(mktemp "${TMPDIR:-/tmp}/test-quiet-unknown.XXXXXX.conf")"
+    printf 'TOTALLY_UNKNOWN_VAR_QUIET_TEST=1\n' > "$_cf"
+    _errf="$(mktemp)"
+    _load_untrusted_config "$_cf" "unknown-var probe" 2>"$_errf"
+    _err="$(cat "$_errf")"
+    rm -f "$_cf" "$_errf"
+    echo "$_err" | grep -q 'unknown variable'
+); then
+    pass "SANDBOX_QUIET does not suppress the unknown-variable config WARNING"
+else
+    fail "SANDBOX_QUIET wrongly silenced a config-integrity WARNING"
+fi
+
+# 4.9.5 — Chaperon RETAINS quiet across Slurm submission (security): when
+# the chaperon is launched quiet, the generated job wrapper bakes a
+# literal `export SANDBOX_QUIET=true` BEFORE the compute-node
+# sandbox-exec.sh re-entry — surviving `--export=NONE` and any
+# in-sandbox unset, and the wrapper must be valid bash with the export
+# ordered before the exec.
+if (
+    set -uo pipefail
+    export SANDBOX_BACKEND=landlock   # disables --output staging path
+    export SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    VALIDATED_ARGS=()
+    _w="$(mktemp)"
+    create_wrapped_script "/path/sandbox-exec.sh" "/proj" $'#!/bin/bash\necho hi' "$_w" 2>/dev/null
+    bash -n "$_w" || { echo "wrapper not valid bash"; rm -f "$_w"; exit 1; }
+    _el="$(grep -n '^export SANDBOX_QUIET=true$' "$_w" | head -1 | cut -d: -f1)"
+    _xl="$(grep -n 'exec .*sandbox-exec.sh' "$_w" | head -1 | cut -d: -f1)"
+    rm -f "$_w"
+    [[ -n "$_el" && -n "$_xl" && "$_el" -lt "$_xl" ]]
+); then
+    pass "chaperon job wrapper bakes 'export SANDBOX_QUIET=true' before re-entry (quiet retained)"
+else
+    fail "chaperon job wrapper failed to bake/order the quiet override"
+fi
+
+# 4.9.6 — Conversely, a non-quiet session bakes nothing — the compute
+# node resolves quiet normally (its own env/config), no override forced.
+if (
+    set -uo pipefail
+    export SANDBOX_BACKEND=landlock
+    export SANDBOX_QUIET=false
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    VALIDATED_ARGS=()
+    _w="$(mktemp)"
+    create_wrapped_script "/path/sandbox-exec.sh" "/proj" $'#!/bin/bash\necho hi' "$_w" 2>/dev/null
+    _hit="$(grep -c 'SANDBOX_QUIET' "$_w" || true)"
+    rm -f "$_w"
+    [[ "$_hit" -eq 0 ]]
+); then
+    pass "chaperon job wrapper bakes no quiet override for a non-quiet session"
+else
+    fail "chaperon job wrapper leaked a SANDBOX_QUIET line when not quiet"
+fi
+
+# 4.9.7 — The --wrap helper (create_wrapped_command) prefixes the
+# compute-node command with SANDBOX_QUIET=true only when quiet.
+if (
+    set -uo pipefail
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    _on="$(SANDBOX_QUIET=true  bash -c 'source "'"$SCRIPT_DIR"'/chaperon/handlers/_handler_lib.sh"; create_wrapped_command /s/exec /proj "echo hi"')"
+    _off="$(SANDBOX_QUIET=false bash -c 'source "'"$SCRIPT_DIR"'/chaperon/handlers/_handler_lib.sh"; create_wrapped_command /s/exec /proj "echo hi"')"
+    [[ "$_on" == SANDBOX_QUIET=true\ * ]] && [[ "$_off" != *SANDBOX_QUIET* ]]
+); then
+    pass "create_wrapped_command prefixes SANDBOX_QUIET=true only when quiet"
+else
+    fail "create_wrapped_command quiet prefix wrong"
+fi
+
+# ── Launch tests: real startup path via sandbox-exec.sh ──
+# (The suite exports SANDBOX_QUIET=true globally, so the default-on
+# behaviour is asserted with an explicit SANDBOX_QUIET=false prefix.)
+# The one-line banner is "sandbox: <backend> | project: <dir> | home: ...".
+
+# 4.9.8 — quiet=false → the informational startup banner is present.
+_q_banner_on=$(SANDBOX_QUIET=false timeout 15 "$SANDBOX_EXEC" \
+    --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- true 2>&1)
+if echo "$_q_banner_on" | grep -qE '^sandbox: .+ \| project: '; then
+    pass "quiet=false: startup banner is present"
+else
+    fail "quiet=false: startup banner missing" "$_q_banner_on"
+fi
+
+# 4.9.9 — quiet=true → the informational startup banner is suppressed.
+_q_banner_off=$(SANDBOX_QUIET=true timeout 15 "$SANDBOX_EXEC" \
+    --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- true 2>&1)
+if echo "$_q_banner_off" | grep -qE '^sandbox: .+ \| project: '; then
+    fail "quiet=true: startup banner leaked" "$_q_banner_off"
+else
+    pass "quiet=true: startup banner suppressed"
+fi
+
+# 4.9.10 / 4.9.11 — conf.d sets SANDBOX_QUIET; env-prefix precedence.
+_quiet_confd="$HOME/.config/agent-sandbox/conf.d/test-quiet-$$.conf"
+_TEST_TEMP_FILES+=("$_quiet_confd")
+mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+
+# conf.d sets quiet=true; empty env prefix lets conf.d win → suppressed.
+printf 'SANDBOX_QUIET=true\n' > "$_quiet_confd"
+_q_confd_on=$(SANDBOX_QUIET= timeout 15 "$SANDBOX_EXEC" \
+    --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- true 2>&1)
+if echo "$_q_confd_on" | grep -qE '^sandbox: .+ \| project: '; then
+    fail "conf.d SANDBOX_QUIET=true did not suppress banner" "$_q_confd_on"
+else
+    pass "conf.d SANDBOX_QUIET=true suppresses banner (loads + applies)"
+fi
+
+# env SANDBOX_QUIET=false overrides conf.d quiet=true → banner present.
+_q_env_over=$(SANDBOX_QUIET=false timeout 15 "$SANDBOX_EXEC" \
+    --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- true 2>&1)
+if echo "$_q_env_over" | grep -qE '^sandbox: .+ \| project: '; then
+    pass "env SANDBOX_QUIET=false overrides conf.d true (env > conf.d)"
+else
+    fail "env did not override conf.d SANDBOX_QUIET (precedence broken)" "$_q_env_over"
+fi
+rm -f "$_quiet_confd"
+
+# 4.9.12 — A real error message still prints under quiet (an invalid
+# HOME_ACCESS is rejected on the failure path, which quiet never gates).
+_q_err=$(HOME_ACCESS=bogus_quiet_test SANDBOX_QUIET=true timeout 15 "$SANDBOX_EXEC" \
+    --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- true 2>&1 || true)
+if echo "$_q_err" | grep -q 'HOME_ACCESS must be'; then
+    pass "SANDBOX_QUIET does not suppress the HOME_ACCESS validation error"
+else
+    fail "SANDBOX_QUIET wrongly suppressed a failure-path error" "$_q_err"
+fi
+
+echo ""
+
 # ── 5. Chaperon: Slurm proxy and isolation ────────────────────────
 
 echo "5. Chaperon: Slurm proxy and isolation"
