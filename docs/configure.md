@@ -143,6 +143,8 @@ Controls how much of `$HOME` the agent sees and whether unlisted writes persist.
 
 Credential dirs (`.ssh`, `.aws`, `.gnupg`) are always blocked, regardless of mode.
 
+The sandbox's own config dir, `~/.config/agent-sandbox` (`sandbox.conf`/`user.conf`, `conf.d/`, `agents/` templates, the per-launch filtered passwd/group files), is always **read-only** inside the sandbox, regardless of mode, so the agent cannot weaken its next launch. It is applied after every writable grant, so `HOME_ACCESS=write`, `HOME_WRITABLE+=(".config")`, the project dir or an `EXTRA_WRITABLE_PATHS` entry cannot re-expose it (a symlinked config dir is protected at both the link and its target). This is not configurable; edit the config from outside the sandbox. The Landlock backend cannot carve a read-only sub-path out of a writable grant and warns instead.
+
 In `read` and `write` mode the real `$HOME` is visible, so further credential stores are masked as well (bwrap: tmpfs over directories, `/dev/null` over files; firejail: blacklisted): `.netrc`, `.git-credentials`, `.config/gh`, `.config/hub`, `.docker/config.json`, `.kube`, `.config/gcloud`, `.azure`, `.config/op`, `.config/helm`, `.terraform.d`, `.vault-token`, `.pgpass`, `.pypirc`, `.cargo/credentials(.toml)`. In `tmpwrite`/`restricted` mode these are already invisible unless you list them. To keep one visible in `read`/`write` mode, list it **verbatim** in `HOME_READONLY` (or `HOME_WRITABLE`), exactly as you would in `tmpwrite` mode, e.g. `HOME_READONLY+=(".config/gh")`; `.ssh`, `.aws` and `.gnupg` cannot be opted in this way. The Landlock backend cannot hide any sub-path of a granted `$HOME` (additive rules) and warns instead.
 
 ### `HOME_READONLY`

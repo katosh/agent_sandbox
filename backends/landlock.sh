@@ -195,6 +195,24 @@ backend_prepare() {
         [[ -d "$_extra_rw" ]] && LANDLOCK_ARGS+=(--rw "$_extra_rw")
     done < <(_effective_extra_writable_paths)
 
+    # Always-read-only $HOME paths (_HOME_ALWAYS_READONLY, e.g. the
+    # sandbox's own ~/.config/agent-sandbox). Landlock rules are
+    # additive: a read-only sub-path cannot be carved out of a writable
+    # grant. When a writable grant covers one, warn (not gated by
+    # SANDBOX_QUIET, like the credential note above) instead of
+    # silently leaving the sandbox's own config writable.
+    local _aro _aro_list=()
+    while IFS= read -r _aro; do
+        [[ -n "$_aro" ]] && _aro_list+=("$_aro")
+    done < <(_home_always_readonly_targets "$project_dir")
+    if [[ ${#_aro_list[@]} -gt 0 ]]; then
+        echo "sandbox: WARNING — landlock cannot make the sandbox's own config read-only under a writable grant (Landlock limitation); the sandboxed process can modify:" >&2
+        for _aro in "${_aro_list[@]}"; do
+            echo "  $_aro" >&2
+        done
+        echo "  Its settings apply on the NEXT launch. Use bwrap/firejail, or avoid HOME_ACCESS=write / writable ancestors of these paths." >&2
+    fi
+
     # --- Filter environment variables ---
     _warn_pattern_blocked_vars
     for var in "${BLOCKED_ENV_VARS[@]}"; do

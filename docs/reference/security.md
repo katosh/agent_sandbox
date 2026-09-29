@@ -194,6 +194,14 @@ This is not a configuration choice; it falls out of the architecture:
   Landlock LSM only narrows.
 - **No `dangerouslyDisableSandbox` flag.** The chaperon proxies
   Slurm syscalls but does not honour any "skip sandbox" request.
+- **The sandbox's own config is read-only inside.**
+  `~/.config/agent-sandbox` (user config, `conf.d/`, agent templates,
+  the per-launch filtered passwd/group files) is read-only in every
+  `HOME_ACCESS` mode, applied after all writable binds so no
+  `HOME_WRITABLE` ancestor, project dir or `EXTRA_WRITABLE_PATHS`
+  entry re-exposes it. The agent therefore cannot weaken the *next*
+  launch's settings either. **Landlock** cannot enforce this under a
+  writable grant (e.g. `HOME_ACCESS=write`) and warns at startup.
 
 Practical consequence: when the agent inside the sandbox encounters
 a permission denial, the only recourse is to fail or surface the

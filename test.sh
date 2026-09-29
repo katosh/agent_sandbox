@@ -1944,6 +1944,103 @@ if has_mount_ns; then
     unset -f _fh_getent
 fi
 
+# 3.9.7 — The sandbox's own config dir (~/.config/agent-sandbox,
+# sandbox-lib.sh _HOME_ALWAYS_READONLY) stays read-only in every
+# HOME_ACCESS mode, even under a writable ancestor: otherwise the agent
+# could edit user.conf / conf.d / .passwd-filter and weaken the NEXT
+# launch. Same throwaway-HOME technique as 3.9.6, so the real
+# ~/.config/agent-sandbox is never touched. Each case also writes a
+# sibling path under the same writable grant as a control, so a
+# generally read-only HOME cannot make the assertion pass vacuously.
+# Landlock cannot carve out a read-only sub-path: it must warn instead.
+mkdir -p "$HOME/.cache"
+_ah="$(mktemp -d "$HOME/.cache/agent-sandbox-test-cfgro.XXXXXX")"
+_TEST_TEMP_DIRS+=("$_ah")
+_ah_getent() {
+    if [[ "$1" == passwd && "$2" == "$(id -un)" ]]; then
+        echo "$(id -un):x:$(id -u):$(id -g)::$_SBX_FAKEHOME:/bin/bash"
+    else command getent "$@"; fi
+}
+# _ah_run HOME_ACCESS CONF CMD — run CMD in a sandbox with the fake
+# HOME; stdout -> _ah_out, stderr -> _ah_err.
+_ah_run() {
+    local _errf; _errf="$(mktemp)"
+    _ah_out="$(
+        getent() { _ah_getent "$@"; }
+        export -f getent _ah_getent
+        _SBX_FAKEHOME="$_ah" HOME="$_ah" HOME_ACCESS="$1" SANDBOX_CONF="$2" \
+        timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$_ah/proj" -- \
+            bash -c "$3" 2>"$_errf"
+    )"
+    _ah_err="$(cat "$_errf")"; rm -f "$_errf"
+}
+# _ah_reset [symlink] — fresh fake config dir (optionally a symlink to
+# a dotfiles-style target) with a sentinel user.conf.
+_ah_reset() {
+    rm -rf "$_ah/.config" "$_ah/dotfiles"
+    mkdir -p "$_ah/proj" "$_ah/.config"
+    if [[ "${1:-}" == symlink ]]; then
+        mkdir -p "$_ah/dotfiles/agent-sandbox"
+        ln -s "$_ah/dotfiles/agent-sandbox" "$_ah/.config/agent-sandbox"
+    else
+        mkdir -p "$_ah/.config/agent-sandbox"
+    fi
+    echo "# sbx-cfgro-sentinel" > "$_ah/.config/agent-sandbox/user.conf"
+}
+_ah_probe='cfg="$HOME/.config/agent-sandbox"
+touch "$cfg/sbx-cfgro-probe" 2>/dev/null && echo CFG_WROTE || echo CFG_BLOCKED
+echo "HOME_ACCESS=write" >> "$cfg/user.conf" 2>/dev/null && echo CONF_WROTE || echo CONF_BLOCKED
+touch "$HOME/.config/sbx-cfgro-control" 2>/dev/null && echo CTRL_WROTE || echo CTRL_BLOCKED'
+# _ah_check LABEL — assert config dir unwritable (in-sandbox AND on the
+# host) while the sibling control write went through.
+_ah_check() {
+    if [[ "$_ah_out" == *CFG_BLOCKED* && "$_ah_out" == *CONF_BLOCKED* \
+          && "$_ah_out" == *CTRL_WROTE* \
+          && ! -e "$_ah/.config/agent-sandbox/sbx-cfgro-probe" \
+          && "$(cat "$_ah/.config/agent-sandbox/user.conf")" == "# sbx-cfgro-sentinel" ]]; then
+        pass "$1: ~/.config/agent-sandbox read-only (sibling still writable)"
+    else
+        fail "$1: sandbox could write its own config dir (or control failed)" \
+             "out=$(echo $_ah_out) err=$(echo "$_ah_err" | tail -3)"
+    fi
+}
+_ah_conf="$(mktemp)"; _TEST_TEMP_FILES+=("$_ah_conf")
+cat "$SANDBOX_CONF" > "$_ah_conf"
+_ah_conf_cfg="$(mktemp)"; _TEST_TEMP_FILES+=("$_ah_conf_cfg")
+{ cat "$SANDBOX_CONF"; echo 'HOME_WRITABLE+=(".config")'; } > "$_ah_conf_cfg"
+
+if has_mount_ns; then
+    _ah_reset
+    _ah_run write "$_ah_conf" "$_ah_probe"
+    _ah_check "HOME_ACCESS=write"
+
+    # A writable ancestor must not re-expose it (HOME_WRITABLE after the
+    # home bind, in both a tmpfs-HOME mode and write mode).
+    for _mode in tmpwrite write; do
+        _ah_reset
+        _ah_run "$_mode" "$_ah_conf_cfg" "$_ah_probe"
+        _ah_check "HOME_ACCESS=$_mode + HOME_WRITABLE+=(.config)"
+    done
+
+    # Symlinked config dir (dotfiles-style): literal and resolved path.
+    _ah_reset symlink
+    _ah_run write "$_ah_conf" "$_ah_probe"
+    _ah_check "HOME_ACCESS=write, symlinked config dir"
+    [[ -e "$_ah/dotfiles/agent-sandbox/sbx-cfgro-probe" ]] \
+        && fail "symlinked config dir: probe landed at the resolved target"
+else
+    _ah_reset
+    _ah_run write "$_ah_conf" 'true'
+    if [[ "$_ah_err" == *"cannot make the sandbox's own config read-only"* \
+          && "$_ah_err" == *"$_ah/.config/agent-sandbox"* ]]; then
+        pass "landlock HOME_ACCESS=write: warns that ~/.config/agent-sandbox stays writable"
+    else
+        fail "landlock HOME_ACCESS=write: no warning about the writable config dir" \
+             "$(echo "$_ah_err" | tail -5)"
+    fi
+fi
+unset -f _ah_getent _ah_run _ah_reset _ah_check
+
 echo ""
 
 # ── 4. Agent profiles: overlays, warnings, and permission guardrail ──

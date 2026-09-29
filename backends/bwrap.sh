@@ -548,6 +548,17 @@ backend_prepare() {
         done
     fi
 
+    # Always-read-only $HOME paths (_HOME_ALWAYS_READONLY, e.g. the
+    # sandbox's own ~/.config/agent-sandbox), every HOME_ACCESS mode.
+    # Emitted AFTER all writable binds above (HOME=write, HOME_WRITABLE,
+    # project dir, EXTRA_WRITABLE_PATHS) so none of them can re-expose
+    # it (bwrap: later wins), and BEFORE the BLOCKED_FILES /
+    # EXTRA_BLOCKED_PATHS overlays below so those still mask inside it.
+    local _aro
+    while IFS= read -r _aro; do
+        [[ -n "$_aro" ]] && BWRAP_ARGS+=(--ro-bind "$_aro" "$_aro")
+    done < <(_home_always_readonly_targets "$project_dir")
+
     # Agent-specific file hiding (e.g., CLAUDE.md, AGENTS.md) is handled
     # by BLOCKED_FILES, populated from agents/*/config.conf by _apply_agent_profiles().
     #

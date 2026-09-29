@@ -403,6 +403,17 @@ backend_prepare() {
     fi
     FIREJAIL_ARGS+=(--read-only="$_state_dir")
 
+    # Always-read-only $HOME paths (_HOME_ALWAYS_READONLY, e.g. the
+    # sandbox's own ~/.config/agent-sandbox), every HOME_ACCESS mode.
+    # Emitted AFTER every --read-write grant above (HOME=write,
+    # HOME_WRITABLE, project dir, EXTRA_WRITABLE_PATHS): a later
+    # recursive --read-write would re-open it. No --whitelist: the
+    # helper only emits paths some writable grant already exposes.
+    local _aro
+    while IFS= read -r _aro; do
+        [[ -n "$_aro" ]] && FIREJAIL_ARGS+=(--read-only="$_aro")
+    done < <(_home_always_readonly_targets "$project_dir")
+
     # Agent-specific file hiding (e.g., CLAUDE.md, AGENTS.md) is handled
     # by BLOCKED_FILES, populated from agents/*/config.conf by _apply_agent_profiles().
 

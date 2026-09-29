@@ -193,6 +193,65 @@ _home_blocked_paths() {
     return 0
 }
 
+# $HOME-relative paths that are ALWAYS read-only inside the sandbox, in
+# every HOME_ACCESS mode. The sandbox's own config dir holds the user
+# config (sandbox.conf / user.conf), conf.d/ and agents/ templates (all
+# read on the next launch) and the per-launch filtered passwd/group
+# files (.passwd-filter/, bind-mounted into OTHER running sandboxes). A
+# sandbox that can write there can weaken its own next launch.
+# Not a config variable: nothing inside the sandbox legitimately writes
+# here (all writers run host-side, before the sandbox starts). Backends
+# apply it AFTER every writable bind/grant (HOME_WRITABLE, project dir,
+# EXTRA_WRITABLE_PATHS), so a writable ancestor cannot re-expose it.
+_HOME_ALWAYS_READONLY=(".config/agent-sandbox")
+
+# _home_always_readonly_targets PROJECT_DIR — emit the absolute host
+# paths the backend must make read-only, one per line. An entry is
+# emitted only when some writable grant overlaps it (HOME_ACCESS=write's
+# whole $HOME, a HOME_WRITABLE entry, the project dir or an
+# EXTRA_WRITABLE_PATHS entry, each compared literally and resolved);
+# otherwise it is already read-only or invisible, and re-binding it
+# would needlessly EXPOSE it in the tmpfs-HOME modes. For each such
+# entry both the literal path and, if different, its symlink-resolved
+# path are emitted (mirrors BLOCKED_FILES): the literal path covers a
+# symlinked ancestor inside a writable bind, the resolved path covers a
+# symlinked leaf. A leaf that is itself a symlink is not emitted
+# literally (bwrap cannot mount onto a symlink destination; the
+# resolved path covers access through it).
+_home_always_readonly_targets() {
+    local project_dir="$1" _rel _lit _res _w _wr _t _overlap
+    local -a _writable=()
+    [[ "${HOME_ACCESS:-}" == "write" ]] && _writable+=("$HOME")
+    for _w in "${HOME_WRITABLE[@]+"${HOME_WRITABLE[@]}"}"; do
+        [[ -n "$_w" ]] && _writable+=("$HOME/${_w%/}")
+    done
+    [[ -n "$project_dir" ]] && _writable+=("$project_dir")
+    while IFS= read -r _w; do
+        [[ -n "$_w" ]] && _writable+=("$_w")
+    done < <(_effective_extra_writable_paths 2>/dev/null)
+
+    for _rel in "${_HOME_ALWAYS_READONLY[@]}"; do
+        _lit="$HOME/$_rel"
+        [[ -e "$_lit" ]] || continue
+        _res="$(readlink -f -- "$_lit" 2>/dev/null)" || _res="$_lit"
+        [[ -n "$_res" ]] || _res="$_lit"
+        _overlap=false
+        for _w in "${_writable[@]+"${_writable[@]}"}"; do
+            _wr="$(readlink -f -- "$_w" 2>/dev/null)" || _wr="$_w"
+            for _t in "$_lit" "$_res"; do
+                if _path_under "$_t" "$_w" || _path_under "$_w" "$_t" \
+                   || { [[ -n "$_wr" ]] && { _path_under "$_t" "$_wr" || _path_under "$_wr" "$_t"; }; }; then
+                    _overlap=true; break 2
+                fi
+            done
+        done
+        $_overlap || continue
+        [[ -L "$_lit" ]] || printf '%s\n' "$_lit"
+        [[ "$_res" != "$_lit" ]] && printf '%s\n' "$_res"
+    done
+    return 0
+}
+
 BLOCKED_FILES=(
     # Per-agent instruction files (e.g. ~/.claude/CLAUDE.md,
     # ~/.codex/AGENTS.md) are added automatically by
