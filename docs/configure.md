@@ -213,6 +213,8 @@ EXTRA_WRITABLE_PATHS=(
 )
 ```
 
+Entries that are `$HOME` itself or one of its parents (e.g. `/home`, `/`) are ignored with a warning: a writable bind that covers `$HOME` would undo the home isolation (credential masks, protected agent config). Protective overlays (`BLOCKED_FILES`, `EXTRA_BLOCKED_PATHS`, the read-only agent config files, `.sandbox-state/`, the sandbox install dir) always win over an `EXTRA_WRITABLE_PATHS` entry that contains them. The same `$HOME`-or-parent rule applies to the project directory.
+
 ### `DENIED_WRITABLE_PATHS`
 
 **Type** array · **Admin-enforced** **admin-only** (no user-side counterpart; the variable is editable in user config but only the admin snapshot is honoured) · **Default** `()`

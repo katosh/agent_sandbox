@@ -193,6 +193,12 @@ _apply_agent_profiles
 _check_agent_requirements
 prepare_agent_configs "$PROJECT_DIR"
 
+# Register this launch in the per-host live-launch registry BEFORE
+# materializing anything, so a concurrent launch's
+# --cleanup-materialized never deletes a placeholder this sandbox is
+# about to mount over (see sandbox-lib.sh §Live-launch registry).
+_register_live_launch
+
 # Materialize BLOCKED_FILES placeholders, warn on each one we created,
 # and track them so the EXIT trap can optionally clean up post-exit.
 # Must run AFTER _apply_agent_profiles (so agent-added entries are
@@ -209,6 +215,14 @@ if [[ "$CLEANUP_MATERIALIZED_FLAG" == "1" ]] \
    || _is_true "${CLEANUP_MATERIALIZED_BLOCKED_FILES:-false}"; then
     _CLEANUP_MATERIALIZED=1
 fi
+
+# .sandbox-state/: create (bwrap/firejail) and sanitize (all backends)
+# BEFORE backend_prepare, so the read-only overlay covers it from the
+# very first session and no symlink planted by an earlier session
+# survives into this one. Fail closed. Runs before the per-launch /tmp
+# dirs below are created, so a refusal leaves nothing behind. See
+# sandbox-lib.sh §.sandbox-state/ for the threat model.
+_prepare_sandbox_state_dir "$PROJECT_DIR" "$SANDBOX_BACKEND" || exit 1
 
 # ── Chaperon: create FIFO directory ───────────────────────────────
 # Create the FIFO directory BEFORE backend_prepare so backends can
