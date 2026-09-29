@@ -5192,6 +5192,76 @@ else
     fail "sbatch optional-argument flag handling / argv shape wrong"
 fi
 
+# 6.7q. %x (agent-controlled job name) in --output/--error is refused on
+# the staging path too (bwrap/firejail; slurmstepd expands it outside
+# the sandbox, `-J ../../x` escaped the staging dir), as are unknown
+# % patterns and backslashes (`.\.` → `..` at open time). Job names with
+# `/` or equal to `.`/`..` are refused on every backend, CLI and #SBATCH.
+if (
+    set -u
+    _bad=0
+    for _be in bwrap firejail landlock; do
+        (
+            export SANDBOX_BACKEND=$_be
+            source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+            _p="$_H67_DIR/proj-q"; mkdir -p "$_p"
+            PROJECT_DIR="$_p"; REQ_CWD="$_p"; _bad=0
+            for _a in "--output=%x" "--output=logs/%x.out" "-o|%x" "--error|%5x.err" \
+                      "-o|out-%q.log" '--output=.\./.\./x' \
+                      "-J|../x" "--job-name=a/b" "--job-name=.." "-J|." '--job-name=a\b'; do
+                IFS='|' read -r -a REQ_ARGS <<< "$_a"
+                _err="$(validate_sbatch_args 2>&1)" && { echo "$_be: accepted $_a"; _bad=1; continue; }
+                [[ "$_err" == *"refused"* ]] || { echo "$_be: unclear message for $_a: $_err"; _bad=1; }
+            done
+            REQ_ARGS=(-J myjob --output=slurm-%j.out --error=err-%A_%4a.log)
+            validate_sbatch_args 2>/dev/null || { echo "$_be: ordinary -J/--output rejected"; _bad=1; }
+            [[ " ${VALIDATED_ARGS[*]} " == *" --job-name=myjob "* ]] || { echo "$_be: job name lost: ${VALIDATED_ARGS[*]}"; _bad=1; }
+            # #SBATCH directives: %x in --output/-o, and bad job names.
+            REQ_ARGS=(); validate_sbatch_args || exit 1
+            _w="$_H67_DIR/q-wrapper-$_be"
+            for _d in "--output=%x" "-o %x.log" "--error=x-%x" "-J ../../x" "--job-name=a/b" \
+                      "--job-name ../x" "-J.." '--output=a\b'; do
+                create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH '"$_d"$'\necho hi' "$_w" 2>/dev/null \
+                    && { echo "$_be: directive accepted: $_d"; _bad=1; }
+            done
+            create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH -J myjob\n#SBATCH --output=slurm-%j.out\necho hi' "$_w" 2>/dev/null \
+                || { echo "$_be: ordinary directives rejected"; _bad=1; }
+            grep -qx '#SBATCH -J myjob' "$_w" || { echo "$_be: -J directive dropped"; _bad=1; }
+            grep -q '%x' "$_w" && { echo "$_be: %x in wrapper"; _bad=1; }
+            exit $_bad
+        ) || _bad=1
+    done
+    exit $_bad
+); then
+    pass "%x / unknown % / backslash in --output/--error refused on every backend (CLI + #SBATCH); job names with '/' or '.'/'..' refused; -J myjob --output=slurm-%j.out works"
+else
+    fail "%x or unsafe job name reaches slurmstepd's --output/--error path"
+fi
+
+# 6.7r. #SBATCH option clusters and single-dash smuggling: Slurm reads
+# `#SBATCH -He/path` as `-H -e /path` and `#SBATCH --hold -e/path` as two
+# options, which set --error behind the directive filter's back.
+if (
+    set -u
+    export SANDBOX_BACKEND=bwrap
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    _p="$_H67_DIR/proj-r"; mkdir -p "$_p"
+    PROJECT_DIR="$_p"; REQ_CWD="$_p"; REQ_ARGS=(); validate_sbatch_args || exit 1
+    _w="$_H67_DIR/r-wrapper"; _bad=0
+    for _d in "-He$HOME/.bashrc" "-Ho/tmp/x" "--hold -e$HOME/.bashrc" "--mem=4G -o/tmp/x"; do
+        create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH '"$_d"$'\necho hi' "$_w" 2>/dev/null || continue
+        grep -qF -- "$_d" "$_w" && { echo "smuggled directive emitted: $_d"; _bad=1; }
+    done
+    create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH -H\n#SBATCH -Jmy-job\n#SBATCH --time=1-00:00:00\necho hi' "$_w" 2>/dev/null \
+        || { echo "ordinary directives rejected"; _bad=1; }
+    grep -qx '#SBATCH -H' "$_w" && grep -qx '#SBATCH -Jmy-job' "$_w" || { echo "ordinary directives dropped"; _bad=1; }
+    exit $_bad
+); then
+    pass "#SBATCH short-option clusters (-He/path) and single-dash multi-option lines are not forwarded"
+else
+    fail "#SBATCH option cluster / single-dash smuggling reaches Slurm"
+fi
+
 # 6.7i. Running chaperon: handlers are loaded once at startup (C4) and
 # the logged cwd is escaped (C5). Uses a private copy of chaperon/ so
 # a handler file can be modified after startup; REAL_SINFO echoes argv.

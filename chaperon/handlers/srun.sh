@@ -324,6 +324,14 @@ handle_srun() {
         return 1
     fi
 
+    # The job name expands into %x (see _validate_slurm_job_name).
+    local _vf
+    for _vf in "${validated_flags[@]+"${validated_flags[@]}"}"; do
+        if [[ "$_vf" == --job-name=* ]]; then
+            _validate_slurm_job_name "srun --job-name" "${_vf#--job-name=}" || return 1
+        fi
+    done
+
     # In allocation mode, inject chaperon comment tag for job scoping
     # (same as sbatch handler — enables scancel/squeue to find these jobs).
     if [[ "$mode" == "alloc" ]]; then
