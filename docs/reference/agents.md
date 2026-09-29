@@ -6,7 +6,7 @@ The sandbox supports a growing set of AI coding agents. Each one lives in `agent
 
 | Agent | Default | Auth dir | Notes |
 |-------|---------|----------|-------|
-| `claude` | enabled | `~/.claude`, `~/.claude.json`, `~/.local/{state,share}/claude` | OAuth or `ANTHROPIC_API_KEY` |
+| `claude` | enabled | `~/.claude`, `~/.local/state/claude` (read-only: `~/.claude.json`, `~/.local/share/claude`) | OAuth or `ANTHROPIC_API_KEY` |
 | `codex` | enabled | `~/.codex` | OAuth (`codex login`) or `OPENAI_API_KEY` |
 | `gemini` | enabled | `~/.gemini` | Google OAuth or `GOOGLE_API_KEY` |
 | `aider` | **disabled** | (none — env-var only) | Opt-in: `ENABLED_AGENTS+=("aider")` |
@@ -57,7 +57,7 @@ To add a tool not on the list above, drop a profile into `agents/<name>/` and ad
    AGENT_LOGIN_HINT="run 'mytool login' inside the sandbox"
    ```
 
-4. **Write `agents/<name>/overlay.sh`** modeled on an existing one (codex is the simplest example) — merge instructions into a `sandbox-config/` dir and export the agent's config-dir env var via `_AGENT_ENV_EXPORTS+=(...)`.
+4. **Write `agents/<name>/overlay.sh`** modeled on an existing one (codex is the simplest example) — merge instructions into a `sandbox-config/` dir and export the agent's config-dir env var via `_AGENT_ENV_EXPORTS+=(...)`. The overlay runs on the host but writes into a directory the agent can write, so do **all** file operations through the helpers in `agents/overlay-lib.sh` (`_overlay_fs mkdir|sync`, `_overlay_read`, `_overlay_write`) — never `cp`, `>`, `mv`, `ln -sf` or `rm -rf` on paths in the agent's config dir, which follow agent-planted symlinks. Register any host-executed config the agent could tamper with (hooks, MCP servers) via `_overlay_protect_host_file` and give the agent a copy-on-launch copy (`sync --copy NAME`). See [Security → Agent config left behind](security.md#agent-config-left-behind-for-your-next-unsandboxed-session).
 
 5. **Copy `agents/<name>/agent.md`** from another agent (the wording is generic). Customize if you want different sandbox-integrity messaging for this tool.
 

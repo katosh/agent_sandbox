@@ -36,8 +36,10 @@ sandbox-exec.sh
               - stub srun → writes to req FIFO → chaperon validates flags:
                   alloc mode (login node): wraps command in sandbox-exec.sh,
                     calls real srun → compute node runs sandboxed
-                  step mode (compute node, SLURM_JOB_ID set): execs real
-                    srun directly for job-step launching (MPI)
+                  step mode (compute node, SLURM_JOB_ID set): wraps the
+                    step command in sandbox-exec.sh too, then calls real
+                    srun (steps are spawned by slurmstepd, outside any
+                    sandbox, so they must be re-wrapped)
               - stub scancel → writes to req FIFO → chaperon validates
                 job scope, calls real scancel
 ```
@@ -51,7 +53,7 @@ sandbox-exec.sh
 | **chaperon.sh** | Main loop: reads requests from FIFO, dispatches to handlers, writes responses |
 | **handlers/_handler_lib.sh** | Shared utilities: argument whitelisting, CWD validation, job wrapping, comment tag encoding/stripping |
 | **handlers/sbatch.sh** | Validates args, wraps job in `sandbox-exec.sh`, submits to real sbatch |
-| **handlers/srun.sh** | Validates flags; allocation mode wraps in `sandbox-exec.sh`, step mode execs real srun |
+| **handlers/srun.sh** | Validates flags; wraps the command in `sandbox-exec.sh` in both allocation and step mode, then calls real srun |
 | **handlers/scancel.sh** | Validates job scope, forwards to real scancel |
 | **handlers/squeue.sh** | Scopes output to session/project, strips chaperon tags |
 | **handlers/scontrol.sh** | Scoped `show job`, `hold`, `release`, `requeue`, `update`; strips chaperon tags |
@@ -321,6 +323,7 @@ These flags are explicitly rejected because they could bypass sandboxing:
 | `--burst-buffer-file` / `--bbf` | Arbitrary file access |
 | `--bcast` | Copy binary to compute nodes (bypass wrapping) |
 | `--container` | OCI container execution could bypass sandbox wrapping |
+| `--export` / `#SBATCH --export` (restricted, not removed) | The generated job wrapper runs **outside** the sandbox on the compute node before it enters it, so exported variables reach host code: `BASH_ENV`/`ENV` run arbitrary code in that bash, `PATH`/`LD_*` hijack it, and `SANDBOX_*` / launcher settings (`SANDBOX_CONF`, `HOME_ACCESS`, `BWRAP`, `NETWORK_FILTER_MODE`, `PRIVATE_TMP`, …) would weaken the compute-node sandbox. Only `NONE`, `ALL` and names outside that denylist (plain `NAME` or `NAME=VALUE`) are accepted |
 
 Unknown flags (not in the whitelist) are also rejected.
 
@@ -336,7 +339,7 @@ The srun handler (`handlers/srun.sh`) operates in two modes:
 
 **Step mode** (`SLURM_JOB_ID` set — inside a compute-node allocation):
 1. Validates flags against a step-only whitelist (no scheduling flags — steps inherit the job's resources)
-2. Execs real srun directly — the command runs within the existing sandboxed allocation
+2. Wraps the step command in `sandbox-exec.sh --project-dir $DIR` and calls real srun. This is required: a job step is started by `slurmstepd`, not as a child of the sandboxed batch script, so it does **not** inherit the job's sandbox. (Earlier versions exec'd real srun unwrapped here, which ran the step unsandboxed with the chaperon's host environment.)
 
 **Denied srun flags** (both modes):
 
@@ -484,7 +487,9 @@ The following commands are routed to `blocked.sh` (no handler):
 2. **Base64 encoding**: All user data in the protocol is base64-encoded, preventing newline injection, null byte issues, and protocol framing attacks.
 3. **Argument whitelisting**: Only explicitly allowed sbatch flags are forwarded. The whitelist is conservative — new Slurm flags must be manually added.
 4. **CWD validation**: The working directory is resolved to a physical path (following symlinks) and validated as being under the project directory. Both sbatch and srun (allocation mode) perform this check.
-5. **Always wrapped**: Every job submitted through the chaperon is wrapped in `sandbox-exec.sh`, ensuring compute-node execution inherits sandbox restrictions.
+5. **Always wrapped**: Every batch job and every `srun` — allocation mode and job-step mode — submitted through the chaperon is wrapped in `sandbox-exec.sh`, ensuring compute-node execution inherits sandbox restrictions.
+5a. **Hardened job wrapper**: The generated wrapper is host code until it `exec`s `sandbox-exec.sh`. It does not trust the job environment: it starts from a sanitized environment (no `BASH_ENV`/`ENV`), calls binaries by absolute path, and strips launcher settings (`SANDBOX_CONF`, `HOME_ACCESS`, …) before entering the sandbox; the chaperon additionally restricts `--export` (see [Denied sbatch Flags](#denied-sbatch-flags)).
+5b. **State dir integrity**: `$project_dir/.sandbox-state/{slurm-logs,chaperon}` is created by the launcher before the sandbox starts, so it is read-only inside from the first session (bwrap/firejail). The launcher and the chaperon refuse to use it if it or a subdir is a symlink, so slurmstepd never writes job output through an agent-planted link.
 6. **FIFO security**: Communication uses named pipes in a per-session temp directory with 700 permissions. Response FIFOs are created inside atomically-named subdirectories (`mktemp -d`), validated against path traversal (`..`) and symlinks (`-L` check), and must match the expected `FIFO_DIR/resp-XXXXXX/fifo` structure.
 7. **Die-with-parent**: The chaperon sets `PR_SET_PDEATHSIG` and polls parent liveness every 5 seconds as a fallback.
 8. **Handler dispatch validation**: Command names are validated against `^[a-z_][a-z0-9_]*$` to prevent path traversal in handler lookup.

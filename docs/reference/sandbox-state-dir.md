@@ -4,7 +4,7 @@
 
 ## What it is
 
-`.sandbox-state/` is a hidden directory the chaperon creates inside each project tree (`$project_dir/.sandbox-state/`) to hold chaperon-managed state that the sandboxed agent needs to read but must not be able to tamper with.
+`.sandbox-state/` is a hidden directory created inside each project tree (`$project_dir/.sandbox-state/`) to hold chaperon-managed state that the sandboxed agent needs to read but must not be able to tamper with.
 
 Layout:
 
@@ -25,7 +25,7 @@ $project_dir/.sandbox-state/
 
 | Principal                         | Permission | Why |
 |-----------------------------------|------------|-----|
-| host (chaperon, slurmstepd)       | read+write | chaperon `mkdir -p`s; slurmstepd writes job logs |
+| host (launcher, chaperon, slurmstepd) | read+write | `sandbox-exec.sh` creates `slurm-logs/` and `chaperon/` **before** the backend starts (so the RO overlay applies from the first session) and refuses a symlinked `.sandbox-state/` or subdir; slurmstepd writes job logs |
 | sandbox (bwrap / firejail)        | read-only  | bind-mount overlay; prevents symlink-plant against slurmstepd |
 | sandbox (landlock)                | writable   | landlock can't make a subdir RO under a writable parent; feature degrades |
 
