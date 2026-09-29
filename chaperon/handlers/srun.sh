@@ -5,17 +5,25 @@
 # (which is blocked inside the sandbox).  Two modes:
 #
 #   Step mode (SLURM_JOB_ID set):
-#     Validates flags against step whitelist, execs real srun directly.
-#     The command runs within the existing sandboxed allocation.
+#     Validates flags against the step whitelist (no allocation flags),
+#     wraps the command in sandbox-exec.sh, execs real srun. The step's
+#     tasks are started by slurmstepd on the allocated nodes, i.e. OUTSIDE
+#     any sandbox — the enclosing allocation's sandbox does not extend to
+#     them — so each task must re-enter the sandbox itself.
 #
 #   Allocation mode (no SLURM_JOB_ID):
 #     Validates flags against allocation whitelist, wraps the command in
 #     sandbox-exec.sh so compute-node processes inherit sandbox restrictions,
-#     then execs real srun.  --pty is denied (no PTY passthrough via protocol).
+#     then execs real srun.
+#
+#   In both modes --pty is denied (no PTY passthrough via protocol) and
+#   every task runs its own `sandbox-exec.sh --project-dir <dir> -- cmd`.
+#   --export is not on the srun allow-list (rejected as unrecognized), so
+#   no agent-chosen value can reach the host-side task environment.
 #
 # Security: munge is intentionally blocked inside the sandbox.  The chaperon
 # runs outside and has munge access.  All flags are validated against a
-# whitelist.  In allocation mode, the command is always sandboxed.
+# whitelist.  The command is always sandboxed.
 
 source "$(dirname "${BASH_SOURCE[0]}")/_handler_lib.sh"
 
@@ -347,38 +355,31 @@ handle_srun() {
 
     local rc=0
 
-    if [[ "$mode" == "step" ]]; then
-        # Step mode: exec real srun directly — the command runs within
-        # the existing sandboxed allocation.
-        if [[ -n "$REQ_CWD" ]]; then
-            (cd "$REQ_CWD" && "$real_srun" "${validated_flags[@]}" -- "${command_args[@]}") || rc=$?
-        else
-            "$real_srun" "${validated_flags[@]}" -- "${command_args[@]}" || rc=$?
-        fi
+    # Both modes: wrap the command in sandbox-exec.sh. srun starts one
+    # copy of the command per task via slurmstepd, outside the sandbox,
+    # so each task runs its own sandbox-exec.sh re-entry:
+    #   srun [flags] -- [env SANDBOX_QUIET=true] sandbox-exec.sh --project-dir $DIR -- <command>
+    # (Step mode used to exec the command bare, on the wrong assumption
+    # that the enclosing allocation's sandbox applied to the step.)
+    #
+    # Retain the session's quiet decision (see create_wrapped_script in
+    # _handler_lib.sh). When the chaperon was launched quiet, srun
+    # launches the command directly (no shell), so an `env` prefix
+    # carries SANDBOX_QUIET to the compute-node sandbox-exec.sh re-entry
+    # — surviving `--export=NONE` and any in-sandbox unset. Only forced
+    # when active; otherwise the compute node resolves normally.
+    local _quiet_env=()
+    case "${SANDBOX_QUIET:-false}" in
+        [Tt]rue|[Yy]es|1) _quiet_env=(/usr/bin/env SANDBOX_QUIET=true) ;;
+    esac
+    if [[ -n "$REQ_CWD" ]]; then
+        (cd "$REQ_CWD" && "$real_srun" "${validated_flags[@]}" -- \
+            "${_quiet_env[@]+"${_quiet_env[@]}"}" \
+            "$sandbox_exec" --project-dir "$project_dir" -- "${command_args[@]}") || rc=$?
     else
-        # Allocation mode: wrap the command in sandbox-exec.sh so
-        # compute-node processes inherit sandbox restrictions.
-        # srun [flags] -- [env SANDBOX_QUIET=true] sandbox-exec.sh --project-dir $DIR -- <command>
-        #
-        # Retain the session's quiet decision (see create_wrapped_script in
-        # _handler_lib.sh). When the chaperon was launched quiet, srun
-        # launches the command directly (no shell), so an `env` prefix
-        # carries SANDBOX_QUIET to the compute-node sandbox-exec.sh re-entry
-        # — surviving `--export=NONE` and any in-sandbox unset. Only forced
-        # when active; otherwise the compute node resolves normally.
-        local _quiet_env=()
-        case "${SANDBOX_QUIET:-false}" in
-            [Tt]rue|[Yy]es|1) _quiet_env=(env SANDBOX_QUIET=true) ;;
-        esac
-        if [[ -n "$REQ_CWD" ]]; then
-            (cd "$REQ_CWD" && "$real_srun" "${validated_flags[@]}" -- \
-                "${_quiet_env[@]+"${_quiet_env[@]}"}" \
-                "$sandbox_exec" --project-dir "$project_dir" -- "${command_args[@]}") || rc=$?
-        else
-            "$real_srun" "${validated_flags[@]}" -- \
-                "${_quiet_env[@]+"${_quiet_env[@]}"}" \
-                "$sandbox_exec" --project-dir "$project_dir" -- "${command_args[@]}" || rc=$?
-        fi
+        "$real_srun" "${validated_flags[@]}" -- \
+            "${_quiet_env[@]+"${_quiet_env[@]}"}" \
+            "$sandbox_exec" --project-dir "$project_dir" -- "${command_args[@]}" || rc=$?
     fi
 
     return "$rc"
