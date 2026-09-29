@@ -5989,8 +5989,163 @@ if [[ "$_ml_out" == "live far untag " ]]; then
 else
     fail "ML07: per-launch passwd pruning" "kept: $_ml_out (want: live far untag)"
 fi
+# ML08-ML11. MOUNT_GUARD=repair puts lost protective mounts back in the
+# running sandbox (bwrap). The host detaches, while the sandbox runs, a
+# BLOCKED_FILES /dev/null mask (rename over the file), an
+# EXTRA_BLOCKED_PATHS tmpfs mask (rename the dir aside, create a new one
+# with content) and the read-only .sandbox-state overlay (rename it
+# aside, copy it back). Within a few intervals each path must be masked
+# or read-only again inside, and each repair reported. ML11: when the
+# agent plants a symlink at the exposed path first, the repair refuses
+# (no mount is placed over or through the link) and warns instead.
+# firejail: repair is not possible (root-owned namespaces); it must
+# fall back to the warning.
+if has_mount_ns; then
+    _ml_secret="$_ml_proj/.test-mr-secret-$$"; _ml_hid="$_ml_proj/.test-mr-hidden-$$"
+    _ml_go="$_ml_proj/.test-mr-go-$$"; _ml_ready="$_ml_proj/.test-mr-ready-$$"
+    _ml_state="$_ml_proj/.sandbox-state"; _ml_stash="$_ml_proj/.test-mr-state-$$"
+    _ml_conf="$HOME/.config/agent-sandbox/conf.d/zz-test-mountrepair-$$.conf"
+    _TEST_TEMP_FILES+=("$_ml_conf" "$_ml_secret" "$_ml_go" "$_ml_ready"); trap_rm_path "$_ml_hid"; trap_rm_path "$_ml_hid.moved"
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d" "$_ml_hid"
+    printf '[[ "$_PROJECT_DIR" == "%s" ]] || return 0\nBLOCKED_FILES+=("%s")\nEXTRA_BLOCKED_PATHS+=("%s")\n' \
+        "$_ml_proj" "$_ml_secret" "$_ml_hid" > "$_ml_conf"
+    echo "ML-SECRET" > "$_ml_secret"; echo "ML-HIDDEN" > "$_ml_hid/h"; rm -f "$_ml_go" "$_ml_ready"
+    # Inside: wait for the guard, signal ready, wait for the host's
+    # detach, then poll until all three are protected again.
+    MOUNT_GUARD=repair MOUNT_GUARD_INTERVAL=1 timeout 90 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- bash -c '
+            for i in $(seq 1 100); do [[ -d "$_CHAPERON_FIFO_DIR/.mount-guard-armed" ]] && break; sleep 0.2; done
+            cat "$1" 2>/dev/null | grep -q ML-SECRET && echo "READ-BEFORE"
+            echo ready > "$4"
+            for i in $(seq 1 200); do [[ -e "$3" ]] && break; sleep 0.1; done
+            m1=""; m2=""; m3=""
+            for i in $(seq 1 60); do
+                [[ -z "$m1" ]] && ! cat "$1" >/dev/null 2>&1 && ! grep -q ML-SECRET "$1" 2>/dev/null \
+                    && grep -q " $1 ro," /proc/self/mountinfo && m1=1
+                [[ -z "$m2" && -z "$(ls -A "$2" 2>/dev/null)" ]] && grep -q " $2 .* - tmpfs " /proc/self/mountinfo && m2=1
+                [[ -z "$m3" ]] && ! touch "$5/.test-mr-probe" 2>/dev/null && grep -q " $5 ro," /proc/self/mountinfo && m3=1
+                [[ -n "$m1$m2$m3" && "$m1$m2$m3" == 111 ]] && break
+                sleep 0.25
+            done
+            [[ -n "$m1" ]] && { echo x > "$1" 2>/dev/null || echo "MASKED-FILE"; }
+            [[ -n "$m2" ]] && { touch "$2/new" 2>/dev/null; [[ -e "$2/h2" ]] || echo "MASKED-DIR"; }
+            [[ -n "$m3" ]] && echo "RO-STATE"
+            true' _ "$_ml_secret" "$_ml_hid" "$_ml_go" "$_ml_ready" "$_ml_state" \
+        >"$_ml_tmp/r.out" 2>"$_ml_tmp/r.err" &
+    _ml_l=$!
+    for _i in $(seq 1 300); do [[ -e "$_ml_ready" ]] && break; sleep 0.2; done
+    _ml_detached=""
+    if [[ -e "$_ml_ready" ]]; then
+        echo "ML-SECRET" > "$_ml_secret.new"; mv -f "$_ml_secret.new" "$_ml_secret"
+        mv "$_ml_hid" "$_ml_hid.moved"; mkdir "$_ml_hid"; echo "ML-HIDDEN2" > "$_ml_hid/h2"
+        if is_bwrap && mv "$_ml_state" "$_ml_stash" 2>/dev/null; then
+            cp -a "$_ml_stash" "$_ml_state"; _ml_detached=1
+        fi
+        touch "$_ml_go"
+    fi
+    wait "$_ml_l"; _ml_rc=$?
+    if [[ -n "$_ml_detached" ]]; then rm -rf "$_ml_state"; mv "$_ml_stash" "$_ml_state"; fi
+    _ml_err="$(cat "$_ml_tmp/r.err")"; _ml_out="$(cat "$_ml_tmp/r.out")"
+    if [[ ! -e "$_ml_ready" ]]; then
+        fail "ML08: repair sandbox never became ready" "$_ml_err"
+    elif [[ "$_ml_out" == *READ-BEFORE* ]]; then
+        fail "ML08: BLOCKED_FILES mask was not in place at start"
+    elif is_firejail; then
+        if [[ $_ml_rc -eq 0 && "$_ml_err" == *"protection LOST at $_ml_secret"*"repair needs bwrap"* ]]; then
+            pass "ML08: MOUNT_GUARD=repair on firejail falls back to the warning (namespaces not enterable)"
+        else
+            fail "ML08: MOUNT_GUARD=repair on firejail did not fall back to the warning" "rc=$_ml_rc err=$_ml_err"
+        fi
+        skip "ML09: mount repair is bwrap-only"; skip "ML10: mount repair is bwrap-only"
+    else
+        if [[ $_ml_rc -eq 0 && "$_ml_out" == *MASKED-FILE* && "$_ml_err" == *"protection LOST at $_ml_secret"*"RESTORED"* ]]; then
+            pass "ML08: MOUNT_GUARD=repair re-masks a BLOCKED_FILES file detached from outside, and reports it"
+        else
+            fail "ML08: detached /dev/null mask not restored" "rc=$_ml_rc out=$_ml_out err=$_ml_err"
+        fi
+        if [[ "$_ml_out" == *MASKED-DIR* && "$_ml_err" == *"at $_ml_hid ("*"RESTORED"* ]]; then
+            pass "ML09: MOUNT_GUARD=repair re-masks an EXTRA_BLOCKED_PATHS dir (empty tmpfs) after it was renamed away"
+        else
+            fail "ML09: detached tmpfs mask not restored" "out=$_ml_out err=$_ml_err"
+        fi
+        if [[ -z "$_ml_detached" ]]; then
+            skip "ML10: could not rename .sandbox-state aside"
+        elif [[ "$_ml_out" == *RO-STATE* && "$_ml_err" == *"at $_ml_state ("*"RESTORED"* ]]; then
+            pass "ML10: MOUNT_GUARD=repair makes a replaced .sandbox-state read-only again"
+        else
+            fail "ML10: detached read-only .sandbox-state overlay not restored" "out=$_ml_out err=$_ml_err"
+        fi
+    fi
+
+    # ML11. The agent races the repair: it watches for the mask to
+    # vanish and plants a symlink at the path. The repair must refuse
+    # and warn (never mount over or through a planted link).
+    if is_bwrap; then
+        rm -rf "$_ml_hid.moved"
+        echo "ML-SECRET" > "$_ml_secret"; rm -f "$_ml_go" "$_ml_ready"
+        MOUNT_GUARD=repair MOUNT_GUARD_INTERVAL=2 timeout 90 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+            --project-dir "$PROJECT_DIR" -- bash -c '
+                for i in $(seq 1 100); do [[ -d "$_CHAPERON_FIFO_DIR/.mount-guard-armed" ]] && break; sleep 0.2; done
+                echo ready > "$2"
+                for i in $(seq 1 3000); do grep -q " $1 " /proc/self/mountinfo || break; sleep 0.005; done
+                ln -sfn /etc/hostname "$1" && echo PLANTED
+                sleep 5
+                [[ -L "$1" ]] && echo STILL-LINK
+                grep -q " $1 " /proc/self/mountinfo && echo MOUNTED
+                grep -q "/null /etc/hostname " /proc/self/mountinfo && echo TARGET-MASKED
+                true' _ "$_ml_secret" "$_ml_ready" \
+            >"$_ml_tmp/s.out" 2>"$_ml_tmp/s.err" &
+        _ml_l=$!
+        for _i in $(seq 1 300); do [[ -e "$_ml_ready" ]] && break; sleep 0.2; done
+        echo "ML-SECRET" > "$_ml_secret.new"; mv -f "$_ml_secret.new" "$_ml_secret"
+        wait "$_ml_l"; _ml_rc=$?
+        _ml_err="$(cat "$_ml_tmp/s.err")"; _ml_out="$(cat "$_ml_tmp/s.out")"
+        if [[ "$_ml_out" != *PLANTED* ]]; then
+            fail "ML11: agent could not plant the symlink (test setup)" "out=$_ml_out err=$_ml_err"
+        elif [[ "$_ml_out" == *STILL-LINK* && "$_ml_out" != *MOUNTED* && "$_ml_out" != *TARGET-MASKED* \
+                && "$_ml_err" == *"protection LOST at $_ml_secret"*"Could not restore it"*"symlink"* \
+                && "$_ml_err" != *RESTORED* ]]; then
+            pass "ML11: MOUNT_GUARD=repair refuses an agent-planted symlink at the lost mount point and warns"
+        else
+            fail "ML11: planted symlink at a lost mask was not refused with a warning" "rc=$_ml_rc out=$_ml_out err=$_ml_err"
+        fi
+        rm -f "$_ml_secret"
+    else
+        skip "ML11: mount repair is bwrap-only"
+    fi
+    rm -rf "$_ml_hid" "$_ml_hid.moved"; rm -f "$_ml_conf" "$_ml_secret" "$_ml_go" "$_ml_ready"
+else
+    skip "ML08: Landlock has no mount overlays (mount guard inactive)"
+    skip "ML09: Landlock has no mount overlays (mount guard inactive)"
+    skip "ML10: Landlock has no mount overlays (mount guard inactive)"
+    skip "ML11: Landlock has no mount overlays (mount guard inactive)"
+fi
+# ML12. Repair eligibility and mode ordering (unit). Only leaves are
+# repairable (a tmpfs with expected mounts below it, e.g. a tmpfs
+# $HOME, is not); ro binds only when bound onto themselves and not a
+# symlink; firejail-style plain kinds never. Harden-only ordering:
+# off < warn < repair < kill.
+_ml_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    mkdir -p "$_T/h/d" "$_T/p/.sandbox-state"; touch "$_T/h/f" "$_T/p/sec"; ln -s "$_T/h/f" "$_T/h/lnk"
+    HOME="$_T/h"; BLOCKED_FILES=(); EXTRA_BLOCKED_PATHS=()
+    backend_mount_expectations() { printf '%s\n' "mask:tmpfs $_T/h" "ro:same $_T/h/f" "mask:tmpfs $_T/h/d" \
+        "rw $_T/p" "ro:same $_T/p/.sandbox-state" "mask:null $_T/p/sec" "ro $_T/p/other" "ro:same $_T/h/lnk" "mask $_T/p/fj"; }
+    _mount_guard_prepare "$_T/p" || { echo "prepare failed"; exit 0; }
+    for i in "${!_MG_PATH[@]}"; do printf '%s=%s%s ' "${_MG_PATH[i]#$_T/}" "${_MG_HOW[i]:--}" "${_MG_FTYPE[i]:+/${_MG_FTYPE[i]}}"; done
+    echo; for m in off warn repair kill bogus; do printf '%s ' "$(_mount_guard_strictness_idx $m)"; done
+)"
+_ml_want=$'h=- h/f=ro/f h/d=tmpfs p=- p/.sandbox-state=ro/d p/sec=null p/other=- h/lnk=- p/fj=- \n0 1 2 3 3 '
+if [[ "$_ml_out" == "$_ml_want" ]]; then
+    pass "ML12: repair eligibility (leaves, self-binds, no symlinks) and ordering off < warn < repair < kill"
+else
+    fail "ML12: repair eligibility / ordering" "got: $_ml_out"
+fi
 unset _ml_a _ml_pid _ml_before _ml_after _ml_rc _ml_r _ml_i1 _ml_m1 _ml_ok _ml_why _ml_out _ml_want \
-      _ml_secret _ml_ready _ml_conf _ml_conf6 _ml_mode _ml_l _ml_msg _ml_ph
+      _ml_secret _ml_ready _ml_conf _ml_conf6 _ml_mode _ml_l _ml_msg _ml_ph \
+      _ml_hid _ml_go _ml_state _ml_stash _ml_detached _ml_err
 unset -f _ml_ns_pid _ml_protective _ml_ofs
 # ── H01: Hardlink /etc/passwd into project dir ──
 local _hlink="$PROJECT_DIR/.test-passwd-hardlink-$$"
