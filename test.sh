@@ -4565,6 +4565,47 @@ else
     skip "S10: BLOCKED_FILES has no effect on Landlock (no mount namespace)"
 fi
 
+# ── S11: --cleanup-materialized keeps placeholders other sandboxes use ──
+# Unlinking a file that is a mount point in another mount namespace
+# detaches that mount everywhere (Linux >= 3.18). If launch A
+# materialized a BLOCKED_FILES placeholder and launch B (concurrent)
+# mounted /dev/null over it, A's post-exit cleanup used to delete the
+# placeholder and silently unmask it inside B, whose agent could then
+# create the file on the host with its own content. A private
+# XDG_RUNTIME_DIR keeps the live-launch registry isolated from other
+# sandboxes on this host.
+if has_mount_ns; then
+    _s11_target="$PROJECT_DIR/.test-blockfiles-s11-$$"
+    _s11_conf="$HOME/.config/agent-sandbox/conf.d/test-blockfiles-s11-$$.conf"
+    _s11_rt=$(mktemp -d)
+    _TEST_TEMP_FILES+=("$_s11_conf" "$_s11_target")
+    _TEST_TEMP_DIRS+=("$_s11_rt")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    rm -f "$_s11_target"
+    echo "BLOCKED_FILES+=( \"$_s11_target\" )" > "$_s11_conf"
+    XDG_RUNTIME_DIR="$_s11_rt" "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --cleanup-materialized \
+        --project-dir "$PROJECT_DIR" -- sleep 2 >/dev/null 2>"$_s11_rt/a.err" &
+    _s11_a=$!
+    for _i in $(seq 1 100); do [[ -e "$_s11_target" ]] && break; sleep 0.05; done
+    XDG_RUNTIME_DIR="$_s11_rt" timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- bash -c "sleep 4; echo S11_AGENT > '$_s11_target' 2>/dev/null; true" \
+        >/dev/null 2>&1 &
+    _s11_b=$!
+    wait "$_s11_a" 2>/dev/null; wait "$_s11_b" 2>/dev/null
+    if grep -q S11_AGENT "$_s11_target" 2>/dev/null || [[ ! -e "$_s11_target" ]]; then
+        fail "S11: cleanup of launch A unmasked a BLOCKED_FILES placeholder inside concurrent launch B" \
+             "exists=$([[ -e $_s11_target ]] && echo yes || echo no) content=$(head -c 40 "$_s11_target" 2>/dev/null) A: $(cat "$_s11_rt/a.err")"
+    elif ! grep -q "other agent-sandbox sessions are running" "$_s11_rt/a.err"; then
+        fail "S11: placeholder kept but no 'other sessions running' note" "$(cat "$_s11_rt/a.err")"
+    else
+        pass "S11: --cleanup-materialized keeps placeholders while another sandbox has them mounted"
+    fi
+    rm -f "$_s11_conf" "$_s11_target"; rm -rf "$_s11_rt"
+else
+    skip "S11: BLOCKED_FILES has no effect on Landlock (no mount namespace)"
+fi
+
+
 # ── H01: Hardlink /etc/passwd into project dir ──
 local _hlink="$PROJECT_DIR/.test-passwd-hardlink-$$"
 if ln /etc/passwd "$_hlink" 2>/dev/null; then

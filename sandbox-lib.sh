@@ -2721,6 +2721,95 @@ _exec_or_run_sandbox() {
     return "$_rc"
 }
 
+# ── Live-launch registry (guards --cleanup-materialized) ─────────
+#
+# A BLOCKED_FILES placeholder materialized by launch A may be the
+# /dev/null mount target of launch B running concurrently on the same
+# host. Unlinking a file that is a mount point in another mount
+# namespace succeeds on Linux >= 3.18 and DETACHES that mount in every
+# namespace, so A's post-exit cleanup would silently unmask the file in
+# B (and B's agent could then create it with its own content on the
+# host). Every launch therefore registers itself (pid + start time) in
+# a per-user, per-host registry before materializing anything, and the
+# cleanup keeps all placeholders while any other registered launch is
+# still alive. Registration and the cleanup's check-then-delete take
+# the same flock, so a launch that registers after the check simply
+# re-materializes what was removed.
+_live_registry_dir() {
+    local _base="${XDG_RUNTIME_DIR:-}"
+    if [[ -z "$_base" || ! -d "$_base" || ! -O "$_base" ]]; then
+        _base="${TMPDIR:-/tmp}"
+    fi
+    printf '%s/agent-sandbox-live-%s' "${_base%/}" "$(id -u)"
+}
+
+# Echo the start time (clock ticks since boot, /proc/PID/stat field 22)
+# of PID, or nothing if it is not running. Pid + start time identifies a
+# process across PID reuse.
+_proc_starttime() {
+    local _stat
+    _stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+    _stat="${_stat##*) }"
+    # shellcheck disable=SC2086  # intentional word split of stat fields
+    set -- $_stat
+    printf '%s' "${20:-}"
+}
+
+# Open + lock the registry dir; sets _LIVE_REG_DIR and _LIVE_REG_LOCKFD.
+# Best effort: returns 1 (caller proceeds unguarded) if the dir cannot
+# be created safely.
+_live_registry_lock() {
+    _LIVE_REG_DIR="$(_live_registry_dir)"
+    _LIVE_REG_LOCKFD=""
+    mkdir -m 700 -- "$_LIVE_REG_DIR" 2>/dev/null || true
+    if [[ -L "$_LIVE_REG_DIR" || ! -d "$_LIVE_REG_DIR" || ! -O "$_LIVE_REG_DIR" ]]; then
+        return 1
+    fi
+    if command -v flock >/dev/null 2>&1; then
+        exec {_LIVE_REG_LOCKFD}>>"$_LIVE_REG_DIR/.lock" || { _LIVE_REG_LOCKFD=""; return 0; }
+        flock -x "$_LIVE_REG_LOCKFD" 2>/dev/null || true
+    fi
+    return 0
+}
+
+_live_registry_unlock() {
+    if [[ -n "${_LIVE_REG_LOCKFD:-}" ]]; then
+        exec {_LIVE_REG_LOCKFD}>&-
+        _LIVE_REG_LOCKFD=""
+    fi
+}
+
+# Register this launcher ($$ survives the exec into the backend, so it
+# stays alive exactly as long as the sandbox does).
+_register_live_launch() {
+    _live_registry_lock || return 0
+    local _st
+    _st="$(_proc_starttime $$)" || _st=""
+    printf '%s\n' "$_st" > "$_LIVE_REG_DIR/$$" 2>/dev/null || true
+    # Opportunistic prune: exec'd launches never deregister themselves.
+    _other_live_launches >/dev/null
+    _live_registry_unlock
+}
+
+# Print the PIDs of OTHER live registered launches; prune dead entries.
+# Caller must hold the registry lock.
+_other_live_launches() {
+    local _f _pid _want _have
+    for _f in "$_LIVE_REG_DIR"/*; do
+        [[ -f "$_f" ]] || continue
+        _pid="${_f##*/}"
+        [[ "$_pid" =~ ^[0-9]+$ ]] || continue
+        [[ "$_pid" == "$$" ]] && continue
+        _want="$(cat "$_f" 2>/dev/null)" || _want=""
+        _have="$(_proc_starttime "$_pid")" || _have=""
+        if [[ -n "$_have" && "$_have" == "$_want" ]]; then
+            printf '%s\n' "$_pid"
+        else
+            rm -f -- "$_f" 2>/dev/null || true
+        fi
+    done
+}
+
 # Remove placeholders + parent dirs created during the just-finished
 # launch. Called by the EXIT trap in sandbox-exec.sh when the user
 # opted into --cleanup-materialized (or CLEANUP_MATERIALIZED_BLOCKED_FILES=1).
@@ -2735,7 +2824,27 @@ _exec_or_run_sandbox() {
 # Both retentions are reported on stderr with a 'kept' note so the user
 # can see why.
 _cleanup_materialized_blocked_files() {
-    [[ ${#_MATERIALIZED_FILES[@]} -eq 0 && ${#_MATERIALIZED_DIRS[@]} -eq 0 ]] && return 0
+    local _have_lock=false
+    if _live_registry_lock; then
+        _have_lock=true
+        rm -f -- "$_LIVE_REG_DIR/$$" 2>/dev/null || true
+    fi
+    if [[ ${#_MATERIALIZED_FILES[@]} -eq 0 && ${#_MATERIALIZED_DIRS[@]} -eq 0 ]]; then
+        $_have_lock && _live_registry_unlock
+        return 0
+    fi
+
+    # Other sandboxes on this host may have these placeholders mounted
+    # over (see the live-launch registry above): keep everything.
+    if $_have_lock; then
+        local _others
+        _others="$(_other_live_launches | tr '\n' ' ')"
+        if [[ -n "${_others// /}" ]]; then
+            echo "WARNING: kept ${#_MATERIALIZED_FILES[@]} materialized BLOCKED_FILES placeholder(s): other agent-sandbox sessions are running on this host (pids: ${_others% }) and may have them mounted. Deleting them would unmask the files inside those sessions." >&2
+            _live_registry_unlock
+            return 0
+        fi
+    fi
 
     local _f _d _size _i
     for _f in "${_MATERIALIZED_FILES[@]}"; do
@@ -2762,6 +2871,8 @@ _cleanup_materialized_blocked_files() {
             fi
         done
     fi
+    $_have_lock && _live_registry_unlock
+    return 0
 }
 
 # Reject command substitution or backticks in path arrays (defense in depth).

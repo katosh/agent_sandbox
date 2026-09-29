@@ -193,6 +193,12 @@ _apply_agent_profiles
 _check_agent_requirements
 prepare_agent_configs "$PROJECT_DIR"
 
+# Register this launch in the per-host live-launch registry BEFORE
+# materializing anything, so a concurrent launch's
+# --cleanup-materialized never deletes a placeholder this sandbox is
+# about to mount over (see sandbox-lib.sh §Live-launch registry).
+_register_live_launch
+
 # Materialize BLOCKED_FILES placeholders, warn on each one we created,
 # and track them so the EXIT trap can optionally clean up post-exit.
 # Must run AFTER _apply_agent_profiles (so agent-added entries are
