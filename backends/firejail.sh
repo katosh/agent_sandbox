@@ -170,6 +170,14 @@ _fj_cover() {
     fi
     local -a _kids=()
     while IFS= read -r -d '' _e; do
+        # Below an autofs mount point, only keys that are mounted now
+        # (or lead to $HOME / a foreign grant): remounting a browsable
+        # but unmounted key would trigger its automount (a mount storm
+        # on /home- or lab-style maps).
+        if [[ -n "${_FJ_AUTOFS[$_d]:-}" && -z "${_FJ_MOUNTED[$_e]:-}" ]] \
+           && ! _fj_is_proper_ancestor "$_e" "$_FJ_HOME" && ! _fj_foreign_below "$_e"; then
+            continue
+        fi
         _kids+=("$_e")
     done < <(find "$_d" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
     if $_home_anc && [[ "$_d" != / ]] && (( ${#_kids[@]} > _FJ_HOME_SIBLINGS_MAX )); then
@@ -427,7 +435,14 @@ backend_prepare() {
     done
 
     # Host filesystem outside $HOME: read-only, see _fj_cover.
-    declare -gA _FJ_COVERED=()
+    declare -gA _FJ_COVERED=() _FJ_AUTOFS=() _FJ_MOUNTED=()
+    local _mi_mp _mi_rest _mi_fs
+    while read -r _ _ _ _ _mi_mp _mi_rest; do
+        _mi_fs="${_mi_rest#* - }"; _mi_fs="${_mi_fs%% *}"
+        [[ "$_mi_mp" == *\\* ]] && _mi_mp="$(printf '%b' "${_mi_mp//\\/\\0}")"
+        _FJ_MOUNTED[$_mi_mp]=1
+        [[ "$_mi_fs" == autofs ]] && _FJ_AUTOFS[$_mi_mp]=1
+    done < /proc/self/mountinfo
     _FJ_OPEN_ANCESTORS=()
     _FJ_UNLISTABLE=()
     _FJ_HOME_SIBLINGS_SKIPPED=""
