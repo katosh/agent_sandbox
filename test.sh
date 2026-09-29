@@ -5659,6 +5659,242 @@ else
 fi
 
 
+# ── ML: bind mounts vanishing from RUNNING sandboxes (settylab/dotto-nexus#386) ──
+# rename()/unlink() of a path that is a mount point in another mount
+# namespace detaches that mount in every namespace. The overlays used to
+# rebuild sandbox-config/{CLAUDE.md,settings.json} with temp + rename on
+# every launch, silently stripping the read-only policy overlays from
+# every sandbox already running. These tests launch sandbox A, act from
+# outside while it runs, and inspect A's /proc/<pid>/mountinfo.
+
+# _ml_ns_pid LAUNCHER — a descendant in another mount ns that has the
+# project dir mounted (the sandbox), or nothing.
+_ml_ns_pid() {
+    local _own _i=0 _p _c _ns
+    _own="$(readlink /proc/self/ns/mnt)"
+    local -a _q=("$1")
+    while (( _i < ${#_q[@]} && _i < 200 )); do
+        _p="${_q[_i]}"; _i=$((_i + 1))
+        for _c in $(cat /proc/"$_p"/task/*/children 2>/dev/null); do
+            _q+=("$_c")
+            _ns="$(readlink "/proc/$_c/ns/mnt" 2>/dev/null)" || continue
+            [[ -n "$_ns" && "$_ns" != "$_own" ]] || continue
+            grep -qF " $_ml_proj " "/proc/$_c/mountinfo" 2>/dev/null && { echo "$_c"; return 0; }
+        done
+    done
+    return 1
+}
+# _ml_protective PID — "mountpoint opts" of the read-only mounts that
+# protect agent config and .sandbox-state inside that sandbox.
+_ml_protective() {
+    awk -v s="$_ml_proj/.sandbox-state" '($5 ~ /\/sandbox-config\/[^\/]+$/ || $5 == s) {
+        split($6, o, ","); ro = "rw"; for (k in o) if (o[k] == "ro") ro = "ro"; print $5, ro }' \
+        "/proc/$1/mountinfo" 2>/dev/null | sort -u
+}
+_ml_proj="$(cd "$PROJECT_DIR" && pwd -P)"
+_ml_tmp="$(mktemp -d)"; trap_rm_dir "$_ml_tmp"
+
+# ML01. A second launch (overlays rebuilt, .sandbox-state sanitized with
+# a planted link purged) leaves the first sandbox's read-only overlays in
+# place and does not trip its mount guard.
+if has_mount_ns; then
+    MOUNT_GUARD=kill MOUNT_GUARD_INTERVAL=1 timeout 60 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- sleep 10 >/dev/null 2>"$_ml_tmp/a.err" &
+    _ml_a=$!
+    _ml_pid=""; _ml_before=""
+    for _i in $(seq 1 100); do
+        _ml_pid="$(_ml_ns_pid "$_ml_a")" && _ml_before="$(_ml_protective "$_ml_pid")"
+        [[ "$_ml_before" == *"/.sandbox-state ro"* && "$_ml_before" == *sandbox-config* ]] && break
+        sleep 0.2
+    done
+    if [[ "$_ml_before" != *sandbox-config*" ro"* ]]; then
+        skip "ML01: no read-only agent overlay in sandbox A (no agent config dir on this host?)"
+        kill "$_ml_a" 2>/dev/null; wait "$_ml_a" 2>/dev/null
+    else
+        ln -sfn "$HOME/.bashrc" "$_ml_proj/.sandbox-state/slurm-logs/ml01-planted" 2>/dev/null || true
+        sandbox true || true
+        _ml_after="$(_ml_protective "$_ml_pid")"
+        wait "$_ml_a"; _ml_rc=$?
+        if [[ "$_ml_after" != "$_ml_before" ]]; then
+            fail "ML01: launching a second sandbox detached read-only overlays in the first" \
+                 "before: $(echo $_ml_before) | after: $(echo $_ml_after)"
+        elif [[ -L "$_ml_proj/.sandbox-state/slurm-logs/ml01-planted" ]]; then
+            fail "ML01: second launch did not purge the planted .sandbox-state link"
+        elif [[ $_ml_rc -ne 0 ]] || grep -q "MOUNT GUARD" "$_ml_tmp/a.err"; then
+            fail "ML01: first sandbox disturbed by the second launch (rc=$_ml_rc)" "$(cat "$_ml_tmp/a.err")"
+        else
+            pass "ML01: a second launch keeps the first sandbox's read-only overlays ($(echo "$_ml_before" | wc -l) mounts) and .sandbox-state bind"
+        fi
+    fi
+    rm -f "$_ml_proj/.sandbox-state/slurm-logs/ml01-planted" 2>/dev/null
+else
+    skip "ML01: Landlock has no mount overlays"
+fi
+
+# ML02. overlay-fs.py write keeps the inode (unchanged content: not
+# rewritten at all; changed: rewritten in place, mode restored) and
+# never writes through a planted hard link or symlink.
+_ml_r="$_ml_tmp/root"; mkdir -p "$_ml_r/cfg"; echo "user rc" > "$_ml_tmp/victim"
+_ml_ofs() { python3 "$SCRIPT_DIR/agents/overlay-fs.py" write "$_ml_r" cfg "$@"; }
+if command -v python3 >/dev/null 2>&1; then
+    echo v1 | _ml_ofs F.md 0444; _ml_i1="$(stat -c %i "$_ml_r/cfg/F.md")"; _ml_m1="$(stat -c %Y "$_ml_r/cfg/F.md")"
+    sleep 1.1; echo v1 | _ml_ofs F.md 0444
+    _ml_ok=true; _ml_why=""
+    [[ "$(stat -c %i "$_ml_r/cfg/F.md")" == "$_ml_i1" && "$(stat -c %Y "$_ml_r/cfg/F.md")" == "$_ml_m1" ]] || { _ml_ok=false; _ml_why+="unchanged content rewritten; "; }
+    printf 'v2 longer\n' | _ml_ofs F.md 0444; echo v3 | _ml_ofs F.md 0444
+    [[ "$(stat -c %i "$_ml_r/cfg/F.md")" == "$_ml_i1" && "$(cat "$_ml_r/cfg/F.md")" == v3 && "$(stat -c %a "$_ml_r/cfg/F.md")" == 444 ]] \
+        || { _ml_ok=false; _ml_why+="changed content not updated in place ($(stat -c '%i %a' "$_ml_r/cfg/F.md") $(cat "$_ml_r/cfg/F.md")); "; }
+    ln "$_ml_tmp/victim" "$_ml_r/cfg/H.md"; echo evil | _ml_ofs H.md 0444 2>/dev/null
+    [[ "$(cat "$_ml_tmp/victim")" == "user rc" && "$(cat "$_ml_r/cfg/H.md")" == evil ]] || { _ml_ok=false; _ml_why+="wrote through a planted hard link; "; }
+    ln -s "$_ml_tmp/victim" "$_ml_r/cfg/S.md"; echo evil | _ml_ofs S.md 0444 2>/dev/null
+    [[ "$(cat "$_ml_tmp/victim")" == "user rc" && ! -L "$_ml_r/cfg/S.md" ]] || { _ml_ok=false; _ml_why+="wrote through a planted symlink; "; }
+    if $_ml_ok; then
+        pass "ML02: overlay-fs write keeps the inode, skips unchanged content, never writes through planted links"
+    else
+        fail "ML02: overlay-fs write" "$_ml_why"
+    fi
+else
+    skip "ML02: python3 not available"
+fi
+
+# ML03. Mount guard classification (synthetic mountinfo). Mechanism 2 of
+# #386: the project bind and its .sandbox-state child vanish and fall
+# through to a read-only parent: reported, not fatal. A BLOCKED_FILES
+# mask in the project falling through to the same read-only parent
+# exposes the file: fatal. So is a read-only overlay under a writable
+# mount, and a read-only mount turned read-write.
+_ml_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _p=/fs/lab/proj
+    _MG_KIND=(rw ro mask ro mask ro); _MG_POLICY=(1 1 1 1 0 1)
+    _MG_PATH=("$_p" "$_p/.sandbox-state" "$_p/.env" /h/u/.claude/settings.json /usr/bin/sbatch /h/u/.bashrc)
+    _MG_ESC=("${_MG_PATH[@]}")
+    _mi() { printf '%s\n' "1 0 0:1 / / rw - tmpfs t rw" "2 1 8:1 /fs /fs ro - nfs s:/x rw" \
+        "3 1 8:2 /usr /usr ro - ext4 d rw" "4 1 0:9 / /h/u rw - tmpfs t rw" \
+        "5 4 8:3 /u/.claude /h/u/.claude rw - nfs s:/h rw" "6 4 8:3 /u/.bashrc /h/u/.bashrc ro - nfs s:/h rw" "$@" > "$_T/mi"; }
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    _v() { local b=1; [[ "${_MG_KIND[$1]}" == rw ]] && b=0
+           _mg_read_mountinfo "$_T/mi"; _mg_evaluate "$1" "$b"; printf '%s:%s ' "$1" "${_MG_VERDICT:-ok}"; }
+    _full=("7 2 8:1 /lab/proj $_p rw - nfs s:/x rw" "8 7 8:1 /lab/proj/.sandbox-state $_p/.sandbox-state ro - nfs s:/x rw"
+           "9 7 0:5 /null $_p/.env ro - devtmpfs u rw" "10 5 8:3 /u/.claude/settings.json /h/u/.claude/settings.json ro - nfs s:/h rw"
+           "11 3 0:5 /null /usr/bin/sbatch ro - devtmpfs u rw")
+    _mi "${_full[@]}"; echo -n "intact="; for i in 0 1 2 3 4 5; do _v $i; done; echo
+    _mi "${_full[@]:3}"; echo -n "mech2="; for i in 0 1 2; do _v $i; done; echo
+    _mi "${_full[@]:0:3}" "${_full[4]}"; echo -n "ovl="; _v 3; echo
+    _mi "${_full[@]:0:4}"; echo -n "sysmask="; _v 4; echo
+    _mi "${_full[@]}" "12 4 8:3 /u/.bashrc /h/u/.bashrc rw - nfs s:/h rw"; echo -n "remount="; _v 5; echo
+)"
+_ml_want=$'intact=0:ok 1:ok 2:ok 3:ok 4:ok 5:ok \nmech2=0:degraded 1:degraded 2:EXPOSED \novl=3:EXPOSED \nsysmask=4:degraded \nremount=5:EXPOSED '
+if [[ "$_ml_out" == "$_ml_want" ]]; then
+    pass "ML03: mount guard classifies lost mounts by what they fall through to"
+else
+    fail "ML03: mount guard classification" "got: $_ml_out"
+fi
+
+# ML04/ML05. Mount guard end to end: a host-side rename over a
+# BLOCKED_FILES path detaches its /dev/null mask inside the running
+# sandbox. kill: the sandbox is terminated before the agent reads the
+# file; warn: it keeps running and the loss is reported.
+if has_mount_ns; then
+    _ml_secret="$_ml_proj/.test-ml-secret-$$"; _ml_ready="$_ml_proj/.test-ml-ready-$$"
+    _ml_conf="$HOME/.config/agent-sandbox/conf.d/zz-test-mountloss-$$.conf"
+    _TEST_TEMP_FILES+=("$_ml_conf" "$_ml_secret" "$_ml_ready")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    printf '[[ "$_PROJECT_DIR" == "%s" ]] || return 0\nBLOCKED_FILES+=("%s")\n' "$_ml_proj" "$_ml_secret" > "$_ml_conf"
+    for _ml_mode in kill warn; do
+        echo "ML-SECRET" > "$_ml_secret"; rm -f "$_ml_ready"
+        MOUNT_GUARD=$_ml_mode MOUNT_GUARD_INTERVAL=1 timeout 60 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+            --project-dir "$PROJECT_DIR" -- bash -c '
+                for i in $(seq 1 100); do [[ -d "$_CHAPERON_FIFO_DIR/.mount-guard-armed" ]] && break; sleep 0.2; done
+                cat "$1" 2>/dev/null | grep -q ML-SECRET && echo "READ-BEFORE"
+                echo ready > "$2"; sleep 6; cat "$1" 2>/dev/null' _ "$_ml_secret" "$_ml_ready" \
+            >"$_ml_tmp/g.out" 2>"$_ml_tmp/g.err" &
+        _ml_l=$!
+        for _i in $(seq 1 200); do [[ -e "$_ml_ready" ]] && break; sleep 0.2; done
+        echo "ML-SECRET" > "$_ml_secret.new"; mv -f "$_ml_secret.new" "$_ml_secret"
+        wait "$_ml_l"; _ml_rc=$?
+        _ml_msg="$(grep "MOUNT GUARD" "$_ml_tmp/g.err")"
+        if [[ ! -e "$_ml_ready" ]]; then
+            fail "ML0x ($_ml_mode): sandbox never became ready" "$(cat "$_ml_tmp/g.err")"
+        elif grep -q READ-BEFORE "$_ml_tmp/g.out"; then
+            fail "ML0x ($_ml_mode): BLOCKED_FILES mask was not in place at start"
+        elif [[ "$_ml_mode" == kill ]]; then
+            if [[ $_ml_rc -ne 0 && "$_ml_msg" == *"protection LOST at $_ml_secret"* ]] && ! grep -q ML-SECRET "$_ml_tmp/g.out"; then
+                pass "ML04: MOUNT_GUARD=kill terminates the sandbox when a BLOCKED_FILES mask is detached from outside"
+            else
+                fail "ML04: MOUNT_GUARD=kill did not stop the sandbox before it read the unmasked file" \
+                     "rc=$_ml_rc out=$(cat "$_ml_tmp/g.out") err=$(cat "$_ml_tmp/g.err")"
+            fi
+        else
+            if [[ $_ml_rc -eq 0 && "$_ml_msg" == *"protection LOST at $_ml_secret"*"not terminating"* ]]; then
+                pass "ML05: MOUNT_GUARD=warn reports the detached mask and keeps the sandbox running"
+            else
+                fail "ML05: MOUNT_GUARD=warn did not report the detached mask" "rc=$_ml_rc err=$(cat "$_ml_tmp/g.err")"
+            fi
+        fi
+    done
+    rm -f "$_ml_conf" "$_ml_secret" "$_ml_ready"
+else
+    skip "ML04: Landlock has no mount overlays (mount guard inactive)"
+    skip "ML05: Landlock has no mount overlays (mount guard inactive)"
+fi
+
+# ML06. --cleanup-materialized never deletes placeholders on a network
+# filesystem: sandboxes on other hosts may have them mounted, and the
+# live-launch registry cannot see them. (stat is shimmed to report nfs;
+# a private XDG_RUNTIME_DIR isolates the registry from other sandboxes.)
+if has_mount_ns; then
+    _ml_ph="$_ml_proj/.test-ml-placeholder-$$"; rm -f "$_ml_ph"
+    _ml_conf6="$HOME/.config/agent-sandbox/conf.d/zz-test-mountloss6-$$.conf"
+    _TEST_TEMP_FILES+=("$_ml_conf6" "$_ml_ph")
+    printf '[[ "$_PROJECT_DIR" == "%s" ]] || return 0\nBLOCKED_FILES+=("%s")\n' "$_ml_proj" "$_ml_ph" > "$_ml_conf6"
+    mkdir -p "$_ml_tmp/shim" "$_ml_tmp/rt"
+    printf '#!/bin/bash\n[[ "$1" == -f && "$2" == -c && "$3" == %%T ]] && { echo nfs; exit 0; }\nexec /usr/bin/stat "$@"\n' > "$_ml_tmp/shim/stat"
+    chmod +x "$_ml_tmp/shim/stat"
+    PATH="$_ml_tmp/shim:$PATH" XDG_RUNTIME_DIR="$_ml_tmp/rt" timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --cleanup-materialized --project-dir "$PROJECT_DIR" -- true >/dev/null 2>"$_ml_tmp/c.err"
+    if [[ -e "$_ml_ph" ]] && grep -q "on a network filesystem" "$_ml_tmp/c.err"; then
+        pass "ML06: --cleanup-materialized keeps placeholders on a network filesystem"
+    else
+        fail "ML06: placeholder on a network filesystem was deleted or not reported" \
+             "exists=$([[ -e $_ml_ph ]] && echo yes || echo no) err=$(cat "$_ml_tmp/c.err")"
+    fi
+    rm -f "$_ml_conf6" "$_ml_ph"
+else
+    skip "ML06: BLOCKED_FILES has no effect on Landlock"
+fi
+
+# ML07. Per-launch passwd dirs (bind sources of /etc/passwd) are pruned
+# only when their launcher is gone on this host (they sit on NFS under
+# ~/.config on HPC hosts, where deleting a live source breaks a sandbox
+# on another host with ESTALE); foreign-host and untagged dirs only
+# after 30 days.
+_ml_out="$(
+    export _SANDBOX_LIB_NO_INIT=1 HOME="$_ml_tmp/h7"
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _USER_DATA_DIR="$HOME/.config/agent-sandbox"; FILTER_PASSWD=true
+    b="$_USER_DATA_DIR/.passwd-filter"; mkdir -p "$b"
+    me="$(_passwd_owner_tag $$)"; read -r h ns _ _ <<< "$me"
+    mk() { mkdir -p "$b/l.$1"; [[ -n "$2" ]] && echo "$2" > "$b/l.$1/.owner"; touch -d "$3" "$b/l.$1"; }
+    mk live   "$me"                        "3 days ago"
+    mk dead   "$h $ns 999999999 1"         "1 hour ago"
+    mk far    "otherhost 1 123 456"        "3 days ago"
+    mk farold "otherhost 1 123 456"        "31 days ago"
+    mk untag  ""                           "3 days ago"
+    mk untagold ""                         "31 days ago"
+    generate_filtered_passwd >/dev/null 2>&1 || { echo "generation failed"; exit 0; }
+    [[ -f "$_FILTERED_PASSWD" && -f "$(dirname "$_FILTERED_PASSWD")/.owner" ]] || echo "new dir untagged"
+    for d in live dead far farold untag untagold; do [[ -d "$b/l.$d" ]] && echo -n "$d " ; done
+)"
+if [[ "$_ml_out" == "live far untag " ]]; then
+    pass "ML07: per-launch passwd dirs pruned by launcher liveness, not age"
+else
+    fail "ML07: per-launch passwd pruning" "kept: $_ml_out (want: live far untag)"
+fi
+unset _ml_a _ml_pid _ml_before _ml_after _ml_rc _ml_r _ml_i1 _ml_m1 _ml_ok _ml_why _ml_out _ml_want \
+      _ml_secret _ml_ready _ml_conf _ml_conf6 _ml_mode _ml_l _ml_msg _ml_ph
+unset -f _ml_ns_pid _ml_protective _ml_ofs
 # ── H01: Hardlink /etc/passwd into project dir ──
 local _hlink="$PROJECT_DIR/.test-passwd-hardlink-$$"
 if ln /etc/passwd "$_hlink" 2>/dev/null; then
