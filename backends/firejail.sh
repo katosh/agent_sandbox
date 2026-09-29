@@ -13,7 +13,8 @@
 #   - PID namespace: isolated by default (no extra flag needed)
 #   - Network namespace: --net=none or --netfilter restricts network access
 #   - Seccomp: built-in filter (--seccomp)
-#   - Unix socket isolation: mount namespace hides /run/user sockets
+#   - Unix socket isolation: /run is replaced by a tmpfs holding only
+#     the DNS resolver dir (like bwrap's --tmpfs /run)
 #     (Landlock cannot block AF_UNIX connect)
 #
 # Key differences from bwrap:
@@ -59,6 +60,186 @@ backend_name() {
     echo "firejail"
 }
 
+# ── Read-only host filesystem (outside the writable grants) ──────
+#
+# Firejail starts from the host mount tree, so everything outside the
+# grants has to be remounted read-only explicitly. Two firejail
+# behaviours (checked in the 0.9.72 source, unchanged on master) rule
+# out the obvious `--read-only=/` + `--read-write=<grant>`:
+#
+#   1. `--read-write=X` is refused for a directory X that is currently
+#      read-only and not owned by the calling user ("you are not
+#      allowed to change X to read-write", fs.c:fs_remount_simple,
+#      hidden by --quiet). A project or EXTRA_WRITABLE_PATHS entry on
+#      shared storage owned by root or the PI and group-writable for
+#      the user (the normal HPC layout) came out READ-ONLY.
+#   2. `--read-only=/` is not recursive: build_mount_array() matches
+#      submounts with `dir[strlen(path)] == '/'`, which never holds for
+#      path "/". Only the root filesystem became read-only; every other
+#      mount (NFS/Lustre/GPFS project and scratch filesystems, /boot,
+#      /run/lock, ...) stayed writable.
+#
+# So the launcher builds the read-only set itself (_fj_cover): every
+# entry of / becomes its own recursive --read-only, except the paths
+# that must stay writable. A directory that CONTAINS a grant the user
+# does not own is not remounted; instead its children are covered one
+# by one, down to the grant, so the grant itself is never under a
+# read-only mount and needs no --read-write. The price: those
+# ancestor directories themselves stay writable as far as Unix
+# permissions allow (new entries can be created directly in them); the
+# launcher lists the ones the user can write. Grants the user owns keep
+# the stronger scheme (read-only parent + --read-write re-open).
+#
+# Not covered here (handled elsewhere in backend_prepare): /proc and
+# /sys (firejail), /dev (--private-dev), /run (tmpfs via --whitelist),
+# /tmp (--private-tmp or shared), $HOME and its ancestors (HOME_ACCESS
+# rules; siblings of $HOME, i.e. other users' homes, are covered when
+# the parent is small enough to enumerate).
+
+# Upper bound for enumerating the siblings of $HOME (e.g. /home). Big
+# NFS home trees would cost one mount per user; beyond this the other
+# homes keep their Unix permissions (they are rarely writable anyway).
+_FJ_HOME_SIBLINGS_MAX=256
+
+# _fj_owned_by_me PATH — true when PATH (following symlinks) belongs to
+# the current user. Root owns everything for firejail's check.
+_fj_owned_by_me() {
+    local _u
+    [[ "$(id -u)" == 0 ]] && return 0
+    _u="$(stat -L -c %u -- "$1" 2>/dev/null)" || return 1
+    [[ "$_u" == "$(id -u)" ]]
+}
+
+# _fj_is_proper_ancestor ANC PATH
+_fj_is_proper_ancestor() {
+    [[ "$1" != "$2" ]] && _path_under "$2" "$1"
+}
+
+# _fj_foreign_below DIR — true when a foreign (not user-owned) grant is
+# DIR or lies below it.
+_fj_foreign_below() {
+    local _g
+    for _g in "${_FJ_FOREIGN_GRANTS[@]+"${_FJ_FOREIGN_GRANTS[@]}"}"; do
+        _path_under "$_g" "$1" && return 0
+    done
+    return 1
+}
+
+# _fj_cover_skip PATH — paths the cover never remounts (see above).
+_fj_cover_skip() {
+    local _p="$1" _s _g
+    for _s in /proc /sys /dev /run /tmp; do
+        _path_under "$_p" "$_s" && return 0
+    done
+    # $HOME and everything below it: HOME_ACCESS rules.
+    _path_under "$_p" "$_FJ_HOME" && return 0
+    # Inside a writable grant: the grant decides (bwrap binds it rw).
+    for _g in "${_FJ_GRANTS[@]+"${_FJ_GRANTS[@]}"}"; do
+        _path_under "$_p" "$_g" && return 0
+    done
+    return 1
+}
+
+# _fj_ro PATH — make PATH read-only (protective overlays, READONLY_MOUNTS),
+# or cover it piecewise when it contains a grant the user does not own.
+_fj_ro() {
+    local _p="$1"
+    local _g
+    [[ -n "$_p" ]] || return 0
+    for _g in "${_FJ_FOREIGN_GRANTS[@]+"${_FJ_FOREIGN_GRANTS[@]}"}"; do
+        [[ "$_p" == "$_g" ]] && return 0
+    done
+    if _fj_foreign_below "$_p"; then
+        _fj_cover "$_p"
+    else
+        FIREJAIL_ARGS+=(--read-only="$_p")
+    fi
+}
+
+# _fj_cover DIR — remount every child of DIR read-only, descending into
+# children that are ancestors of $HOME or of a foreign grant.
+_fj_cover() {
+    local _d="$1" _e _n=0
+    [[ -z "${_FJ_COVERED[$_d]:-}" ]] || return 0
+    _FJ_COVERED[$_d]=1
+    local _home_anc=false
+    _fj_is_proper_ancestor "$_d" "$_FJ_HOME" && _home_anc=true
+    if [[ ! -r "$_d" || ! -x "$_d" ]]; then
+        _FJ_UNLISTABLE+=("$_d")
+        return 0
+    fi
+    local -a _kids=()
+    while IFS= read -r -d '' _e; do
+        _kids+=("$_e")
+    done < <(find "$_d" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+    if $_home_anc && [[ "$_d" != / ]] && (( ${#_kids[@]} > _FJ_HOME_SIBLINGS_MAX )); then
+        # Too many siblings of $HOME to remount one by one; still
+        # descend towards $HOME (and foreign grants) below.
+        _FJ_HOME_SIBLINGS_SKIPPED="$_d"
+        for _e in "${_kids[@]}"; do
+            [[ -L "$_e" ]] && continue
+            _fj_cover_skip "$_e" && continue
+            if _fj_is_proper_ancestor "$_e" "$_FJ_HOME" || _fj_foreign_below "$_e"; then
+                _fj_cover "$_e"
+            fi
+        done
+        return 0
+    fi
+    for _e in "${_kids[@]}"; do
+        # A symlink is not a mount target of its own: firejail would
+        # remount whatever it points to (possibly a grant).
+        [[ -L "$_e" ]] && continue
+        _fj_cover_skip "$_e" && continue
+        if _fj_is_proper_ancestor "$_e" "$_FJ_HOME" || _fj_foreign_below "$_e"; then
+            _fj_cover "$_e"
+            continue
+        fi
+        FIREJAIL_ARGS+=(--read-only="$_e")
+        _n=$((_n + 1))
+    done
+    # An ancestor of a foreign grant that the user can write: new
+    # entries created directly in it reach the host. Reported below.
+    if [[ "$_d" != / ]] && ! $_home_anc && [[ -w "$_d" ]]; then
+        _FJ_OPEN_ANCESTORS+=("$_d")
+    fi
+}
+
+# _fj_check_foreign_grants — after FIREJAIL_ARGS is complete: a foreign
+# grant below any --read-only (or below a directory firejail itself
+# always mounts read-only) cannot be made writable. Refuse to start
+# instead of silently running with a read-only project.
+_fj_check_foreign_grants() {
+    local _g _a _p _bad=() _implicit=(/etc /usr /bin /sbin /lib /lib32 /lib64 /libx32)
+    local _writable_var=false
+    for _a in "${FIREJAIL_ARGS[@]}"; do
+        [[ "$_a" == --writable-var ]] && _writable_var=true
+    done
+    $_writable_var || _implicit+=(/var)
+    for _g in "${_FJ_FOREIGN_GRANTS[@]+"${_FJ_FOREIGN_GRANTS[@]}"}"; do
+        for _p in "${_implicit[@]}"; do
+            if _path_under "$_g" "$_p"; then
+                _bad+=("$_g (firejail always mounts $_p read-only)")
+                continue 2
+            fi
+        done
+        for _a in "${FIREJAIL_ARGS[@]}"; do
+            [[ "$_a" == --read-only=* ]] || continue
+            _p="${_a#--read-only=}"
+            if _path_under "$_g" "$_p"; then
+                _bad+=("$_g (below --read-only=$_p)")
+                continue 2
+            fi
+        done
+    done
+    (( ${#_bad[@]} )) || return 0
+    echo "sandbox: ERROR — firejail cannot make these writable paths writable:" >&2
+    for _a in "${_bad[@]}"; do echo "  $_a" >&2; done
+    echo "  firejail only re-opens read-only directories that you own, and these are" >&2
+    echo "  owned by another user (group-writable for you). Use --backend bwrap or" >&2
+    echo "  --backend landlock, or move the path out of the read-only area." >&2
+    return 1
+}
+
 backend_prepare() {
     local project_dir="$1"
     _FIREJAIL_PROJECT_DIR="$project_dir"
@@ -95,8 +276,6 @@ backend_prepare() {
         --caps.drop=all
         --nonewprivs
         --seccomp.drop=io_uring_setup,io_uring_enter,io_uring_register,userfaultfd,kexec_load,kexec_file_load
-        --nosound
-        --no3d
         --restrict-namespaces
         --allusers
         # --allusers: disable /etc/passwd filtering. Firejail removes UIDs
@@ -117,92 +296,200 @@ backend_prepare() {
         FIREJAIL_ARGS+=("$_NETWORK_FIREJAIL_FLAG")
     fi
 
-    # --private-tmp: isolate /tmp with a clean tmpfs.
-    # Enabled by default for security (prevents cross-session /tmp leakage).
-    # Disable via PRIVATE_TMP=false in sandbox.conf if MPI, NCCL, or other
-    # multi-process frameworks need shared /tmp for inter-rank communication.
+    # --- /tmp ---
+    # PRIVATE_TMP=true: --private-tmp mounts a clean tmpfs on /tmp.
+    # PRIVATE_TMP=false: the host /tmp is shared (MPI / NCCL rendezvous
+    # files); nothing is mounted on /tmp, and the chaperon FIFO dir is
+    # then NOT --whitelist'ed (a whitelist under /tmp would make
+    # firejail replace /tmp with a tmpfs again; see the FIFO block).
+    # /var/tmp: firejail always mounts a private tmpfs there (no
+    # --keep-var-tmp); the read-only cover below then remounts /var,
+    # this tmpfs included, read-only. Neither mode reaches the host's
+    # /var/tmp.
     if _is_true "${PRIVATE_TMP:-true}"; then
         FIREJAIL_ARGS+=(--private-tmp)
-        # --private-tmp only mounts a tmpfs on /tmp, not /var/tmp. Without
-        # this blacklist, sandboxed processes can write to the host's
-        # /var/tmp, leaking state across sessions and breaking the
-        # isolation guarantees bwrap and landlock already provide.
-        # Hiding /var/tmp is acceptable: it's rarely needed for normal
-        # workloads, and callers that genuinely need persistent /var/tmp
-        # access can set PRIVATE_TMP=false.
-        FIREJAIL_ARGS+=(--blacklist=/var/tmp)
     fi
 
-    # IPC namespace isolation: gives sandbox its own SysV IPC + /dev/shm.
-    # Disable via PRIVATE_IPC=false in sandbox.conf if you need cross-sandbox
-    # or host-to-sandbox shared memory.
+    # IPC namespace isolation: own SysV IPC and POSIX message queues.
+    # /dev/shm (POSIX shared memory) is handled with /dev below.
+    # Disable via PRIVATE_IPC=false in sandbox.conf if you need
+    # cross-sandbox or host-to-sandbox shared memory.
     if _is_true "${PRIVATE_IPC:-true}"; then
         FIREJAIL_ARGS+=(--ipc-namespace)
-        # --ipc-namespace gives a new SysV IPC namespace (SysV shm,
-        # semaphores, message queues) but does NOT mount a private
-        # /dev/shm for POSIX shared memory. Firejail's --tmpfs is
-        # silently ignored on /dev paths. Block /dev/shm entirely so
-        # sandboxed processes cannot leak state via POSIX shared memory.
-        # If shared memory is needed, set PRIVATE_IPC=false.
-        FIREJAIL_ARGS+=(--blacklist=/dev/shm)
     fi
 
     # PID namespace is enabled by default in firejail (no flag needed).
     # --restrict-namespaces prevents the sandboxed process from creating
     # new namespaces to escape.
 
+    # --- /dev ---
+    # --private-dev: a fresh tmpfs /dev with the basic nodes (null,
+    # zero, full, random, urandom, tty), a NEW devpts instance (other
+    # terminals' /dev/pts/N are invisible; pty allocation, tmux and
+    # script(1) work; `tty` prints "not a tty" because the inherited
+    # terminal has no name inside) and an empty private /dev/shm. Host
+    # nodes such as /dev/mqueue, /dev/fuse, /dev/vfio, /dev/net/tun and
+    # /dev/loop* are gone. Firejail can carry only the device classes
+    # of its own table into a private /dev (/dev/nvidia0-9, nvidiactl,
+    # nvidia-modeset, nvidia-uvm, /dev/dri, /dev/snd, video0-9,
+    # hidraw0-9, /dev/usb, /dev/input, /dev/sr0), toggled per class by
+    # --no3d / --nosound / --novideo / --nou2f / --noinput / --nodvd.
+    # DEVICES selects the classes; a resolved DEVICES node outside the
+    # table falls back to the host /dev (loud warning), since dropping
+    # it would silently break the workload (e.g. /dev/infiniband).
+    _resolve_devices
+    local _fj_dev _fj_3d=false _fj_snd=false _fj_video=false _fj_u2f=false _fj_input=false _fj_dvd=false
+    local -a _fj_dev_unsupported=() _fj_dev_dropped=()
+    for _fj_dev in "${DEVICES_RESOLVED[@]+"${DEVICES_RESOLVED[@]}"}"; do
+        case "$_fj_dev" in
+            /dev/dri|/dev/dri/*|/dev/nvidia[0-9]|/dev/nvidiactl|/dev/nvidia-modeset|/dev/nvidia-uvm)
+                _fj_3d=true ;;
+            /dev/snd|/dev/snd/*)                 _fj_snd=true ;;
+            /dev/video[0-9])                     _fj_video=true ;;
+            /dev/hidraw[0-9]|/dev/usb|/dev/usb/*) _fj_u2f=true ;;
+            /dev/input|/dev/input/*)             _fj_input=true ;;
+            /dev/sr0)                            _fj_dvd=true ;;
+            # Profiling-only node matched by the default /dev/nvidia*
+            # glob: not worth giving up the private /dev on GPU nodes.
+            /dev/nvidia-uvm-tools)               _fj_dev_dropped+=("$_fj_dev") ;;
+            *)                                   _fj_dev_unsupported+=("$_fj_dev") ;;
+        esac
+    done
+    $_fj_3d    || FIREJAIL_ARGS+=(--no3d)
+    $_fj_snd   || FIREJAIL_ARGS+=(--nosound)
+    $_fj_video || FIREJAIL_ARGS+=(--novideo)
+    $_fj_u2f   || FIREJAIL_ARGS+=(--nou2f)
+    $_fj_input || FIREJAIL_ARGS+=(--noinput)
+    $_fj_dvd   || FIREJAIL_ARGS+=(--nodvd)
+    if [[ ${#_fj_dev_unsupported[@]} -eq 0 ]]; then
+        _FIREJAIL_PRIVATE_DEV=true
+        FIREJAIL_ARGS+=(--private-dev)
+        # /dev/log is re-bound by --private-dev (journald socket); bwrap
+        # has no /dev/log either.
+        [[ -e /dev/log ]] && FIREJAIL_ARGS+=(--blacklist=/dev/log)
+        # PRIVATE_IPC=true: the private-dev /dev/shm is an empty dir in
+        # the sandbox's own /dev tmpfs, i.e. private and usable (Python
+        # multiprocessing, shared_memory). false: keep the host's.
+        _is_true "${PRIVATE_IPC:-true}" || FIREJAIL_ARGS+=(--keep-dev-shm)
+        if [[ ${#_fj_dev_dropped[@]} -gt 0 ]] && ! _is_true "${SANDBOX_QUIET:-false}"; then
+            echo "sandbox: firejail private /dev cannot carry: ${_fj_dev_dropped[*]} (not available inside; use bwrap if needed)" >&2
+        fi
+    else
+        _FIREJAIL_PRIVATE_DEV=false
+        echo "sandbox: WARNING — firejail: DEVICES lists ${_fj_dev_unsupported[*]}, which firejail's --private-dev cannot provide; using the HOST /dev instead (all device nodes, other terminals' /dev/pts). Use bwrap for a per-node DEVICES allow-list." >&2
+        # Host /dev: keep POSIX mqueue files and shm off the host.
+        if [[ -d /dev/mqueue ]]; then
+            FIREJAIL_ARGS+=(--read-only=/dev/mqueue)
+        fi
+        if _is_true "${PRIVATE_IPC:-true}"; then
+            # Firejail's --tmpfs is ignored on /dev paths; block it.
+            FIREJAIL_ARGS+=(--blacklist=/dev/shm)
+        fi
+    fi
+
     # --- Filesystem isolation ---
     # Using --whitelist on $HOME paths automatically creates a tmpfs $HOME
     # and only exposes whitelisted entries. No --private needed.
-    # --whitelist works under $HOME, /tmp, /opt, /srv, and /run.
+    # --whitelist under any other top-level directory replaces that
+    # directory with a tmpfs holding only the whitelisted paths.
 
-    # Host filesystem outside $HOME: read-only by default. Firejail
-    # starts from the host's own mount tree (unlike bwrap, which starts
-    # from an empty root), so without this every directory outside
-    # $HOME that the user can write per Unix permissions (shared
-    # project/scratch filesystems such as /fh/fast, /scratch, /opt/lab,
-    # other projects of the same user outside $HOME) stayed writable
-    # inside the sandbox. `--read-only=/` is applied first; firejail
-    # processes --read-only/--read-write in argv order (later wins), so
-    # the explicit --read-write grants below (project dir,
-    # EXTRA_WRITABLE_PATHS, HOME_WRITABLE, chaperon FIFO dir, shared
-    # /tmp) re-open exactly the paths bwrap would bind writable. $HOME
-    # (firejail rebuilds /home itself), /tmp (--private-tmp tmpfs),
-    # /dev, /proc and /run are separate mounts and keep their own modes.
-    FIREJAIL_ARGS+=(--read-only=/)
+    # Writable grants outside the HOME_ACCESS rules, canonicalised the
+    # way firejail resolves them (realpath). _FJ_FOREIGN_GRANTS: those
+    # the user does not own (see the read-only cover above).
+    _FJ_HOME="$(_resolve_path "$HOME")"
+    _FJ_GRANTS=("$project_dir")
+    _FJ_FOREIGN_GRANTS=()
+    _FJ_EXTRA_RW=()
+    local _extra_rw _g
+    while IFS= read -r _extra_rw; do
+        [[ -d "$_extra_rw" ]] || continue
+        _FJ_EXTRA_RW+=("$_extra_rw")
+        _FJ_GRANTS+=("$(_resolve_path "$_extra_rw")")
+    done < <(_effective_extra_writable_paths)
+    if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -d "${_CHAPERON_FIFO_DIR:-}" ]]; then
+        _FJ_GRANTS+=("$(_resolve_path "$_CHAPERON_FIFO_DIR")")
+    fi
+    if ! _is_true "${PRIVATE_TMP:-true}" && [[ -d /tmp ]]; then
+        _FJ_GRANTS+=(/tmp)
+    fi
+    for _g in "${_FJ_GRANTS[@]}"; do
+        [[ "$_g" == /tmp ]] && continue
+        _fj_owned_by_me "$_g" || _FJ_FOREIGN_GRANTS+=("$_g")
+    done
+    # Firejail itself mounts /var read-only (and noexec) unless
+    # --writable-var; a foreign grant below /var needs it (the cover
+    # then handles the rest of /var).
+    for _g in "${_FJ_FOREIGN_GRANTS[@]+"${_FJ_FOREIGN_GRANTS[@]}"}"; do
+        if _path_under "$_g" /var; then
+            FIREJAIL_ARGS+=(--writable-var)
+            break
+        fi
+    done
 
-    # Read-only system mounts — covered by --read-only=/ above; kept
-    # explicit so the intent survives if the root rule is ever relaxed.
+    # Host filesystem outside $HOME: read-only, see _fj_cover.
+    declare -gA _FJ_COVERED=()
+    _FJ_OPEN_ANCESTORS=()
+    _FJ_UNLISTABLE=()
+    _FJ_HOME_SIBLINGS_SKIPPED=""
+    _fj_cover /
+
+    # Read-only system mounts: already covered above (a no-op inside
+    # firejail for paths that are read-only by then); kept explicit so
+    # the intent survives if the cover is ever relaxed.
     for mount in "${READONLY_MOUNTS[@]}"; do
         if [[ -d "$mount" || -f "$mount" ]]; then
-            FIREJAIL_ARGS+=(--read-only="$mount")
+            _fj_ro "$mount"
         fi
     done
+
+    if [[ ${#_FJ_OPEN_ANCESTORS[@]} -gt 0 ]]; then
+        echo "sandbox: WARNING — firejail: ${_FJ_FOREIGN_GRANTS[*]} is not owned by you, so its parent directories cannot be remounted read-only without making it read-only too. New files can still be created directly in: ${_FJ_OPEN_ANCESTORS[*]} (their existing contents are read-only). Use bwrap to close this." >&2
+    fi
+    if [[ ${#_FJ_UNLISTABLE[@]} -gt 0 ]]; then
+        echo "sandbox: WARNING — firejail: cannot list ${_FJ_UNLISTABLE[*]}; entries there keep their host permissions (read-only only where Unix permissions already say so)." >&2
+    fi
+    if [[ -n "$_FJ_HOME_SIBLINGS_SKIPPED" ]] && ! _is_true "${SANDBOX_QUIET:-false}"; then
+        echo "sandbox: firejail: more than $_FJ_HOME_SIBLINGS_MAX entries in $_FJ_HOME_SIBLINGS_SKIPPED; other users' home directories keep their host permissions." >&2
+    fi
 
     # --- /run isolation ---
-    # Firejail cannot blacklist /run entirely (it needs /run during setup).
-    # Instead, blacklist the dangerous subdirectories that enable escape:
-    #   - /run/dbus: D-Bus system bus
-    #   - /run/user: systemd user sockets (systemd-run --user escape)
-    #   - /run/systemd/private: systemd private socket
-    #   - /run/containerd: container runtime socket
-    for _run_danger in \
-        /run/dbus /run/user /run/systemd/private /run/containerd \
-        /run/snapd.socket /run/snapd-snap.socket \
-        /run/systemd/notify \
-        /run/lxd-installer.socket; do
-        if [[ -e "$_run_danger" ]]; then
-            FIREJAIL_ARGS+=(--blacklist="$_run_danger")
-        fi
-    done
+    # Like bwrap's `--tmpfs /run` + selective binds: a --whitelist under
+    # /run makes firejail mount a tmpfs on /run holding only the
+    # whitelisted paths, plus its own /run/firejail and /run/user/$UID
+    # (masked below). The /run/systemd/resolve whitelist triggers the
+    # tmpfs even where that path does not exist. Everything else under
+    # /run is gone, so nothing there can be written (/run/lock,
+    # /run/screen, ...) or connected to (munge, D-Bus, systemd private
+    # and journal sockets, screen/tmux, LDAP ldapi, MySQL, uuidd,
+    # containerd, snapd, ...). Previously only a hand-picked deny list
+    # of /run paths was hidden and the rest stayed writable/reachable.
+    FIREJAIL_ARGS+=(--whitelist=/run/systemd/resolve)
+    # nscd: only when FILTER_PASSWD=false (as bwrap); it proxies LDAP/AD.
+    if ! _is_true "${FILTER_PASSWD:-true}" && [[ -d /run/nscd ]]; then
+        FIREJAIL_ARGS+=(--whitelist=/run/nscd)
+    fi
+    # /run/user/$UID (systemd --user, D-Bus session bus, gpg/ssh agents;
+    # `systemd-run --user` escapes the sandbox): masked. When the
+    # chaperon FIFO dir lives there ($TMPDIR under $XDG_RUNTIME_DIR),
+    # mask every other entry instead.
+    local _runuser="/run/user/$(id -u)" _ru
+    if [[ -n "${_CHAPERON_FIFO_DIR:-}" ]] && _path_under "$(_resolve_path "$_CHAPERON_FIFO_DIR")" "$_runuser"; then
+        local _fifo_top="${_CHAPERON_FIFO_DIR#"$_runuser"/}"
+        _fifo_top="$_runuser/${_fifo_top%%/*}"
+        for _ru in /run/user/* "$_runuser"/* "$_runuser"/.[!.]*; do
+            [[ -e "$_ru" || -L "$_ru" ]] || continue
+            [[ "$_ru" == "$_runuser" || "$_ru" == "$_fifo_top" ]] && continue
+            FIREJAIL_ARGS+=(--blacklist="$_ru")
+        done
+    else
+        FIREJAIL_ARGS+=(--blacklist=/run/user)
+    fi
 
     # Munge socket: BLOCKED inside sandbox (chaperon handles auth outside).
-    # This is intentionally blocked even on compute nodes: exposing munge
-    # would allow crafting arbitrary Slurm submissions that bypass the
-    # chaperon and don't inherit sandbox restrictions.
-    if [[ -e /run/munge ]]; then
-        FIREJAIL_ARGS+=(--blacklist=/run/munge)
-    fi
+    # /run/munge is hidden by the /run tmpfs above. This is intentionally
+    # blocked even on compute nodes: exposing munge would allow crafting
+    # arbitrary Slurm submissions that bypass the chaperon and don't
+    # inherit sandbox restrictions.
 
     # Slurm binaries: BLOCKED inside sandbox (chaperon stubs in PATH).
     # Block Slurm binaries (list derived from chaperon/stubs/ + defaults).
@@ -220,19 +507,14 @@ backend_prepare() {
         fi
     done
 
-    # /run/systemd/resolve remains accessible (DNS).
-
     # --- Passwd filtering (block NSS daemon sockets) ---
-    # Blacklist sockets used by NSS daemons that proxy LDAP/AD queries:
-    # nscd (caching), nslcd (LDAP), sssd (AD/LDAP/Kerberos).
-    # Without these sockets, getent passwd returns only local users.
+    # nscd, nslcd and sssd sockets under /run are hidden by the /run
+    # tmpfs above. sssd's pipes live under /var/lib. Without these
+    # sockets, getent passwd returns only local users.
     if _is_true "${FILTER_PASSWD:-true}"; then
-        for _nss_sock in /run/nscd /run/nslcd /var/run/nscd /var/run/nslcd \
-                         /run/sssd /var/lib/sss/pipes; do
-            if [[ -e "$_nss_sock" ]]; then
-                FIREJAIL_ARGS+=(--blacklist="$_nss_sock")
-            fi
-        done
+        if [[ -e /var/lib/sss/pipes ]]; then
+            FIREJAIL_ARGS+=(--blacklist=/var/lib/sss/pipes)
+        fi
     fi
 
     # Nested firejail: --nonewprivs prevents the setuid binary from
@@ -339,9 +621,9 @@ backend_prepare() {
                 FIREJAIL_ARGS+=(--read-write="$project_dir")
             fi
         fi
-        # write mode: full HOME writable. Explicit since the host root
-        # (which contains /home when firejail doesn't rebuild it) is
-        # --read-only=/ above.
+        # write mode: full HOME writable. The read-only cover never
+        # remounts $HOME; the explicit grant keeps that intent visible
+        # (and re-opens $HOME should an ancestor ever be read-only).
         if [[ "${HOME_ACCESS}" == "write" ]]; then
             FIREJAIL_ARGS+=(--read-write="$HOME")
         fi
@@ -358,32 +640,33 @@ backend_prepare() {
     # the project grant below still wins for the project subtree.
     local _sandbox_dir_ro_late=true
     if _path_under "$project_dir" "$SANDBOX_DIR"; then
-        FIREJAIL_ARGS+=(--read-only="$SANDBOX_DIR")
+        _fj_ro "$SANDBOX_DIR"
         _sandbox_dir_ro_late=false
     fi
 
-    # Project directory: writable (also outside $HOME, now that the
-    # host root is read-only).
-    FIREJAIL_ARGS+=(--read-write="$project_dir")
+    # Project directory: writable. A user-owned project below a
+    # read-only tree is re-opened here; a project owned by someone else
+    # was never put under a read-only mount (see _fj_cover), and an
+    # explicit --read-write would only be refused.
+    if _fj_owned_by_me "$project_dir"; then
+        FIREJAIL_ARGS+=(--read-write="$project_dir")
+    fi
 
     # Additional writable directories. Entries equal to or above $HOME
     # are dropped by _effective_extra_writable_paths.
     local _extra_rw
-    while IFS= read -r _extra_rw; do
-        if [[ -d "$_extra_rw" ]]; then
-            if [[ "${HOME_ACCESS:-restricted}" == "restricted" || "${HOME_ACCESS:-restricted}" == "tmpwrite" ]] \
-               && _path_under "$_extra_rw" "$HOME"; then
-                FIREJAIL_ARGS+=(--whitelist="$_extra_rw")
-            fi
+    for _extra_rw in "${_FJ_EXTRA_RW[@]+"${_FJ_EXTRA_RW[@]}"}"; do
+        if [[ "${HOME_ACCESS:-restricted}" == "restricted" || "${HOME_ACCESS:-restricted}" == "tmpwrite" ]] \
+           && _path_under "$_extra_rw" "$HOME"; then
+            FIREJAIL_ARGS+=(--whitelist="$_extra_rw")
+        fi
+        if _fj_owned_by_me "$_extra_rw"; then
             FIREJAIL_ARGS+=(--read-write="$_extra_rw")
         fi
-    done < <(_effective_extra_writable_paths)
+    done
 
-    # Shared /tmp (PRIVATE_TMP=false): the host /tmp must stay writable
-    # for MPI / NCCL rendezvous files despite --read-only=/.
-    if ! _is_true "${PRIVATE_TMP:-true}" && [[ -d /tmp ]]; then
-        FIREJAIL_ARGS+=(--read-write=/tmp)
-    fi
+    # Shared /tmp (PRIVATE_TMP=false) needs no grant: the cover never
+    # remounts /tmp, so it keeps the host's permissions.
 
     if $_sandbox_dir_ro_late; then
         FIREJAIL_ARGS+=(--read-only="$SANDBOX_DIR")
@@ -494,14 +777,26 @@ backend_prepare() {
     # Prepend chaperon stubs to PATH (before bin/ for sbatch/srun override)
     export PATH="$SANDBOX_DIR/chaperon/stubs:$SANDBOX_DIR/bin:${PATH}"
 
-    # Pass chaperon FIFO directory into the sandbox.
-    # When --private-tmp is active, /tmp is replaced with a clean tmpfs,
-    # so we must whitelist the FIFO dir to make it visible inside.
+    # Pass chaperon FIFO directory into the sandbox. --whitelist only
+    # where firejail replaces the parent with a tmpfs: /tmp with
+    # PRIVATE_TMP=true (--private-tmp), /run (always, see above), and
+    # $HOME in restricted/tmpwrite. Anywhere else a --whitelist would
+    # itself turn the top-level directory into a tmpfs holding only the
+    # FIFO dir: with PRIVATE_TMP=false that replaced the shared host
+    # /tmp by a private one, and a $TMPDIR such as /fh/scratch/... hid
+    # the rest of /fh (including a project there).
     if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -d "${_CHAPERON_FIFO_DIR:-}" ]]; then
         export _CHAPERON_FIFO_DIR
-        FIREJAIL_ARGS+=(--whitelist="$_CHAPERON_FIFO_DIR")
-        # Stubs create per-request response FIFOs here; keep it
-        # writable when $TMPDIR is outside /tmp (--read-only=/).
+        local _fifo_real
+        _fifo_real="$(_resolve_path "$_CHAPERON_FIFO_DIR")"
+        if { _is_true "${PRIVATE_TMP:-true}" && _path_under "$_fifo_real" /tmp; } \
+           || _path_under "$_fifo_real" /run \
+           || { [[ "${HOME_ACCESS:-restricted}" == restricted || "${HOME_ACCESS:-restricted}" == tmpwrite ]] \
+                && _path_under "$_fifo_real" "$_FJ_HOME"; }; then
+            FIREJAIL_ARGS+=(--whitelist="$_CHAPERON_FIFO_DIR")
+        fi
+        # Stubs create per-request response FIFOs here; re-open it
+        # when $TMPDIR is inside a read-only tree (user-owned: mktemp).
         FIREJAIL_ARGS+=(--read-write="$_CHAPERON_FIFO_DIR")
     fi
 
@@ -509,6 +804,10 @@ backend_prepare() {
     if [[ -n "${SANDBOX_NPROC_LIMIT:-}" ]]; then
         FIREJAIL_ARGS+=(--rlimit-nproc="$SANDBOX_NPROC_LIMIT")
     fi
+
+    # A writable grant owned by someone else that still ended up below a
+    # read-only mount would silently be read-only: refuse instead.
+    _fj_check_foreign_grants || exit 1
 
 }
 
