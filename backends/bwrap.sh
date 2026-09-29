@@ -476,7 +476,17 @@ backend_prepare() {
         fi
     fi
 
-    BWRAP_ARGS+=(--ro-bind "$SANDBOX_DIR" "$SANDBOX_DIR")
+    # Sandbox install dir: read-only. Emitted here only when the project
+    # lives inside it (developing agent-sandbox itself), so the later
+    # writable project bind still wins for the project subtree.
+    # Otherwise it is emitted AFTER the project / EXTRA_WRITABLE_PATHS
+    # binds below, so a project or extra dir that CONTAINS the install
+    # dir cannot make the sandbox's own scripts writable.
+    local _sandbox_dir_ro_late=true
+    if _path_under "$project_dir" "$SANDBOX_DIR"; then
+        BWRAP_ARGS+=(--ro-bind "$SANDBOX_DIR" "$SANDBOX_DIR")
+        _sandbox_dir_ro_late=false
+    fi
 
     # Bind the project dir writable. Emitted HERE — before the
     # BLOCKED_FILES / EXTRA_BLOCKED_PATHS overlays and the .sandbox-state
@@ -495,6 +505,35 @@ backend_prepare() {
     # of that check still cannot re-bind the whole home.
     if [[ "$project_dir" != "$HOME" ]]; then
         BWRAP_ARGS+=(--bind "$project_dir" "$project_dir")
+    fi
+
+    # Additional writable directories. Emitted HERE, with the project
+    # bind and BEFORE every protective overlay below (BLOCKED_FILES,
+    # agent config RO files, EXTRA_BLOCKED_PATHS, .sandbox-state RO), so
+    # those overlays win at overlapping paths (bwrap: last wins).
+    # Previously they were bound after the overlays and silently
+    # re-exposed anything masked beneath them. Entries equal to or
+    # above $HOME are dropped by _effective_extra_writable_paths.
+    local _extra_rw
+    while IFS= read -r _extra_rw; do
+        if [[ -d "$_extra_rw" ]]; then
+            BWRAP_ARGS+=(--bind "$_extra_rw" "$_extra_rw")
+        fi
+    done < <(_effective_extra_writable_paths)
+
+    if $_sandbox_dir_ro_late; then
+        BWRAP_ARGS+=(--ro-bind "$SANDBOX_DIR" "$SANDBOX_DIR")
+    fi
+
+    # read/write HOME modes: re-apply the credential masks after the
+    # writable binds above, so an extra/project dir that contains one
+    # of them (e.g. a project dir that is a parent of ~/.ssh's target)
+    # cannot re-expose it.
+    if [[ "${HOME_ACCESS:-restricted}" == "read" || "${HOME_ACCESS:-restricted}" == "write" ]]; then
+        for _blocked_sub in "${_HOME_ALWAYS_BLOCKED[@]}"; do
+            local _bp="$HOME/$_blocked_sub"
+            [[ -e "$_bp" ]] && BWRAP_ARGS+=(--tmpfs "$_bp")
+        done
     fi
 
     # Agent-specific file hiding (e.g., CLAUDE.md, AGENTS.md) is handled
@@ -589,35 +628,19 @@ backend_prepare() {
     # BLOCKED_FILES / EXTRA_BLOCKED_PATHS inside it stay masked.)
 
     # .sandbox-state/ — chaperon-owned state subdir, RO-overlaid AFTER
-    # the writable project bind (path-keyed, later wins) so the agent
-    # can't tamper with the chaperon's slurm-log staging area or the
-    # chaperon diagnostic log. Threat-model framing + the distinction
+    # the writable project / extra binds (path-keyed, later wins) so the
+    # agent can't tamper with the chaperon's slurm-log staging area or
+    # the chaperon diagnostic log. Threat-model framing + the distinction
     # from reverted PR #50 is documented at sandbox-lib.sh's
-    # `.sandbox-state/` section. Only overlay when the dir exists —
-    # the chaperon mkdir's it lazily on first slurm submission.
+    # `.sandbox-state/` section. sandbox-exec.sh creates and sanitizes
+    # the dir (_prepare_sandbox_state_dir) BEFORE backend_prepare, so it
+    # always exists here; a missing dir means that step was bypassed and
+    # we fail closed rather than start with a writable staging area.
     local _state_dir="$project_dir/.sandbox-state"
-    if [[ -d "$_state_dir" ]]; then
-        BWRAP_ARGS+=(--ro-bind "$_state_dir" "$_state_dir")
+    if [[ ! -d "$_state_dir" || -L "$_state_dir" ]]; then
+        _prepare_sandbox_state_dir "$project_dir" bwrap || exit 1
     fi
-
-    # .sandbox-state/ — chaperon-owned state subdir, RO-overlaid AFTER
-    # the writable project bind (path-keyed, later wins) so the agent
-    # can't tamper with the chaperon's slurm-log staging area or the
-    # chaperon diagnostic log. Threat-model framing + the distinction
-    # from reverted PR #50 is documented at sandbox-lib.sh's
-    # `.sandbox-state/` section. Only overlay when the dir exists —
-    # the chaperon mkdir's it lazily on first slurm submission.
-    local _state_dir="$project_dir/.sandbox-state"
-    if [[ -d "$_state_dir" ]]; then
-        BWRAP_ARGS+=(--ro-bind "$_state_dir" "$_state_dir")
-    fi
-
-    # Additional writable directories
-    for _extra_rw in "${EXTRA_WRITABLE_PATHS[@]}"; do
-        if [[ -d "$_extra_rw" ]]; then
-            BWRAP_ARGS+=(--bind "$_extra_rw" "$_extra_rw")
-        fi
-    done
+    BWRAP_ARGS+=(--ro-bind "$_state_dir" "$_state_dir")
 
     # Mount /run as a tmpfs, then selectively bind only what's needed.
     # Mounting all of /run exposes D-Bus, systemd user sockets, and

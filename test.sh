@@ -666,6 +666,30 @@ else
     skip "ALLOWED_PROJECT_PARENTS test: could not create a temp dir under /var/tmp or /dev/shm"
 fi
 
+# ── Project dir must not be $HOME or an ANCESTOR of $HOME ────────
+# A project dir of /home (or /) is bound writable over the whole home
+# directory, re-exposing ~/.ssh & co. and making every host dotfile
+# writable. validate_project_dir used to reject only == $HOME. Allow
+# $HOME's parent in a throwaway config so the allow-list check can't
+# be what rejects it; the ancestor check must.
+_l3_conf=$(mktemp "${TMPDIR:-/tmp}/sandbox-l3-XXXXXX")
+_TEST_TEMP_FILES+=("$_l3_conf")
+_l3_dir="$(dirname "$HOME")"
+{ cat "$SANDBOX_CONF"; echo "ALLOWED_PROJECT_PARENTS+=(\"$_l3_dir\")"; } > "$_l3_conf"
+if [[ "$_l3_dir" != "/" ]]; then
+    _raw=$(SANDBOX_CONF="$_l3_conf" timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$_l3_dir" -- bash -c 'echo L3_GUEST_REACHED' 2>&1)
+    _rc=$?
+    if [[ "$_raw" == *L3_GUEST_REACHED* ]]; then
+        fail "Project dir '$_l3_dir' (ancestor of \$HOME) was accepted" "rc=$_rc"
+    elif [[ $_rc -ne 0 ]] && grep -q "one of its parent directories" <<<"$_raw"; then
+        pass "Project dir '$_l3_dir' (ancestor of \$HOME) rejected"
+    else
+        skip "Project dir '$_l3_dir' rejected for another reason (admin config?): $(grep -m1 Error <<<"$_raw")"
+    fi
+fi
+
+
 echo ""
 
 # ── 1.5 Landlock ABI hard-requirement probe ──────────────────────
@@ -971,6 +995,90 @@ if [[ -n "$_project_parent" && "$_project_parent" != "/" && "$_project_parent" !
         fi
     fi
 fi
+
+# ── EXTRA_WRITABLE_PATHS must not undo protective overlays ──
+# EXTRA_WRITABLE_PATHS used to be bound AFTER the BLOCKED_FILES /
+# EXTRA_BLOCKED_PATHS / .sandbox-state read-only overlays (bwrap; the
+# firejail --read-write came after --read-only too), so an entry that
+# contained a masked path re-exposed it, and an entry of $HOME (or a
+# parent) re-exposed the whole real home. Now: writable binds first,
+# overlays last, and $HOME-or-ancestor entries are dropped with a warning.
+_l2_fix="$PROJECT_DIR/.test-l2-extra-$$"
+_l2_conf="$HOME/.config/agent-sandbox/conf.d/test-l2-extra-$$.conf"
+_l2_marker="$HOME/.sandbox-test-l2-home-marker-$$"
+_TEST_TEMP_FILES+=("$_l2_conf" "$_l2_marker")
+_TEST_TEMP_DIRS+=("$_l2_fix")
+mkdir -p "$_l2_fix/hidden" "$HOME/.config/agent-sandbox/conf.d" "$PROJECT_DIR/.sandbox-state"
+echo "L2_BLOCKED_SECRET" > "$_l2_fix/secret.txt"
+echo "L2_HIDDEN_SECRET" > "$_l2_fix/hidden/h.txt"
+rm -f "$_l2_marker" "$PROJECT_DIR/.sandbox-state/.l2-probe-$$"
+cat > "$_l2_conf" <<L2CONF
+BLOCKED_FILES+=("$_l2_fix/secret.txt")
+EXTRA_BLOCKED_PATHS+=("$_l2_fix/hidden")
+EXTRA_WRITABLE_PATHS+=("$_l2_fix" "$PROJECT_DIR" "\$HOME")
+L2CONF
+sandbox bash -c "cat '$_l2_fix/secret.txt' 2>/dev/null; cat '$_l2_fix/hidden/h.txt' 2>/dev/null; \
+    touch '$PROJECT_DIR/.sandbox-state/.l2-probe-$$' 2>/dev/null && echo L2_STATE_WRITABLE; \
+    touch '$_l2_marker' 2>/dev/null; echo L2_DONE"
+if [[ "$OUTPUT" != *L2_DONE* ]]; then
+    fail "EXTRA_WRITABLE_PATHS overlay-order test: sandbox did not run" "$OUTPUT_ERR"
+else
+    if [[ -e "$_l2_marker" ]]; then
+        fail "EXTRA_WRITABLE_PATHS=(\$HOME) made the real \$HOME writable"
+    elif ! grep -q "EXTRA_WRITABLE_PATHS entry '$HOME' is \\\$HOME or an ancestor" <<<"$OUTPUT_ERR"; then
+        fail "EXTRA_WRITABLE_PATHS=(\$HOME) not rejected with a warning" "$OUTPUT_ERR"
+    else
+        pass "EXTRA_WRITABLE_PATHS=(\$HOME) ignored with a warning; real \$HOME not writable"
+    fi
+    if has_mount_ns; then
+        if [[ "$OUTPUT" == *L2_BLOCKED_SECRET* || "$OUTPUT" == *L2_HIDDEN_SECRET* ]]; then
+            fail "EXTRA_WRITABLE_PATHS re-exposed BLOCKED_FILES / EXTRA_BLOCKED_PATHS" "$OUTPUT"
+        else
+            pass "BLOCKED_FILES / EXTRA_BLOCKED_PATHS stay masked under an EXTRA_WRITABLE_PATHS entry"
+        fi
+        if [[ "$OUTPUT" == *L2_STATE_WRITABLE* || -e "$PROJECT_DIR/.sandbox-state/.l2-probe-$$" ]]; then
+            fail "EXTRA_WRITABLE_PATHS containing the project re-opened .sandbox-state for writing"
+        else
+            pass ".sandbox-state stays read-only under an EXTRA_WRITABLE_PATHS entry"
+        fi
+    fi
+fi
+rm -rf "$_l2_conf" "$_l2_fix" "$_l2_marker" "$PROJECT_DIR/.sandbox-state/.l2-probe-$$"
+
+# ── Firejail: host filesystem outside $HOME is read-only (L9) ──
+# Firejail starts from the host mount tree, so directories outside
+# $HOME that the user can write (shared lab / scratch filesystems)
+# used to stay writable inside the sandbox. Structural check on the
+# dry-run argv everywhere; behavioural check when the host provides a
+# user-writable dir outside $HOME and /tmp via
+# SANDBOX_TEST_HOST_WRITABLE_DIR (e.g. a group-writable /fh/fast path).
+if is_firejail; then
+    _l9_args=$("$SANDBOX_EXEC" --backend firejail --dry-run --project-dir "$PROJECT_DIR" -- true 2>/dev/null)
+    _l9_ro=$(grep -n -- '--read-only=/ ' <<<"$_l9_args" | head -1 | cut -d: -f1)
+    _l9_rw=$(grep -n -- "--read-write=$PROJECT_DIR " <<<"$_l9_args" | head -1 | cut -d: -f1)
+    _l9_st=$(grep -n -- "--read-only=$PROJECT_DIR/.sandbox-state " <<<"$_l9_args" | tail -1 | cut -d: -f1)
+    if [[ -n "$_l9_ro" && -n "$_l9_rw" && -n "$_l9_st" && $_l9_ro -lt $_l9_rw && $_l9_rw -lt $_l9_st ]]; then
+        pass "firejail argv: --read-only=/ first, project --read-write, .sandbox-state --read-only last"
+    else
+        fail "firejail argv ordering wrong (ro=/ line $_l9_ro, rw project $_l9_rw, ro state $_l9_st)"
+    fi
+    if [[ -n "${SANDBOX_TEST_HOST_WRITABLE_DIR:-}" && -d "$SANDBOX_TEST_HOST_WRITABLE_DIR" && -w "$SANDBOX_TEST_HOST_WRITABLE_DIR" ]]; then
+        _l9_m="$SANDBOX_TEST_HOST_WRITABLE_DIR/.sandbox-l9-marker-$$"
+        _TEST_TEMP_FILES+=("$_l9_m")
+        sandbox bash -c "touch '$_l9_m' 2>/dev/null; echo L9_DONE"
+        if [[ -e "$_l9_m" ]]; then
+            fail "firejail: sandbox wrote to host dir outside \$HOME ($SANDBOX_TEST_HOST_WRITABLE_DIR)"
+        elif [[ "$OUTPUT" == *L9_DONE* ]]; then
+            pass "firejail: host dir outside \$HOME/project is read-only inside the sandbox"
+        else
+            fail "firejail: L9 behavioural check did not run" "$OUTPUT_ERR"
+        fi
+        rm -f "$_l9_m"
+    else
+        skip "firejail host-FS write check: set SANDBOX_TEST_HOST_WRITABLE_DIR to a writable dir outside \$HOME and /tmp"
+    fi
+fi
+
 
 # ── HOME_ACCESS modes ──
 # HOME_ACCESS=read — real home visible, but writes rejected outside allowlist.
@@ -3624,11 +3732,99 @@ EOF
 _transform_table_test
 unset -f _transform_table_test
 
+# 6.5a2. .sandbox-state lifecycle is launcher-owned (L1). The RO overlay
+# only protects a dir that exists when the backend argv is built; the
+# chaperon used to create it lazily (after that), so the first session
+# in a fresh project had it writable and could plant
+# slurm-logs/<name> -> ~/file for slurmstepd to write through. Links
+# planted by an earlier (pre-fix or landlock) session must not survive
+# into a later one either.
+#
+# The throwaway project lives under $HOME (a default allowed parent),
+# NOT under $PROJECT_DIR: the harness's project is the install dir, and
+# a project nested in the install dir is a different mount layout.
+_l1_base=$(mktemp -d "$HOME/.sandbox-test-l1-XXXXXX")
+_l1_proj="$_l1_base/proj"
+_l1_victim="$_l1_base/victim"
+_TEST_TEMP_DIRS+=("$_l1_base")
+mkdir -p "$_l1_proj" "$_l1_victim"
+_l1_run() {
+    OUTPUT=$(timeout "${_l1_timeout:-30}" "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$_l1_proj" -- "$@" 2>&1)
+}
+# (i) fresh project, first session: the dir exists and is RO inside.
+_l1_run bash -c "mkdir -p .sandbox-state/slurm-logs 2>/dev/null; \
+    ln -s '$_l1_victim/pwn' .sandbox-state/slurm-logs/evil.out 2>/dev/null && echo L1_PLANTED; echo L1_DONE"
+if [[ "$OUTPUT" != *L1_DONE* ]]; then
+    fail "L1 fresh-project session did not run" "$OUTPUT"
+elif is_landlock; then
+    # Documented gap: landlock cannot RO-protect the dir; (ii) checks
+    # that what it plants is purged before the next session.
+    pass "Landlock: .sandbox-state writable in-session (documented; purged at next launch)"
+elif [[ "$OUTPUT" == *L1_PLANTED* || -L "$_l1_proj/.sandbox-state/slurm-logs/evil.out" ]]; then
+    fail "First session in a fresh project could plant a symlink in .sandbox-state/slurm-logs"
+elif [[ -d "$_l1_proj/.sandbox-state/slurm-logs" && -d "$_l1_proj/.sandbox-state/chaperon" ]]; then
+    pass "First session: launcher pre-created .sandbox-state/{slurm-logs,chaperon}; RO inside"
+else
+    fail "Launcher did not create .sandbox-state/{slurm-logs,chaperon} before the sandbox started"
+fi
+# (ii) links planted by an earlier session are purged at launch.
+rm -rf "$_l1_proj/.sandbox-state"
+mkdir -p "$_l1_proj/.sandbox-state/slurm-logs/sub" "$_l1_victim/chap"
+ln -s "$_l1_victim/pwn" "$_l1_proj/.sandbox-state/slurm-logs/evil.out"
+ln -s "$_l1_victim" "$_l1_proj/.sandbox-state/slurm-logs/sub/dirlink"
+ln -s "$_l1_victim/chap" "$_l1_proj/.sandbox-state/chaperon"
+echo keep > "$_l1_proj/.sandbox-state/slurm-logs/real.out"
+_l1_run true
+if [[ -L "$_l1_proj/.sandbox-state/slurm-logs/evil.out" || -L "$_l1_proj/.sandbox-state/slurm-logs/sub/dirlink" \
+      || -L "$_l1_proj/.sandbox-state/chaperon" ]]; then
+    fail "Planted symlinks under .sandbox-state survived a new launch" "$OUTPUT"
+elif [[ ! -f "$_l1_proj/.sandbox-state/slurm-logs/real.out" ]]; then
+    fail "Sanitizing .sandbox-state removed a regular log file"
+elif ! grep -q "planted by an earlier session" <<<"$OUTPUT"; then
+    fail "Planted symlinks removed without a warning" "$OUTPUT"
+else
+    pass "Symlinks planted under .sandbox-state by an earlier session are purged at launch (regular logs kept)"
+fi
+# (iii) .sandbox-state itself replaced by a symlink to a host dir.
+rm -rf "$_l1_proj/.sandbox-state" "$_l1_victim"/*
+ln -s "$_l1_victim" "$_l1_proj/.sandbox-state"
+_l1_run true
+if [[ -L "$_l1_proj/.sandbox-state" ]]; then
+    fail ".sandbox-state symlink planted by an earlier session survived a new launch" "$OUTPUT"
+elif [[ -n "$(ls -A "$_l1_victim" 2>/dev/null)" ]]; then
+    fail "Launcher/chaperon wrote through a planted .sandbox-state symlink into $_l1_victim"
+else
+    pass "Planted .sandbox-state symlink is removed before the sandbox starts (target untouched)"
+fi
+# (iv) real Slurm: first-session plant + sbatch must not write through.
+if ! command -v sbatch &>/dev/null; then
+    skip "L1 real-Slurm first-session plant: sbatch not found"
+elif is_landlock; then
+    skip "L1 real-Slurm first-session plant: output staging disabled on landlock"
+else
+    rm -rf "$_l1_proj" "$_l1_victim"; mkdir -p "$_l1_proj" "$_l1_victim"
+    _l1_timeout=120 _l1_run bash -c "mkdir -p .sandbox-state/slurm-logs 2>/dev/null; \
+        ln -s '$_l1_victim/pwn' .sandbox-state/slurm-logs/evil.out 2>/dev/null; \
+        sbatch --wait -o evil.out --wrap='echo L1_ATTACKER_$$' 2>&1; echo L1_DONE"
+    if [[ -e "$_l1_victim/pwn" ]]; then
+        fail "slurmstepd wrote job output through a symlink planted in the first session" "$OUTPUT"
+    elif grep -rqs "L1_ATTACKER_$$" "$_l1_proj/.sandbox-state/slurm-logs/"; then
+        pass "Real Slurm: first-session symlink plant blocked; output landed in staging"
+    elif [[ "$OUTPUT" != *"Submitted batch job"* ]]; then
+        skip "L1 real-Slurm first-session plant: sbatch did not submit ($(tail -2 <<<"$OUTPUT" | tr '\n' ' '))"
+    else
+        skip "L1 real-Slurm first-session plant: job output not found (host slurm config?)"
+    fi
+fi
+rm -rf "$_l1_base"
+unset -f _l1_run
+
 # 6.5b. Backend-side RO overlay: from inside the sandbox, writing
 # under .sandbox-state/ must fail on bwrap/firejail; landlock
-# silently allows (documented feature gap). The chaperon mkdir's
-# .sandbox-state on first sbatch — pre-seed it here so the bind
-# overlay actually applies.
+# silently allows (documented feature gap). sandbox-exec.sh creates
+# .sandbox-state before the backend is prepared (6.5a2); the mkdir
+# below only keeps this check independent of that.
 mkdir -p "$PROJECT_DIR/.sandbox-state/slurm-logs"
 if is_landlock; then
     # Sanity: write succeeds (no RO defense on landlock).

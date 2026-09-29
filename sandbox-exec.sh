@@ -216,6 +216,14 @@ if [[ "$CLEANUP_MATERIALIZED_FLAG" == "1" ]] \
     _CLEANUP_MATERIALIZED=1
 fi
 
+# .sandbox-state/: create (bwrap/firejail) and sanitize (all backends)
+# BEFORE backend_prepare, so the read-only overlay covers it from the
+# very first session and no symlink planted by an earlier session
+# survives into this one. Fail closed. Runs before the per-launch /tmp
+# dirs below are created, so a refusal leaves nothing behind. See
+# sandbox-lib.sh §.sandbox-state/ for the threat model.
+_prepare_sandbox_state_dir "$PROJECT_DIR" "$SANDBOX_BACKEND" || exit 1
+
 # ── Chaperon: create FIFO directory ───────────────────────────────
 # Create the FIFO directory BEFORE backend_prepare so backends can
 # add bind-mounts for it. The chaperon process is started AFTER

@@ -156,8 +156,23 @@ backend_prepare() {
     # and only exposes whitelisted entries. No --private needed.
     # --whitelist works under $HOME, /tmp, /opt, /srv, and /run.
 
-    # Read-only system mounts — visible by default (firejail only isolates
-    # $HOME via whitelist). Mark read-only explicitly for defense in depth.
+    # Host filesystem outside $HOME: read-only by default. Firejail
+    # starts from the host's own mount tree (unlike bwrap, which starts
+    # from an empty root), so without this every directory outside
+    # $HOME that the user can write per Unix permissions (shared
+    # project/scratch filesystems such as /fh/fast, /scratch, /opt/lab,
+    # other projects of the same user outside $HOME) stayed writable
+    # inside the sandbox. `--read-only=/` is applied first; firejail
+    # processes --read-only/--read-write in argv order (later wins), so
+    # the explicit --read-write grants below (project dir,
+    # EXTRA_WRITABLE_PATHS, HOME_WRITABLE, chaperon FIFO dir, shared
+    # /tmp) re-open exactly the paths bwrap would bind writable. $HOME
+    # (firejail rebuilds /home itself), /tmp (--private-tmp tmpfs),
+    # /dev, /proc and /run are separate mounts and keep their own modes.
+    FIREJAIL_ARGS+=(--read-only=/)
+
+    # Read-only system mounts — covered by --read-only=/ above; kept
+    # explicit so the intent survives if the root rule is ever relaxed.
     for mount in "${READONLY_MOUNTS[@]}"; do
         if [[ -d "$mount" || -f "$mount" ]]; then
             FIREJAIL_ARGS+=(--read-only="$mount")
@@ -323,35 +338,69 @@ backend_prepare() {
                 FIREJAIL_ARGS+=(--read-write="$project_dir")
             fi
         fi
-        # write mode: full HOME writable, project dir already writable
+        # write mode: full HOME writable. Explicit since the host root
+        # (which contains /home when firejail doesn't rebuild it) is
+        # --read-only=/ above.
+        if [[ "${HOME_ACCESS}" == "write" ]]; then
+            FIREJAIL_ARGS+=(--read-write="$HOME")
+        fi
     fi
 
-    # Sandbox scripts (read-only inside sandbox, unless it IS the project dir)
-    if [[ "$SANDBOX_DIR" != "$project_dir" ]]; then
+    # ── Writable grants, then protective read-only overlays ─────────
+    # Firejail applies --read-only / --read-write in argv order and a
+    # --read-write remount is recursive, so ANY grant emitted after a
+    # protective --read-only on a descendant re-opens it. All writable
+    # grants therefore come first, protective overlays last.
+
+    # Sandbox scripts: read-only. Emitted early only when the project
+    # lives inside the install dir (developing agent-sandbox itself) so
+    # the project grant below still wins for the project subtree.
+    local _sandbox_dir_ro_late=true
+    if _path_under "$project_dir" "$SANDBOX_DIR"; then
         FIREJAIL_ARGS+=(--read-only="$SANDBOX_DIR")
+        _sandbox_dir_ro_late=false
     fi
 
-    # .sandbox-state/ — chaperon-owned state subdir, RO-overlaid AFTER
-    # the writable project dir so the agent can't tamper with the
-    # chaperon's slurm-log staging area or the chaperon diagnostic log.
-    # Mirrors bwrap's --ro-bind; threat-model framing + the distinction
-    # from reverted PR #50 documented in sandbox-lib.sh's
-    # `.sandbox-state/` section. Only overlay when the dir exists —
-    # the chaperon mkdir's it lazily on first slurm submission.
-    local _state_dir="$project_dir/.sandbox-state"
-    if [[ -d "$_state_dir" ]]; then
-        FIREJAIL_ARGS+=(--read-only="$_state_dir")
-    fi
+    # Project directory: writable (also outside $HOME, now that the
+    # host root is read-only).
+    FIREJAIL_ARGS+=(--read-write="$project_dir")
 
-    # Additional writable directories
-    for _extra_rw in "${EXTRA_WRITABLE_PATHS[@]}"; do
+    # Additional writable directories. Entries equal to or above $HOME
+    # are dropped by _effective_extra_writable_paths.
+    local _extra_rw
+    while IFS= read -r _extra_rw; do
         if [[ -d "$_extra_rw" ]]; then
-            if [[ "${HOME_ACCESS:-restricted}" == "restricted" && "$_extra_rw" == "$HOME"* ]]; then
+            if [[ "${HOME_ACCESS:-restricted}" == "restricted" || "${HOME_ACCESS:-restricted}" == "tmpwrite" ]] \
+               && _path_under "$_extra_rw" "$HOME"; then
                 FIREJAIL_ARGS+=(--whitelist="$_extra_rw")
             fi
             FIREJAIL_ARGS+=(--read-write="$_extra_rw")
         fi
-    done
+    done < <(_effective_extra_writable_paths)
+
+    # Shared /tmp (PRIVATE_TMP=false): the host /tmp must stay writable
+    # for MPI / NCCL rendezvous files despite --read-only=/.
+    if ! _is_true "${PRIVATE_TMP:-true}" && [[ -d /tmp ]]; then
+        FIREJAIL_ARGS+=(--read-write=/tmp)
+    fi
+
+    if $_sandbox_dir_ro_late; then
+        FIREJAIL_ARGS+=(--read-only="$SANDBOX_DIR")
+    fi
+
+    # .sandbox-state/ — chaperon-owned state subdir, RO-overlaid AFTER
+    # every writable grant so the agent can't tamper with the
+    # chaperon's slurm-log staging area or the chaperon diagnostic log.
+    # Mirrors bwrap's --ro-bind; threat-model framing + the distinction
+    # from reverted PR #50 documented in sandbox-lib.sh's
+    # `.sandbox-state/` section. sandbox-exec.sh creates and sanitizes
+    # the dir before backend_prepare, so it always exists here; fail
+    # closed if that step was bypassed.
+    local _state_dir="$project_dir/.sandbox-state"
+    if [[ ! -d "$_state_dir" || -L "$_state_dir" ]]; then
+        _prepare_sandbox_state_dir "$project_dir" firejail || exit 1
+    fi
+    FIREJAIL_ARGS+=(--read-only="$_state_dir")
 
     # Agent-specific file hiding (e.g., CLAUDE.md, AGENTS.md) is handled
     # by BLOCKED_FILES, populated from agents/*/config.conf by _apply_agent_profiles().
@@ -425,6 +474,9 @@ backend_prepare() {
     if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -d "${_CHAPERON_FIFO_DIR:-}" ]]; then
         export _CHAPERON_FIFO_DIR
         FIREJAIL_ARGS+=(--whitelist="$_CHAPERON_FIFO_DIR")
+        # Stubs create per-request response FIFOs here; keep it
+        # writable when $TMPDIR is outside /tmp (--read-only=/).
+        FIREJAIL_ARGS+=(--read-write="$_CHAPERON_FIFO_DIR")
     fi
 
     # Fork bomb defense-in-depth: firejail has native rlimit support

@@ -4,7 +4,7 @@
 
 ## What it is
 
-`.sandbox-state/` is a hidden directory the chaperon creates inside each project tree (`$project_dir/.sandbox-state/`) to hold chaperon-managed state that the sandboxed agent needs to read but must not be able to tamper with.
+`.sandbox-state/` is a hidden directory the launcher (bwrap/firejail) and the chaperon create inside each project tree (`$project_dir/.sandbox-state/`) to hold chaperon-managed state that the sandboxed agent needs to read but must not be able to tamper with.
 
 Layout:
 
@@ -32,6 +32,18 @@ $project_dir/.sandbox-state/
 The bwrap and firejail backends emit a `--ro-bind` / `--read-only=` after the writable project-dir bind. Mount overlays are path-keyed and later-wins, so the RO subtree sits on top of the writable parent in the sandbox's mount namespace.
 
 Landlock cannot do this — its rules are additive at the kernel level, so once `$project_dir` is in the writable allowlist, every descendant is writable too. The chaperon-side feature detects `$SANDBOX_BACKEND=landlock` and disables the parts that depend on the RO overlay (the `--output`/`--error` transformation in `chaperon/handlers/_handler_lib.sh`).
+
+## Launcher-side creation and sanitization
+
+A read-only overlay only protects a directory that exists when the backend argv is built. Earlier releases let the chaperon create `.sandbox-state/` lazily, after the sandbox was already configured, so the **first session in a fresh project had it writable**: the agent could plant `slurm-logs/<name> -> ~/some-file`, and slurmstepd (outside the sandbox) wrote job output through the link. That was reproduced on a real Slurm cluster. An agent could also replace `.sandbox-state` itself with a symlink, which later sessions would then RO-bind (exposing the link target) and the chaperon would write into.
+
+`sandbox-exec.sh` now calls `_prepare_sandbox_state_dir` (sandbox-lib.sh) **before** `backend_prepare`, on every launch:
+
+1. If `.sandbox-state`, `slurm-logs/` or `chaperon/` is a symlink, it is removed (with a warning) and recreated as a real directory. Any other non-directory there is a hard error.
+2. On bwrap and firejail, `.sandbox-state/{slurm-logs,chaperon}` are created (mode 700) so the RO overlay applies from the very first session. The backends refuse to start rather than launch without the overlay.
+3. On every backend, symlinks, multiply-linked regular files and special files anywhere under `.sandbox-state/` are deleted (with a warning listing them). Neither the chaperon nor slurmstepd ever creates these, so anything found was planted by an earlier session that could write there.
+
+**What landlock can and cannot do.** A landlock session can always write anything under `.sandbox-state/`; there is no way to make it read-only there. The launcher-side purge means a *later* bwrap/firejail session never inherits a link planted by an earlier landlock session. It cannot help against a landlock session that runs *concurrently* with a bwrap/firejail session on the same project: the landlock agent can plant a link between the purge and slurmstepd's `open()`. Do not run landlock sessions on a project at the same time as bwrap/firejail sessions on shared-Slurm hosts. (Landlock sessions can also reach munge and the real `sbatch` directly; see the SPANK hardening in `docs/admin/hardening.md`.)
 
 ## Threat-model framing
 
@@ -81,7 +93,8 @@ The directory is hidden (leading dot) so it doesn't clutter `ls`. `find` and mos
 - Helper functions: `chaperon/handlers/_handler_lib.sh::_sandbox_state_dir`, `::_ensure_sandbox_state_dir`, `::_slurm_output_feature_enabled`.
 - Bind-mount overlay: `backends/bwrap.sh`, `backends/firejail.sh` (search for `.sandbox-state`).
 - Landlock warning: `backends/landlock.sh` (search for `.sandbox-state`).
-- First mkdir trigger: `chaperon/handlers/sbatch.sh::handle_sbatch`.
+- Creation + sanitization before the sandbox starts: `sandbox-lib.sh::_prepare_sandbox_state_dir`, called from `sandbox-exec.sh` before `backend_prepare`.
+- Chaperon-side (idempotent) mkdir: `chaperon/handlers/sbatch.sh::handle_sbatch`.
 - Backend identity propagation to chaperon: `sandbox-exec.sh` after `detect_backend` (`export SANDBOX_BACKEND`).
 
 For the slurm-output-specific use, see `docs/reference/chaperon-output-staging.md`.

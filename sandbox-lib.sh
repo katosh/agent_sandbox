@@ -991,6 +991,135 @@ _resolve_path() {
 # `chaperon/handlers/_handler_lib.sh::_ensure_sandbox_state_dir`) does
 # not source `sandbox-lib.sh`. Keeping the path literal here avoids the
 # duplicate-function-definition smell at the cost of a string.
+#
+# Launcher-side lifecycle (_prepare_sandbox_state_dir below). The RO
+# overlay only protects a directory that EXISTS when the backend argv is
+# built. Before this was enforced, the chaperon created the dir lazily
+# (after backend_prepare), so the first session in a fresh project got
+# a WRITABLE .sandbox-state and could plant
+# `slurm-logs/<name> -> ~/.bashrc`; slurmstepd (host side, outside the
+# sandbox) then wrote attacker-chosen job output through the link.
+# Reproduced on real Slurm. The launcher therefore:
+#
+#   1. refuses/repairs a .sandbox-state (or slurm-logs/, chaperon/) that
+#      is a symlink or not a directory — a symlinked state dir would
+#      also make the RO bind follow the link and expose its target;
+#   2. creates .sandbox-state/{slurm-logs,chaperon} BEFORE
+#      backend_prepare on bwrap/firejail, so the RO overlay always
+#      applies, including in the first session;
+#   3. purges symlinks, multiply-linked regular files and special files
+#      anywhere under .sandbox-state. None of these are ever created by
+#      the chaperon or slurmstepd; any that exist were planted by an
+#      earlier session that had write access (a pre-fix session, or a
+#      landlock session, which can never RO-protect the dir).
+#
+# Step 3 runs on every backend, including landlock, so a later
+# bwrap/firejail session never inherits a link planted by an earlier
+# landlock session. What it cannot close: a landlock session running
+# CONCURRENTLY on the same project can plant a link at any time (the
+# project tree is writable to it and landlock has no mount overlay), so
+# a bwrap/firejail session's job can race it. Do not mix landlock with
+# other backends on the same project on shared-Slurm hosts.
+_prepare_sandbox_state_dir() {
+    local _proj="$1" _backend="$2"
+    local _state="$_proj/.sandbox-state"
+    local _create=false
+    case "$_backend" in
+        bwrap|firejail) _create=true ;;
+    esac
+
+    # (1) the entry itself, then each chaperon-owned subdir.
+    local _p
+    for _p in "$_state" "$_state/slurm-logs" "$_state/chaperon"; do
+        if [[ -L "$_p" ]]; then
+            echo "sandbox: WARNING — '$_p' is a symlink (-> $(readlink -- "$_p" 2>/dev/null)); planted by an earlier session? Removing it." >&2
+            if ! rm -f -- "$_p"; then
+                echo "Error: cannot remove symlink '$_p'. Remove it by hand and retry." >&2
+                return 1
+            fi
+        fi
+        if [[ -e "$_p" && ! -d "$_p" ]]; then
+            echo "Error: '$_p' exists but is not a directory." >&2
+            echo "  It is chaperon-owned state; move it aside and retry:  mv -- '$_p' '$_p.bak'" >&2
+            return 1
+        fi
+        if [[ ! -d "$_p" ]]; then
+            # Nothing to protect and nothing to create (landlock, no
+            # state yet): done. On landlock the chaperon keeps its logs
+            # outside the project and disables the output staging.
+            [[ -d "$_state" ]] || $_create || return 0
+            $_create || continue
+            # mkdir (not -p): the parent was just verified to be a real
+            # directory, and -p would follow a symlink raced in between.
+            if ! mkdir -m 700 -- "$_p" 2>/dev/null && [[ ! -d "$_p" || -L "$_p" ]]; then
+                echo "Error: cannot create '$_p' (needed so the sandbox can mount it read-only)." >&2
+                return 1
+            fi
+        fi
+    done
+    [[ -d "$_state" ]] || return 0
+    chmod 700 -- "$_state" 2>/dev/null || true
+
+    # (3) purge planted links / special files anywhere under the state
+    # dir. find -P never follows symlinks, and -delete on a symlink
+    # removes the link, not its target.
+    local _planted
+    _planted="$(find -P "$_state" -mindepth 1 \
+        \( -type l -o \( -type f -links +1 \) -o \( ! -type f ! -type d \) \) \
+        -print -delete 2>/dev/null)" || true
+    if [[ -n "$_planted" ]]; then
+        echo "sandbox: WARNING — removed entries under '$_state' that the chaperon never creates (symlinks / hard links / special files, planted by an earlier session):" >&2
+        printf '%s\n' "$_planted" | head -20 | sed 's/^/  /' >&2
+    fi
+
+    # Final invariant (fail closed): the physical path of the state dir
+    # is exactly where we expect it. $_proj is already physical
+    # (sandbox-exec.sh resolves it with pwd -P).
+    local _phys
+    _phys="$(cd -P -- "$_state" 2>/dev/null && pwd)" || _phys=""
+    if [[ -L "$_state" || "$_phys" != "$_state" ]]; then
+        echo "Error: '$_state' does not resolve to itself (got '${_phys:-?}'); refusing to start." >&2
+        return 1
+    fi
+    return 0
+}
+
+# _is_home_or_ancestor PATH: true if PATH (literal or canonical) equals
+# $HOME or is an ancestor of it (e.g. /home, /). A writable bind of such
+# a path covers the whole home directory — credential masks, the tmpfs
+# HOME blank slate and the protected agent config — so neither the
+# project dir (L3) nor an EXTRA_WRITABLE_PATHS entry (L2) may be one.
+_is_home_or_ancestor() {
+    local _d="$1" _dr _h _hr
+    [[ -n "$_d" ]] || return 1
+    _dr="$(_resolve_path "$_d")"
+    _h="${HOME%/}"
+    _hr="$(_resolve_path "$HOME")"
+    local _a _b
+    for _a in "$_d" "$_dr"; do
+        for _b in "$_h" "$_hr"; do
+            _path_under "$_b" "$_a" && return 0
+        done
+    done
+    return 1
+}
+
+# _effective_extra_writable_paths: print (one per line) the
+# EXTRA_WRITABLE_PATHS entries a backend may bind writable. Drops, with
+# a warning, entries that equal or contain $HOME: binding those
+# writable would undo the home isolation wholesale. Backends must use
+# this instead of iterating EXTRA_WRITABLE_PATHS directly.
+_effective_extra_writable_paths() {
+    local _e
+    for _e in "${EXTRA_WRITABLE_PATHS[@]}"; do
+        [[ -n "$_e" ]] || continue
+        if _is_home_or_ancestor "$_e"; then
+            echo "sandbox: WARNING — EXTRA_WRITABLE_PATHS entry '$_e' is \$HOME or an ancestor of it; ignored (it would re-expose ~/.ssh and every other masked path). List specific subdirectories instead." >&2
+            continue
+        fi
+        printf '%s\n' "$_e"
+    done
+}
 
 # _path_under: returns 0 if CHILD is identical to PARENT or is a proper
 # subdirectory of PARENT.  Trailing slashes are stripped.  The "/"
@@ -3090,11 +3219,11 @@ validate_project_dir() {
     #     a full read+write credential bypass, confirmed in the default
     #     (tmpwrite) mode when launched from the home directory.  Require a
     #     subdirectory instead.
-    local _home_resolved
-    _home_resolved="$(_resolve_path "$HOME")"
-    if [[ "$dir" == "$HOME" || "$dir_resolved" == "$HOME" \
-          || "$dir" == "$_home_resolved" || "$dir_resolved" == "$_home_resolved" ]]; then
-        echo "Error: The project directory cannot be your home directory ($HOME)." >&2
+    #
+    #     Ancestors of $HOME (/home, /) are rejected for the same reason:
+    #     binding /home writable covers $HOME and everything under it.
+    if _is_home_or_ancestor "$dir"; then
+        echo "Error: The project directory cannot be your home directory ($HOME) or one of its parent directories." >&2
         echo "  Running an agent with all of \$HOME writable would re-expose ~/.ssh," >&2
         echo "  ~/.aws, ~/.gnupg, and shell startup files the sandbox is meant to hide." >&2
         echo "  Use a subdirectory instead, e.g.:" >&2
