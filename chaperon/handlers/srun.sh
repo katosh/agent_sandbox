@@ -5,17 +5,25 @@
 # (which is blocked inside the sandbox).  Two modes:
 #
 #   Step mode (SLURM_JOB_ID set):
-#     Validates flags against step whitelist, execs real srun directly.
-#     The command runs within the existing sandboxed allocation.
+#     Validates flags against the step whitelist (no allocation flags),
+#     wraps the command in sandbox-exec.sh, execs real srun. The step's
+#     tasks are started by slurmstepd on the allocated nodes, i.e. OUTSIDE
+#     any sandbox — the enclosing allocation's sandbox does not extend to
+#     them — so each task must re-enter the sandbox itself.
 #
 #   Allocation mode (no SLURM_JOB_ID):
 #     Validates flags against allocation whitelist, wraps the command in
 #     sandbox-exec.sh so compute-node processes inherit sandbox restrictions,
-#     then execs real srun.  --pty is denied (no PTY passthrough via protocol).
+#     then execs real srun.
+#
+#   In both modes --pty is denied (no PTY passthrough via protocol) and
+#   every task runs its own `sandbox-exec.sh --project-dir <dir> -- cmd`.
+#   --export is not on the srun allow-list (rejected as unrecognized), so
+#   no agent-chosen value can reach the host-side task environment.
 #
 # Security: munge is intentionally blocked inside the sandbox.  The chaperon
 # runs outside and has munge access.  All flags are validated against a
-# whitelist.  In allocation mode, the command is always sandboxed.
+# whitelist.  The command is always sandboxed.
 
 source "$(dirname "${BASH_SOURCE[0]}")/_handler_lib.sh"
 
@@ -122,32 +130,15 @@ _SRUN_VALUE_FLAGS=" \
   --comment \
 "
 
-# Require an srun -o/-e/-i path to resolve under the project dir.
-# slurmstepd opens --output/--error/--input OUTSIDE the sandbox, as the
-# host user, before the compute-node sandbox boundary applies. An
-# unrestricted path is therefore an arbitrary host-file write
-# (--output/--error → e.g. ~/.ssh/authorized_keys, ~/.bashrc) or read
-# (--input → e.g. ~/.aws/credentials piped into the job) — a confinement
-# escape even though the task itself is sandboxed. Relative paths are
-# resolved against the validated submission cwd (REQ_CWD, already checked
-# to be under the project dir) or the project dir. realpath -m
-# canonicalizes without requiring the file to exist (--output creates it)
-# and collapses any `..` traversal. Returns 0 if contained, 1 otherwise.
-_srun_io_path_under_project() {
-    local _val="$1" _project_dir="$2" _cwd="$3"
-    [[ -n "$_val" ]] || return 0
-    local _base="${_cwd:-$_project_dir}"
-    local _abs
-    if [[ "$_val" == /* ]]; then
-        _abs="$_val"
-    else
-        _abs="$_base/$_val"
-    fi
-    local _canon _proj_canon
-    _canon="$(realpath -m -- "$_abs" 2>/dev/null)" || return 1
-    _proj_canon="$(realpath -m -- "$_project_dir" 2>/dev/null)" || return 1
-    [[ "$_canon" == "$_proj_canon" || "$_canon" == "$_proj_canon"/* ]]
-}
+# srun -o/-e/-i: slurmstepd opens these OUTSIDE the sandbox, as the
+# host user, before the compute-node sandbox boundary applies, and srun
+# has no staging redirect on any backend. An unrestricted path is an
+# arbitrary host-file write (--output/--error → e.g. ~/.bashrc) or read
+# (--input → e.g. ~/.aws/credentials piped into the job). Validated by
+# _validate_slurm_io_path (_handler_lib.sh): project-contained directory
+# resolved against the validated submission cwd, no `..`, no symlink
+# components, no existing symlink target, only directory-neutral %
+# patterns and only in the file name.
 
 _is_srun_allowed() {
     local base="${1%%=*}"
@@ -253,7 +244,7 @@ handle_srun() {
                 ;;
             # ── Output/error/input: opened by slurmstepd OUTSIDE the sandbox.
             #    Restrict to paths under the project dir (see
-            #    _srun_io_path_under_project). Handles the space-separated
+            #    _validate_slurm_io_path). Handles the space-separated
             #    forms here; the --flag=value forms are handled below. ──
             -o|--output|-e|--error|-i|--input)
                 local _io_flag="$arg" _io_val=""
@@ -261,16 +252,14 @@ handle_srun() {
                     (( i++ )) || true
                     _io_val="${REQ_ARGS[$i]}"
                 fi
-                if ! _srun_io_path_under_project "$_io_val" "$project_dir" "$REQ_CWD"; then
-                    _sandbox_deny "srun '$_io_flag $_io_val' is not allowed — --output/--error/--input files are opened by Slurm outside the sandbox, so the path must stay within the project directory ($project_dir). Use a project-relative path."
+                if ! _validate_slurm_io_path "srun $_io_flag" "$_io_val" "$project_dir" "${REQ_CWD:-$project_dir}"; then
                     return 1
                 fi
                 validated_flags+=("$_io_flag" "$_io_val")
                 ;;
             --output=*|--error=*|--input=*)
                 local _io_val2="${arg#*=}"
-                if ! _srun_io_path_under_project "$_io_val2" "$project_dir" "$REQ_CWD"; then
-                    _sandbox_deny "srun '$arg' is not allowed — --output/--error/--input files are opened by Slurm outside the sandbox, so the path must stay within the project directory ($project_dir). Use a project-relative path."
+                if ! _validate_slurm_io_path "srun ${arg%%=*}" "$_io_val2" "$project_dir" "${REQ_CWD:-$project_dir}"; then
                     return 1
                 fi
                 validated_flags+=("$arg")
@@ -347,38 +336,31 @@ handle_srun() {
 
     local rc=0
 
-    if [[ "$mode" == "step" ]]; then
-        # Step mode: exec real srun directly — the command runs within
-        # the existing sandboxed allocation.
-        if [[ -n "$REQ_CWD" ]]; then
-            (cd "$REQ_CWD" && "$real_srun" "${validated_flags[@]}" -- "${command_args[@]}") || rc=$?
-        else
-            "$real_srun" "${validated_flags[@]}" -- "${command_args[@]}" || rc=$?
-        fi
+    # Both modes: wrap the command in sandbox-exec.sh. srun starts one
+    # copy of the command per task via slurmstepd, outside the sandbox,
+    # so each task runs its own sandbox-exec.sh re-entry:
+    #   srun [flags] -- [env SANDBOX_QUIET=true] sandbox-exec.sh --project-dir $DIR -- <command>
+    # (Step mode used to exec the command bare, on the wrong assumption
+    # that the enclosing allocation's sandbox applied to the step.)
+    #
+    # Retain the session's quiet decision (see create_wrapped_script in
+    # _handler_lib.sh). When the chaperon was launched quiet, srun
+    # launches the command directly (no shell), so an `env` prefix
+    # carries SANDBOX_QUIET to the compute-node sandbox-exec.sh re-entry
+    # — surviving `--export=NONE` and any in-sandbox unset. Only forced
+    # when active; otherwise the compute node resolves normally.
+    local _quiet_env=()
+    case "${SANDBOX_QUIET:-false}" in
+        [Tt]rue|[Yy]es|1) _quiet_env=(/usr/bin/env SANDBOX_QUIET=true) ;;
+    esac
+    if [[ -n "$REQ_CWD" ]]; then
+        (cd "$REQ_CWD" && "$real_srun" "${validated_flags[@]}" -- \
+            "${_quiet_env[@]+"${_quiet_env[@]}"}" \
+            "$sandbox_exec" --project-dir "$project_dir" -- "${command_args[@]}") || rc=$?
     else
-        # Allocation mode: wrap the command in sandbox-exec.sh so
-        # compute-node processes inherit sandbox restrictions.
-        # srun [flags] -- [env SANDBOX_QUIET=true] sandbox-exec.sh --project-dir $DIR -- <command>
-        #
-        # Retain the session's quiet decision (see create_wrapped_script in
-        # _handler_lib.sh). When the chaperon was launched quiet, srun
-        # launches the command directly (no shell), so an `env` prefix
-        # carries SANDBOX_QUIET to the compute-node sandbox-exec.sh re-entry
-        # — surviving `--export=NONE` and any in-sandbox unset. Only forced
-        # when active; otherwise the compute node resolves normally.
-        local _quiet_env=()
-        case "${SANDBOX_QUIET:-false}" in
-            [Tt]rue|[Yy]es|1) _quiet_env=(env SANDBOX_QUIET=true) ;;
-        esac
-        if [[ -n "$REQ_CWD" ]]; then
-            (cd "$REQ_CWD" && "$real_srun" "${validated_flags[@]}" -- \
-                "${_quiet_env[@]+"${_quiet_env[@]}"}" \
-                "$sandbox_exec" --project-dir "$project_dir" -- "${command_args[@]}") || rc=$?
-        else
-            "$real_srun" "${validated_flags[@]}" -- \
-                "${_quiet_env[@]+"${_quiet_env[@]}"}" \
-                "$sandbox_exec" --project-dir "$project_dir" -- "${command_args[@]}" || rc=$?
-        fi
+        "$real_srun" "${validated_flags[@]}" -- \
+            "${_quiet_env[@]+"${_quiet_env[@]}"}" \
+            "$sandbox_exec" --project-dir "$project_dir" -- "${command_args[@]}" || rc=$?
     fi
 
     return "$rc"

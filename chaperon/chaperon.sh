@@ -18,7 +18,13 @@
 #   - Sets PR_SET_PDEATHSIG for orphan prevention
 #
 # Usage (internal — called by sandbox-exec.sh):
-#   chaperon.sh <fifo_dir> <project_dir> <sandbox_exec_path>
+#   chaperon.sh <fifo_dir> <project_dir> <sandbox_exec_path> [cleanup_dir ...]
+#
+# Optional trailing cleanup_dir arguments name other per-launch
+# directories (proxy socket dir, mail-block stub dir) that the chaperon
+# removes together with <fifo_dir> when it shuts down. The chaperon is
+# the launch's long-lived host-side process, so it is the natural owner
+# of that cleanup after sandbox-exec.sh has exec'd into the backend.
 
 set -euo pipefail
 
@@ -33,7 +39,44 @@ PROJECT_DIR="${2:-}"
 SANDBOX_EXEC="${3:-}"
 
 if [[ -z "$FIFO_DIR" || -z "$PROJECT_DIR" || -z "$SANDBOX_EXEC" ]]; then
-    echo "chaperon: usage: chaperon.sh <fifo_dir> <project_dir> <sandbox_exec_path>" >&2
+    echo "chaperon: usage: chaperon.sh <fifo_dir> <project_dir> <sandbox_exec_path> [cleanup_dir ...]" >&2
+    exit 1
+fi
+shift 3
+# Only accept the per-launch dir shapes sandbox-exec.sh creates, owned
+# by us and not symlinks — the rm -rf at shutdown must not be steerable.
+_CHAPERON_CLEANUP_DIRS=()
+for _cd in "$@"; do
+    case "${_cd##*/}" in
+        agent-sandbox-proxy-*|agent-sandbox-mailblock-*) ;;
+        *) continue ;;
+    esac
+    [[ -d "$_cd" && ! -L "$_cd" && -O "$_cd" ]] || continue
+    _CHAPERON_CLEANUP_DIRS+=("$_cd")
+done
+unset _cd
+
+# ── Handlers: load ALL of them once, now ─────────────────────────
+# Handlers are sourced at startup and never re-read. Re-sourcing
+# handlers/<cmd>.sh per request would let anyone who can modify the
+# install tree after launch (e.g. a landlock session whose writable
+# rules cover it) run code in this host-side process. Loading first
+# also gives logging.sh the _sandbox_state_safe_mkdir helper.
+declare -A _CHAPERON_HANDLERS=()
+for _hf in "$CHAPERON_DIR"/handlers/*.sh; do
+    _hn="${_hf##*/}"
+    _hn="${_hn%.sh}"
+    [[ "$_hn" == _* ]] && continue          # libraries, not handlers
+    [[ "$_hn" =~ ^[a-z][a-z0-9_]*$ ]] || continue
+    # shellcheck disable=SC1090
+    source "$_hf"
+    if declare -F "handle_${_hn}" >/dev/null; then
+        _CHAPERON_HANDLERS[$_hn]=1
+    fi
+done
+unset _hf _hn
+if ! declare -F handle_blocked >/dev/null; then
+    echo "chaperon: handlers/blocked.sh missing — refusing to start" >&2
     exit 1
 fi
 
@@ -47,6 +90,10 @@ chaperon_log info "starting (pid=$$, ppid=$PPID, fifo=$FIFO_DIR)"
 trap 'chaperon_log error "unexpected exit at line $LINENO (exit=$?)"' ERR
 
 # ── Orphan prevention ────────────────────────────────────────────
+# NOTE: prctl() below runs in the python3 child, so PR_SET_PDEATHSIG
+# applies to that short-lived child, not to this shell. Parent death is
+# actually detected by the `kill -0 $PPID` poll in the main loop, which
+# then exits through _chaperon_cleanup (EXIT trap).
 if command -v python3 &>/dev/null; then
     python3 -c "
 import ctypes, signal
@@ -68,10 +115,14 @@ _chaperon_cleanup() {
     chaperon_log info "shutting down (pid=$$)"
     exec 3<&- 2>/dev/null || true
     rm -rf "$FIFO_DIR" 2>/dev/null || true
+    local _d
+    for _d in "${_CHAPERON_CLEANUP_DIRS[@]+"${_CHAPERON_CLEANUP_DIRS[@]}"}"; do
+        [[ -d "$_d" && ! -L "$_d" ]] && rm -rf -- "$_d" 2>/dev/null
+    done
     exit 0
 }
 
-trap _chaperon_cleanup SIGTERM SIGINT EXIT
+trap _chaperon_cleanup SIGTERM SIGINT SIGHUP EXIT
 
 # ── Open request FIFO ────────────────────────────────────────────
 # Open read+write (O_RDWR) on the req FIFO. This:
@@ -90,24 +141,18 @@ READ_FD=3
 dispatch_handler() {
     local command="$1"
 
-    # Validate command name to prevent path traversal (e.g. "../../etc/passwd")
+    # Validate command name (defense in depth; lookup is table-based).
     if [[ ! "$command" =~ ^[a-z_][a-z0-9_]*$ ]]; then
-        chaperon_log error "rejected invalid command name: $command"
+        chaperon_log error "rejected invalid command name: $(chaperon_log_escape "$command")"
         return 1
     fi
 
-    local handler_script="$CHAPERON_DIR/handlers/${command}.sh"
-
-    if [[ -f "$handler_script" ]]; then
-        source "$handler_script"
-        local handler_fn="handle_${command}"
-        if declare -f "$handler_fn" &>/dev/null; then
-            "$handler_fn" "$PROJECT_DIR" "$SANDBOX_EXEC"
-            return $?
-        fi
+    # Dispatch only to handlers loaded at startup; never source here.
+    if [[ -n "${_CHAPERON_HANDLERS[$command]+x}" ]]; then
+        "handle_${command}" "$PROJECT_DIR" "$SANDBOX_EXEC"
+        return $?
     fi
 
-    source "$CHAPERON_DIR/handlers/blocked.sh"
     handle_blocked
     return $?
 }
@@ -181,7 +226,7 @@ while true; do
     # The request includes a RESP_FIFO line with the path to the
     # per-request response FIFO. The stub creates it before sending.
     if [[ -z "${REQ_RESP_FIFO:-}" ]]; then
-        chaperon_log warn "request missing RESP_FIFO (command=$REQ_COMMAND)"
+        chaperon_log warn "request missing RESP_FIFO (command=$(chaperon_log_escape "$REQ_COMMAND"))"
         continue
     fi
 
@@ -189,7 +234,7 @@ while true; do
     # not a symlink. The stub creates an atomic directory (mktemp -d) with a
     # FIFO inside, so the expected structure is deterministic.
     if [[ "$REQ_RESP_FIFO" != "$FIFO_DIR/"*/fifo ]] || [[ "$REQ_RESP_FIFO" == *".."* ]]; then
-        chaperon_log error "RESP_FIFO path validation failed: $REQ_RESP_FIFO"
+        chaperon_log error "RESP_FIFO path validation failed: $(chaperon_log_escape "$REQ_RESP_FIFO")"
         continue
     fi
 
@@ -202,16 +247,17 @@ while true; do
     # the python3 writer below, because bash's `>` redirection follows
     # symlinks at open time.
     if [[ -L "$REQ_RESP_FIFO" ]] || [[ ! -p "$REQ_RESP_FIFO" ]]; then
-        chaperon_log error "RESP_FIFO is symlink or not a FIFO: $REQ_RESP_FIFO"
+        chaperon_log error "RESP_FIFO is symlink or not a FIFO: $(chaperon_log_escape "$REQ_RESP_FIFO")"
         continue
     fi
 
-    # Log full request details for audit trail.
-    # Escape newlines/tabs so each log call produces exactly one line.
-    _log_args="${REQ_ARGS[*]:-}"
-    _log_args="${_log_args//$'\n'/\\n}"
-    _log_args="${_log_args//$'\t'/\\t}"
-    chaperon_log info "request: $REQ_COMMAND args=[${_log_args}] cwd=${REQ_CWD:-<unset>}"
+    # Log full request details for audit trail. Every agent-controlled
+    # field goes through chaperon_log_escape so each log call produces
+    # exactly one line (no forged entries via newline in args / cwd).
+    _log_args="$(chaperon_log_escape "${REQ_ARGS[*]:-}")"
+    _log_cwd="$(chaperon_log_escape "${REQ_CWD:-<unset>}")"
+    _log_cmd="$(chaperon_log_escape "$REQ_COMMAND")"
+    chaperon_log info "request: $_log_cmd args=[${_log_args}] cwd=${_log_cwd}"
     if [[ -n "${REQ_SCRIPT:-}" ]]; then
         # Log size and shebang only. Script body is intentionally NOT logged
         # because it may contain secrets (API keys, DB credentials) or
@@ -219,9 +265,9 @@ while true; do
         # audit trail without the secret exposure risk.
         _log_shebang=""
         if [[ "$REQ_SCRIPT" == "#!"* ]]; then
-            _log_shebang=" shebang=${REQ_SCRIPT%%$'\n'*}"
+            _log_shebang=" shebang=$(chaperon_log_escape "${REQ_SCRIPT%%$'\n'*}")"
         fi
-        chaperon_log info "request: $REQ_COMMAND script=${#REQ_SCRIPT} bytes${_log_shebang}"
+        chaperon_log info "request: $_log_cmd script=${#REQ_SCRIPT} bytes${_log_shebang}"
     fi
 
     # Dispatch to handler, capturing stdout and stderr
@@ -237,16 +283,16 @@ while true; do
     dispatch_handler "$REQ_COMMAND" 3>&- >"$_ch_stdout" 2>"$_ch_stderr" || _exit_code=$?
 
     if [[ "$_exit_code" -ne 0 ]]; then
-        chaperon_log warn "handler $REQ_COMMAND exited $_exit_code"
+        chaperon_log warn "handler $_log_cmd exited $_exit_code"
     else
-        chaperon_log debug "handler $REQ_COMMAND exited 0"
+        chaperon_log debug "handler $_log_cmd exited 0"
     fi
 
     # Log handler stderr (contains deny/warn messages from _sandbox_deny/_sandbox_warn).
     # These are critical for security audit — they show what was blocked and why.
     if [[ -s "$_ch_stderr" ]]; then
         while IFS= read -r _stderr_line; do
-            chaperon_log warn "handler $REQ_COMMAND stderr: $_stderr_line"
+            chaperon_log warn "handler $_log_cmd stderr: $(chaperon_log_escape "$_stderr_line")"
         done < "$_ch_stderr"
     fi
 
@@ -296,10 +342,10 @@ finally:
 ' "$REQ_RESP_FIFO" 2>/dev/null || _write_rc=$?
     if [[ "$_write_rc" -ne 0 ]]; then
         case "$_write_rc" in
-            1) chaperon_log warn "response open failed (ELOOP / missing) for $REQ_COMMAND: $REQ_RESP_FIFO" ;;
-            2) chaperon_log warn "response target is not a FIFO after validation (race) for $REQ_COMMAND: $REQ_RESP_FIFO" ;;
-            124) chaperon_log warn "response write timed out for $REQ_COMMAND" ;;
-            *) chaperon_log warn "response write failed (rc=$_write_rc) for $REQ_COMMAND" ;;
+            1) chaperon_log warn "response open failed (ELOOP / missing) for $_log_cmd: $(chaperon_log_escape "$REQ_RESP_FIFO")" ;;
+            2) chaperon_log warn "response target is not a FIFO after validation (race) for $_log_cmd: $(chaperon_log_escape "$REQ_RESP_FIFO")" ;;
+            124) chaperon_log warn "response write timed out for $_log_cmd" ;;
+            *) chaperon_log warn "response write failed (rc=$_write_rc) for $_log_cmd" ;;
         esac
     fi
 done

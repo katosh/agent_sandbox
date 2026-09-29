@@ -68,7 +68,7 @@ Always inside a bash context (the prelude uses bash-specific `${var//pat/replace
 | firejail | yes (`--read-only=`) | yes  | yes  | `.sandbox-state/chaperon/<id>.log`  |
 | landlock | no (additive rules) | **no** | **no** | `~/.local/state/agent-sandbox/chaperon/<id>.log` (XDG fallback) |
 
-The landlock backend skips the entire feature because without the RO overlay, the symlink-plant attack is still exploitable. Operators on landlock get exactly the pre-#67 behavior: `--output` flows verbatim to slurmstepd, the escape vector remains. One-line `NOTE` at backend init (when `.sandbox-state/` exists) tells operators the feature is off.
+The landlock backend skips the entire feature because without the RO overlay, the symlink-plant attack is still exploitable. Instead, on landlock the chaperon **validates** `--output` / `--error` (CLI and `#SBATCH` directives) before they flow verbatim to slurmstepd: the directory part, resolved against the submission cwd, must be inside the project with no symlink component; `..` and backslashes are refused; only directory-neutral `%` patterns (`%A %a %J %j %N %n %s %t %u %%`) are allowed and only in the file name (`%x` is refused); an existing symlink target (or, for a patterned name, any existing symlink matching the pattern) is refused; `/dev/null` is allowed. A symlink planted after submission can still race slurmstepd's `open()` because the project dir is sandbox-writable on landlock. One-line `NOTE` at backend init (when `.sandbox-state/` exists) tells operators the feature is off.
 
 ## Env-var contract
 
@@ -85,7 +85,7 @@ These values are baked into the generated wrapper via `printf %q`, not passed as
 
 ## Limitations
 
-- **Landlock:** Feature is fully disabled (documented in the backend matrix above). `--output=/etc/foo` still escapes.
+- **Landlock:** Staging is disabled (documented in the backend matrix above); paths are validated instead (`--output=/etc/foo` or `~/.bashrc` is refused), with the post-check symlink race as residual risk.
 - **`%`-patterns in directory components:** `--output=job-%j/out` — the chaperon `mkdir -p`s the literal-component parent of the staging template (`job-%j/`, with literal `%j`), but slurmstepd substitutes `%j` at open time and tries to write to `job-12345/out` (which doesn't exist). slurmstepd's `open()` fails; the job runs but `--output` redirection is broken. **Workaround:** the user should `mkdir -p` the substituted dir before submitting, or use `%j` only in filenames.
 - **TOCTOU on the intended path:** Between the wrapper's `mkdir -p` of the intended parent and `ln -s`, an attacker with concurrent sandbox access could move/replace the parent. The bind-mount envelope still caps the damage (writes only land where the agent could have written anyway), but the symlink may end up pointing to a different file than intended. Single-sandbox-per-project is the assumed deployment.
 - **Non-shell, non-bash-runner languages:** The wrapper-side prelude is bash. Non-shell scripts (python etc.) are launched via a bash runner that hosts the prelude, so this is transparent.

@@ -68,13 +68,20 @@ chaperon_log_init() {
     #
     # 3) Final fallback: FIFO dir (when neither above can be mkdir'd,
     #    e.g. HOME is tmpfs inside an unusual sandbox config).
+    #
+    # The .sandbox-state branch goes through _sandbox_state_safe_mkdir
+    # (chaperon/handlers/_handler_lib.sh, loaded by chaperon.sh before
+    # this runs): a symlinked or foreign-owned component makes us fall
+    # through to the XDG location instead of writing through the link.
+    # Without the helper (logging.sh sourced standalone) the branch is
+    # skipped entirely — fail safe.
     _CHAPERON_LOG_DIR=""
     case "${SANDBOX_BACKEND:-}" in
         bwrap|firejail)
-            if [[ -n "$project_dir" && -d "$project_dir" ]]; then
-                local _state_chap="$project_dir/.sandbox-state/chaperon"
-                if mkdir -p "$_state_chap" 2>/dev/null; then
-                    _CHAPERON_LOG_DIR="$_state_chap"
+            if [[ -n "$project_dir" && -d "$project_dir" ]] \
+               && declare -F _sandbox_state_safe_mkdir >/dev/null; then
+                if _sandbox_state_safe_mkdir "$project_dir" ".sandbox-state/chaperon"; then
+                    _CHAPERON_LOG_DIR="$project_dir/.sandbox-state/chaperon"
                 fi
             fi
             ;;
@@ -163,6 +170,34 @@ chaperon_log() {
 
     # Also write to stderr (captured per-request or by sandbox-exec redirect)
     echo "$line" >&2
+}
+
+# chaperon_log_escape <string>
+#
+# Print <string> with every control character made visible, so an
+# attacker-controlled field (args, cwd, command name, shebang) can never
+# start a new log line or smuggle terminal escapes: \n, \r, \t become
+# the two-character sequences, backslash is doubled so the encoding is
+# unambiguous, and any other C0/DEL byte becomes \xHH.
+chaperon_log_escape() {
+    local _s="$1" _out="" _c _i _hex
+    _s="${_s//\\/\\\\}"
+    _s="${_s//$'\n'/\\n}"
+    _s="${_s//$'\r'/\\r}"
+    _s="${_s//$'\t'/\\t}"
+    if [[ "$_s" == *[[:cntrl:]]* ]]; then
+        for (( _i = 0; _i < ${#_s}; _i++ )); do
+            _c="${_s:_i:1}"
+            if [[ "$_c" == [[:cntrl:]] ]]; then
+                printf -v _hex '\\x%02X' "'$_c"
+                _out+="$_hex"
+            else
+                _out+="$_c"
+            fi
+        done
+        _s="$_out"
+    fi
+    printf '%s' "$_s"
 }
 
 # chaperon_log_file — returns the current log file path (for diagnostics)

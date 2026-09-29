@@ -261,9 +261,54 @@ _NETWORK_PROXY_PID=""
 # trap below.
 _MAIL_BLOCK_STUBS_DIR=""
 
+# ── Per-launch dir ownership + stale pruning ──────────────────────
+# chaperon-*, agent-sandbox-proxy-* and agent-sandbox-mailblock-* dirs
+# under $TMPDIR outlive a normal run (the trap below only fires if exec
+# fails; the chaperon removes them when it notices parent death, but not
+# if it is SIGKILLed). Each dir gets a `.owner` tag
+# "<host> <pidns-inode> <pid> <starttime>" naming this launch's PID
+# (which survives the exec into the backend). At launch, dirs of ours
+# whose tagged owner is gone on this host / PID namespace are removed;
+# untagged (pre-upgrade) dirs only once older than 7 days.
+_launch_owner_tag() {
+    local _pid="$1" _stat _ns
+    IFS= read -r _stat < "/proc/$_pid/stat" 2>/dev/null || return 1
+    local -a _f
+    read -r -a _f <<< "${_stat##*) }"
+    _ns="$(stat -L -c %i "/proc/$_pid/ns/pid" 2>/dev/null)" || return 1
+    printf '%s %s %s %s' "${HOSTNAME:-$(hostname 2>/dev/null)}" "$_ns" "$_pid" "${_f[19]:-?}"
+}
+_tag_launch_dir() {
+    [[ -n "${1:-}" && -d "$1" && ! -L "$1" ]] || return 0
+    { _launch_owner_tag "$$" && echo; } > "$1/.owner" 2>/dev/null || true
+}
+_prune_stale_launch_dirs() {
+    local _base="${TMPDIR:-/tmp}" _d _h _ns _pid _st _me
+    _me="$(_launch_owner_tag "$$")" || return 0
+    local _me_host="${_me%% *}" _me_ns="${_me#* }"; _me_ns="${_me_ns%% *}"
+    local -a _untagged=()
+    for _d in "$_base"/chaperon-* "$_base"/agent-sandbox-proxy-* "$_base"/agent-sandbox-mailblock-*; do
+        [[ -d "$_d" && ! -L "$_d" && -O "$_d" ]] || continue
+        if [[ -f "$_d/.owner" && ! -L "$_d/.owner" ]]; then
+            _h=""; read -r _h _ns _pid _st < "$_d/.owner" 2>/dev/null || [[ -n "$_h" ]] || continue
+            [[ "$_h" == "$_me_host" && "$_ns" == "$_me_ns" && "$_pid" =~ ^[0-9]+$ ]] || continue
+            [[ "$(_launch_owner_tag "$_pid" 2>/dev/null)" == "$_h $_ns $_pid $_st" ]] && continue
+            rm -rf -- "$_d" 2>/dev/null || true
+        else
+            _untagged+=("$_d")
+        fi
+    done
+    (( ${#_untagged[@]} )) || return 0
+    while IFS= read -r -d '' _d; do
+        rm -rf -- "$_d" 2>/dev/null || true
+    done < <(find "${_untagged[@]}" -maxdepth 0 -type d -user "$(id -u)" -mtime +7 -print0 2>/dev/null)
+}
+_prune_stale_launch_dirs
+
 if [[ -x "$SCRIPT_DIR/chaperon/chaperon.sh" ]]; then
     _CHAPERON_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chaperon-XXXXXX")"
     chmod 700 "$_CHAPERON_DIR"
+    _tag_launch_dir "$_CHAPERON_DIR"
 
     # request pipe: sandbox writes → chaperon reads
     mkfifo "$_CHAPERON_DIR/req"
@@ -302,6 +347,22 @@ fi
 
 # Prepare sandbox (reads _CHAPERON_FIFO_DIR for bind-mounts)
 backend_prepare "$PROJECT_DIR"
+_tag_launch_dir "${_NETWORK_PROXY_DIR:-}"
+_tag_launch_dir "${_MAIL_BLOCK_STUBS_DIR:-}"
+
+# PRIVATE_TMP=false binds the host /tmp into the sandbox, and the
+# chaperon FIFO / proxy socket / mail-block dirs live there too: any
+# other sandbox of the same user sharing /tmp can open this launch's
+# chaperon FIFO (submitting Slurm jobs as this project) or proxy
+# sockets. Nothing else distinguishes them (same uid), so say so.
+if [[ -n "$_CHAPERON_DIR" ]] && ! _is_true "${PRIVATE_TMP:-true}" \
+   && ! _is_true "${SANDBOX_QUIET:-false}"; then
+    case "${SANDBOX_BACKEND:-}" in
+        bwrap|firejail)
+            echo "sandbox: WARNING — PRIVATE_TMP=false: this session's chaperon FIFO ($_CHAPERON_DIR) and helper sockets are in the shared host /tmp; other sandboxes run by the same user can reach them and submit Slurm jobs through this session's chaperon. Keep PRIVATE_TMP=true unless you need a shared /tmp." >&2
+            ;;
+    esac
+fi
 
 if [[ "$DRY_RUN" == true ]]; then
     backend_dry_run "$@"
@@ -419,6 +480,8 @@ if [[ -n "$_CHAPERON_DIR" ]]; then
     SANDBOX_QUIET="$SANDBOX_QUIET" \
         "$SCRIPT_DIR/chaperon/chaperon.sh" \
         "$_CHAPERON_DIR" "$PROJECT_DIR" "$SCRIPT_DIR/sandbox-exec.sh" \
+        ${_NETWORK_PROXY_DIR:+"$_NETWORK_PROXY_DIR"} \
+        ${_MAIL_BLOCK_STUBS_DIR:+"$_MAIL_BLOCK_STUBS_DIR"} \
         >/dev/null 2>"$_CHAPERON_DIR/chaperon.err" &
     _CHAPERON_PID=$!
 fi
