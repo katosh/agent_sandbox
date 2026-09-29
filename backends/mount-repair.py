@@ -39,6 +39,12 @@ Safety (a repair may never make the sandbox less safe):
     owner change of the host object, and a sandbox object that is not
     the host object.
   * All mount operations act on the file descriptors that were checked.
+  * Nothing is imported or loaded once inside: the sandbox's filesystem
+    is agent-controlled in places (e.g. a writable ~/.local), and this
+    process keeps the user's host credentials. The guard runs it with
+    `python3 -I` (no user site, no PYTHONPATH, no script dir), every
+    module and libc symbol is resolved before setns, and sys.path is
+    emptied before entering.
 
 Exit status: 0 repaired; 1 refused (reason on stderr); 2 not supported
 here (kernel, permissions, namespace gone).
@@ -65,6 +71,7 @@ ST_RDONLY = 1
 
 libc = ctypes.CDLL(None, use_errno=True)
 libc.syscall.restype = ctypes.c_long
+libc.setns.restype = ctypes.c_int      # resolve both symbols on the host
 
 
 class Refused(Exception):
@@ -164,6 +171,11 @@ def repair(pid, ns_ino, kind, path, want_type=None, want_uid=None):
         if want_uid is not None and host.st_uid != want_uid:
             raise Refused("host %s changed owner (uid %d, was %d)" % (path, host.st_uid, want_uid))
 
+    # From here on nothing may be imported: paths would resolve in the
+    # sandbox's (partly agent-writable) filesystem.
+    sys.path[:] = []
+    sys.meta_path[:] = [m for m in sys.meta_path if getattr(m, "__name__", "") in
+                        ("BuiltinImporter", "FrozenImporter")]
     _setns(usrfd, CLONE_NEWUSER, "user")
     _setns(mntfd, CLONE_NEWNS, "mount")
     os.chdir("/")

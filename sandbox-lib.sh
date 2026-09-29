@@ -3293,7 +3293,9 @@ _mg_repair() {
     [[ "$_how" == tmpfs && "${4:-0}" == 1 ]] && _how=tmpfs-ro
     local -a _args=("$2" "$3" "$_how" "${_MG_PATH[_i]}")
     [[ "${_MG_HOW[_i]}" == ro ]] && _args+=("${_MG_FTYPE[_i]}" "${_MG_UID[_i]}")
-    _MG_REPAIR_ERR="$(timeout 10 python3 "$_helper" "${_args[@]}" 2>&1 >/dev/null)"; _rc=$?
+    # -I: the helper enters the sandbox's mount namespace, where user
+    # site-packages may be agent-writable; nothing may be imported there.
+    _MG_REPAIR_ERR="$(timeout 10 python3 -I "$_helper" "${_args[@]}" 2>&1 >/dev/null)"; _rc=$?
     _MG_REPAIR_ERR="${_MG_REPAIR_ERR//$'\n'/; }"
     [[ $_rc -eq 0 ]] && return 0
     [[ -n "$_MG_REPAIR_ERR" ]] || _MG_REPAIR_ERR="helper failed (status $_rc)"
