@@ -125,13 +125,19 @@ PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
 # Load per-project config overrides (conf.d/*.conf)
 load_project_config "$PROJECT_DIR"
 
-# Apply per-project environment overrides (SANDBOX_ENV from conf.d/*.conf).
-# Done here so backends inherit the modified environment naturally —
-# e.g. PATH modifications are picked up when bwrap/landlock/firejail
-# prepend chaperon stubs.
-for _env_entry in "${SANDBOX_ENV[@]}"; do
-    export "$_env_entry"
-done
+# Per-project environment (SANDBOX_ENV from any config layer). Only
+# PATH touches the launcher: it is exported here so the backends'
+# chaperon/sandbox stub prepends layer on top of it. Every other entry
+# is validated (config / launcher-internal / hidden / blocked names are
+# rejected) and applied to the sandboxed command only — see the `env`
+# wrap just before backend_prepare and _prepare_sandbox_env in
+# sandbox-lib.sh. Exporting them here (the old behaviour) let
+# SANDBOX_ENV rewrite admin-enforced settings such as
+# NETWORK_FILTER_MODE or PRIVATE_TMP after enforcement had run.
+_prepare_sandbox_env
+if [[ -n "$_SANDBOX_ENV_PATH" ]]; then
+    export PATH="$_SANDBOX_ENV_PATH"
+fi
 
 # Validate
 if [[ ! -d "$PROJECT_DIR" ]]; then
@@ -246,6 +252,33 @@ if [[ -x "$SCRIPT_DIR/chaperon/chaperon.sh" ]]; then
 
     # Export the FIFO directory path — backends read this during prepare
     export _CHAPERON_FIFO_DIR="$_CHAPERON_DIR"
+fi
+
+# Apply the validated SANDBOX_ENV entries to the sandboxed command only:
+# `env NAME=VALUE… CMD` runs inside the sandbox, after the backend has
+# set up and scrubbed the child environment, so these values never
+# reach the launcher, the chaperon or the backend binary. Agent profile
+# exports (e.g. CLAUDE_CONFIG_DIR) keep precedence, as before.
+if [[ ${#_SANDBOX_CHILD_ENV[@]} -gt 0 ]]; then
+    _child_env=()
+    for _env_entry in "${_SANDBOX_CHILD_ENV[@]}"; do
+        _env_name="${_env_entry%%=*}"
+        _env_is_agent=false
+        for _agent_export in "${_AGENT_ENV_EXPORTS[@]+"${_AGENT_ENV_EXPORTS[@]}"}"; do
+            [[ "${_agent_export%%=*}" == "$_env_name" ]] && { _env_is_agent=true; break; }
+        done
+        if $_env_is_agent; then
+            echo "WARNING: SANDBOX_ENV entry '${_env_name}' ignored: set by an enabled agent profile." >&2
+            continue
+        fi
+        _child_env+=("$_env_entry")
+    done
+    if [[ ${#_child_env[@]} -gt 0 ]]; then
+        _env_bin=/usr/bin/env
+        [[ -x "$_env_bin" ]] || _env_bin=/bin/env
+        set -- "$_env_bin" -- "${_child_env[@]}" "$@"
+    fi
+    unset _child_env _env_entry _env_name _env_is_agent _agent_export _env_bin
 fi
 
 # Prepare sandbox (reads _CHAPERON_FIFO_DIR for bind-mounts)

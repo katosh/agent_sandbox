@@ -157,9 +157,12 @@ EXTRA_BLOCKED_PATHS=()
 
 EXTRA_WRITABLE_PATHS=()
 
-# Per-project environment variables (KEY=VALUE strings).
-# Applied to the host environment before the backend runs, so backend
-# PATH prepends (chaperon stubs, sandbox bin) layer on top naturally.
+# Per-project environment variables (KEY=VALUE strings) for the
+# SANDBOXED COMMAND. Applied to the child only (never to the launcher
+# shell, so they cannot change sandbox settings); see
+# _prepare_sandbox_env for the rules. PATH is the one exception: it is
+# exported host-side before the backend runs, so backend PATH prepends
+# (chaperon stubs, sandbox bin) layer on top naturally.
 # Use ${PATH} in values to reference the current PATH, e.g.:
 #   SANDBOX_ENV+=("PATH=/my/bin:${PATH}")
 # Set these in conf.d/*.conf files, guarded by _PROJECT_DIR.
@@ -2547,6 +2550,89 @@ _apply_launch_overrides() {
     if [[ -n "${_ADMIN_CONF:-}" ]]; then
         _enforce_admin_scalars "Launch override (env/CLI)"
     fi
+    return 0
+}
+
+# ── SANDBOX_ENV: validate and split into host PATH + child env ──
+#
+# SANDBOX_ENV used to be `export`ed into the launcher shell after admin
+# enforcement, so an entry named like a config variable
+# (NETWORK_FILTER_MODE=open, PRIVATE_TMP=false, HOME_ACCESS=write, …)
+# silently replaced the resolved — admin-enforced — value, and entries
+# like TMPDIR or LD_PRELOAD changed how the launcher itself behaved.
+#
+# Now:
+#   * PATH  — still exported host-side (documented layering: the
+#             backend prepends chaperon/sandbox stubs on top). The
+#             launcher's PATH is the user's own anyway.
+#   * every other entry is applied ONLY to the sandboxed command (via
+#     `env NAME=VALUE… CMD` at exec time, see sandbox-exec.sh), and is
+#     rejected with a warning when the name
+#       - is not a valid identifier,
+#       - is a config variable (_CONFIG_ARRAYS / _CONFIG_SCALARS),
+#       - is launcher-internal (leading `_`) or a sandbox/launcher
+#         setting family (SANDBOX_*, CHAPERON_*, LANDLOCK_*, NETWORK_*,
+#         CLEANUP_MATERIALIZED_BLOCKED_FILES),
+#       - is hidden (HIDE_FROM_SANDBOX, incl. the built-in floor), or
+#       - is blocked (BLOCKED_ENV_VARS / BLOCKED_ENV_PATTERNS, unless in
+#         ALLOWED_ENV_VARS) — injecting a value for a blocked name would
+#         otherwise bypass the scrub that previously removed it.
+#
+# Sets: _SANDBOX_ENV_PATH (empty = no PATH entry), _SANDBOX_CHILD_ENV.
+_sandbox_env_reject_reason() {
+    local _n="$1" _c
+    if [[ ! "$_n" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        echo "not a valid variable name"; return 0
+    fi
+    for _c in "${_CONFIG_ARRAYS[@]}" "${_CONFIG_SCALARS[@]}"; do
+        if [[ "$_n" == "$_c" ]]; then
+            echo "is a sandbox config variable — set it as a config value, not via SANDBOX_ENV"; return 0
+        fi
+    done
+    case "$_n" in
+        _*)
+            echo "names starting with '_' are reserved for the launcher"; return 0 ;;
+        SANDBOX_*|CHAPERON_*|LANDLOCK_*|NETWORK_*|CLEANUP_MATERIALIZED_BLOCKED_FILES)
+            echo "is a sandbox/launcher setting"; return 0 ;;
+    esac
+    while IFS= read -r _c; do
+        if [[ "$_n" == "$_c" ]]; then
+            echo "is listed in HIDE_FROM_SANDBOX"; return 0
+        fi
+    done < <(_hide_from_sandbox_names 2>/dev/null)
+    if ! _is_allowed_env "$_n"; then
+        for _c in "${BLOCKED_ENV_VARS[@]+"${BLOCKED_ENV_VARS[@]}"}"; do
+            if [[ "$_n" == "$_c" ]]; then
+                echo "is in BLOCKED_ENV_VARS (add it to ALLOWED_ENV_VARS to pass it)"; return 0
+            fi
+        done
+        if _is_blocked_by_pattern "$_n"; then
+            echo "matches BLOCKED_ENV_PATTERNS (add it to ALLOWED_ENV_VARS to pass it)"; return 0
+        fi
+    fi
+    return 1
+}
+
+_prepare_sandbox_env() {
+    _SANDBOX_ENV_PATH=""
+    _SANDBOX_CHILD_ENV=()
+    local _entry _name _reason
+    for _entry in "${SANDBOX_ENV[@]+"${SANDBOX_ENV[@]}"}"; do
+        if [[ "$_entry" != *=* ]]; then
+            echo "WARNING: SANDBOX_ENV entry '${_entry}' is not NAME=VALUE — ignored." >&2
+            continue
+        fi
+        _name="${_entry%%=*}"
+        if [[ "$_name" == "PATH" ]]; then
+            _SANDBOX_ENV_PATH="${_entry#*=}"
+            continue
+        fi
+        if _reason="$(_sandbox_env_reject_reason "$_name")"; then
+            echo "WARNING: SANDBOX_ENV entry '${_name}' ignored: ${_reason}." >&2
+            continue
+        fi
+        _SANDBOX_CHILD_ENV+=("$_entry")
+    done
     return 0
 }
 
