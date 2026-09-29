@@ -329,8 +329,13 @@ fi
 # Detect available backends
 AVAILABLE_BACKENDS=()
 
+# Backend-detection probe timeout (seconds). A dry-run stats every bind-mount
+# path, which is slow on networked HPC filesystems (e.g. /fh/fast), so the
+# default is generous. Override with SANDBOX_TEST_PROBE_TIMEOUT.
+PROBE_TIMEOUT="${SANDBOX_TEST_PROBE_TIMEOUT:-30}"
+
 check_backend() {
-    timeout 5 "$SANDBOX_EXEC" --backend "$1" --dry-run --project-dir "$PROJECT_DIR" -- true &>/dev/null
+    timeout "$PROBE_TIMEOUT" "$SANDBOX_EXEC" --backend "$1" --dry-run --project-dir "$PROJECT_DIR" -- true &>/dev/null
 }
 
 if [[ -n "$BACKEND_FLAG" ]]; then
@@ -345,7 +350,7 @@ fi
 
 if [[ ${#AVAILABLE_BACKENDS[@]} -eq 0 ]]; then
     echo "ERROR: No sandbox backends available."
-    timeout 5 "$SANDBOX_EXEC" --dry-run --project-dir "$PROJECT_DIR" -- true 2>&1 || true
+    timeout "$PROBE_TIMEOUT" "$SANDBOX_EXEC" --dry-run --project-dir "$PROJECT_DIR" -- true 2>&1 || true
     exit 1
 fi
 
