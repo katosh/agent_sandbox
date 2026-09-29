@@ -3050,8 +3050,8 @@ else
     # These are rejected by chaperon/handlers/_handler_lib.sh
     # but were previously untested — the only way to know the deny list
     # is still wired up is to assert each one rejects.
-    # Note: --export is intentionally allowed — compute-node jobs run
-    # inside sandbox-exec.sh which filters env vars regardless.
+    # Note: --export is allowed but rewritten (names only reach Slurm,
+    # values are applied inside the sandbox) — see section 6.7.
     if sandbox sbatch --prolog=/tmp/foo.sh --wrap="echo pwned"; then
         fail "sbatch --prolog should be rejected by chaperon"
     else
@@ -3082,9 +3082,9 @@ else
         fi
     fi
 
-    # 6c-ter. #SBATCH --export=ALL directive in script body is allowed.
-    # --export is safe because compute-node jobs run inside sandbox-exec.sh
-    # which filters env vars regardless of what --export passes through.
+    # 6c-ter. #SBATCH --export=ALL directive in script body is allowed
+    # (rewritten by the chaperon; values never reach the host-side job
+    # environment — see section 6.7).
     # Create script in PROJECT_DIR so it's visible inside the sandbox
     # (mktemp creates in /tmp which is isolated by --private-tmp).
     _scriptfile="$PROJECT_DIR/.sbatch-export-test-$$.sh"
@@ -4035,6 +4035,408 @@ _smuggle_unit_run \
     "Chaperon accepts clean #SBATCH --output= directive (rebuild path)" \
     "$_clean_output" 0 ""
 
+echo ""
+
+# ── 6.7 Chaperon hardening: --export, job wrapper, srun steps, state dir ──
+#
+# Regression tests for the chaperon hardening pass (FINDINGS C1-C8).
+# Unit tests source the chaperon handler libraries directly and assert
+# on the argv / wrapper text they produce; nothing generated here is
+# executed on the host. The end-to-end --export test submits through a
+# sandbox and needs real Slurm.
+
+echo "6.7 Chaperon hardening (--export, wrapper, srun steps, .sandbox-state)"
+
+_H67_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sbx-test-67-XXXXXX")"
+trap_rm_dir "$_H67_DIR"
+
+# Recording stub for REAL_SBATCH / REAL_SRUN: writes its argv (one per
+# line) to $_REC_OUT and, if the last arg is a file, copies it to
+# $_REC_OUT.script. Only ever run with chaperon-built argv.
+cat > "$_H67_DIR/recorder" <<'REC'
+#!/bin/bash
+printf '%s\n' "$@" > "$_REC_OUT"
+_last="${!#}"
+[[ -f "$_last" ]] && cp "$_last" "$_REC_OUT.script"
+exit 0
+REC
+chmod +x "$_H67_DIR/recorder"
+
+# 6.7a. Denied / malformed --export names are rejected (CLI).
+if (
+    set -u
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    PROJECT_DIR=/proj
+    _bad=0
+    for _v in BASH_ENV=/p/x.sh ENV=/p/x LD_PRELOAD=/p/x.so LD_AUDIT=/p/a.so \
+              BASH_FUNC_cd%%=x PATH=/p/bin SHELLOPTS=xtrace BASHOPTS=x PS4=x \
+              GCONV_PATH=/p SANDBOX_CONF=/p/c _SANDBOX_LIB_NO_INIT=1 \
+              _CHAPERON_FIFO_DIR=/p CHAPERON_LOG_LEVEL=debug REAL_SBATCH=/p/s \
+              SLURM_CONF=/p/s _PASSWD_SRC_FILE=/p/pw _GROUP_SRC_FILE=/p/g \
+              HOME_ACCESS=write BWRAP=/p/b NETWORK_FILTER_MODE=open \
+              PRIVATE_TMP=false FILTER_PASSWD=false 1BAD=x A-B=x; do
+        REQ_ARGS=("--export=ALL,$_v")
+        _err="$(validate_sbatch_args 2>&1)" && { echo "accepted: $_v"; _bad=1; continue; }
+        [[ "$_err" == *"may not set"* || "$_err" == *"not a valid"* ]] \
+            || { echo "unclear message for $_v: $_err"; _bad=1; }
+    done
+    # Bare denied names and the space-separated form are rejected too.
+    REQ_ARGS=(--export LD_PRELOAD)
+    validate_sbatch_args 2>/dev/null && { echo "accepted bare LD_PRELOAD"; _bad=1; }
+    exit $_bad
+); then
+    pass "sbatch --export rejects shell/loader/Slurm/sandbox-control names (BASH_ENV, LD_*, PATH, SANDBOX_*, config vars, ...)"
+else
+    fail "sbatch --export accepted a denied name or gave an unclear message"
+fi
+
+# 6.7b. Accepted --export values are rewritten so only ALL/NONE/NIL or
+# bare NAMES reach Slurm; NAME=VALUE pairs are captured for in-sandbox use.
+if (
+    set -u
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    PROJECT_DIR=/proj
+    _bad=0
+    _chk() {  # <expected --export value> <expected assignments (| sep)> <args...>
+        local _exp="$1" _asg="$2"; shift 2
+        REQ_ARGS=("$@")
+        validate_sbatch_args 2>/dev/null || { echo "rejected: $*"; _bad=1; return; }
+        local _got="" _a
+        for _a in "${VALIDATED_ARGS[@]}"; do [[ "$_a" == --export=* ]] && _got="${_a#--export=}"; done
+        local IFS='|'
+        local _gasg="${_EXPORT_ENV_ASSIGNMENTS[*]}"
+        [[ "$_got" == "$_exp" && "$_gasg" == "$_asg" ]] \
+            || { echo "$* -> export='$_got' assign='$_gasg' (want '$_exp' / '$_asg')"; _bad=1; }
+        [[ "$_got" != *=* ]] || { echo "value reached Slurm: $_got"; _bad=1; }
+    }
+    _chk ALL ""               --export=ALL
+    _chk NONE ""              --export=NONE
+    _chk NIL ""               --export=nil
+    _chk FOO ""               --export=FOO
+    _chk ALL "FOO=bar"        --export=ALL,FOO=bar
+    _chk ALL "FOO=a b|X=1"    "--export=ALL,FOO=a b,X=1"
+    _chk FOO,BAZ "FOO=bar"    --export=FOO=bar,BAZ
+    _chk FOO "FOO=x=y"        --export FOO=x=y
+    _chk ALL "B=2"            --export=A=1 --export=ALL,B=2
+    REQ_ARGS=(--export=NONE,FOO=bar)
+    validate_sbatch_args 2>/dev/null && { echo "NONE,FOO=bar accepted"; _bad=1; }
+    exit $_bad
+); then
+    pass "sbatch --export rewritten to names only (ALL/NONE/NIL/NAME list); NAME=VALUE kept for in-sandbox env"
+else
+    fail "sbatch --export rewrite wrong (see verbose output)"
+fi
+
+# 6.7c. Generated job wrapper: `#!/bin/bash -p`, only builtins before
+# the absolute-path sandbox-exec.sh exec, launcher config scrubbed, and
+# NAME=VALUE applied via /usr/bin/env inside the sandbox. Checked for
+# all three wrapper shapes (shell, shell + staging prelude, non-shell).
+_h67_wrapper_check() {
+    # <wrapper file> <sandbox_exec> → prints problems, returns 1 on any
+    local _w="$1" _se="$2" _bad=0 _line _in_heredoc="" _first _l1
+    IFS= read -r _l1 < "$_w"
+    [[ "$_l1" == "#!/bin/bash -p" ]] || { echo "shebang: $_l1"; _bad=1; }
+    bash -n "$_w" || { echo "wrapper is not valid bash"; _bad=1; }
+    local _reached_exec=false
+    while IFS= read -r _line; do
+        if [[ -n "$_in_heredoc" ]]; then
+            [[ "$_line" == "$_in_heredoc" ]] && _in_heredoc=""
+            continue
+        fi
+        [[ -z "$_line" || "$_line" == \#* ]] && continue
+        if [[ "$_line" =~ \<\<\'([A-Za-z0-9_]+)\' ]]; then
+            _in_heredoc="${BASH_REMATCH[1]}"
+        fi
+        [[ "$_line" == *'$('* || "$_line" == *'`'* ]] && { echo "command substitution before exec: $_line"; _bad=1; }
+        _first="${_line%% *}"
+        [[ "$_first" == *=* && "$_first" != *'('* ]] && _first="${_line#* }" && _first="${_first%% *}"
+        case "$(type -t "$_first")" in
+            builtin|keyword) ;;
+            *) [[ "$_line" == _SCRIPT=* ]] || { echo "non-builtin '$_first': $_line"; _bad=1; } ;;
+        esac
+        if [[ "$_line" == *"exec "* ]]; then
+            local _after="${_line#*exec }"
+            [[ "${_after%% *}" == "$_se" ]] || { echo "exec target not absolute sandbox-exec: $_after"; _bad=1; }
+            _reached_exec=true
+            break
+        fi
+    done < "$_w"
+    $_reached_exec || { echo "no exec of sandbox-exec.sh found"; _bad=1; }
+    local _n
+    for _n in BASH_ENV ENV HOME_ACCESS NETWORK_FILTER_MODE PRIVATE_TMP FILTER_PASSWD \
+              _PASSWD_SRC_FILE _GROUP_SRC_FILE BWRAP; do
+        grep -qE "^unset -v (.* )?$_n( |\$)" "$_w" || { echo "not unset: $_n"; _bad=1; }
+    done
+    grep -qF '"${!SANDBOX_@}"' "$_w" && grep -qF '"${!REAL_@}"' "$_w" \
+        || { echo "SANDBOX_*/REAL_* prefix scrub missing"; _bad=1; }
+    grep -q 'cat' <(sed -n '/Chaperon wrapper/,/<<'"'"'/p' "$_w") && { echo "cat still used"; _bad=1; }
+    return $_bad
+}
+for _h67_case in "shell|landlock|#!/bin/bash" "prelude|bwrap|#!/bin/bash" "python|landlock|#!/usr/bin/env python3"; do
+    IFS='|' read -r _h67_name _h67_be _h67_sb <<< "$_h67_case"
+    if (
+        set -u
+        export SANDBOX_BACKEND="$_h67_be" SANDBOX_QUIET=true
+        source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+        PROJECT_DIR=/proj
+        REQ_ARGS=("--export=ALL,FOO=bar baz")
+        validate_sbatch_args 2>/dev/null || exit 1
+        _w="$_H67_DIR/wrapper-$_h67_name"
+        create_wrapped_script /opt/sbx/sandbox-exec.sh /proj "$_h67_sb"$'\n#SBATCH --time=5\necho "$FOO" \\\\ $1' "$_w" arg1 2>/dev/null || exit 1
+        _h67_wrapper_check "$_w" /opt/sbx/sandbox-exec.sh || exit 1
+        grep -qF -- "-- /usr/bin/env FOO=bar\\ baz " "$_w" || { echo "env prefix missing"; exit 1; }
+        grep -qE '^#SBATCH --export' "$_w" && { echo "CLI --export leaked into directives"; exit 1; }
+        grep -qE '^export SANDBOX_QUIET=true$' "$_w" || exit 1
+        exit 0
+    ); then
+        pass "job wrapper ($_h67_name): '#!/bin/bash -p', builtins only before absolute sandbox-exec.sh, config scrubbed, FOO via /usr/bin/env"
+    else
+        fail "job wrapper ($_h67_name) hardening check failed" "$(cat "$_H67_DIR/wrapper-$_h67_name" 2>/dev/null | head -20)"
+    fi
+done
+unset _h67_case _h67_name _h67_be _h67_sb
+
+# 6.7d. #SBATCH --export directives: rewritten (last one wins), denied
+# names fail the submission, and a CLI --export overrides them.
+if (
+    set -u
+    export SANDBOX_BACKEND=landlock
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    PROJECT_DIR=/proj; _bad=0
+    REQ_ARGS=(); validate_sbatch_args || exit 1
+    _w="$_H67_DIR/dir-wrapper"
+    create_wrapped_script /opt/sbx/sandbox-exec.sh /proj $'#!/bin/bash\n#SBATCH --export=NONE\n#SBATCH --export=ALL,FOO=bar\necho hi' "$_w" 2>/dev/null || { echo "valid directive rejected"; exit 1; }
+    [[ "$(grep -c '^#SBATCH --export' "$_w")" == 1 ]] && grep -qx '#SBATCH --export=ALL' "$_w" || { echo "directive not rewritten"; _bad=1; }
+    grep -qF -- '-- /usr/bin/env FOO=bar ' "$_w" || { echo "directive FOO=bar not applied in-sandbox"; _bad=1; }
+    create_wrapped_script /opt/sbx/sandbox-exec.sh /proj $'#!/bin/bash\n#SBATCH --export=ALL,BASH_ENV=/proj/x.sh\necho hi' "$_w" 2>/dev/null \
+        && { echo "#SBATCH --export=ALL,BASH_ENV accepted"; _bad=1; }
+    create_wrapped_script /opt/sbx/sandbox-exec.sh /proj $'#!/bin/bash\n#SBATCH --export=ALL,SANDBOX_CONF=/proj/c\necho hi' "$_w" 2>/dev/null \
+        && { echo "#SBATCH --export=ALL,SANDBOX_CONF accepted"; _bad=1; }
+    REQ_ARGS=(--export=NONE); validate_sbatch_args || exit 1
+    create_wrapped_script /opt/sbx/sandbox-exec.sh /proj $'#!/bin/bash\n#SBATCH --export=ALL,LD_PRELOAD=/x\necho hi' "$_w" 2>/dev/null \
+        || { echo "CLI --export did not override directive"; _bad=1; }
+    grep -q '^#SBATCH --export' "$_w" && { echo "overridden directive still emitted"; _bad=1; }
+    exit $_bad
+); then
+    pass "#SBATCH --export directives rewritten (last wins), denied names fail the submission, CLI --export overrides"
+else
+    fail "#SBATCH --export directive handling wrong"
+fi
+
+# 6.7e. The chaperon's config-variable mirror covers sandbox-lib.sh's
+# _CONFIG_SCALARS + _CONFIG_ARRAYS (every one is --export-denied and
+# scrubbed by the wrapper).
+if (
+    set -u
+    _decl="$(sed -n '/^_CONFIG_ARRAYS=(/,/^)/p; /^_CONFIG_SCALARS=(/,/^)/p' "$SCRIPT_DIR/sandbox-lib.sh")"
+    eval "$_decl"
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    (( ${#_CONFIG_SCALARS[@]} > 5 && ${#_CONFIG_ARRAYS[@]} > 5 )) || { echo "could not parse lists"; exit 1; }
+    for _n in "${_CONFIG_SCALARS[@]}" "${_CONFIG_ARRAYS[@]}"; do
+        _is_denied_export_name "$_n" || { echo "not denied: $_n"; exit 1; }
+        _found=false
+        for _m in "${_CHAPERON_LAUNCHER_CONFIG_VARS[@]}"; do [[ "$_m" == "$_n" ]] && _found=true; done
+        $_found || { echo "missing from _CHAPERON_LAUNCHER_CONFIG_VARS: $_n"; exit 1; }
+    done
+); then
+    pass "chaperon config-var mirror covers sandbox-lib.sh _CONFIG_SCALARS/_CONFIG_ARRAYS"
+else
+    fail "chaperon _CHAPERON_LAUNCHER_CONFIG_VARS out of sync with sandbox-lib.sh"
+fi
+
+# 6.7f. srun step mode (SLURM_JOB_ID set) wraps the command in
+# sandbox-exec.sh like allocation mode; argv inspected via a stub srun.
+if (
+    set -u
+    export _REC_OUT="$_H67_DIR/srun.argv" REAL_SRUN="$_H67_DIR/recorder" SLURM_JOB_ID=4242 SANDBOX_QUIET=false
+    source "$SCRIPT_DIR/chaperon/handlers/srun.sh"
+    REQ_ARGS=(-n 2 -- hostname -s); REQ_CWD=""
+    handle_srun /proj /opt/sbx/sandbox-exec.sh >/dev/null 2>&1 || exit 1
+    mapfile -t _argv < "$_REC_OUT"
+    _want=(-n 2 -- /opt/sbx/sandbox-exec.sh --project-dir /proj -- hostname -s)
+    [[ "${_argv[*]}" == "${_want[*]}" ]] || { echo "got: ${_argv[*]}"; exit 1; }
+    # quiet sessions keep the absolute-path env prefix in step mode too
+    SANDBOX_QUIET=true
+    REQ_ARGS=(-- true)
+    handle_srun /proj /opt/sbx/sandbox-exec.sh >/dev/null 2>&1 || exit 1
+    mapfile -t _argv < "$_REC_OUT"
+    _want=(-- /usr/bin/env SANDBOX_QUIET=true /opt/sbx/sandbox-exec.sh --project-dir /proj -- true)
+    [[ "${_argv[*]}" == "${_want[*]}" ]] || { echo "got (quiet): ${_argv[*]}"; exit 1; }
+); then
+    pass "srun step mode wraps the command in sandbox-exec.sh --project-dir (stub srun argv)"
+else
+    fail "srun step mode does not wrap the command in sandbox-exec.sh"
+fi
+
+# 6.7g. handle_sbatch end to end with a stub sbatch: rewritten
+# --export reaches the real sbatch argv, the value only the wrapper.
+if (
+    set -u
+    export _REC_OUT="$_H67_DIR/sbatch.argv" REAL_SBATCH="$_H67_DIR/recorder" SANDBOX_BACKEND=landlock
+    _proj="$_H67_DIR/proj-g"; mkdir -p "$_proj"
+    source "$SCRIPT_DIR/chaperon/handlers/sbatch.sh"
+    REQ_ARGS=(--export=ALL,FOO=bar); REQ_CWD="$_proj"; REQ_SCRIPT=$'#!/bin/bash\necho "$FOO"'; REQ_SCRIPT_ARGS=()
+    handle_sbatch "$_proj" /opt/sbx/sandbox-exec.sh >/dev/null 2>&1 || exit 1
+    grep -qx -- '--export=ALL' "$_REC_OUT" || { echo "no --export=ALL in argv"; exit 1; }
+    grep -q 'FOO' "$_REC_OUT" && { echo "FOO reached sbatch argv"; exit 1; }
+    grep -qF -- '-- /usr/bin/env FOO=bar ' "$_REC_OUT.script" || { echo "wrapper lacks env FOO=bar"; exit 1; }
+    : > "$_REC_OUT"
+    REQ_ARGS=(--export=ALL,BASH_ENV=/x)
+    handle_sbatch "$_proj" /opt/sbx/sandbox-exec.sh >/dev/null 2>&1 && exit 1
+    [[ ! -s "$_REC_OUT" ]] || { echo "sbatch invoked despite denied --export"; exit 1; }
+); then
+    pass "handle_sbatch: real sbatch sees --export=ALL only; FOO=bar only in the wrapper; denied name never submitted"
+else
+    fail "handle_sbatch --export rewrite / rejection not applied end to end"
+fi
+
+# 6.7h. .sandbox-state symlink refusal (C6): the chaperon must not
+# create or use .sandbox-state / slurm-logs / chaperon through a
+# symlink, nor stage onto an existing symlink.
+if (
+    set -u
+    export SANDBOX_BACKEND=bwrap
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    _bad=0
+    _p="$_H67_DIR/proj-h1"; _t="$_H67_DIR/elsewhere-h1"; mkdir -p "$_p" "$_t"
+    ln -s "$_t" "$_p/.sandbox-state"
+    _ensure_sandbox_state_dir "$_p" 2>/dev/null && { echo "symlinked .sandbox-state accepted"; _bad=1; }
+    [[ -z "$(ls -A "$_t")" ]] || { echo "wrote through .sandbox-state symlink"; _bad=1; }
+    _p="$_H67_DIR/proj-h2"; mkdir -p "$_p/.sandbox-state"
+    ln -s "$_t" "$_p/.sandbox-state/slurm-logs"
+    _ensure_sandbox_state_dir "$_p" 2>/dev/null && { echo "symlinked slurm-logs accepted"; _bad=1; }
+    _p="$_H67_DIR/proj-h3"; mkdir -p "$_p/.sandbox-state/chaperon"
+    ln -s "$_t" "$_p/.sandbox-state/slurm-logs"
+    _prepare_staging_output_path "$_p" "$_p/.sandbox-state/slurm-logs/out.log" 2>/dev/null && { echo "staging via symlinked slurm-logs accepted"; _bad=1; }
+    _p="$_H67_DIR/proj-h4"; mkdir -p "$_p"
+    _ensure_sandbox_state_dir "$_p" 2>/dev/null || { echo "clean project refused"; _bad=1; }
+    ln -s "$_t/target" "$_p/.sandbox-state/slurm-logs/out.log"
+    _prepare_staging_output_path "$_p" "$_p/.sandbox-state/slurm-logs/out.log" 2>/dev/null && { echo "symlinked staging file accepted"; _bad=1; }
+    _prepare_staging_output_path "$_p" "$_p/.sandbox-state/slurm-logs/sub/ok-%j.log" 2>/dev/null || { echo "clean staging refused"; _bad=1; }
+    # Chaperon log dir falls back to XDG when .sandbox-state is a symlink.
+    source "$SCRIPT_DIR/chaperon/logging.sh"
+    XDG_STATE_HOME="$_H67_DIR/xdg" chaperon_log_init "$_H67_DIR/proj-h1" "" 2>/dev/null
+    [[ "$_CHAPERON_LOG_DIR" == "$_H67_DIR/xdg/"* ]] || { echo "log dir: $_CHAPERON_LOG_DIR"; _bad=1; }
+    [[ -z "$(ls -A "$_t")" ]] || { echo "log written through symlink"; _bad=1; }
+    exit $_bad
+); then
+    pass "chaperon refuses symlinked .sandbox-state components and pre-existing staging symlinks (log falls back to XDG)"
+else
+    fail "chaperon followed a symlinked .sandbox-state component"
+fi
+
+# 6.7i. Running chaperon: handlers are loaded once at startup (C4) and
+# the logged cwd is escaped (C5). Uses a private copy of chaperon/ so
+# a handler file can be modified after startup; REAL_SINFO echoes argv.
+_h67_chap_test() {
+    local _root="$_H67_DIR/chap" _fifo _proj _pid _i _log _out
+    mkdir -p "$_root/fifo" "$_root/proj" "$_root/xdg"
+    cp -r "$SCRIPT_DIR/chaperon" "$_root/chaperon"
+    _fifo="$_root/fifo"; _proj="$_root/proj"
+    chmod 700 "$_fifo"; mkfifo -m 600 "$_fifo/req"
+    printf '#!/bin/bash\necho "ARGS:$*"\n' > "$_root/echo-args"; chmod +x "$_root/echo-args"
+    XDG_STATE_HOME="$_root/xdg" SANDBOX_BACKEND=landlock REAL_SINFO="$_root/echo-args" \
+        bash "$_root/chaperon/chaperon.sh" "$_fifo" "$_proj" /opt/sbx/sandbox-exec.sh \
+        >/dev/null 2>"$_root/chaperon.err" &
+    _pid=$!
+    for _i in $(seq 1 50); do
+        _log="$(ls "$_root/xdg/agent-sandbox/chaperon/"*.log 2>/dev/null | head -1)"
+        [[ -n "$_log" ]] && break
+        sleep 0.1
+    done
+    if [[ -z "$_log" ]]; then
+        kill "$_pid" 2>/dev/null; wait "$_pid" 2>/dev/null
+        fail "test chaperon did not start" "$(cat "$_root/chaperon.err")"
+        return
+    fi
+    # C4: replace the handler on disk AFTER startup.
+    printf 'handle_sinfo() { echo HANDLER_RELOADED; }\n' > "$_root/chaperon/handlers/sinfo.sh"
+    # C5: request from a cwd whose name carries a newline + forged entry.
+    local _evil="$_proj/d"$'\n'"1999-01-01T00:00:00Z [ERROR] forged-entry"
+    mkdir -p "$_evil"
+    _out="$(cd "$_evil" && _CHAPERON_FIFO_DIR="$_fifo" timeout 20 bash "$_root/chaperon/stubs/sinfo" --version 2>&1)"
+    sleep 0.2
+    kill "$_pid" 2>/dev/null; wait "$_pid" 2>/dev/null
+    if [[ "$_out" == *"ARGS:--version"* && "$_out" != *HANDLER_RELOADED* ]]; then
+        pass "chaperon keeps handlers loaded at startup (modified handler file ignored)"
+    else
+        fail "chaperon re-read a handler file after startup" "output: $_out"
+    fi
+    if grep -q '^1999-01-01T00:00:00Z \[ERROR\] forged-entry' "$_log"; then
+        fail "newline in request cwd forged a chaperon log line" "$(tail -5 "$_log")"
+    elif grep -qF 'cwd='"$_proj"'/d\n1999-01-01T00:00:00Z [ERROR] forged-entry' "$_log"; then
+        pass "chaperon log escapes newlines in the request cwd"
+    else
+        fail "chaperon request log line for escaped cwd not found" "$(tail -5 "$_log")"
+    fi
+}
+_h67_chap_test
+unset -f _h67_chap_test
+
+# 6.7j. Stale per-launch dirs (C8): a tagged dir whose owner process is
+# gone is pruned at launch; one whose owner is alive is kept.
+_h67_tmp="${TMPDIR:-/tmp}"
+_h67_dead="$(mktemp -d "$_h67_tmp/agent-sandbox-mailblock-XXXXXX")"
+_h67_live="$(mktemp -d "$_h67_tmp/agent-sandbox-mailblock-XXXXXX")"
+trap_rm_dir "$_h67_dead"; trap_rm_dir "$_h67_live"
+_h67_ns="$(stat -L -c %i /proc/self/ns/pid)"
+read -r _h67_stat < "/proc/$$/stat"; read -r -a _h67_f <<< "${_h67_stat##*) }"
+printf '%s %s %s %s' "$HOSTNAME" "$_h67_ns" "$$" "${_h67_f[19]}" > "$_h67_live/.owner"
+printf '%s %s %s %s' "$HOSTNAME" "$_h67_ns" "999999999" "1" > "$_h67_dead/.owner"
+sandbox true || true
+if [[ ! -e "$_h67_dead" && -d "$_h67_live" ]]; then
+    pass "launch prunes per-launch dirs whose tagged owner is gone, keeps live ones"
+else
+    fail "stale per-launch dir pruning wrong" "dead exists: $([[ -e $_h67_dead ]] && echo yes), live exists: $([[ -d $_h67_live ]] && echo yes)"
+fi
+unset _h67_tmp _h67_dead _h67_live _h67_ns _h67_stat _h67_f
+
+# 6.7k. PRIVATE_TMP=false warns that chaperon/helper dirs are shared (C7).
+if has_mount_ns; then
+    _h67_err="$(PRIVATE_TMP=false SANDBOX_QUIET=false timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- true 2>&1 >/dev/null)"
+    if [[ "$_h67_err" == *"PRIVATE_TMP=false"*"chaperon"* ]]; then
+        pass "PRIVATE_TMP=false emits the shared-/tmp chaperon warning"
+    else
+        fail "PRIVATE_TMP=false did not warn about shared chaperon dirs" "$_h67_err"
+    fi
+    unset _h67_err
+else
+    skip "PRIVATE_TMP warning applies to bwrap/firejail only"
+fi
+
+# 6.7l. End to end (real Slurm): --export=ALL,FOO=bar still delivers
+# FOO=bar to the job script inside the sandbox; a denied name is
+# refused before submission.
+if ! command -v sbatch &>/dev/null; then
+    skip "sbatch --export end-to-end: sbatch not found"
+else
+    _h67_out=$(mktemp -p "$PROJECT_DIR" .test-export-XXXXXX)
+    _TEST_TEMP_FILES+=("$_h67_out")
+    # Explicit cd: the submission cwd must be inside the project (this
+    # test is about --export, not about the backend's initial cwd).
+    timeout 90 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- \
+        bash -c 'cd "$1" && sbatch --wait --export=ALL,FOO=bar --output="$2" \
+            --wrap='"'"'echo "FOO=${FOO:-unset} ACTIVE=${SANDBOX_ACTIVE:-0}"'"'"'' \
+        _ "$PROJECT_DIR" "$_h67_out" >/dev/null 2>&1
+    if grep -q '^FOO=bar ACTIVE=1$' "$_h67_out" 2>/dev/null; then
+        pass "sbatch --export=ALL,FOO=bar delivers FOO=bar inside the sandboxed job"
+    else
+        fail "sbatch --export=ALL,FOO=bar did not deliver FOO=bar in-sandbox" "$(cat "$_h67_out" 2>/dev/null)"
+    fi
+    if sandbox_must_run bash -c 'cd "$1" && sbatch --export=ALL,BASH_ENV=/tmp/x.sh --wrap=true' _ "$PROJECT_DIR"; then
+        fail "sbatch --export=ALL,BASH_ENV=... should be rejected"
+    elif [[ $? -ne 125 ]]; then
+        if [[ "$OUTPUT $OUTPUT_ERR" == *"may not set 'BASH_ENV'"* ]]; then
+            pass "sbatch --export=ALL,BASH_ENV=... rejected through the sandbox"
+        else
+            fail "sbatch --export BASH_ENV rejection message unclear" "$OUTPUT $OUTPUT_ERR"
+        fi
+    fi
+    unset _h67_out
+fi
+
+unset -f _h67_wrapper_check
 echo ""
 
 # ── 7. Sandbox self-protection ───────────────────────────────────
