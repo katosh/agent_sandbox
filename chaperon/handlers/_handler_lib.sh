@@ -50,6 +50,62 @@ _sandbox_state_dir() {
     printf '%s/.sandbox-state' "$1"
 }
 
+# _sandbox_state_safe_mkdir <project_dir> <relpath>
+#
+# Create (if missing) and validate `<project_dir>/<relpath>` one
+# component at a time, e.g. relpath `.sandbox-state/slurm-logs`. The
+# chaperon writes here as the host user, so a symlink planted at any
+# component (by an earlier job, a landlock session, or a pre-existing
+# tree) would redirect its writes outside the project. Refuses (returns
+# 1 with a message on stderr) if any component:
+#   - is a symlink, or
+#   - is not a directory owned by the current user, or
+#   - does not canonicalise to <realpath(project_dir)>/<relpath>
+#     (catches a component swapped between the checks).
+# New components are created with mode 0700. The project dir itself is
+# not checked (it was validated by the launcher).
+_sandbox_state_safe_mkdir() {
+    local _proj="$1" _rel="$2"
+    local _proj_real
+    _proj_real="$(realpath -e -- "$_proj" 2>/dev/null)" || {
+        echo "sandbox: refusing to use '$_proj/$_rel': project dir does not resolve." >&2
+        return 1
+    }
+    local _cur="$_proj" _cur_rel="" _comp _saved_ifs="$IFS"
+    local -a _comps
+    IFS='/'
+    # shellcheck disable=SC2206  # split on / is intentional
+    _comps=( $_rel )
+    IFS="$_saved_ifs"
+    for _comp in "${_comps[@]}"; do
+        [[ -z "$_comp" || "$_comp" == "." ]] && continue
+        if [[ "$_comp" == ".." ]]; then
+            echo "sandbox: refusing to use '$_proj/$_rel': '..' component." >&2
+            return 1
+        fi
+        _cur="$_cur/$_comp"
+        _cur_rel="$_cur_rel/$_comp"
+        if [[ ! -L "$_cur" && ! -e "$_cur" ]]; then
+            mkdir -m 700 -- "$_cur" 2>/dev/null || true
+        fi
+        if [[ -L "$_cur" ]]; then
+            echo "sandbox: refusing to use '$_cur': it is a symlink (possible symlink-plant). Remove it to re-enable Slurm log staging." >&2
+            return 1
+        fi
+        if [[ ! -d "$_cur" || ! -O "$_cur" ]]; then
+            echo "sandbox: refusing to use '$_cur': not a directory owned by $(id -un 2>/dev/null || echo you)." >&2
+            return 1
+        fi
+        local _real
+        _real="$(realpath -e -- "$_cur" 2>/dev/null)" || _real=""
+        if [[ "$_real" != "$_proj_real$_cur_rel" ]]; then
+            echo "sandbox: refusing to use '$_cur': resolves to '$_real', not '$_proj_real$_cur_rel'." >&2
+            return 1
+        fi
+    done
+    return 0
+}
+
 _sandbox_state_slurm_logs_dir() {
     printf '%s/.sandbox-state/slurm-logs' "$1"
 }
@@ -85,12 +141,18 @@ _ensure_sandbox_state_dir() {
     # creates `.sandbox-state/` itself. Short-circuiting then would skip
     # mkdir'ing `slurm-logs/` and slurmstepd's open(--output) would fail
     # with ENOENT. `mkdir -p` is already idempotent — re-run is cheap.
-    mkdir -p "$_state_dir/slurm-logs" "$_state_dir/chaperon" 2>/dev/null || return 1
+    # Component-wise, symlink-refusing creation (C6): never mkdir -p
+    # through a planted symlink.
+    _sandbox_state_safe_mkdir "$_project_dir" ".sandbox-state/slurm-logs" || return 1
+    _sandbox_state_safe_mkdir "$_project_dir" ".sandbox-state/chaperon" || return 1
     chmod 700 "$_state_dir" "$_state_dir/slurm-logs" "$_state_dir/chaperon" 2>/dev/null || true
 
+    # README marker: noclobber makes bash open with O_CREAT|O_EXCL, which
+    # fails on ANY existing path including a dangling symlink, so the
+    # write can never follow a planted link.
     local _marker="$_state_dir/README.md"
-    if [[ ! -e "$_marker" ]]; then
-        cat > "$_marker" <<'_SANDBOX_STATE_README' 2>/dev/null || true
+    if [[ ! -e "$_marker" && ! -L "$_marker" ]]; then
+        ( set -C; cat > "$_marker" ) <<'_SANDBOX_STATE_README' 2>/dev/null || true
 # .sandbox-state/
 
 Hidden chaperon-owned state directory created by `agent-sandbox`.
@@ -126,6 +188,34 @@ See `docs/reference/sandbox-state-dir.md` in the agent-sandbox source
 tree for the full convention and the threat-model framing.
 _SANDBOX_STATE_README
         chmod 644 "$_marker" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# _prepare_staging_output_path <project_dir> <staging_path>
+#
+# Materialise the parent directory of a transformed --output/--error
+# staging path (slurmstepd does not mkdir -p) using the symlink-refusing
+# component walk, and refuse if the staging file itself already exists
+# as a symlink (slurmstepd would follow it when opening the log).
+# %-patterns in the leaf are left alone (resolved by slurmstepd at open
+# time; the literal pattern path is what gets checked).
+_prepare_staging_output_path() {
+    local _proj="$1" _staging="$2"
+    local _logs="$_proj/.sandbox-state/slurm-logs"
+    if [[ "$_staging" != "$_logs/"* ]]; then
+        _sandbox_deny "staging path '$_staging' is outside '$_logs'."
+        return 1
+    fi
+    local _parent_rel
+    _parent_rel="$(dirname -- "${_staging#"$_proj"/}")"
+    if ! _sandbox_state_safe_mkdir "$_proj" "$_parent_rel"; then
+        _sandbox_deny "refusing to stage Slurm output under '$_proj/$_parent_rel' (see message above)."
+        return 1
+    fi
+    if [[ -L "$_staging" ]]; then
+        _sandbox_deny "refusing to stage Slurm output: '$_staging' already exists as a symlink."
+        return 1
     fi
     return 0
 }

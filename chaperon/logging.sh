@@ -68,13 +68,20 @@ chaperon_log_init() {
     #
     # 3) Final fallback: FIFO dir (when neither above can be mkdir'd,
     #    e.g. HOME is tmpfs inside an unusual sandbox config).
+    #
+    # The .sandbox-state branch goes through _sandbox_state_safe_mkdir
+    # (chaperon/handlers/_handler_lib.sh, loaded by chaperon.sh before
+    # this runs): a symlinked or foreign-owned component makes us fall
+    # through to the XDG location instead of writing through the link.
+    # Without the helper (logging.sh sourced standalone) the branch is
+    # skipped entirely — fail safe.
     _CHAPERON_LOG_DIR=""
     case "${SANDBOX_BACKEND:-}" in
         bwrap|firejail)
-            if [[ -n "$project_dir" && -d "$project_dir" ]]; then
-                local _state_chap="$project_dir/.sandbox-state/chaperon"
-                if mkdir -p "$_state_chap" 2>/dev/null; then
-                    _CHAPERON_LOG_DIR="$_state_chap"
+            if [[ -n "$project_dir" && -d "$project_dir" ]] \
+               && declare -F _sandbox_state_safe_mkdir >/dev/null; then
+                if _sandbox_state_safe_mkdir "$project_dir" ".sandbox-state/chaperon"; then
+                    _CHAPERON_LOG_DIR="$project_dir/.sandbox-state/chaperon"
                 fi
             fi
             ;;
