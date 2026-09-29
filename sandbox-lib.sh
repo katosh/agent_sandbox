@@ -237,6 +237,7 @@ _FILTER_PASSWD_OVERRIDE="${FILTER_PASSWD:-}"
 _NETWORK_FILTER_MODE_OVERRIDE="${NETWORK_FILTER_MODE:-}"
 _NETWORK_FILTER_FALLBACK_OVERRIDE="${NETWORK_FILTER_FALLBACK:-}"
 _NETWORK_MAIL_BLOCK_OVERRIDE="${NETWORK_MAIL_BLOCK:-}"
+_MOUNT_GUARD_OVERRIDE="${MOUNT_GUARD:-}"
 
 PRIVATE_TMP=true
 
@@ -455,6 +456,25 @@ SANDBOX_BACKEND="${SANDBOX_BACKEND:-}"
 # Note: counts per-UID system-wide, not per-sandbox. Admin cgroups with
 # pids.max are the primary defense; this is a supplemental safeguard.
 SANDBOX_NPROC_LIMIT=""
+
+# Mount guard (bwrap/firejail). A bind mount can vanish from a RUNNING
+# sandbox: the kernel detaches every mount on a path that is renamed or
+# unlinked from another mount namespace, and an NFS client that finds a
+# cached directory stale detaches every mount at or below it
+# (d_invalidate). A lost read-only overlay or mask fails OPEN. A
+# host-side watcher compares the sandbox's /proc/<pid>/mountinfo with the
+# protective mounts the backend set up, every MOUNT_GUARD_INTERVAL
+# seconds, and reports any loss on the launching terminal (plus syslog
+# and tmux, when available):
+#   kill — (default) terminate the sandbox when a loss exposes a
+#          protected path (a masked file/dir becomes visible, or a
+#          read-only overlay inside a writable host mount becomes
+#          writable); other losses are reported only.
+#   warn — report every loss, never terminate.
+#   off  — no watcher.
+# Harden-only under an admin pin (off < warn < kill).
+MOUNT_GUARD="kill"
+MOUNT_GUARD_INTERVAL=5
 
 # Landlock ABI floor (landlock backend only). Empty means "use the
 # helper's defaults" — see backends/landlock-sandbox.py
@@ -833,6 +853,7 @@ _CONFIG_SCALARS=(
     SLURM_SCOPE HOME_ACCESS SANDBOX_QUIET SANDBOX_NPROC_LIMIT
     CHAPERON_LOG_LEVEL CHAPERON_LOG_RETAIN_DAYS
     LANDLOCK_REQUIRED_ABI LANDLOCK_HARD_REQUIREMENT
+    MOUNT_GUARD MOUNT_GUARD_INTERVAL
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
 # Consumed by _enforce_admin_policy (via _restore_enforced_array): every
@@ -1486,6 +1507,15 @@ _enforce_admin_scalars() {
             NETWORK_MAIL_BLOCK="$_ADMIN_NETWORK_MAIL_BLOCK"
         fi
     fi
+
+    # Mount guard (tri-valued): harden-only. Ordering: off < warn < kill.
+    if [[ -n "${_ADMIN_MOUNT_GUARD:-}" ]]; then
+        if [[ "$(_mount_guard_strictness_idx "${MOUNT_GUARD:-kill}")" -lt \
+              "$(_mount_guard_strictness_idx "$_ADMIN_MOUNT_GUARD")" ]]; then
+            echo "WARNING: ${_label} weakened admin-enforced MOUNT_GUARD='${_ADMIN_MOUNT_GUARD}' to '${MOUNT_GUARD}' — restored." >&2
+            MOUNT_GUARD="$_ADMIN_MOUNT_GUARD"
+        fi
+    fi
 }
 
 # --- Enforce admin policy: compare extracted values against admin snapshot ---
@@ -1802,6 +1832,8 @@ _snapshot_admin_config() {
     _ADMIN_NETWORK_FILTER_MODE="${NETWORK_FILTER_MODE:-}"
     _ADMIN_NETWORK_FILTER_FALLBACK="${NETWORK_FILTER_FALLBACK:-}"
     _ADMIN_NETWORK_MAIL_BLOCK="${NETWORK_MAIL_BLOCK:-}"
+    # _ADMIN_MOUNT_GUARD is set by _load_config_layers: only an explicit
+    # admin value is a floor (the built-in default is not).
 }
 
 # ── Network filter — mode resolution + helper detection ──────────
@@ -2817,7 +2849,15 @@ _load_config_layers() {
         # post-source declare -p check distinguish "admin silent" (apply
         # narrowing default "/") from "admin set" (snapshot admin's value).
         unset ALLOWED_PROJECT_PARENTS
+        # Same for MOUNT_GUARD: only an explicit admin value is enforced.
+        unset MOUNT_GUARD
         _source_trusted_config "$_ADMIN_CONF"
+        if declare -p MOUNT_GUARD &>/dev/null; then
+            _ADMIN_MOUNT_GUARD="$MOUNT_GUARD"
+        else
+            _ADMIN_MOUNT_GUARD=""
+            MOUNT_GUARD="kill"
+        fi
         if declare -p ALLOWED_PROJECT_PARENTS &>/dev/null; then
             _admin_set_app=true
             _validate_admin_allowed_project_parents
@@ -2865,6 +2905,7 @@ _apply_launch_overrides() {
     [[ -n "${_NETWORK_FILTER_MODE_OVERRIDE:-}" ]]     && NETWORK_FILTER_MODE="$_NETWORK_FILTER_MODE_OVERRIDE"
     [[ -n "${_NETWORK_FILTER_FALLBACK_OVERRIDE:-}" ]] && NETWORK_FILTER_FALLBACK="$_NETWORK_FILTER_FALLBACK_OVERRIDE"
     [[ -n "${_NETWORK_MAIL_BLOCK_OVERRIDE:-}" ]]      && NETWORK_MAIL_BLOCK="$_NETWORK_MAIL_BLOCK_OVERRIDE"
+    [[ -n "${_MOUNT_GUARD_OVERRIDE:-}" ]]             && MOUNT_GUARD="$_MOUNT_GUARD_OVERRIDE"
     # env can loosen user config but cannot weaken admin-set values.
     if [[ -n "${_ADMIN_CONF:-}" ]]; then
         _enforce_admin_scalars "Launch override (env/CLI)"
@@ -2953,6 +2994,374 @@ _prepare_sandbox_env() {
         _SANDBOX_CHILD_ENV+=("$_entry")
     done
     return 0
+}
+
+# ── Mount guard ─────────────────────────────────────────────────
+#
+# Why: a bind mount can disappear from a RUNNING sandbox without anything
+# inside it doing so.
+#   * rename()/unlink()/rmdir() of a path that is a mount point in
+#     another mount namespace succeeds and detaches the mount in every
+#     namespace (Linux >= 3.18). The launcher's own overlays no longer do
+#     this (agents/overlay-fs.py writes in place), but anything else on
+#     the host can: an editor or `claude` outside saving
+#     ~/.claude/settings.json via rename, a package upgrade replacing a
+#     masked binary, config management rewriting /etc/nsswitch.conf.
+#   * On NFS, a rename/unlink by ANOTHER client, or a directory the
+#     client decides is stale (ESTALE on revalidation), makes
+#     d_invalidate() detach every mount at or below that dentry, in every
+#     namespace (settylab/dotto-nexus#386: the project bind and its
+#     .sandbox-state child vanished mid-session).
+# The path then falls through to whatever is mounted underneath. For the
+# project bind that is usually a read-only parent (fails closed), but a
+# lost read-only overlay or /dev/null / tmpfs mask FAILS OPEN: the agent
+# can read a blocked file, or write a file it must not (its own
+# permission settings, host-executed agent config, .sandbox-state).
+#
+# How: after backend_prepare the backend lists the mounts it asked for
+# (backend_mount_expectations: "<kind> <path>", kind = rw | ro | mask).
+# A host-side watcher (started just before backend_exec, so it outlives
+# the exec as a child of the backend process) finds the sandbox's mount
+# namespace among the launcher's descendants, records which expected
+# mount points are present (the baseline; anything absent there is
+# never reported, so path-spelling differences cannot cause false
+# alarms), and re-reads /proc/<pid>/mountinfo every MOUNT_GUARD_INTERVAL
+# seconds. A lost mount is classified by what the path falls through to
+# (the deepest remaining mount above it):
+#   EXPOSED  — a mask, or a read-only overlay whose fall-through mount is
+#              writable, on a POLICY path (under $HOME, the project dir,
+#              an EXTRA_WRITABLE_PATHS entry or the install dir, or a
+#              BLOCKED_FILES / EXTRA_BLOCKED_PATHS entry), falling through
+#              to a host filesystem (not tmpfs); or a read-only mount that
+#              turned read-write. MOUNT_GUARD=kill terminates the sandbox.
+#   degraded — everything else (lost writable bind, loss that falls
+#              through to something read-only or to a tmpfs, loss of a
+#              system mask such as /usr/bin/sbatch). Reported only.
+# Reports go to the launching terminal (the backend process's stderr,
+# /dev/tty as fallback) with a bell, to syslog (logger) and to tmux
+# (display-message) when available. Each path is reported once.
+
+_mount_guard_strictness_idx() {
+    case "$1" in
+        off)  echo 0 ;;
+        warn) echo 1 ;;
+        *)    echo 2 ;;
+    esac
+}
+
+# mountinfo escapes space, tab, newline and backslash as octal.
+_mg_esc() {
+    local _s="$1"
+    _s="${_s//\\/\\134}"
+    _s="${_s// /\\040}"
+    _s="${_s//$'\t'/\\011}"
+    _s="${_s//$'\n'/\\012}"
+    printf '%s' "$_s"
+}
+
+declare -A _MG_TOP_OPTS=() _MG_TOP_FS=()
+# _mg_read_mountinfo PID — index PID's mountinfo by mount point; for a
+# stacked mount point the last listed (topmost) entry wins.
+_mg_read_mountinfo() {
+    local _mi _line _mp _opts _fs _src="/proc/$1/mountinfo"
+    [[ "$1" == /* ]] && _src="$1"   # a mountinfo file (unit tests)
+    _MG_TOP_OPTS=(); _MG_TOP_FS=()
+    _mi="$(cat "$_src" 2>/dev/null)" || return 1
+    [[ -n "$_mi" ]] || return 1
+    while IFS= read -r _line; do
+        read -r _ _ _ _ _mp _opts _ <<< "$_line"
+        _fs="${_line#* - }"; _fs="${_fs%% *}"
+        _MG_TOP_OPTS[$_mp]="$_opts"
+        _MG_TOP_FS[$_mp]="$_fs"
+    done <<< "$_mi"
+}
+
+# _mg_covering ESCAPED_PATH — deepest present mount point strictly above.
+_mg_covering() {
+    local _p="$1"
+    while [[ "$_p" != "/" ]]; do
+        _p="${_p%/*}"; [[ -n "$_p" ]] || _p="/"
+        if [[ -n "${_MG_TOP_FS[$_p]+x}" ]]; then printf '%s' "$_p"; return 0; fi
+    done
+    return 1
+}
+
+_mg_is_ro() { [[ ",$1," == *,ro,* ]]; }
+
+# Filesystems whose content is not host data (a fall-through onto one of
+# these shows an empty/synthetic dir, not the protected host path).
+_mg_is_synthetic_fs() {
+    case "$1" in
+        tmpfs|ramfs|proc|sysfs|devpts|devtmpfs|mqueue|cgroup|cgroup2|"") return 0 ;;
+    esac
+    return 1
+}
+
+# _mg_children PID — direct children (all threads), no procps needed.
+_mg_children() {
+    local _c
+    if compgen -G "/proc/$1/task/*/children" >/dev/null; then
+        for _c in $(cat /proc/"$1"/task/*/children 2>/dev/null); do printf '%s\n' "$_c"; done
+    else
+        pgrep -P "$1" 2>/dev/null || true
+    fi
+}
+
+# _mount_guard_prepare PROJECT_DIR — fill the expectation arrays from the
+# backend's mount list. Returns 1 when there is nothing to guard.
+_MG_KIND=(); _MG_PATH=(); _MG_ESC=(); _MG_POLICY=()
+_mount_guard_prepare() {
+    local _proj="$1" _kind _path _e _r
+    _MG_KIND=(); _MG_PATH=(); _MG_ESC=(); _MG_POLICY=()
+    declare -F backend_mount_expectations >/dev/null || return 1
+    local -a _roots=("$HOME" "$_proj" "${SANDBOX_DIR:-}")
+    local -A _exact=()
+    while IFS= read -r _e; do [[ -n "$_e" ]] && _roots+=("$_e"); done \
+        < <(_effective_extra_writable_paths 2>/dev/null)
+    for _e in "${BLOCKED_FILES[@]+"${BLOCKED_FILES[@]}"}" \
+              "${EXTRA_BLOCKED_PATHS[@]+"${EXTRA_BLOCKED_PATHS[@]}"}"; do
+        [[ -n "$_e" ]] || continue
+        _exact[$_e]=1
+        _r="$(readlink -f -- "$_e" 2>/dev/null)" && [[ -n "$_r" ]] && _exact[$_r]=1
+    done
+    local -A _seen=()
+    while read -r _kind _path; do
+        [[ -n "$_path" && "$_path" == /* ]] || continue
+        case "$_kind" in rw|ro|mask) ;; *) continue ;; esac
+        _path="${_path%/}"; [[ -n "$_path" ]] || _path="/"
+        [[ "$_path" == "/" ]] && continue
+        local _policy=0
+        if [[ -n "${_exact[$_path]:-}" ]]; then
+            _policy=1
+        else
+            for _r in "${_roots[@]}"; do
+                [[ -n "$_r" ]] || continue
+                if [[ "$_path" == "$_r" || "$_path" == "${_r%/}/"* ]]; then _policy=1; break; fi
+            done
+        fi
+        # HOME_ACCESS=write: all of $HOME is writable by design, so a
+        # read-only overlay there (e.g. ~/.claude.json, which `claude`
+        # outside rewrites via rename on every start) is defense in depth
+        # only; its loss is reported but does not terminate. Masks stay
+        # policy (a lost credential mask exposes ~/.ssh etc.).
+        if [[ "$_policy" == 1 && "$_kind" == ro && "${HOME_ACCESS:-}" == write \
+              && -z "${_exact[$_path]:-}" && "$_path" == "$HOME"/* ]] \
+           && [[ "$_path" != "$_proj" && "$_path" != "$_proj"/* ]]; then
+            _policy=0
+        fi
+        if [[ -n "${_seen[$_path]:-}" ]]; then
+            # Later op at the same point wins (bwrap/firejail argv order).
+            local _i="${_seen[$_path]}"
+            _MG_KIND[$_i]="$_kind"; _MG_POLICY[$_i]="$_policy"
+            continue
+        fi
+        _seen[$_path]="${#_MG_PATH[@]}"
+        _MG_KIND+=("$_kind"); _MG_PATH+=("$_path")
+        _MG_ESC+=("$(_mg_esc "$_path")"); _MG_POLICY+=("$_policy")
+    done < <(backend_mount_expectations)
+    [[ ${#_MG_PATH[@]} -gt 0 ]]
+}
+
+# _mg_evaluate INDEX BASE_RO — classify expectation INDEX against the
+# mount table last read by _mg_read_mountinfo. Sets _MG_VERDICT (empty =
+# intact, "degraded", "EXPOSED") and _MG_WHAT (human-readable detail).
+_MG_VERDICT=""; _MG_WHAT=""
+_mg_evaluate() {
+    local _i="$1" _base_ro="${2:-0}" _mp _cov _covfs _covopts _kind
+    _mp="${_MG_ESC[_i]}"; _kind="${_MG_KIND[_i]}"
+    _MG_VERDICT=""; _MG_WHAT=""
+    if [[ -n "${_MG_TOP_FS[$_mp]+x}" ]]; then
+        if [[ "$_base_ro" == 1 ]] && ! _mg_is_ro "${_MG_TOP_OPTS[$_mp]}"; then
+            _MG_VERDICT=EXPOSED; _MG_WHAT="read-only mount became read-write"
+        fi
+        return 0
+    fi
+    _cov="$(_mg_covering "$_mp")" || _cov="/"
+    _covfs="${_MG_TOP_FS[$_cov]:-}"; _covopts="${_MG_TOP_OPTS[$_cov]:-}"
+    case "$_kind" in
+        rw)   _MG_WHAT="writable bind lost" ;;
+        ro)   _MG_WHAT="read-only overlay lost" ;;
+        *)    _MG_WHAT="mask lost" ;;
+    esac
+    _MG_WHAT="$_MG_WHAT; path now falls through to the $(_mg_is_ro "$_covopts" && echo read-only || echo WRITABLE) ${_covfs:-?} mount at $(printf '%b' "${_cov//\\/\\0}")"
+    # Exposed: a protective mount (mask, or read-only overlay now under a
+    # writable mount) on a policy path, falling through to host data.
+    if [[ "${_MG_POLICY[_i]}" == 1 && "$_kind" != rw ]] \
+       && ! _mg_is_synthetic_fs "$_covfs" \
+       && { [[ "$_kind" == mask ]] || ! _mg_is_ro "$_covopts"; }; then
+        _MG_VERDICT=EXPOSED
+    else
+        _MG_VERDICT=degraded
+    fi
+}
+
+# _mount_guard_find_target LAUNCHER_PID — echo the pid (in a different
+# mount namespace than ours, readable mountinfo) with the most expected
+# mount points present, plus that count: "<pid> <count>".
+_mount_guard_find_target() {
+    local _own _q _i=0 _p _c _n _best="" _bestn=0 _k _cns
+    _own="$(readlink /proc/self/ns/mnt 2>/dev/null)" || return 1
+    local -a _queue=("$1")
+    while (( _i < ${#_queue[@]} && _i < 256 )); do
+        _p="${_queue[_i]}"; _i=$((_i + 1))
+        for _c in $(_mg_children "$_p"); do
+            _queue+=("$_c")
+            # Skip our own namespace and processes whose namespace we
+            # cannot identify (firejail's root-owned helper): the guard
+            # must be able to re-find the namespace later.
+            _cns="$(readlink "/proc/$_c/ns/mnt" 2>/dev/null)" || continue
+            [[ -n "$_cns" && "$_cns" != "$_own" ]] || continue
+            _mg_read_mountinfo "$_c" || continue
+            _n=0
+            for _k in "${_MG_ESC[@]}"; do [[ -n "${_MG_TOP_FS[$_k]+x}" ]] && _n=$((_n + 1)); done
+            if (( _n > _bestn )); then _best="$_c"; _bestn="$_n"; fi
+        done
+    done
+    [[ -n "$_best" ]] || return 1
+    printf '%s %s\n' "$_best" "$_bestn"
+}
+
+# _mg_find_in_ns LAUNCHER_PID NS — a descendant living in mount ns NS.
+_mg_find_in_ns() {
+    local _i=0 _p _c
+    local -a _queue=("$1")
+    while (( _i < ${#_queue[@]} && _i < 256 )); do
+        _p="${_queue[_i]}"; _i=$((_i + 1))
+        for _c in $(_mg_children "$_p"); do
+            if [[ "$(readlink "/proc/$_c/ns/mnt" 2>/dev/null)" == "$2" ]]; then
+                printf '%s\n' "$_c"; return 0
+            fi
+            _queue+=("$_c")
+        done
+    done
+    return 1
+}
+
+_mount_guard_notify() {
+    local _lpid="$1" _msg="$2"
+    # The backend process's stderr (the launching terminal or log). Not
+    # reachable for setuid firejail; then our own stderr, which the
+    # watcher only keeps when it is a terminal or a file; then /dev/tty.
+    { printf '\a\n%s\n' "$_msg" >> "/proc/$_lpid/fd/2"; } 2>/dev/null \
+        || { [[ -t 2 || -f /dev/stderr ]] && printf '\a\n%s\n' "$_msg" >&2; } \
+        || { printf '\a\n%s\n' "$_msg" > /dev/tty; } 2>/dev/null || true
+    if command -v logger >/dev/null 2>&1; then
+        logger -t agent-sandbox -- "$_msg" 2>/dev/null || true
+    fi
+    if [[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1; then
+        tmux display-message -- "$_msg" 2>/dev/null || true
+    fi
+}
+
+# _mount_guard_run LAUNCHER_PID — the watcher loop (run in background).
+_mount_guard_run() {
+    local _lpid="$1" _lstart _target="" _tstart _ns _tries=0 _prev="" _cur
+    local _mode="${MOUNT_GUARD:-kill}" _interval="${MOUNT_GUARD_INTERVAL:-5}"
+    _lstart="$(_proc_starttime "$_lpid")" || return 0
+    _alive() { [[ "$(_proc_starttime "$1" 2>/dev/null)" == "$2" ]]; }
+
+    # Baseline: poll until the sandbox's mount table stops growing. Every
+    # expected mount point seen at least once is guarded from then on,
+    # so a loss that happens while the table is still settling is caught
+    # too (it was present in an earlier poll).
+    local -a _guarded=() _base_ro=()
+    local -A _ever=()
+    local _i _stable=0 _nseen=0
+    while (( _tries < 240 && _stable < 2 )); do
+        _tries=$((_tries + 1))
+        _alive "$_lpid" "$_lstart" || return 0
+        _cur="$(_mount_guard_find_target "$_lpid")" || _cur=""
+        if [[ -z "$_cur" ]]; then sleep 0.25; continue; fi
+        if [[ "${_cur%% *}" != "$_target" ]]; then
+            _target="${_cur%% *}"; _ever=(); _guarded=(); _base_ro=(); _nseen=0; _stable=0
+        fi
+        _mg_read_mountinfo "$_target" || { sleep 0.25; continue; }
+        for _i in "${!_MG_ESC[@]}"; do
+            [[ -z "${_ever[$_i]:-}" && -n "${_MG_TOP_FS[${_MG_ESC[_i]}]+x}" ]] || continue
+            _ever[$_i]=1
+            _guarded+=("$_i")
+            if _mg_is_ro "${_MG_TOP_OPTS[${_MG_ESC[_i]}]}"; then _base_ro[_i]=1; else _base_ro[_i]=0; fi
+        done
+        if (( ${#_guarded[@]} > _nseen )); then
+            _nseen=${#_guarded[@]}; _stable=0
+        else
+            _stable=$((_stable + 1))
+        fi
+        sleep 0.25
+    done
+    [[ -n "$_target" ]] && (( ${#_guarded[@]} )) || return 0
+    _tstart="$(_proc_starttime "$_target")" || return 0
+    _ns="$(readlink "/proc/$_target/ns/mnt" 2>/dev/null)" || return 0
+    # Armed. Leave a marker in this launch's chaperon FIFO dir (visible
+    # inside as $_CHAPERON_FIFO_DIR) so tests and curious users can tell
+    # the guard is active. mkdir never follows a planted symlink.
+    if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -d "$_CHAPERON_FIFO_DIR" && ! -L "$_CHAPERON_FIFO_DIR" ]]; then
+        mkdir -- "$_CHAPERON_FIFO_DIR/.mount-guard-armed" 2>/dev/null || true
+    fi
+    local -A _reported=()
+    local _mp _verdict _what _p _k
+    while :; do
+        sleep "$_interval"
+        _alive "$_lpid" "$_lstart" || return 0
+        if ! _alive "$_target" "$_tstart"; then
+            # Sandbox init gone: find another process in the same namespace
+            # (none left = the sandbox has ended).
+            _target="$(_mg_find_in_ns "$_lpid" "$_ns")" || return 0
+            _tstart="$(_proc_starttime "$_target")" || return 0
+        fi
+        _mg_read_mountinfo "$_target" || continue
+        for _i in "${_guarded[@]}"; do
+            _mp="${_MG_ESC[_i]}"
+            [[ -z "${_reported[$_i]:-}" ]] || continue
+            _mg_evaluate "$_i" "${_base_ro[_i]}"
+            _verdict="$_MG_VERDICT"; _what="$_MG_WHAT"
+            [[ -n "$_verdict" ]] || continue
+            _reported[$_i]=1
+            if [[ "$_verdict" == EXPOSED ]]; then
+                if [[ "$_mode" == kill ]]; then
+                    _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: protection LOST at ${_MG_PATH[_i]} (${_what}). The sandbox no longer enforces its policy there. Terminating the sandbox (MOUNT_GUARD=kill)."
+                    kill -KILL "$_target" 2>/dev/null || true
+                    kill -TERM "$_lpid" 2>/dev/null || true
+                    sleep 2
+                    _alive "$_lpid" "$_lstart" && kill -KILL "$_lpid" 2>/dev/null
+                    return 0
+                fi
+                _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: protection LOST at ${_MG_PATH[_i]} (${_what}). The sandbox no longer enforces its policy there; restart it (MOUNT_GUARD=warn, not terminating)."
+            else
+                _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: mount lost at ${_MG_PATH[_i]} (${_what}). No protected path is exposed, but the sandbox is degraded; restart it."
+            fi
+        done
+    done
+}
+
+# _mount_guard_main PROJECT_DIR LAUNCHER_PID — body of the watcher
+# process. Everything, including parsing the backend's mount list, runs
+# in this background subshell with errexit/nounset off, so no guard
+# failure can ever abort or alter the launch itself.
+_mount_guard_main() {
+    ( set +euo pipefail; trap - EXIT TERM INT HUP ERR
+      _mount_guard_prepare "$1" || exit 0
+      _mount_guard_run "$2" )
+}
+
+# _start_mount_guard PROJECT_DIR — fork the watcher (bwrap/firejail).
+_MOUNT_GUARD_PID=""
+_start_mount_guard() {
+    [[ "${MOUNT_GUARD:-kill}" != off ]] || return 0
+    case "${SANDBOX_BACKEND:-}" in bwrap|firejail) ;; *) return 0 ;; esac
+    [[ -r /proc/self/mountinfo ]] || return 0
+    declare -F backend_mount_expectations >/dev/null || return 0
+    # The watcher must never hold the caller's stdout/stderr PIPE open (a
+    # `$(sandbox-exec.sh …)` would wait for it until the next poll); it
+    # writes to the backend's stderr through /proc/<pid>/fd/2 when it has
+    # something to say. A terminal or a regular file is kept (setuid
+    # firejail's /proc/<pid>/fd is not accessible to us).
+    if [[ -t 2 || -f /dev/stderr ]]; then
+        _mount_guard_main "$1" "$$" </dev/null >/dev/null &
+    else
+        _mount_guard_main "$1" "$$" </dev/null >/dev/null 2>&1 &
+    fi
+    _MOUNT_GUARD_PID=$!
 }
 
 # ── Test-harness early-return ────────────────────────────────────
@@ -3461,6 +3870,17 @@ _validate_loaded_config() {
             fi
         done
         unset _dev_entry
+    fi
+
+    case "${MOUNT_GUARD:-kill}" in
+        off|warn|kill) ;;
+        *)
+            echo "WARNING: MOUNT_GUARD='${MOUNT_GUARD}' invalid (off|warn|kill); using 'kill'." >&2
+            MOUNT_GUARD=kill ;;
+    esac
+    if [[ ! "${MOUNT_GUARD_INTERVAL:-5}" =~ ^[1-9][0-9]{0,3}$ ]]; then
+        echo "WARNING: MOUNT_GUARD_INTERVAL='${MOUNT_GUARD_INTERVAL}' invalid (whole seconds, 1-9999); using 5." >&2
+        MOUNT_GUARD_INTERVAL=5
     fi
     return 0
 }

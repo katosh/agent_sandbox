@@ -863,6 +863,45 @@ backend_prepare() {
 
 }
 
+# backend_mount_expectations — the mounts BWRAP_ARGS asks for, one
+# "<kind> <dest>" per line (kind: rw | ro | mask), for the mount guard
+# (sandbox-lib.sh §Mount guard). Device nodes, /dev and /proc are left
+# out. An option this parser does not know makes it print nothing (the
+# guard then stays off rather than guess the argument layout).
+backend_mount_expectations() {
+    local -a _a=("${BWRAP_ARGS[@]}") _out=()
+    local _i=0 _o _n=${#_a[@]}
+    while (( _i < _n )); do
+        _o="${_a[_i]}"
+        case "$_o" in
+            --bind|--bind-try|--dev-bind|--dev-bind-try)
+                [[ "${_a[_i+2]:-}" == /dev || "${_a[_i+2]:-}" == /dev/* ]] \
+                    || _out+=("rw ${_a[_i+2]}")
+                _i=$((_i + 3)) ;;
+            --ro-bind|--ro-bind-try)
+                if [[ "${_a[_i+1]}" == /dev/null ]]; then
+                    _out+=("mask ${_a[_i+2]}")
+                else
+                    _out+=("ro ${_a[_i+2]}")
+                fi
+                _i=$((_i + 3)) ;;
+            --tmpfs)
+                [[ "${_a[_i+1]}" == /dev/* ]] || _out+=("mask ${_a[_i+1]}")
+                _i=$((_i + 2)) ;;
+            --setenv|--file|--bind-data|--ro-bind-data|--symlink|--chmod)
+                _i=$((_i + 3)) ;;
+            --unsetenv|--chdir|--proc|--dev|--dir|--remount-ro|--seccomp|--add-seccomp-fd|--perms|--size|--mqueue|--hostname|--uid|--gid|--lock-file|--sync-fd|--info-fd|--json-status-fd|--block-fd|--userns-block-fd|--cap-add|--cap-drop|--argv0|--exec-label|--file-label|--userns|--userns2|--pidns|--args)
+                _i=$((_i + 2)) ;;
+            --unshare-*|--share-net|--die-with-parent|--as-pid-1|--new-session|--clearenv|--disable-userns|--assert-userns-disabled)
+                _i=$((_i + 1)) ;;
+            *)
+                return 0 ;;
+        esac
+    done
+    (( ${#_out[@]} )) && printf '%s\n' "${_out[@]}"
+    return 0
+}
+
 backend_exec() {
     # Scrub sensitive vars from OUR environment before exec'ing bwrap.
     # --unsetenv only cleans the child (PID 2); bwrap itself is PID 1

@@ -501,6 +501,25 @@ backend_prepare() {
 
 }
 
+# backend_mount_expectations — the path-level mounts FIREJAIL_ARGS asks
+# for, one "<kind> <path>" per line, for the mount guard (sandbox-lib.sh
+# §Mount guard). --read-only / --read-write / --blacklist each put a
+# mount at the path inside firejail's namespace; --whitelist is left out
+# (firejail rebuilds the parent dir around it). Paths firejail did not
+# turn into a mount point of their own are dropped by the guard's
+# baseline.
+backend_mount_expectations() {
+    local _o
+    for _o in "${FIREJAIL_ARGS[@]}"; do
+        case "$_o" in
+            --read-only=/) ;;
+            --read-only=/*)  printf 'ro %s\n'   "${_o#--read-only=}" ;;
+            --read-write=/*) printf 'rw %s\n'   "${_o#--read-write=}" ;;
+            --blacklist=/*)  printf 'mask %s\n' "${_o#--blacklist=}" ;;
+        esac
+    done
+}
+
 backend_exec() {
     # Hide sandbox-setting vars (HIDE_FROM_SANDBOX). Done HERE, not in
     # backend_prepare's env filter: host-side code that runs between
