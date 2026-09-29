@@ -2640,6 +2640,47 @@ _classify_pasta_port_entry() {
 # copy at source time; only in-process assignment after sourcing works.
 unset _PASSWD_SRC_FILE _GROUP_SRC_FILE
 
+# Per-launch passwd dirs are the bind SOURCES of /etc/passwd, /etc/group
+# and /etc/nsswitch.conf in a running sandbox. Removing a source never
+# detaches the mount (it pins the inode) on a local filesystem, but the
+# base dir lives under ~/.config, which is NFS on most HPC systems: a
+# launch on ANOTHER host deleting it makes the running sandbox's reads of
+# /etc/passwd fail with ESTALE (getpwuid() fails; ssh/git break). The
+# old rule (anything older than 24 h) hit exactly the long-running
+# sessions this is used for. Each dir is therefore tagged with its
+# launcher ("<host> <pidns> <pid> <starttime>"; the pid survives the exec
+# into the backend) and removed only when that launcher is gone on this
+# host. Dirs from other hosts (liveness unknowable) and untagged
+# pre-upgrade dirs are removed only after 30 days.
+_passwd_owner_tag() {
+    local _st _ns
+    _st="$(_proc_starttime "$1")" || return 1
+    [[ -n "$_st" ]] || return 1
+    _ns="$(stat -L -c %i "/proc/$1/ns/pid" 2>/dev/null)" || _ns="?"
+    printf '%s %s %s %s\n' "${HOSTNAME:-$(hostname 2>/dev/null)}" "$_ns" "$1" "$_st"
+}
+
+_prune_passwd_launch_dirs() {
+    local _base="$1" _d _h _ns _pid _st _me _me_host _me_ns
+    _me="$(_passwd_owner_tag $$)" || _me=""
+    read -r _me_host _me_ns _ <<< "$_me"
+    for _d in "$_base"/l.*; do
+        [[ -d "$_d" && ! -L "$_d" && -O "$_d" ]] || continue
+        _h=""
+        if [[ -f "$_d/.owner" && ! -L "$_d/.owner" ]]; then
+            read -r _h _ns _pid _st < "$_d/.owner" 2>/dev/null || true
+        fi
+        if [[ -n "$_h" && -n "$_me_host" && "$_h" == "$_me_host" \
+              && "$_ns" == "$_me_ns" && "$_pid" =~ ^[0-9]+$ ]]; then
+            # Ours on this host: remove once the launcher is gone.
+            [[ "$(_passwd_owner_tag "$_pid" 2>/dev/null)" == "$_h $_ns $_pid $_st" ]] && continue
+            rm -rf -- "$_d" 2>/dev/null || true
+        elif [[ -n "$(find "$_d" -maxdepth 0 -mmin +43200 2>/dev/null)" ]]; then
+            rm -rf -- "$_d" 2>/dev/null || true
+        fi
+    done
+}
+
 generate_filtered_passwd() {
     _is_true "${FILTER_PASSWD:-true}" || return 0
 
@@ -2647,8 +2688,7 @@ generate_filtered_passwd() {
     mkdir -p "$base" || { echo "sandbox: cannot create $base" >&2; return 1; }
 
     # Best-effort prune of stale per-launch dirs and pre-#79 shared files.
-    find "$base" -mindepth 1 -maxdepth 1 -type d -name 'l.*' -mmin +1440 \
-        -exec rm -rf {} + 2>/dev/null || true
+    _prune_passwd_launch_dirs "$base"
     find "$base" -mindepth 1 -maxdepth 1 -type f -mmin +1440 \
         -delete 2>/dev/null || true
 
@@ -2658,6 +2698,7 @@ generate_filtered_passwd() {
         return 1
     }
     chmod 755 "$tmpdir" 2>/dev/null || true
+    _passwd_owner_tag $$ > "$tmpdir/.owner" 2>/dev/null || true
 
     local my_uid my_name
     my_uid="$(id -u)"
