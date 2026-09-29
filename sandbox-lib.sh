@@ -469,6 +469,9 @@ DEVICES=(
     /dev/nvidia-modeset
     /dev/nvidiactl
 )
+# Snapshot of the built-in list: the non-bwrap warning below fires only
+# when a config actually changed DEVICES, not for the shipped defaults.
+_DEFAULT_DEVICES=("${DEVICES[@]}")
 
 # Devices that may NEVER be bind-mounted, even when listed in DEVICES.
 # Admin-enforceable: when an admin sandbox.conf is present, its
@@ -3396,7 +3399,7 @@ _validate_loaded_config() {
         if _is_true "${BIND_DEV_PTS:-false}"; then
             echo "WARNING: BIND_DEV_PTS only applies to the bwrap backend." >&2
         fi
-        if [[ ${#DEVICES[@]} -gt 0 ]]; then
+        if [[ ${#DEVICES[@]} -gt 0 && "${DEVICES[*]}" != "${_DEFAULT_DEVICES[*]}" ]]; then
             echo "WARNING: DEVICES only applies to the bwrap backend." >&2
             echo "  /dev passthrough requires a mount namespace; firejail's --private-dev is coarser, landlock has no FS isolation." >&2
         fi
