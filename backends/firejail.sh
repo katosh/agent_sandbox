@@ -321,10 +321,11 @@ backend_prepare() {
         # tmpwrite: skip --read-only="$HOME" — tmpfs stays writable (ephemeral)
     else
         # read/write: full HOME visible, blacklist credential dirs
-        for _blocked_sub in "${_HOME_ALWAYS_BLOCKED[@]}"; do
-            local _bp="$HOME/$_blocked_sub"
+        local _blocked_sub _bp
+        while IFS= read -r _blocked_sub; do
+            _bp="$HOME/$_blocked_sub"
             [[ -e "$_bp" ]] && FIREJAIL_ARGS+=(--blacklist="$_bp")
-        done
+        done < <(_home_blocked_paths)
 
         if [[ "${HOME_ACCESS}" == "read" ]]; then
             FIREJAIL_ARGS+=(--read-only="$HOME")

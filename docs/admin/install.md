@@ -97,17 +97,20 @@ User configs (`user.conf`, `conf.d/*.conf`) are loaded in an **isolated subproce
 
 This eliminates entire attack classes: function overrides (`source`, `eval`, `builtin`), DEBUG/RETURN traps, `exit`/`return` escapes, IFS manipulation, and background processes — none can escape the subprocess boundary. The merge logic runs in the parent shell, unreachable from user config.
 
-**Enforced arrays** (`BLOCKED_FILES`, `BLOCKED_ENV_VARS`, `BLOCKED_ENV_PATTERNS`, `EXTRA_BLOCKED_PATHS`): admin entries are always present. User additions are preserved, but user removals are undone with a warning:
+**Enforced arrays** (`BLOCKED_FILES`, `BLOCKED_ENV_VARS`, `BLOCKED_ENV_PATTERNS`, `EXTRA_BLOCKED_PATHS`, `DEVICES_BLACKLIST`, `HIDE_FROM_SANDBOX`, `NETWORK_BLOCKLIST`, `NETWORK_BLOCKLIST_EXCEPT` — the `_ENFORCED_ARRAYS` list): admin entries are always present. User additions are preserved, but user removals are undone with a warning:
 
 ```
 WARNING: User config removed admin-enforced BLOCKED_ENV_VARS entry 'GITHUB_TOKEN' — restored.
 ```
 
-**HOME_READONLY → HOME_WRITABLE escalation**: if a user config moves an admin read-only entry to writable, the escalation is reverted with a warning:
+**HOME_READONLY → HOME_WRITABLE escalation**: if a user config moves an admin read-only entry to writable, the escalation is reverted with a warning. Paths are compared after canonicalization (lexical and symlink-resolved), and a writable entry that is a parent or child of an admin read-only entry is reverted too; `EXTRA_WRITABLE_PATHS` is held to the same rule:
 
 ```
 WARNING: User config moved admin HOME_READONLY entry '.gnupg' to HOME_WRITABLE — reverted.
+WARNING: User config HOME_WRITABLE entry './.ssh' overlaps admin HOME_READONLY entry '.ssh' (same path, parent or child) — reverted.
 ```
+
+**`SANDBOX_CONF` does not bypass the baseline**: the env var only chooses the file used as the user layer; this admin config is always loaded and enforced when present.
 
 **DENIED_WRITABLE_PATHS**: any `EXTRA_WRITABLE_PATHS` entry matching or under a denied path is stripped with a warning:
 

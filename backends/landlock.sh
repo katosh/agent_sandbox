@@ -169,7 +169,7 @@ backend_prepare() {
         # read/write: grant full HOME
         # NOTE: Landlock cannot hide subdirs (.ssh, .aws, .gnupg) when
         # the parent directory is already granted — rules are additive.
-        echo "sandbox: note: HOME_ACCESS=${HOME_ACCESS} with landlock cannot hide ~/.ssh, ~/.aws, ~/.gnupg (Landlock limitation)" >&2
+        echo "sandbox: note: HOME_ACCESS=${HOME_ACCESS} with landlock cannot hide credential paths (~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc, ~/.config/gh, …) (Landlock limitation)" >&2
         if [[ "${HOME_ACCESS}" == "read" ]]; then
             LANDLOCK_ARGS+=(--ro "$HOME")
             for subdir in "${HOME_WRITABLE[@]}"; do

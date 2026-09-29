@@ -779,8 +779,9 @@ test_credential_dir ".aws"
 test_credential_dir ".gnupg"
 
 # ── Extra credential paths beyond the canonical .ssh/.aws/.gnupg ─
-# sandbox-lib.sh's _HOME_ALWAYS_BLOCKED currently lists only those
-# three, but README/SECURITY.md tacitly promise "credential hiding".
+# In the default tmpwrite mode these are hidden because the tmpfs HOME
+# only shows listed paths. (HOME_ACCESS=read|write masking of the wider
+# set — sandbox-lib.sh _HOME_CREDENTIAL_PATHS — is covered in 3.9.6.)
 # Modern cloud CLIs store tokens elsewhere; test whether those paths
 # are hidden too. Skip when the path is absent on the host.
 #
@@ -788,14 +789,11 @@ test_credential_dir ".gnupg"
 # only exercise mount-namespace backends here (same pattern as the
 # history-file tests below).
 if has_mount_ns; then
-    # .netrc is universally recognised as a credential file; we treat
-    # it as a hard requirement. The others are aspirational — warn
-    # (not fail) so the assertion flips to pass automatically when
-    # _HOME_ALWAYS_BLOCKED is later expanded.
+    # All of these are in sandbox-lib.sh's _HOME_CREDENTIAL_PATHS (masked
+    # in read/write mode too), so they are hard requirements now. The
+    # soft list is kept for future aspirational entries.
     _extra_creds_strict=(
         ".netrc"                # curl/wget HTTP basic auth (FILE)
-    )
-    _extra_creds_soft=(
         ".kube/config"          # kubectl (FILE)
         ".docker/config.json"   # Docker Hub tokens (FILE)
         ".config/gcloud"        # Google Cloud (DIR)
@@ -804,6 +802,7 @@ if has_mount_ns; then
         ".config/helm"          # Helm (DIR)
         ".terraform.d"          # Terraform login (DIR)
     )
+    _extra_creds_soft=()
 
     _cred_present() {
         # Present if it's a non-empty dir or an existing file.
@@ -1618,16 +1617,27 @@ rm -f "$_sandbox_env_conf"
 # shipping.
 
 # 3.8.1 — Registered config array + admin-enforced (add-only for users).
+# Membership in _ENFORCED_ARRAYS is load-bearing (_enforce_admin_policy
+# iterates it), so check the behaviour too: an admin entry removed by a
+# user layer is restored, and the user's own addition survives.
 if (
     set -uo pipefail
     export _SANDBOX_LIB_NO_INIT=1
     source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
     printf ' %s ' "${_CONFIG_ARRAYS[@]}" | grep -q ' HIDE_FROM_SANDBOX ' || exit 1
-    printf ' %s ' "${_ENFORCED_ARRAYS[@]}" | grep -q ' HIDE_FROM_SANDBOX '
+    printf ' %s ' "${_ENFORCED_ARRAYS[@]}" | grep -q ' HIDE_FROM_SANDBOX ' || exit 1
+    HIDE_FROM_SANDBOX+=("ADMIN_ONLY_HIDE")
+    _snapshot_admin_config
+    HIDE_FROM_SANDBOX=("USER_HIDE")          # user layer drops everything
+    _ADMIN_CONF=/dev/null
+    _enforce_admin_policy "Test" 2>/dev/null
+    printf ' %s ' "${HIDE_FROM_SANDBOX[@]}" | grep -q ' ADMIN_ONLY_HIDE ' || exit 1
+    printf ' %s ' "${HIDE_FROM_SANDBOX[@]}" | grep -q ' SLURM_SCOPE ' || exit 1
+    printf ' %s ' "${HIDE_FROM_SANDBOX[@]}" | grep -q ' USER_HIDE '
 ); then
-    pass "HIDE_FROM_SANDBOX is a registered, admin-enforced config array"
+    pass "HIDE_FROM_SANDBOX is a registered, admin-enforced config array (removal restored)"
 else
-    fail "HIDE_FROM_SANDBOX missing from _CONFIG_ARRAYS / _ENFORCED_ARRAYS"
+    fail "HIDE_FROM_SANDBOX not registered or not enforced via _ENFORCED_ARRAYS"
 fi
 
 # 3.8.2 — Helper emits the defaults; PATH is refused with a warning.
@@ -1792,6 +1802,147 @@ if sandbox bash -c 'echo "${SANDBOX_BACKEND:-HIDDEN}"'; then
     fi
 fi
 rm -f "$_hfs_conf"
+
+# 3.8.5 — Built-in HIDE_FROM_SANDBOX defaults are a floor: a user/project
+# `HIDE_FROM_SANDBOX=()` must not re-expose them, admin config or not.
+_hfs_conf="$HOME/.config/agent-sandbox/conf.d/test-hide-floor-$$.conf"
+_TEST_TEMP_FILES+=("$_hfs_conf")
+printf '[[ "$_PROJECT_DIR" == "%s" ]] || return 0\nHIDE_FROM_SANDBOX=()\n' \
+    "$(cd "$PROJECT_DIR" && pwd -P)" > "$_hfs_conf"
+if SLURM_SCOPE=project HOME_ACCESS="${HOME_ACCESS:-tmpwrite}" \
+   sandbox bash -c 'env | grep -E "^(SLURM_SCOPE|HOME_ACCESS|SANDBOX_QUIET)=" ; true'; then
+    if [[ -z "$OUTPUT" ]]; then
+        pass "HIDE_FROM_SANDBOX=() in conf.d does not remove the built-in defaults"
+    else
+        fail "HIDE_FROM_SANDBOX=() re-exposed built-in hidden vars" "$OUTPUT"
+    fi
+fi
+rm -f "$_hfs_conf"
+
+# ── 3.9 Config precedence + SANDBOX_ENV hardening ────────────────
+# conf.d files below are guarded on this run's project dir so they
+# cannot leak into other sandboxes launched concurrently by the user.
+_cfg_proj="$(cd "$PROJECT_DIR" && pwd -P)"
+_cfg_conf="$HOME/.config/agent-sandbox/conf.d/zz-test-config-hardening-$$.conf"
+_TEST_TEMP_FILES+=("$_cfg_conf")
+_cfg_marker="/tmp/.sbx-cfg-hostmarker-$$"
+: > "$_cfg_marker"
+_TEST_TEMP_FILES+=("$_cfg_marker")
+_cfg_write() {
+    printf '[[ "$_PROJECT_DIR" == "%s" ]] || return 0\n' "$_cfg_proj" > "$_cfg_conf"
+    printf '%s\n' "$@" >> "$_cfg_conf"
+}
+
+# 3.9.1 — SANDBOX_ENV reaches only the sandboxed command. A config name
+# (PRIVATE_TMP) is rejected with a warning instead of overriding the
+# resolved setting, and a launcher-affecting var (TMPDIR) no longer
+# breaks the launcher's own mktemp calls.
+_cfg_write 'SANDBOX_ENV+=("PRIVATE_TMP=false" "TMPDIR=/nonexistent-sbx-tmpdir" "SBX_CFG_CHILD=child-only")'
+if sandbox bash -c 'echo "${SBX_CFG_CHILD:-unset}|${TMPDIR:-unset}|$([[ -e '"$_cfg_marker"' ]] && echo shared || echo private)"'; then
+    _want="child-only|/nonexistent-sbx-tmpdir|"
+    if [[ "$OUTPUT" == "$_want"* ]] \
+       && [[ "$OUTPUT_ERR" == *"SANDBOX_ENV entry 'PRIVATE_TMP' ignored"* ]] \
+       && { ! is_bwrap || [[ "$OUTPUT" == *"|private" ]]; }; then
+        pass "SANDBOX_ENV: child-only; config names rejected; launcher unaffected"
+    else
+        fail "SANDBOX_ENV applied to the launcher or accepted a config name" "out=$OUTPUT err=$OUTPUT_ERR"
+    fi
+else
+    fail "SANDBOX_ENV with TMPDIR broke the launcher" "out=$OUTPUT err=$OUTPUT_ERR"
+fi
+
+# 3.9.2 — An explicit --backend beats SANDBOX_BACKEND set in conf.d.
+if is_landlock; then _cfg_other=bwrap; else _cfg_other=landlock; fi
+_cfg_write "SANDBOX_BACKEND=$_cfg_other"
+if sandbox bash -c 'echo "$SANDBOX_BACKEND"'; then
+    if [[ "$OUTPUT" == "$CURRENT_BACKEND" ]]; then
+        pass "--backend $CURRENT_BACKEND wins over conf.d SANDBOX_BACKEND=$_cfg_other"
+    else
+        fail "conf.d SANDBOX_BACKEND overrode --backend" "got '$OUTPUT'"
+    fi
+fi
+
+# 3.9.3 — An env override beats a conf.d value (bwrap: the only backend
+# where PRIVATE_TMP=false observably shares the host /tmp).
+if is_bwrap; then
+    _cfg_write 'PRIVATE_TMP=true'
+    if PRIVATE_TMP=false sandbox bash -c '[[ -e '"$_cfg_marker"' ]] && echo shared || echo private'; then
+        if [[ "$OUTPUT" == "shared" ]]; then
+            pass "env PRIVATE_TMP=false wins over conf.d PRIVATE_TMP=true"
+        else
+            fail "conf.d PRIVATE_TMP overrode the env override" "$OUTPUT"
+        fi
+    fi
+fi
+
+# 3.9.4 — Config validation runs on the final config (after conf.d).
+_cfg_write 'BIND_DEV_PTS=true'
+if sandbox true; then
+    if [[ "$OUTPUT_ERR" == *"BIND_DEV_PTS"* ]]; then
+        pass "Config validation sees conf.d values (BIND_DEV_PTS notice emitted)"
+    else
+        fail "Config validation ran before conf.d (no BIND_DEV_PTS notice)" "$OUTPUT_ERR"
+    fi
+fi
+rm -f "$_cfg_conf"
+
+# 3.9.5 — _PASSWD_SRC_FILE is a test hook, never honoured from the env.
+if is_bwrap; then
+    _cfg_pw="$(mktemp)"
+    _TEST_TEMP_FILES+=("$_cfg_pw")
+    echo 'sbxplanted:x:0:0:planted:/root:/bin/bash' > "$_cfg_pw"
+    if _PASSWD_SRC_FILE="$_cfg_pw" _GROUP_SRC_FILE="$_cfg_pw" \
+       sandbox bash -c 'cat /etc/passwd /etc/group | grep -c sbxplanted; true'; then
+        if [[ "$OUTPUT" == "0" ]]; then
+            pass "_PASSWD_SRC_FILE/_GROUP_SRC_FILE from env are ignored"
+        else
+            fail "env-supplied passwd/group source reached the sandbox" "$OUTPUT"
+        fi
+    fi
+fi
+
+# 3.9.6 — HOME_ACCESS=read|write masks credential stores beyond
+# .ssh/.aws/.gnupg. Uses a throwaway HOME (sandbox-lib resolves HOME via
+# getent, so an exported `getent` function fakes it) so no real
+# credential file is created or read. Landlock cannot hide sub-paths.
+# The fake HOME lives under the real HOME (firejail derives HOME from
+# passwd itself and needs the project under it) but outside the install
+# dir (SANDBOX_DIR is re-bound read-only after the HOME masks).
+if has_mount_ns; then
+    mkdir -p "$HOME/.cache"
+    _fh="$(mktemp -d "$HOME/.cache/agent-sandbox-test-fakehome.XXXXXX")"
+    _TEST_TEMP_DIRS+=("$_fh")
+    mkdir -p "$_fh/proj" "$_fh/.config/gh" "$_fh/.docker" "$_fh/.kube"
+    for _f in .netrc .git-credentials .config/gh/hosts.yml .docker/config.json .kube/config; do
+        echo "sbx-fake-secret" > "$_fh/$_f"
+    done
+    # Opt-in: an entry listed verbatim in HOME_READONLY stays visible.
+    _fh_conf="$(mktemp)"; _TEST_TEMP_FILES+=("$_fh_conf")
+    { cat "$SANDBOX_CONF"; echo 'HOME_READONLY+=(".config/gh")'; } > "$_fh_conf"
+    _fh_getent() {
+        if [[ "$1" == passwd && "$2" == "$(id -un)" ]]; then
+            echo "$(id -un):x:$(id -u):$(id -g)::$_SBX_FAKEHOME:/bin/bash"
+        else command getent "$@"; fi
+    }
+    for _mode in read write; do
+        _fh_out="$(
+            getent() { _fh_getent "$@"; }
+            export -f getent _fh_getent
+            _SBX_FAKEHOME="$_fh" HOME="$_fh" HOME_ACCESS="$_mode" SANDBOX_CONF="$_fh_conf" \
+            timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$_fh/proj" -- \
+                bash -c 'for f in .netrc .git-credentials .docker/config.json .kube/config .config/gh/hosts.yml; do
+                             grep -q sbx-fake-secret "$HOME/$f" 2>/dev/null && echo "VISIBLE:$f" || echo "HIDDEN:$f"
+                         done' 2>/dev/null
+        )"
+        if [[ "$(echo "$_fh_out" | grep -c '^HIDDEN:')" -eq 4 ]] \
+           && echo "$_fh_out" | grep -qx 'VISIBLE:.config/gh/hosts.yml'; then
+            pass "HOME_ACCESS=$_mode masks .netrc/.git-credentials/.docker/.kube; explicit opt-in kept"
+        else
+            fail "HOME_ACCESS=$_mode credential masking" "$_fh_out"
+        fi
+    done
+    unset -f _fh_getent
+fi
 
 echo ""
 

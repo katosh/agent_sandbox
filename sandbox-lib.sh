@@ -141,9 +141,57 @@ ENABLED_AGENTS=("claude" "codex" "gemini")
 HOME_ACCESS="tmpwrite"
 
 # Credential dirs that are ALWAYS hidden regardless of HOME_ACCESS mode.
-# In restricted mode these are hidden implicitly (never listed in HOME_READONLY).
-# In read/write modes they are explicitly blocked (tmpfs/blacklist).
+# In restricted/tmpwrite mode these are hidden unless listed in
+# HOME_READONLY/HOME_WRITABLE (the tmpfs HOME only shows listed paths).
+# In read/write modes they are masked unconditionally (tmpfs/blacklist).
 _HOME_ALWAYS_BLOCKED=(".ssh" ".aws" ".gnupg")
+
+# Further credential stores (dirs or files) hidden in read/write modes.
+# In tmpwrite/restricted mode they are already invisible unless listed.
+# To keep that mode's opt-in semantics, an entry listed VERBATIM in
+# HOME_READONLY / HOME_WRITABLE / HOME_SEEDED_FILES (e.g. the shipped
+# `".config/gh"` example) stays visible in read/write mode as well;
+# everything else is masked (bwrap: tmpfs over dirs, /dev/null over
+# files; firejail: blacklist; landlock cannot hide — it warns).
+# Not a config variable: configs can opt entries in, never shrink it.
+_HOME_CREDENTIAL_PATHS=(
+    ".netrc"                   # curl/wget/git HTTP basic auth
+    ".git-credentials"         # git credential-store
+    ".config/gh"               # GitHub CLI OAuth token (hosts.yml)
+    ".config/hub"              # hub CLI token
+    ".docker/config.json"      # registry auth
+    ".kube"                    # kubeconfig + cached tokens
+    ".config/gcloud"           # Google Cloud credentials
+    ".azure"                   # Azure CLI tokens
+    ".config/op"               # 1Password CLI session
+    ".config/helm"             # Helm repository credentials
+    ".terraform.d"             # Terraform Cloud login token
+    ".vault-token"             # HashiCorp Vault token
+    ".pgpass"                  # PostgreSQL passwords
+    ".pypirc"                  # PyPI upload tokens
+    ".cargo/credentials.toml"  # crates.io token
+    ".cargo/credentials"       # crates.io token (older cargo)
+)
+
+# Emit the $HOME-relative paths to mask in HOME_ACCESS=read|write, one
+# per line: every _HOME_ALWAYS_BLOCKED entry, plus each
+# _HOME_CREDENTIAL_PATHS entry not explicitly opted in (see above).
+_home_blocked_paths() {
+    local _p _l _listed
+    for _p in "${_HOME_ALWAYS_BLOCKED[@]}"; do
+        printf '%s\n' "$_p"
+    done
+    for _p in "${_HOME_CREDENTIAL_PATHS[@]}"; do
+        _listed=false
+        for _l in "${HOME_READONLY[@]+"${HOME_READONLY[@]}"}" \
+                  "${HOME_WRITABLE[@]+"${HOME_WRITABLE[@]}"}" \
+                  "${HOME_SEEDED_FILES[@]+"${HOME_SEEDED_FILES[@]}"}"; do
+            [[ "${_l%/}" == "$_p" ]] && { _listed=true; break; }
+        done
+        $_listed || printf '%s\n' "$_p"
+    done
+    return 0
+}
 
 BLOCKED_FILES=(
     # Per-agent instruction files (e.g. ~/.claude/CLAUDE.md,
@@ -157,9 +205,12 @@ EXTRA_BLOCKED_PATHS=()
 
 EXTRA_WRITABLE_PATHS=()
 
-# Per-project environment variables (KEY=VALUE strings).
-# Applied to the host environment before the backend runs, so backend
-# PATH prepends (chaperon stubs, sandbox bin) layer on top naturally.
+# Per-project environment variables (KEY=VALUE strings) for the
+# SANDBOXED COMMAND. Applied to the child only (never to the launcher
+# shell, so they cannot change sandbox settings); see
+# _prepare_sandbox_env for the rules. PATH is the one exception: it is
+# exported host-side before the backend runs, so backend PATH prepends
+# (chaperon stubs, sandbox bin) layer on top naturally.
 # Use ${PATH} in values to reference the current PATH, e.g.:
 #   SANDBOX_ENV+=("PATH=/my/bin:${PATH}")
 # Set these in conf.d/*.conf files, guarded by _PROJECT_DIR.
@@ -469,6 +520,12 @@ HIDE_FROM_SANDBOX=(
     "SANDBOX_NPROC_LIMIT"
     "SANDBOX_CONF"
 )
+# Built-in floor, snapshotted before any config layer runs. Not a config
+# variable (configs cannot name it), so it survives `HIDE_FROM_SANDBOX=()`
+# in user config or conf.d even when no admin baseline exists:
+# _hide_from_sandbox_names always emits floor ∪ HIDE_FROM_SANDBOX.
+# Mirrors the _NETWORK_BLOCKLIST_DEFAULTS floor pattern.
+_HIDE_FROM_SANDBOX_DEFAULTS=("${HIDE_FROM_SANDBOX[@]}")
 
 # Credential-pattern globs: block env vars matching common credential naming
 # conventions. Configurable via sandbox.conf / user.conf (admin-enforced).
@@ -533,13 +590,21 @@ _is_allowed_env() {
 # outright — it is not a sandbox-setting var, and scrubbing it yields
 # a sandbox where nothing resolves; a listed PATH is always a
 # misconfiguration, so warn instead of obeying.
+#
+# The built-in defaults (_HIDE_FROM_SANDBOX_DEFAULTS) are always
+# emitted first, whatever the config layers did to HIDE_FROM_SANDBOX,
+# so the documented "users can add names but never remove default
+# entries" holds without an admin baseline too. Duplicates collapse.
 _hide_from_sandbox_names() {
-    local _hv
-    for _hv in "${HIDE_FROM_SANDBOX[@]+"${HIDE_FROM_SANDBOX[@]}"}"; do
+    local _hv _seen=" "
+    for _hv in "${_HIDE_FROM_SANDBOX_DEFAULTS[@]+"${_HIDE_FROM_SANDBOX_DEFAULTS[@]}"}" \
+               "${HIDE_FROM_SANDBOX[@]+"${HIDE_FROM_SANDBOX[@]}"}"; do
         if [[ "$_hv" == "PATH" ]]; then
             echo "WARNING: HIDE_FROM_SANDBOX entry 'PATH' would break every in-sandbox exec — ignored." >&2
             continue
         fi
+        [[ "$_seen" == *" $_hv "* ]] && continue
+        _seen+="$_hv "
         printf '%s\n' "$_hv"
     done
 }
@@ -648,6 +713,8 @@ _kernel_at_least() {
 # prevent an agent from redirecting it to a controlled directory.
 #
 # Without an admin config, $_USER_DATA_DIR/sandbox.conf is the only config.
+# SANDBOX_CONF (env) swaps which file is used as the user layer (3); it
+# never bypasses the admin layer (2).
 # See docs/admin/install.md for setup instructions.
 
 # Preserve any SANDBOX_BACKEND set via environment or --backend flag
@@ -662,25 +729,46 @@ _ADMIN_CONF=""
 _USER_CONF=""
 _ADMIN_DIR="/app/lib/agent-sandbox"
 
-if [[ "${SANDBOX_CONF:-}" != "" && "$SANDBOX_CONF" != "$_USER_DATA_DIR/sandbox.conf" ]]; then
-    # Explicit SANDBOX_CONF override — single config, backward compat
-    _USER_CONF="$SANDBOX_CONF"
-elif [[ -f "$_ADMIN_DIR/sandbox.conf" ]]; then
-    # Admin-installed: admin config is authoritative, user gets user.conf
-    _ADMIN_CONF="$_ADMIN_DIR/sandbox.conf"
-    if [[ -f "$_USER_DATA_DIR/user.conf" ]]; then
-        _USER_CONF="$_USER_DATA_DIR/user.conf"
-    elif [[ -f "$_USER_DATA_DIR/sandbox.conf" ]]; then
-        # Fallback: accept sandbox.conf as user config (common when users
-        # have customized sandbox.conf before admin install was deployed).
-        _USER_CONF="$_USER_DATA_DIR/sandbox.conf"
-    else
-        _USER_CONF="$_USER_DATA_DIR/user.conf"  # Expected path (will be missing)
+# The admin baseline ALWAYS applies when present. SANDBOX_CONF only
+# chooses which file is loaded as the (untrusted) USER layer; it can
+# never skip or replace the admin layer. Previously an explicit
+# SANDBOX_CONF short-circuited the admin branch entirely, so anyone who
+# could set one env var (a user, or an agent via a Slurm --export on
+# the compute-node re-entry) silently dropped every admin pin.
+#
+# Factored into a function so test-admin-narrowing.sh can exercise the
+# selection against a scratch admin dir. The production call below
+# passes the hardcoded $_ADMIN_DIR; there is no env hook.
+#
+# Sets: _ADMIN_CONF (empty when no admin baseline), _USER_CONF.
+_select_config_files() {
+    local _admin_dir="$1"
+    _ADMIN_CONF=""
+    _USER_CONF=""
+    if [[ -f "$_admin_dir/sandbox.conf" ]]; then
+        _ADMIN_CONF="$_admin_dir/sandbox.conf"
     fi
-else
-    # User-only install: single config
-    _USER_CONF="$_USER_DATA_DIR/sandbox.conf"
-fi
+
+    if [[ "${SANDBOX_CONF:-}" != "" && "$SANDBOX_CONF" != "$_USER_DATA_DIR/sandbox.conf" ]]; then
+        # Explicit SANDBOX_CONF override — replaces the user layer only.
+        _USER_CONF="$SANDBOX_CONF"
+    elif [[ -n "$_ADMIN_CONF" ]]; then
+        # Admin-installed: admin config is authoritative, user gets user.conf
+        if [[ -f "$_USER_DATA_DIR/user.conf" ]]; then
+            _USER_CONF="$_USER_DATA_DIR/user.conf"
+        elif [[ -f "$_USER_DATA_DIR/sandbox.conf" ]]; then
+            # Fallback: accept sandbox.conf as user config (common when users
+            # have customized sandbox.conf before admin install was deployed).
+            _USER_CONF="$_USER_DATA_DIR/sandbox.conf"
+        else
+            _USER_CONF="$_USER_DATA_DIR/user.conf"  # Expected path (will be missing)
+        fi
+    else
+        # User-only install: single config
+        _USER_CONF="$_USER_DATA_DIR/sandbox.conf"
+    fi
+}
+_select_config_files "$_ADMIN_DIR"
 
 # --- Auto-init: deploy user config ---
 # Always deploy the full sandbox.conf template to the user dir, even
@@ -747,6 +835,10 @@ _CONFIG_SCALARS=(
     LANDLOCK_REQUIRED_ABI LANDLOCK_HARD_REQUIREMENT
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
+# Consumed by _enforce_admin_policy (via _restore_enforced_array): every
+# name listed here is restored from its _ADMIN_<NAME> snapshot after each
+# untrusted layer. Adding a name here requires a matching snapshot line
+# in _snapshot_admin_config.
 _ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS EXTRA_BLOCKED_PATHS DEVICES_BLACKLIST NETWORK_BLOCKLIST NETWORK_BLOCKLIST_EXCEPT HIDE_FROM_SANDBOX)
 
 # --- Load an untrusted config file in an isolated subprocess ---
@@ -1258,75 +1350,95 @@ _narrow_allowed_project_parents() {
     ALLOWED_PROJECT_PARENTS=("${_effective[@]}")
 }
 
-# --- Enforce admin policy: compare extracted values against admin snapshot ---
+# --- Writable-vs-admin-read-only overlap (HOME_READONLY escalation) ---
 #
-# After loading untrusted config (user.conf or conf.d), this function:
-# 1. Warns about removed admin entries or overridden scalars
-# 2. Restores admin values as the base
-# 3. Merges user additions on top
-# 4. Strips DENIED_WRITABLE_PATHS violations (resolves symlinks to block
-#    indirection attacks — see the DENIED_WRITABLE_PATHS section below)
+# _path_forms: print the lexically normalized form (`.`/`..`/`//`
+# collapsed, symlinks NOT followed) and the symlink-resolved form of
+# each argument, as "<lexical>\t<resolved>" lines. realpath -m accepts
+# missing components; falls back to the literal / _resolve_path.
+_path_forms() {
+    local _p _lex _res
+    for _p in "$@"; do
+        _lex="$(realpath -m -s -- "$_p" 2>/dev/null)" || _lex="$_p"
+        _res="$(realpath -m -- "$_p" 2>/dev/null)" || _res="$(_resolve_path "$_p")"
+        printf '%s\t%s\n' "$_lex" "$_res"
+    done
+}
+
+# Precompute the admin HOME_READONLY forms once per enforcement pass.
+# Sets _ADMIN_RO_NAMES / _ADMIN_RO_LEX / _ADMIN_RO_RES (parallel arrays).
+_collect_admin_ro_forms() {
+    _ADMIN_RO_NAMES=() _ADMIN_RO_LEX=() _ADMIN_RO_RES=()
+    local _aro _lex _res
+    for _aro in "${_ADMIN_HOME_READONLY[@]+"${_ADMIN_HOME_READONLY[@]}"}"; do
+        [[ -n "$_aro" ]] || continue
+        IFS=$'\t' read -r _lex _res < <(_path_forms "$HOME/$_aro")
+        _ADMIN_RO_NAMES+=("$_aro")
+        _ADMIN_RO_LEX+=("$_lex")
+        _ADMIN_RO_RES+=("$_res")
+    done
+}
+
+# _writable_overlaps_admin_ro ABS_PATH: if ABS_PATH (either form) is
+# equal to, under, or above any admin HOME_READONLY entry (either
+# form), print that admin entry and return 0. Requires
+# _collect_admin_ro_forms to have run.
+_writable_overlaps_admin_ro() {
+    local _w_lex _w_res _i _wf _rf
+    IFS=$'\t' read -r _w_lex _w_res < <(_path_forms "$1")
+    for ((_i = 0; _i < ${#_ADMIN_RO_NAMES[@]}; _i++)); do
+        for _wf in "$_w_lex" "$_w_res"; do
+            for _rf in "${_ADMIN_RO_LEX[$_i]}" "${_ADMIN_RO_RES[$_i]}"; do
+                if _path_under "$_wf" "$_rf" || _path_under "$_rf" "$_wf"; then
+                    printf '%s' "${_ADMIN_RO_NAMES[$_i]}"
+                    return 0
+                fi
+            done
+        done
+    done
+    return 1
+}
+
+# --- Restore one admin-enforced array ---
 #
-# This is a pure comparison — no re-sourcing, no eval of untrusted code.
-_enforce_admin_policy() {
+# Generic worker for every name in _ENFORCED_ARRAYS: warn about each
+# admin entry the loaded layer removed, then rebuild the array as the
+# admin snapshot (_ADMIN_<NAME>) followed by the layer's own additions
+# (entries not already in the snapshot), preserving order.
+#   $1 — array name (must have a matching _ADMIN_<NAME> snapshot)
+#   $2 — label for warnings ("User config", "Project config", …)
+_restore_enforced_array() {
+    local -n _rea_cur="$1"
+    local -n _rea_adm="_ADMIN_$1"
+    local _rea_label="$2" _rea_a _rea_i _rea_found
+    local _rea_out=("${_rea_adm[@]+"${_rea_adm[@]}"}")
+    for _rea_a in "${_rea_adm[@]+"${_rea_adm[@]}"}"; do
+        _rea_found=false
+        for _rea_i in "${_rea_cur[@]+"${_rea_cur[@]}"}"; do
+            [[ "$_rea_i" == "$_rea_a" ]] && { _rea_found=true; break; }
+        done
+        $_rea_found || echo "WARNING: ${_rea_label} removed admin-enforced $1 entry '${_rea_a}' — restored." >&2
+    done
+    for _rea_i in "${_rea_cur[@]+"${_rea_cur[@]}"}"; do
+        _rea_found=false
+        for _rea_a in "${_rea_adm[@]+"${_rea_adm[@]}"}"; do
+            [[ "$_rea_i" == "$_rea_a" ]] && { _rea_found=true; break; }
+        done
+        $_rea_found || _rea_out+=("$_rea_i")
+    done
+    _rea_cur=("${_rea_out[@]+"${_rea_out[@]}"}")
+}
+
+# --- Enforce admin harden-only scalars ---
+#
+# Security-critical booleans (PRIVATE_TMP, PRIVATE_IPC, FILTER_PASSWD):
+# an admin `true` is sticky. Tri-valued network scalars: the effective
+# value may only be equal to or stricter than the admin pin. Shared by
+# _enforce_admin_policy (config layers) and _apply_launch_overrides
+# (env / CLI overrides), so every path that can change one of these
+# values re-checks it against the same admin snapshot.
+_enforce_admin_scalars() {
     local _label="${1:-Config}"
-
-    # --- Warn about violations ---
-    local _a _item _found _aro
-
-    # Enforced arrays: warn about removed admin entries
-    for _a in "${_ADMIN_BLOCKED_FILES[@]}"; do
-        _found=false
-        for _item in "${BLOCKED_FILES[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced BLOCKED_FILES entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_BLOCKED_ENV_VARS[@]}"; do
-        _found=false
-        for _item in "${BLOCKED_ENV_VARS[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced BLOCKED_ENV_VARS entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_BLOCKED_ENV_PATTERNS[@]}"; do
-        _found=false
-        for _item in "${BLOCKED_ENV_PATTERNS[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced BLOCKED_ENV_PATTERNS entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_HIDE_FROM_SANDBOX[@]}"; do
-        _found=false
-        for _item in "${HIDE_FROM_SANDBOX[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced HIDE_FROM_SANDBOX entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_EXTRA_BLOCKED_PATHS[@]}"; do
-        _found=false
-        for _item in "${EXTRA_BLOCKED_PATHS[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced EXTRA_BLOCKED_PATHS entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_DEVICES_BLACKLIST[@]}"; do
-        _found=false
-        for _item in "${DEVICES_BLACKLIST[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced DEVICES_BLACKLIST entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_NETWORK_BLOCKLIST[@]+"${_ADMIN_NETWORK_BLOCKLIST[@]}"}"; do
-        _found=false
-        for _item in "${NETWORK_BLOCKLIST[@]+"${NETWORK_BLOCKLIST[@]}"}"; do
-            [[ "$_item" == "$_a" ]] && { _found=true; break; }
-        done
-        $_found || echo "WARNING: ${_label} removed admin-enforced NETWORK_BLOCKLIST entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]+"${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
-        _found=false
-        for _item in "${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
-            [[ "$_item" == "$_a" ]] && { _found=true; break; }
-        done
-        $_found || echo "WARNING: ${_label} removed admin-enforced NETWORK_BLOCKLIST_EXCEPT entry '${_a}' — restored." >&2
-    done
-
-    # HOME_READONLY → HOME_WRITABLE escalation
-    for _aro in "${_ADMIN_HOME_READONLY[@]}"; do
-        for _item in "${HOME_WRITABLE[@]}"; do
-            [[ "$_item" == "$_aro" ]] && echo "WARNING: ${_label} moved admin HOME_READONLY entry '${_aro}' to HOME_WRITABLE — reverted." >&2
-        done
-    done
-
     # Security-critical booleans: user can harden (false→true) but not
     # weaken (true→false) an admin-set value.
     local _bool_name _admin_val _user_val
@@ -1374,32 +1486,46 @@ _enforce_admin_policy() {
             NETWORK_MAIL_BLOCK="$_ADMIN_NETWORK_MAIL_BLOCK"
         fi
     fi
+}
+
+# --- Enforce admin policy: compare extracted values against admin snapshot ---
+#
+# After loading untrusted config (user.conf or conf.d), this function:
+# 1. Warns about removed admin entries or overridden scalars
+# 2. Restores admin values as the base
+# 3. Merges user additions on top
+# 4. Strips DENIED_WRITABLE_PATHS violations (resolves symlinks to block
+#    indirection attacks — see the DENIED_WRITABLE_PATHS section below)
+#
+# This is a pure comparison — no re-sourcing, no eval of untrusted code.
+_enforce_admin_policy() {
+    local _label="${1:-Config}"
+
+    # --- Warn about violations ---
+    local _a _item _found _aro
+
+    # Enforced arrays — _ENFORCED_ARRAYS is the single source of truth:
+    # admin entries are restored (with a warning when a layer dropped
+    # one), then the layer's own additions are appended.
+    local _enf
+    for _enf in "${_ENFORCED_ARRAYS[@]}"; do
+        _restore_enforced_array "$_enf" "$_label"
+    done
+
+    _enforce_admin_scalars "$_label"
 
     # --- Collect user-only additions (items not in admin snapshot) ---
     # Save the user's arrays before restoring admin values.
-    local _user_bf=("${BLOCKED_FILES[@]}")
-    local _user_bev=("${BLOCKED_ENV_VARS[@]}")
-    local _user_bep=("${BLOCKED_ENV_PATTERNS[@]}")
     local _user_aev=("${ALLOWED_ENV_VARS[@]}")
-    local _user_hfs=("${HIDE_FROM_SANDBOX[@]}")
-    local _user_ebp=("${EXTRA_BLOCKED_PATHS[@]}")
     local _user_hw=("${HOME_WRITABLE[@]}")
     local _user_ewp=("${EXTRA_WRITABLE_PATHS[@]}")
     local _user_rom=("${READONLY_MOUNTS[@]}")
     local _user_hro=("${HOME_READONLY[@]}")
     local _user_hsf=("${HOME_SEEDED_FILES[@]}")
     local _user_app=("${ALLOWED_PROJECT_PARENTS[@]}")
-    local _user_dbl=("${DEVICES_BLACKLIST[@]}")
-    local _user_nbl=("${NETWORK_BLOCKLIST[@]+"${NETWORK_BLOCKLIST[@]}"}")
-    local _user_nbx=("${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}")
 
     # --- Restore admin base values ---
-    BLOCKED_FILES=("${_ADMIN_BLOCKED_FILES[@]}")
-    BLOCKED_ENV_VARS=("${_ADMIN_BLOCKED_ENV_VARS[@]}")
-    BLOCKED_ENV_PATTERNS=("${_ADMIN_BLOCKED_ENV_PATTERNS[@]}")
     ALLOWED_ENV_VARS=("${_ADMIN_ALLOWED_ENV_VARS[@]}")
-    HIDE_FROM_SANDBOX=("${_ADMIN_HIDE_FROM_SANDBOX[@]}")
-    EXTRA_BLOCKED_PATHS=("${_ADMIN_EXTRA_BLOCKED_PATHS[@]}")
     HOME_READONLY=("${_ADMIN_HOME_READONLY[@]}")
     HOME_SEEDED_FILES=("${_ADMIN_HOME_SEEDED_FILES[@]}")
     EXTRA_WRITABLE_PATHS=("${_ADMIN_EXTRA_WRITABLE_PATHS[@]}")
@@ -1412,9 +1538,6 @@ _enforce_admin_policy() {
     # snapshot.
     HOME_WRITABLE=("${_ADMIN_HOME_WRITABLE[@]}")
     DENIED_WRITABLE_PATHS=("${_ADMIN_DENIED_WRITABLE_PATHS[@]}")
-    DEVICES_BLACKLIST=("${_ADMIN_DEVICES_BLACKLIST[@]}")
-    NETWORK_BLOCKLIST=("${_ADMIN_NETWORK_BLOCKLIST[@]+"${_ADMIN_NETWORK_BLOCKLIST[@]}"}")
-    NETWORK_BLOCKLIST_EXCEPT=("${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]+"${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]}"}")
 
     # --- Merge: admin base + user-only additions ---
     local _in_admin
@@ -1430,41 +1553,63 @@ _enforce_admin_policy() {
             $_in_admin || _target_arr+=("$_item")
         done
     }
-    _merge_additions _user_bf   _ADMIN_BLOCKED_FILES          BLOCKED_FILES
-    _merge_additions _user_bev  _ADMIN_BLOCKED_ENV_VARS       BLOCKED_ENV_VARS
-    _merge_additions _user_bep  _ADMIN_BLOCKED_ENV_PATTERNS   BLOCKED_ENV_PATTERNS
     _merge_additions _user_aev  _ADMIN_ALLOWED_ENV_VARS       ALLOWED_ENV_VARS
-    _merge_additions _user_hfs  _ADMIN_HIDE_FROM_SANDBOX      HIDE_FROM_SANDBOX
-    _merge_additions _user_ebp  _ADMIN_EXTRA_BLOCKED_PATHS    EXTRA_BLOCKED_PATHS
     _merge_additions _user_ewp  _ADMIN_EXTRA_WRITABLE_PATHS   EXTRA_WRITABLE_PATHS
     _merge_additions _user_rom  _ADMIN_READONLY_MOUNTS        READONLY_MOUNTS
     _merge_additions _user_hro  _ADMIN_HOME_READONLY          HOME_READONLY
     _merge_additions _user_hsf  _ADMIN_HOME_SEEDED_FILES      HOME_SEEDED_FILES
     _narrow_allowed_project_parents _user_app "$_label"
-    _merge_additions _user_dbl  _ADMIN_DEVICES_BLACKLIST       DEVICES_BLACKLIST
-    _merge_additions _user_nbl  _ADMIN_NETWORK_BLOCKLIST       NETWORK_BLOCKLIST
-    # NETWORK_BLOCKLIST_EXCEPT merges similarly, but with an
-    # additional cover-check: user-exception entries that match (under
+    # NETWORK_BLOCKLIST_EXCEPT was merged above (it is in
+    # _ENFORCED_ARRAYS); it additionally gets a cover-check: user-exception entries that match (under
     # bash glob semantics) any admin-set NETWORK_BLOCKLIST entry are
     # stripped + warned. Admin entries cannot be carved out by users.
-    _merge_additions _user_nbx  _ADMIN_NETWORK_BLOCKLIST_EXCEPT  NETWORK_BLOCKLIST_EXCEPT
     _strip_user_exceptions_covered_by_admin "$_label"
 
-    # HOME_WRITABLE: merge user additions, but strip admin HOME_READONLY items
+    # HOME_WRITABLE / EXTRA_WRITABLE_PATHS vs admin HOME_READONLY.
+    #
+    # A user writable entry is dropped when, after canonicalization, it
+    # is EQUAL to, BELOW or ABOVE an admin read-only entry:
+    #   equal — `.ssh/`, `./.ssh`, `.ssh//` are all `.ssh`; the old
+    #           literal string compare let those through;
+    #   below — `.ssh/authorized_keys` writable defeats `.ssh` read-only;
+    #   above — `.config` writable covers `.config/git` (bind order on
+    #           bwrap, additive rules on landlock).
+    # Both the lexical form and the symlink-resolved form of each side
+    # are compared, so `mylink -> .ssh` is caught too. EXTRA_WRITABLE_PATHS
+    # (absolute) is held to the same rule: `$HOME/.ssh` there is the
+    # same escalation. Admin-listed writable entries are kept as-is.
+    _collect_admin_ro_forms
+    local _conflict
     for _item in "${_user_hw[@]}"; do
         _in_admin=false
         for _a in "${_ADMIN_HOME_WRITABLE[@]}"; do
             [[ "$_item" == "$_a" ]] && { _in_admin=true; break; }
         done
-        if ! $_in_admin; then
-            # Check it's not an admin HOME_READONLY escalation
-            local _is_admin_ro=false
-            for _aro in "${_ADMIN_HOME_READONLY[@]}"; do
-                [[ "$_item" == "$_aro" ]] && { _is_admin_ro=true; break; }
-            done
-            $_is_admin_ro || HOME_WRITABLE+=("$_item")
+        $_in_admin && continue
+        if _conflict="$(_writable_overlaps_admin_ro "$HOME/$_item")"; then
+            if [[ "$_item" == "$_conflict" ]]; then
+                echo "WARNING: ${_label} moved admin HOME_READONLY entry '${_conflict}' to HOME_WRITABLE — reverted." >&2
+            else
+                echo "WARNING: ${_label} HOME_WRITABLE entry '${_item}' overlaps admin HOME_READONLY entry '${_conflict}' (same path, parent or child) — reverted." >&2
+            fi
+            continue
         fi
+        HOME_WRITABLE+=("$_item")
     done
+    local _ewp_clean=("${_ADMIN_EXTRA_WRITABLE_PATHS[@]+"${_ADMIN_EXTRA_WRITABLE_PATHS[@]}"}")
+    for _item in "${EXTRA_WRITABLE_PATHS[@]+"${EXTRA_WRITABLE_PATHS[@]}"}"; do
+        _in_admin=false
+        for _a in "${_ADMIN_EXTRA_WRITABLE_PATHS[@]+"${_ADMIN_EXTRA_WRITABLE_PATHS[@]}"}"; do
+            [[ "$_item" == "$_a" ]] && { _in_admin=true; break; }
+        done
+        $_in_admin && continue
+        if _conflict="$(_writable_overlaps_admin_ro "$_item")"; then
+            echo "WARNING: ${_label} EXTRA_WRITABLE_PATHS entry '${_item}' overlaps admin HOME_READONLY entry '${_conflict}' (same path, parent or child) — removed." >&2
+            continue
+        fi
+        _ewp_clean+=("$_item")
+    done
+    EXTRA_WRITABLE_PATHS=("${_ewp_clean[@]+"${_ewp_clean[@]}"}")
 
     # --- Enforce DENIED_WRITABLE_PATHS ---
     #
@@ -2486,6 +2631,15 @@ _classify_pasta_port_entry() {
 # prunes per-launch dirs (and legacy shared files) older than a day; a
 # launch binds within milliseconds of generating, so that window is safe.
 
+# Test hooks: _PASSWD_SRC_FILE / _GROUP_SRC_FILE redirect the base
+# passwd/group source (test.sh #79 cases set them AFTER sourcing this
+# file with _SANDBOX_LIB_NO_INIT=1). They must never come from the
+# environment: an inherited value (e.g. via a Slurm --export on the
+# compute-node re-entry, or the launch env) would let the caller choose
+# the /etc/passwd and /etc/group the sandbox sees. Drop any inherited
+# copy at source time; only in-process assignment after sourcing works.
+unset _PASSWD_SRC_FILE _GROUP_SRC_FILE
+
 generate_filtered_passwd() {
     _is_true "${FILTER_PASSWD:-true}" || return 0
 
@@ -2588,6 +2742,166 @@ generate_filtered_passwd() {
     _FILTERED_NSSWITCH="$tmpdir/nsswitch.conf"
 }
 
+# ── Config layers (Phases 1–3) ───────────────────────────────────
+#
+# Defined as a function so test-admin-narrowing.sh can drive the real
+# production path against a scratch admin config (via
+# _select_config_files); production calls it once, below.
+_load_config_layers() {
+    # ── Phase 1: Source admin config (trusted — admin-owned, root-protected) ──
+    #
+    # Missing-vs-malformed boundary: a missing admin config file causes
+    # _ADMIN_CONF to be unset above, so this block is skipped entirely and
+    # the sandbox runs in user-only mode. A present-but-malformed admin
+    # config is caught here: parse errors abort via _source_trusted_config,
+    # and shape errors on ALLOWED_PROJECT_PARENTS abort via
+    # _validate_admin_allowed_project_parents. There is no fall-through to
+    # a permissive default once admin has spoken.
+    if [[ -n "$_ADMIN_CONF" && -f "$_ADMIN_CONF" ]]; then
+        # Unset before sourcing so we can detect whether admin explicitly
+        # sets ALLOWED_PROJECT_PARENTS. Lib defaults at line 68 mean the
+        # variable is always set before this point; unsetting lets the
+        # post-source declare -p check distinguish "admin silent" (apply
+        # narrowing default "/") from "admin set" (snapshot admin's value).
+        unset ALLOWED_PROJECT_PARENTS
+        _source_trusted_config "$_ADMIN_CONF"
+        if declare -p ALLOWED_PROJECT_PARENTS &>/dev/null; then
+            _admin_set_app=true
+            _validate_admin_allowed_project_parents
+        else
+            _admin_set_app=false
+            # Restore lib default so downstream code paths see a populated
+            # array. The narrowing merge uses _ADMIN_ALLOWED_PROJECT_PARENTS
+            # (set to ("/") by _snapshot_admin_config when admin is silent),
+            # not this value, so no permissive admin policy results.
+            ALLOWED_PROJECT_PARENTS=("/fh/fast" "/fh/scratch" "$HOME")
+        fi
+        _snapshot_admin_config
+    fi
+
+    # ── Phase 2: Load user config (untrusted — runs in isolated subprocess) ──
+    _load_untrusted_config "$_USER_CONF" "User config"
+
+    # ── Phase 3: Enforce admin policy ──
+    # Pure comparison + merge — no re-sourcing, no eval of untrusted code.
+    if [[ -n "$_ADMIN_CONF" ]]; then
+        _enforce_admin_policy "User config"
+    fi
+}
+
+# ── Launch overrides: env / CLI beat every config layer ──────────
+#
+# Explicit launch-time selections (`--backend`, SANDBOX_BACKEND, and
+# the PRIVATE_TMP / PRIVATE_IPC / FILTER_PASSWD / NETWORK_FILTER_MODE /
+# NETWORK_FILTER_FALLBACK / NETWORK_MAIL_BLOCK env vars, captured at
+# the top of this file before the defaults were assigned) win over
+# user config AND conf.d — but never over an admin pin, which is
+# re-checked afterwards.
+#
+# Called from load_project_config() AFTER conf.d, so a per-project
+# file can no longer override an explicit `--backend` or env value
+# (it used to: this ran at source time, before conf.d was loaded).
+# Idempotent: the saved override values are not consumed.
+_apply_launch_overrides() {
+    if [[ -n "${_SANDBOX_BACKEND_OVERRIDE:-}" ]]; then
+        SANDBOX_BACKEND="$_SANDBOX_BACKEND_OVERRIDE"
+    fi
+    [[ -n "${_PRIVATE_TMP_OVERRIDE:-}" ]]    && PRIVATE_TMP="$_PRIVATE_TMP_OVERRIDE"
+    [[ -n "${_PRIVATE_IPC_OVERRIDE:-}" ]]    && PRIVATE_IPC="$_PRIVATE_IPC_OVERRIDE"
+    [[ -n "${_FILTER_PASSWD_OVERRIDE:-}" ]]  && FILTER_PASSWD="$_FILTER_PASSWD_OVERRIDE"
+    [[ -n "${_NETWORK_FILTER_MODE_OVERRIDE:-}" ]]     && NETWORK_FILTER_MODE="$_NETWORK_FILTER_MODE_OVERRIDE"
+    [[ -n "${_NETWORK_FILTER_FALLBACK_OVERRIDE:-}" ]] && NETWORK_FILTER_FALLBACK="$_NETWORK_FILTER_FALLBACK_OVERRIDE"
+    [[ -n "${_NETWORK_MAIL_BLOCK_OVERRIDE:-}" ]]      && NETWORK_MAIL_BLOCK="$_NETWORK_MAIL_BLOCK_OVERRIDE"
+    # env can loosen user config but cannot weaken admin-set values.
+    if [[ -n "${_ADMIN_CONF:-}" ]]; then
+        _enforce_admin_scalars "Launch override (env/CLI)"
+    fi
+    return 0
+}
+
+# ── SANDBOX_ENV: validate and split into host PATH + child env ──
+#
+# SANDBOX_ENV used to be `export`ed into the launcher shell after admin
+# enforcement, so an entry named like a config variable
+# (NETWORK_FILTER_MODE=open, PRIVATE_TMP=false, HOME_ACCESS=write, …)
+# silently replaced the resolved — admin-enforced — value, and entries
+# like TMPDIR or LD_PRELOAD changed how the launcher itself behaved.
+#
+# Now:
+#   * PATH  — still exported host-side (documented layering: the
+#             backend prepends chaperon/sandbox stubs on top). The
+#             launcher's PATH is the user's own anyway.
+#   * every other entry is applied ONLY to the sandboxed command (via
+#     `env NAME=VALUE… CMD` at exec time, see sandbox-exec.sh), and is
+#     rejected with a warning when the name
+#       - is not a valid identifier,
+#       - is a config variable (_CONFIG_ARRAYS / _CONFIG_SCALARS),
+#       - is launcher-internal (leading `_`) or a sandbox/launcher
+#         setting family (SANDBOX_*, CHAPERON_*, LANDLOCK_*, NETWORK_*,
+#         CLEANUP_MATERIALIZED_BLOCKED_FILES),
+#       - is hidden (HIDE_FROM_SANDBOX, incl. the built-in floor), or
+#       - is blocked (BLOCKED_ENV_VARS / BLOCKED_ENV_PATTERNS, unless in
+#         ALLOWED_ENV_VARS) — injecting a value for a blocked name would
+#         otherwise bypass the scrub that previously removed it.
+#
+# Sets: _SANDBOX_ENV_PATH (empty = no PATH entry), _SANDBOX_CHILD_ENV.
+_sandbox_env_reject_reason() {
+    local _n="$1" _c
+    if [[ ! "$_n" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        echo "not a valid variable name"; return 0
+    fi
+    for _c in "${_CONFIG_ARRAYS[@]}" "${_CONFIG_SCALARS[@]}"; do
+        if [[ "$_n" == "$_c" ]]; then
+            echo "is a sandbox config variable — set it as a config value, not via SANDBOX_ENV"; return 0
+        fi
+    done
+    case "$_n" in
+        _*)
+            echo "names starting with '_' are reserved for the launcher"; return 0 ;;
+        SANDBOX_*|CHAPERON_*|LANDLOCK_*|NETWORK_*|CLEANUP_MATERIALIZED_BLOCKED_FILES)
+            echo "is a sandbox/launcher setting"; return 0 ;;
+    esac
+    while IFS= read -r _c; do
+        if [[ "$_n" == "$_c" ]]; then
+            echo "is listed in HIDE_FROM_SANDBOX"; return 0
+        fi
+    done < <(_hide_from_sandbox_names 2>/dev/null)
+    if ! _is_allowed_env "$_n"; then
+        for _c in "${BLOCKED_ENV_VARS[@]+"${BLOCKED_ENV_VARS[@]}"}"; do
+            if [[ "$_n" == "$_c" ]]; then
+                echo "is in BLOCKED_ENV_VARS (add it to ALLOWED_ENV_VARS to pass it)"; return 0
+            fi
+        done
+        if _is_blocked_by_pattern "$_n"; then
+            echo "matches BLOCKED_ENV_PATTERNS (add it to ALLOWED_ENV_VARS to pass it)"; return 0
+        fi
+    fi
+    return 1
+}
+
+_prepare_sandbox_env() {
+    _SANDBOX_ENV_PATH=""
+    _SANDBOX_CHILD_ENV=()
+    local _entry _name _reason
+    for _entry in "${SANDBOX_ENV[@]+"${SANDBOX_ENV[@]}"}"; do
+        if [[ "$_entry" != *=* ]]; then
+            echo "WARNING: SANDBOX_ENV entry '${_entry}' is not NAME=VALUE — ignored." >&2
+            continue
+        fi
+        _name="${_entry%%=*}"
+        if [[ "$_name" == "PATH" ]]; then
+            _SANDBOX_ENV_PATH="${_entry#*=}"
+            continue
+        fi
+        if _reason="$(_sandbox_env_reject_reason "$_name")"; then
+            echo "WARNING: SANDBOX_ENV entry '${_name}' ignored: ${_reason}." >&2
+            continue
+        fi
+        _SANDBOX_CHILD_ENV+=("$_entry")
+    done
+    return 0
+}
+
 # ── Test-harness early-return ────────────────────────────────────
 #
 # Tests can source this file as a function library by setting
@@ -2602,119 +2916,7 @@ generate_filtered_passwd() {
 # should set it; only the in-tree unit-test harness does.
 [[ "${_SANDBOX_LIB_NO_INIT:-}" == "1" ]] && return 0
 
-# ── Phase 1: Source admin config (trusted — admin-owned, root-protected) ──
-#
-# Missing-vs-malformed boundary: a missing admin config file causes
-# _ADMIN_CONF to be unset above, so this block is skipped entirely and
-# the sandbox runs in user-only mode. A present-but-malformed admin
-# config is caught here: parse errors abort via _source_trusted_config,
-# and shape errors on ALLOWED_PROJECT_PARENTS abort via
-# _validate_admin_allowed_project_parents. There is no fall-through to
-# a permissive default once admin has spoken.
-if [[ -n "$_ADMIN_CONF" && -f "$_ADMIN_CONF" ]]; then
-    # Unset before sourcing so we can detect whether admin explicitly
-    # sets ALLOWED_PROJECT_PARENTS. Lib defaults at line 68 mean the
-    # variable is always set before this point; unsetting lets the
-    # post-source declare -p check distinguish "admin silent" (apply
-    # narrowing default "/") from "admin set" (snapshot admin's value).
-    unset ALLOWED_PROJECT_PARENTS
-    _source_trusted_config "$_ADMIN_CONF"
-    if declare -p ALLOWED_PROJECT_PARENTS &>/dev/null; then
-        _admin_set_app=true
-        _validate_admin_allowed_project_parents
-    else
-        _admin_set_app=false
-        # Restore lib default so downstream code paths see a populated
-        # array. The narrowing merge uses _ADMIN_ALLOWED_PROJECT_PARENTS
-        # (set to ("/") by _snapshot_admin_config when admin is silent),
-        # not this value, so no permissive admin policy results.
-        ALLOWED_PROJECT_PARENTS=("/fh/fast" "/fh/scratch" "$HOME")
-    fi
-    _snapshot_admin_config
-fi
-
-# ── Phase 2: Load user config (untrusted — runs in isolated subprocess) ──
-_load_untrusted_config "$_USER_CONF" "User config"
-
-# ── Phase 3: Enforce admin policy ──
-# Pure comparison + merge — no re-sourcing, no eval of untrusted code.
-if [[ -n "$_ADMIN_CONF" ]]; then
-    _enforce_admin_policy "User config"
-fi
-
-# Restore explicit backend override (env/CLI takes precedence over config)
-if [[ -n "$_SANDBOX_BACKEND_OVERRIDE" ]]; then
-    SANDBOX_BACKEND="$_SANDBOX_BACKEND_OVERRIDE"
-fi
-unset _SANDBOX_BACKEND_OVERRIDE
-
-# Restore env overrides for security booleans (env takes precedence over
-# config, but admin enforcement still wins — checked below).
-for _bvar in PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD; do
-    _override_var="_${_bvar}_OVERRIDE"
-    if [[ -n "${!_override_var}" ]]; then
-        eval "${_bvar}=\"${!_override_var}\""
-    fi
-    unset "$_override_var"
-done
-unset _bvar _override_var
-# Re-enforce admin policy on the env-overridden values: env can loosen
-# user config but cannot weaken admin-set security booleans.
-if [[ -n "$_ADMIN_CONF" ]]; then
-    for _bvar in PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD; do
-        eval "_admin_val=\"\${_ADMIN_${_bvar}:-}\""
-        if _is_true "$_admin_val" && ! _is_true "${!_bvar}"; then
-            echo "WARNING: env override ${_bvar}=false blocked by admin policy — restored to true." >&2
-            eval "${_bvar}=true"
-        fi
-    done
-    unset _bvar _admin_val
-fi
-
-# Restore env overrides for network-filter scalars (env wins over config;
-# admin enforcement re-applied below).
-if [[ -n "${_NETWORK_FILTER_MODE_OVERRIDE:-}" ]]; then
-    NETWORK_FILTER_MODE="$_NETWORK_FILTER_MODE_OVERRIDE"
-fi
-if [[ -n "${_NETWORK_FILTER_FALLBACK_OVERRIDE:-}" ]]; then
-    NETWORK_FILTER_FALLBACK="$_NETWORK_FILTER_FALLBACK_OVERRIDE"
-fi
-if [[ -n "${_NETWORK_MAIL_BLOCK_OVERRIDE:-}" ]]; then
-    NETWORK_MAIL_BLOCK="$_NETWORK_MAIL_BLOCK_OVERRIDE"
-fi
-unset _NETWORK_FILTER_MODE_OVERRIDE _NETWORK_FILTER_FALLBACK_OVERRIDE _NETWORK_MAIL_BLOCK_OVERRIDE
-
-# Re-apply admin enforcement on network-filter scalars: env can loosen
-# user config but cannot weaken admin-set values.
-if [[ -n "$_ADMIN_CONF" ]]; then
-    if [[ -n "${_ADMIN_NETWORK_FILTER_MODE:-}" ]]; then
-        _admin_idx="$(_network_mode_strictness_idx "$_ADMIN_NETWORK_FILTER_MODE")"
-        _user_idx="$(_network_mode_strictness_idx "${NETWORK_FILTER_MODE:-filtered}")"
-        if [[ "$_user_idx" -lt "$_admin_idx" ]]; then
-            echo "WARNING: env override NETWORK_FILTER_MODE='${NETWORK_FILTER_MODE}' weaker than admin '${_ADMIN_NETWORK_FILTER_MODE}' — restored." >&2
-            NETWORK_FILTER_MODE="$_ADMIN_NETWORK_FILTER_MODE"
-        fi
-        unset _admin_idx _user_idx
-    fi
-    if [[ -n "${_ADMIN_NETWORK_FILTER_FALLBACK:-}" ]]; then
-        _admin_pidx="$(_network_fallback_strictness_idx "$_ADMIN_NETWORK_FILTER_FALLBACK")"
-        _user_pidx="$(_network_fallback_strictness_idx "${NETWORK_FILTER_FALLBACK:-open}")"
-        if [[ "$_user_pidx" -lt "$_admin_pidx" ]]; then
-            echo "WARNING: env override NETWORK_FILTER_FALLBACK='${NETWORK_FILTER_FALLBACK}' weaker than admin '${_ADMIN_NETWORK_FILTER_FALLBACK}' — restored." >&2
-            NETWORK_FILTER_FALLBACK="$_ADMIN_NETWORK_FILTER_FALLBACK"
-        fi
-        unset _admin_pidx _user_pidx
-    fi
-    if [[ -n "${_ADMIN_NETWORK_MAIL_BLOCK:-}" ]]; then
-        _admin_midx="$(_mail_block_strictness_idx "$_ADMIN_NETWORK_MAIL_BLOCK")"
-        _user_midx="$(_mail_block_strictness_idx "${NETWORK_MAIL_BLOCK:-auto}")"
-        if [[ "$_user_midx" -lt "$_admin_midx" ]]; then
-            echo "WARNING: env override NETWORK_MAIL_BLOCK='${NETWORK_MAIL_BLOCK}' weaker than admin '${_ADMIN_NETWORK_MAIL_BLOCK}' — restored." >&2
-            NETWORK_MAIL_BLOCK="$_ADMIN_NETWORK_MAIL_BLOCK"
-        fi
-        unset _admin_midx _user_midx
-    fi
-fi
+_load_config_layers
 
 # ── Validate config ──────────────────────────────────────────────
 
@@ -3046,6 +3248,11 @@ load_project_config() {
         _enforce_admin_policy "Project config"
     fi
 
+    # Launch overrides (--backend, env) beat every config layer, then
+    # validate the final result. Both must follow conf.d.
+    _apply_launch_overrides
+    _validate_loaded_config
+
     # Validate all path arrays
     _validate_path_array ALLOWED_PROJECT_PARENTS "${ALLOWED_PROJECT_PARENTS[@]}"
     _validate_path_array READONLY_MOUNTS "${READONLY_MOUNTS[@]}"
@@ -3063,118 +3270,129 @@ if [[ -z "${HOME:-}" ]]; then
     exit 1
 fi
 
-# Warn about critical READONLY_MOUNTS that are missing from config.
-# Without these, the sandbox starts but almost nothing works inside it.
-for _critical_mount in /usr /lib /bin /sbin /etc; do
-    _found=false
-    for _m in "${READONLY_MOUNTS[@]}"; do
-        if [[ "$_m" == "$_critical_mount" ]]; then _found=true; break; fi
-    done
-    if ! $_found && [[ -d "$_critical_mount" ]]; then
-        echo "WARNING: $_critical_mount is not in READONLY_MOUNTS. The sandbox may not function correctly." >&2
-    fi
-done
-
-# Agent-specific HOME_WRITABLE entries are added automatically by
-# _apply_agent_profiles(). No hardcoded critical-path warnings needed.
-
-# Detect paths that appear in both HOME_READONLY and HOME_WRITABLE.
-# The writable mount wins (later bwrap arg overrides), which may
-# silently escalate permissions beyond what the user intended.
-for _ro in "${HOME_READONLY[@]}"; do
-    for _rw in "${HOME_WRITABLE[@]}"; do
-        if [[ "$_ro" == "$_rw" ]]; then
-            echo "WARNING: $HOME/$_ro is in both HOME_READONLY and HOME_WRITABLE (writable wins)." >&2
+# ── Validate the FINAL config ────────────────────────────────────
+#
+# Consistency warnings and the BIND_DEV_PTS shim. Runs from
+# load_project_config() once every layer (admin, user, conf.d) and the
+# launch overrides are applied, so it sees the configuration that is
+# actually launched. (It used to run at source time, before conf.d,
+# so conf.d-set values and backend overrides were never validated.)
+_validate_loaded_config() {
+    local _critical_mount _found _m _ro _rw _seed _dev_entry
+    # Warn about critical READONLY_MOUNTS that are missing from config.
+    # Without these, the sandbox starts but almost nothing works inside it.
+    for _critical_mount in /usr /lib /bin /sbin /etc; do
+        _found=false
+        for _m in "${READONLY_MOUNTS[@]}"; do
+            if [[ "$_m" == "$_critical_mount" ]]; then _found=true; break; fi
+        done
+        if ! $_found && [[ -d "$_critical_mount" ]]; then
+            echo "WARNING: $_critical_mount is not in READONLY_MOUNTS. The sandbox may not function correctly." >&2
         fi
     done
-done
 
-# HOME_SEEDED_FILES wins over HOME_READONLY: a file seeded into the
-# tmpfs cannot also be a read-only bind to the host file. Backends
-# skip the read-only mount when an entry is seeded; warn so the
-# overlap is visible.
-for _seed in "${HOME_SEEDED_FILES[@]}"; do
+    # Agent-specific HOME_WRITABLE entries are added automatically by
+    # _apply_agent_profiles(). No hardcoded critical-path warnings needed.
+
+    # Detect paths that appear in both HOME_READONLY and HOME_WRITABLE.
+    # The writable mount wins (later bwrap arg overrides), which may
+    # silently escalate permissions beyond what the user intended.
     for _ro in "${HOME_READONLY[@]}"; do
-        if [[ "$_seed" == "$_ro" ]]; then
-            echo "WARNING: $HOME/$_seed is in both HOME_SEEDED_FILES and HOME_READONLY (seeded wins, read-only ignored)." >&2
-        fi
+        for _rw in "${HOME_WRITABLE[@]}"; do
+            if [[ "$_ro" == "$_rw" ]]; then
+                echo "WARNING: $HOME/$_ro is in both HOME_READONLY and HOME_WRITABLE (writable wins)." >&2
+            fi
+        done
     done
-done
 
-# Warn when backend-specific features are used with an incompatible backend.
-if [[ "${SANDBOX_BACKEND:-auto}" == "landlock" ]]; then
-    if _is_true "${FILTER_PASSWD:-true}"; then
-        echo "WARNING: FILTER_PASSWD=true has no effect with the Landlock backend (no mount namespace)." >&2
-        echo "  User enumeration prevention requires bwrap or firejail." >&2
+    # HOME_SEEDED_FILES wins over HOME_READONLY: a file seeded into the
+    # tmpfs cannot also be a read-only bind to the host file. Backends
+    # skip the read-only mount when an entry is seeded; warn so the
+    # overlap is visible.
+    for _seed in "${HOME_SEEDED_FILES[@]}"; do
+        for _ro in "${HOME_READONLY[@]}"; do
+            if [[ "$_seed" == "$_ro" ]]; then
+                echo "WARNING: $HOME/$_seed is in both HOME_SEEDED_FILES and HOME_READONLY (seeded wins, read-only ignored)." >&2
+            fi
+        done
+    done
+
+    # Warn when backend-specific features are used with an incompatible backend.
+    if [[ "${SANDBOX_BACKEND:-auto}" == "landlock" ]]; then
+        if _is_true "${FILTER_PASSWD:-true}"; then
+            echo "WARNING: FILTER_PASSWD=true has no effect with the Landlock backend (no mount namespace)." >&2
+            echo "  User enumeration prevention requires bwrap or firejail." >&2
+        fi
+        if [[ ${#BLOCKED_FILES[@]} -gt 0 ]]; then
+            echo "WARNING: BLOCKED_FILES has no effect with the Landlock backend." >&2
+            echo "  Individual file blocking requires bwrap or firejail." >&2
+        fi
+        if [[ -e /run/munge/munge.socket.2 ]]; then
+            echo "WARNING: Landlock cannot block AF_UNIX connect() — the munge socket is reachable." >&2
+            echo "  Agents can bypass the chaperon and submit arbitrary Slurm jobs." >&2
+            echo "  Use bwrap/firejail, or deploy the SPANK plugin (docs/admin/hardening.md §1)." >&2
+        fi
     fi
-    if [[ ${#BLOCKED_FILES[@]} -gt 0 ]]; then
-        echo "WARNING: BLOCKED_FILES has no effect with the Landlock backend." >&2
-        echo "  Individual file blocking requires bwrap or firejail." >&2
+    if [[ "${SANDBOX_BACKEND:-auto}" != "bwrap" && "${SANDBOX_BACKEND:-auto}" != "auto" ]]; then
+        if _is_true "${BIND_DEV_PTS:-false}"; then
+            echo "WARNING: BIND_DEV_PTS only applies to the bwrap backend." >&2
+        fi
+        if [[ ${#DEVICES[@]} -gt 0 ]]; then
+            echo "WARNING: DEVICES only applies to the bwrap backend." >&2
+            echo "  /dev passthrough requires a mount namespace; firejail's --private-dev is coarser, landlock has no FS isolation." >&2
+        fi
     fi
-    if [[ -e /run/munge/munge.socket.2 ]]; then
-        echo "WARNING: Landlock cannot block AF_UNIX connect() — the munge socket is reachable." >&2
-        echo "  Agents can bypass the chaperon and submit arbitrary Slurm jobs." >&2
-        echo "  Use bwrap/firejail, or deploy the SPANK plugin (docs/admin/hardening.md §1)." >&2
-    fi
-fi
-if [[ "${SANDBOX_BACKEND:-auto}" != "bwrap" && "${SANDBOX_BACKEND:-auto}" != "auto" ]]; then
+
+    # BIND_DEV_PTS deprecation shim. Old configs that say `BIND_DEV_PTS=true`
+    # used to bind the host /dev into the sandbox to give tmux a working pty.
+    # On kernel < 5.4 that was the only way: bwrap's user-namespace devpts
+    # was broken (ptmxmode=000) so tmux/script/expect could not allocate a
+    # pty inside the sandbox without binding the host /dev/pts on top.
+    #
+    # On kernel >= 5.4 bwrap auto-mounts a working user-ns devpts. Binding
+    # the host /dev/pts on top of that shadows the working mount with one
+    # whose ptmxmode=000 (the host devpts is configured for the privileged
+    # default) and silently breaks pty allocation — tmux exits with
+    # "create session failed", script(1) with "failed to create
+    # pseudo-terminal: Permission denied". The default DEVICES_BLACKLIST
+    # masks this for fresh installs (it lists /dev/pts), but a user who
+    # overrides DEVICES_BLACKLIST without copying the upstream defaults
+    # re-exposes the trap.
+    #
+    # So gate the shim on the kernel: on >= 5.4 the legacy toggle becomes
+    # a logged no-op (with a clear "drop the line" message); on < 5.4 we
+    # preserve the historical behaviour. The blacklist still applies on
+    # < 5.4 so an admin can refuse pty exposure cluster-wide.
     if _is_true "${BIND_DEV_PTS:-false}"; then
-        echo "WARNING: BIND_DEV_PTS only applies to the bwrap backend." >&2
-    fi
-    if [[ ${#DEVICES[@]} -gt 0 ]]; then
-        echo "WARNING: DEVICES only applies to the bwrap backend." >&2
-        echo "  /dev passthrough requires a mount namespace; firejail's --private-dev is coarser, landlock has no FS isolation." >&2
-    fi
-fi
-
-# BIND_DEV_PTS deprecation shim. Old configs that say `BIND_DEV_PTS=true`
-# used to bind the host /dev into the sandbox to give tmux a working pty.
-# On kernel < 5.4 that was the only way: bwrap's user-namespace devpts
-# was broken (ptmxmode=000) so tmux/script/expect could not allocate a
-# pty inside the sandbox without binding the host /dev/pts on top.
-#
-# On kernel >= 5.4 bwrap auto-mounts a working user-ns devpts. Binding
-# the host /dev/pts on top of that shadows the working mount with one
-# whose ptmxmode=000 (the host devpts is configured for the privileged
-# default) and silently breaks pty allocation — tmux exits with
-# "create session failed", script(1) with "failed to create
-# pseudo-terminal: Permission denied". The default DEVICES_BLACKLIST
-# masks this for fresh installs (it lists /dev/pts), but a user who
-# overrides DEVICES_BLACKLIST without copying the upstream defaults
-# re-exposes the trap.
-#
-# So gate the shim on the kernel: on >= 5.4 the legacy toggle becomes
-# a logged no-op (with a clear "drop the line" message); on < 5.4 we
-# preserve the historical behaviour. The blacklist still applies on
-# < 5.4 so an admin can refuse pty exposure cluster-wide.
-if _is_true "${BIND_DEV_PTS:-false}"; then
-    if _kernel_at_least 5 4; then
-        echo "agent-sandbox: BIND_DEV_PTS=true is a no-op on kernel >= 5.4 (bwrap auto-mounts a working devpts; binding host /dev/pts would shadow it with ptmxmode=000 and break pty allocation). Drop the line from your sandbox.conf." >&2
-    else
-        echo "agent-sandbox: BIND_DEV_PTS is deprecated; use DEVICES+=(/dev/pts) instead. See docs/reference/device-passthrough.md." >&2
-        DEVICES+=(/dev/pts)
-    fi
-fi
-
-# Belt-and-suspenders for explicit /dev/pts in DEVICES on kernel >= 5.4.
-# Users who wrote `DEVICES+=(/dev/pts)` directly (because the v0.6.0
-# migration comment told them that was the path on < 5.4) hit the same
-# devpts-shadow trap on >= 5.4. We do not silently drop the entry
-# (that overrides explicit user intent), but we surface the warning at
-# every spawn so the trap is at most "your tmux is broken AND you have
-# a stderr line telling you why" instead of "your tmux is broken with
-# no log explaining it". The DEVICES_BLACKLIST default already lists
-# /dev/pts, so this branch only fires when the user has overridden the
-# blacklist as well.
-if _kernel_at_least 5 4 && [[ ${#DEVICES[@]} -gt 0 ]]; then
-    for _dev_entry in "${DEVICES[@]}"; do
-        if [[ "$_dev_entry" == "/dev/pts" ]]; then
-            echo "agent-sandbox: DEVICES contains /dev/pts on kernel >= 5.4 — bwrap's auto-mounted user-ns devpts will be shadowed with ptmxmode=000 and pty allocation (tmux/script/expect) will fail with 'Permission denied'. Drop /dev/pts from DEVICES; the bind was only needed on kernel < 5.4." >&2
-            break
+        if _kernel_at_least 5 4; then
+            echo "agent-sandbox: BIND_DEV_PTS=true is a no-op on kernel >= 5.4 (bwrap auto-mounts a working devpts; binding host /dev/pts would shadow it with ptmxmode=000 and break pty allocation). Drop the line from your sandbox.conf." >&2
+        else
+            echo "agent-sandbox: BIND_DEV_PTS is deprecated; use DEVICES+=(/dev/pts) instead. See docs/reference/device-passthrough.md." >&2
+            DEVICES+=(/dev/pts)
         fi
-    done
-    unset _dev_entry
-fi
+    fi
+
+    # Belt-and-suspenders for explicit /dev/pts in DEVICES on kernel >= 5.4.
+    # Users who wrote `DEVICES+=(/dev/pts)` directly (because the v0.6.0
+    # migration comment told them that was the path on < 5.4) hit the same
+    # devpts-shadow trap on >= 5.4. We do not silently drop the entry
+    # (that overrides explicit user intent), but we surface the warning at
+    # every spawn so the trap is at most "your tmux is broken AND you have
+    # a stderr line telling you why" instead of "your tmux is broken with
+    # no log explaining it". The DEVICES_BLACKLIST default already lists
+    # /dev/pts, so this branch only fires when the user has overridden the
+    # blacklist as well.
+    if _kernel_at_least 5 4 && [[ ${#DEVICES[@]} -gt 0 ]]; then
+        for _dev_entry in "${DEVICES[@]}"; do
+            if [[ "$_dev_entry" == "/dev/pts" ]]; then
+                echo "agent-sandbox: DEVICES contains /dev/pts on kernel >= 5.4 — bwrap's auto-mounted user-ns devpts will be shadowed with ptmxmode=000 and pty allocation (tmux/script/expect) will fail with 'Permission denied'. Drop /dev/pts from DEVICES; the bind was only needed on kernel < 5.4." >&2
+                break
+            fi
+        done
+        unset _dev_entry
+    fi
+    return 0
+}
 
 # ── Helpers ─────────────────────────────────────────────────────
 
