@@ -117,8 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `.cargo/credentials` were visible in those modes. bwrap and firejail
   now mask them; landlock cannot and warns.
 
-- **Host-executed agent config is read-only inside the sandbox (O2,
-  partial).** `~/.claude/settings.json`, `~/.claude.json`,
+- **Host-executed agent config is read-only inside the sandbox
+  (partial).** `~/.claude/settings.json`, `~/.claude.json`,
   `~/.codex/config.toml`, `~/.gemini/settings.json`,
   `~/.pi/agent/settings.json` and Claude's native binaries under
   `~/.local/share/claude` could be edited by the agent to run code the
