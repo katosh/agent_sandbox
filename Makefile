@@ -170,10 +170,11 @@ install-lib:
 		done; \
 		chmod +x $(DESTDIR)$(LIBDIR)/agents/$$agent/overlay.sh 2>/dev/null || true; \
 	done
-	@# Top-level agent docs
-	@for f in $(SRC_DIR)/agents/*.md; do \
+	@# Top-level agent docs + shared overlay helpers (overlay-lib.sh,
+	@# overlay-fs.py — required by every agents/*/overlay.sh)
+	@for f in $(SRC_DIR)/agents/*.md $(SRC_DIR)/agents/*.sh $(SRC_DIR)/agents/*.py; do \
 		[ -f "$$f" ] && $(INSTALL) -m 644 "$$f" $(DESTDIR)$(LIBDIR)/agents/; \
-	done
+	done; true
 	@# Chaperon
 	$(INSTALL) -d $(DESTDIR)$(LIBDIR)/chaperon/handlers
 	$(INSTALL) -d $(DESTDIR)$(LIBDIR)/chaperon/stubs

@@ -339,7 +339,7 @@ The srun handler (`handlers/srun.sh`) operates in two modes:
 
 **Step mode** (`SLURM_JOB_ID` set — inside a compute-node allocation):
 1. Validates flags against a step-only whitelist (no scheduling flags — steps inherit the job's resources)
-2. Wraps the command in `sandbox-exec.sh --project-dir $DIR` exactly like allocation mode, then calls real srun. Step tasks are spawned by `slurmstepd` on the allocated nodes, outside any sandbox: the sandbox that encloses the calling job does **not** extend to them. Each task therefore runs its own `sandbox-exec.sh` (multi-task steps get one sandbox per task).
+2. Wraps the command in `sandbox-exec.sh --project-dir $DIR` exactly like allocation mode, then calls real srun. Step tasks are spawned by `slurmstepd` on the allocated nodes, outside any sandbox: the sandbox that encloses the calling job does **not** extend to them. Each task therefore runs its own `sandbox-exec.sh` (multi-task steps get one sandbox per task). (Earlier versions exec'd real srun unwrapped here, which ran the step unsandboxed with the chaperon's host environment.)
 
 `--export` is not on the srun whitelist in either mode (rejected as an unrecognized flag). srun `-o`/`-e`/`-i` are opened by slurmstepd outside the sandbox and srun has no staging redirect, so on every backend they get the same validation as landlock sbatch output paths (project-contained, no symlink components or target, no `..`, safe `%` patterns only).
 

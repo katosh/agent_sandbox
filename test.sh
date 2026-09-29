@@ -2021,6 +2021,49 @@ if [[ -d "$HOME/.claude" ]] || command -v claude &>/dev/null; then
             fi
         fi
     fi
+
+    # Host-executed agent config is read-only inside (tamper resistance):
+    # an agent must not plant hooks / MCP servers / a binary that run
+    # UNSANDBOXED on the user's next outside launch. Probes are
+    # non-destructive: `: >>` opens for append without writing, and the
+    # directory probe removes what it created.
+    if "$_claude_config_reachable"; then
+        _ro_probe='r=""
+            for f in "$@"; do
+                [[ -f "$f" ]] || continue
+                ( : >> "$f" ) 2>/dev/null && r+="$f "
+            done
+            d="$HOME/.local/share/claude"
+            if [[ -d "$d" ]]; then
+                p="$d/.rw-probe-$$"
+                ( : > "$p" ) 2>/dev/null && { rm -f "$p"; r+="$d "; }
+            fi
+            echo "WRITABLE=[$r] AU=${DISABLE_AUTOUPDATER:-}"'
+        if has_mount_ns; then
+            _ro_files=("\$HOME/.claude/settings.json" "\$HOME/.claude.json" "\$HOME/.codex/config.toml" "\$HOME/.gemini/settings.json")
+        else
+            # Landlock cannot carve a read-only file out of a writable
+            # dir; only the top-level HOME_READONLY entries are enforced.
+            _ro_files=("\$HOME/.claude.json")
+        fi
+        if sandbox bash -c "set -- ${_ro_files[*]}; $_ro_probe"; then
+            if [[ "$OUTPUT" == *"WRITABLE=[]"* ]]; then
+                pass "Host-executed agent config (settings.json, .claude.json, config.toml, claude versions) is read-only inside"
+            else
+                fail "Host-executed agent config writable inside the sandbox" "$OUTPUT"
+            fi
+            if [[ "$OUTPUT" == *"AU=1"* ]]; then
+                pass "DISABLE_AUTOUPDATER=1 exported (claude version store is read-only)"
+            else
+                fail "DISABLE_AUTOUPDATER not exported into the sandbox" "$OUTPUT"
+            fi
+        else
+            fail "Host-executed agent config probe failed to run" "$OUTPUT $OUTPUT_ERR"
+        fi
+        if is_landlock; then
+            warn "Landlock: ~/.claude/settings.json, ~/.codex/config.toml, ~/.gemini/settings.json stay writable (no per-file carve-out)"
+        fi
+    fi
 else
     skip "Claude not installed — skipping Claude content overlay tests"
 fi
@@ -2146,6 +2189,168 @@ else
 fi
 rm -rf "$_malicious_dir"
 rm -f "$_leak_conf"
+
+# ── Overlays never follow agent-planted symlinks (O1) ──
+# Unit-style, host-side, in a throwaway fake HOME (never the real one).
+# The overlays run OUTSIDE the sandbox but write into dirs the agent can
+# write (~/.claude, ~/.codex, ~/.gemini, ~/.pi). Plant every shape an
+# agent could leave behind and assert nothing escapes into ~/.ssh,
+# ~/.local/bin or ~/.bashrc, and no secret is copied into sandbox-config.
+_ovl_run() {  # _ovl_run AGENT FAKEHOME — mimic prepare_agent_configs
+    (
+        set -uo pipefail
+        export HOME="$2"
+        SANDBOX_DIR="$SCRIPT_DIR"
+        _agent_file() { echo "$SANDBOX_DIR/agents/$1/$2"; }
+        HOME_ACCESS=restricted
+        HOME_READONLY=(.bashrc); HOME_WRITABLE=(.claude .codex .gemini .pi)
+        READONLY_MOUNTS=(/usr); EXTRA_WRITABLE_PATHS=(); EXTRA_BLOCKED_PATHS=()
+        _HOME_ALWAYS_BLOCKED=(.ssh .aws .gnupg)
+        BLOCKED_FILES=("$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md")
+        _AGENT_ENV_EXPORTS=(); _AGENT_SANDBOX_CONFIG_DIRS=(); _AGENT_PROTECTED_FILES=()
+        source "$SCRIPT_DIR/agents/overlay-lib.sh"
+        source "$SCRIPT_DIR/agents/$1/overlay.sh"
+        agent_prepare_config "$HOME/proj"
+        printf 'ENV\t%s\n'  "${_AGENT_ENV_EXPORTS[@]:-}"
+        printf 'FILE\t%s\n' "${_AGENT_PROTECTED_FILES[@]:-}"
+    ) 2>&1
+}
+_ovl_fresh() {
+    local h="$1"
+    mkdir -p "$h/.ssh" "$h/.local/bin" "$h/.claude" "$h/.codex" "$h/.gemini" "$h/.pi/agent" "$h/proj"
+    echo "SECRET-KEY" > "$h/.ssh/id_rsa"
+    echo "# user bashrc" > "$h/.bashrc"
+}
+_ovl_plant_tmp() {  # pre-plant <name>.tmp.<pid> symlinks for the next PIDs
+    python3 -c 'import os,sys
+d,f,t,b=sys.argv[1],sys.argv[2],sys.argv[3],int(sys.argv[4])
+for p in range(b,b+3000):
+    try: os.symlink(t,"%s/%s.tmp.%d"%(d,f,p))
+    except OSError: pass' "$1" "$2" "$3" "$BASHPID"
+}
+_ovl_escaped() {  # anything besides id_rsa in ~/.ssh, anything in ~/.local/bin, bashrc changed
+    local h="$1"
+    [[ -n "$(find "$h/.ssh" "$h/.local/bin" -mindepth 1 ! -name id_rsa -print -quit)" ]] \
+        || ! grep -q '^# user bashrc$' "$h/.bashrc" || [[ ! -w "$h/.bashrc" ]]
+}
+if command -v python3 &>/dev/null; then
+    _ovl_base="$(mktemp -d)"
+    trap_rm_dir "$_ovl_base"
+    _ovl_bad=()
+    for _a in claude codex gemini pi; do
+        case "$_a" in
+            claude) _cfgrel=".claude/sandbox-config" _md=CLAUDE.md ;;
+            codex)  _cfgrel=".codex/sandbox-config"  _md=AGENTS.md ;;
+            gemini) _cfgrel=".gemini/sandbox-config" _md=GEMINI.md ;;
+            pi)     _cfgrel=".pi/agent/sandbox-config" _md=AGENTS.md ;;
+        esac
+        # (a) predictable temp name pre-planted as a symlink to ~/.bashrc
+        _h="$_ovl_base/tmp-$_a"; _ovl_fresh "$_h"; mkdir -p "$_h/$_cfgrel"
+        _ovl_plant_tmp "$_h/$_cfgrel" "$_md" "$_h/.bashrc"
+        _ovl_run "$_a" "$_h" >/dev/null
+        _ovl_escaped "$_h" && _ovl_bad+=("$_a: $_md.tmp.<pid> symlink followed")
+        # (b) sandbox-config itself replaced by a symlink to ~/.ssh
+        _h="$_ovl_base/cfglink-$_a"; _ovl_fresh "$_h"
+        ln -s "$_h/.ssh" "$_h/$_cfgrel"
+        _ovl_run "$_a" "$_h" >/dev/null
+        _ovl_escaped "$_h" && _ovl_bad+=("$_a: sandbox-config symlink followed")
+        [[ -d "$_h/$_cfgrel" && ! -L "$_h/$_cfgrel" ]] \
+            || _ovl_bad+=("$_a: planted sandbox-config symlink not replaced by a real dir")
+    done
+    # (c) claude stale-dir merge through a real entry that is a symlink
+    _h="$_ovl_base/merge"; _ovl_fresh "$_h"
+    ln -s "$_h/.ssh" "$_h/.claude/evil"
+    mkdir -p "$_h/.claude/sandbox-config/evil"
+    echo PAYLOAD > "$_h/.claude/sandbox-config/evil/authorized_keys"
+    ln -s "$_h/.local/bin" "$_h/.claude/sandbox-config/evil/bin"
+    _ovl_run claude "$_h" >/dev/null
+    _ovl_escaped "$_h" && _ovl_bad+=("claude: stale-dir merge followed ~/.claude/evil -> ~/.ssh")
+    # (d) dangling ~/.claude/settings.json symlink must not be created through
+    _h="$_ovl_base/dangling"; _ovl_fresh "$_h"
+    ln -s "$_h/.ssh/authorized_keys" "$_h/.claude/settings.json"
+    _ovl_run claude "$_h" >/dev/null
+    _ovl_escaped "$_h" && _ovl_bad+=("claude: dangling settings.json symlink followed")
+    # (e) ~/.pi/agent replaced by a symlink: overlay must refuse
+    _h="$_ovl_base/piagent"; _ovl_fresh "$_h"; rmdir "$_h/.pi/agent"
+    ln -s "$_h/.ssh" "$_h/.pi/agent"
+    _ovl_run pi "$_h" >/dev/null
+    _ovl_escaped "$_h" && _ovl_bad+=("pi: ~/.pi/agent symlink followed")
+    # (f) read-through: instruction/config source symlinked to a secret
+    for _a in claude codex; do
+        _h="$_ovl_base/leak-$_a"; _ovl_fresh "$_h"
+        case "$_a" in
+            claude) ln -s "$_h/.ssh/id_rsa" "$_h/.claude/CLAUDE.md"; _f="$_h/.claude/sandbox-config/CLAUDE.md" ;;
+            codex)  ln -s "$_h/.ssh/id_rsa" "$_h/.codex/config.toml"; _f="$_h/.codex/sandbox-config/config.toml" ;;
+        esac
+        _ovl_run "$_a" "$_h" >/dev/null
+        grep -qs SECRET-KEY "$_f" && _ovl_bad+=("$_a: secret copied through a planted symlink into $(basename "$_f")")
+    done
+    if [[ ${#_ovl_bad[@]} -eq 0 ]]; then
+        pass "Agent overlays never follow agent-planted symlinks (claude/codex/gemini/pi)"
+    else
+        fail "Agent overlay followed a planted symlink" "$(printf '%s; ' "${_ovl_bad[@]}")"
+    fi
+
+    # Normal operation still works: merge, stale-dir recovery, fresher
+    # in-sandbox token kept, copy-on-launch, protected host files.
+    _h="$_ovl_base/legit"; _ovl_fresh "$_h"
+    echo "# my rules" > "$_h/.claude/CLAUDE.md"
+    echo '{"model":"opus"}' > "$_h/.claude/settings.json"
+    echo old > "$_h/.claude/.credentials.json"; echo '{}' > "$_h/.claude.json"
+    mkdir -p "$_h/.claude/projects/p1" "$_h/.claude/sandbox-config/projects/p1" "$_h/.claude/sandbox-config/projects/p2"
+    echo host > "$_h/.claude/projects/p1/a"; echo stale > "$_h/.claude/sandbox-config/projects/p1/a"
+    echo new > "$_h/.claude/sandbox-config/projects/p2/b"
+    touch -d '1 hour ago' "$_h/.claude/.credentials.json"
+    echo refreshed > "$_h/.claude/sandbox-config/.credentials.json"
+    echo 'model = "x"' > "$_h/.codex/config.toml"
+    _out_c="$(_ovl_run claude "$_h")"; _out_x="$(_ovl_run codex "$_h")"
+    _ovl_bad=()
+    grep -q '^# my rules' "$_h/.claude/sandbox-config/CLAUDE.md" && grep -q 'Sandbox Integrity' "$_h/.claude/sandbox-config/CLAUDE.md" \
+        || _ovl_bad+=("CLAUDE.md merge")
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["model"]=="opus" and "Bash" in d["permissions"]["allow"]' \
+        "$_h/.claude/sandbox-config/settings.json" 2>/dev/null || _ovl_bad+=("settings.json merge")
+    [[ "$(cat "$_h/.claude/projects/p1/a")" == host && "$(cat "$_h/.claude/projects/p2/b" 2>/dev/null)" == new ]] \
+        || _ovl_bad+=("stale-dir merge (no-clobber)")
+    [[ -L "$_h/.claude/sandbox-config/projects" ]] || _ovl_bad+=("stale dir not relinked")
+    [[ "$(cat "$_h/.claude/sandbox-config/.credentials.json")" == refreshed ]] || _ovl_bad+=("fresher token not kept")
+    [[ -f "$_h/.codex/sandbox-config/config.toml" && ! -L "$_h/.codex/sandbox-config/config.toml" ]] \
+        && grep -q 'model = "x"' "$_h/.codex/sandbox-config/config.toml" || _ovl_bad+=("codex config.toml copy-on-launch")
+    [[ "$_out_c" == *$'FILE\t'"$_h/.claude/settings.json"* && "$_out_c" == *$'FILE\t'"$_h/.claude.json"* ]] \
+        || _ovl_bad+=("claude host config not registered as protected")
+    [[ "$_out_x" == *$'FILE\t'"$_h/.codex/config.toml"* ]] || _ovl_bad+=("codex config.toml not protected")
+    [[ "$_out_c" == *$'ENV\tDISABLE_AUTOUPDATER=1'* ]] || _ovl_bad+=("DISABLE_AUTOUPDATER not exported")
+    if [[ ${#_ovl_bad[@]} -eq 0 ]]; then
+        pass "Agent overlays: merge, stale-dir recovery, token refresh, copy-on-launch still work"
+    else
+        fail "Agent overlay regression" "$(printf '%s; ' "${_ovl_bad[@]}")"
+    fi
+    unset -f _ovl_run _ovl_fresh _ovl_plant_tmp _ovl_escaped
+else
+    skip "Agent overlay symlink tests: python3 not available"
+fi
+
+# ── sbatch-sandbox.sh (deprecated compat wrapper) ──
+# Unit-style with a fake sbatch that runs the generated wrapper inline and
+# a stub sandbox-exec.sh next to a copy of the script: (a) a value-less
+# flag before the script must not swallow the script name, (b) a script
+# without +x still runs (via its #! line, as real sbatch does), (c) the
+# generated wrapper is removed once sbatch returns.
+_sbs_dir="$(mktemp -d)"
+trap_rm_dir "$_sbs_dir"
+mkdir -p "$_sbs_dir/tmp"
+cp "$SCRIPT_DIR/sbatch-sandbox.sh" "$_sbs_dir/"
+printf '#!/bin/bash\nwhile [[ $1 != -- ]]; do shift; done; shift; exec "$@"\n' > "$_sbs_dir/sandbox-exec.sh"
+printf '#!/bin/bash\nlast="${@: -1}"; echo "ARGS:$*"; bash "$last"\n' > "$_sbs_dir/fake-sbatch"
+printf '#!/bin/bash\necho "JOB-RAN:$*"\n' > "$_sbs_dir/job.sh"   # deliberately not executable
+chmod +x "$_sbs_dir/sandbox-exec.sh" "$_sbs_dir/fake-sbatch"
+_sbs_out="$(cd "$_sbs_dir" && TMPDIR="$_sbs_dir/tmp" REAL_SBATCH="$_sbs_dir/fake-sbatch" \
+    bash "$_sbs_dir/sbatch-sandbox.sh" --exclusive -pdebug --hold job.sh a1 2>&1)"
+if [[ "$_sbs_out" == *"JOB-RAN:a1"* && "$_sbs_out" == *"ARGS:--exclusive -pdebug --hold "* ]] \
+   && [[ -z "$(ls -A "$_sbs_dir/tmp")" ]]; then
+    pass "sbatch-sandbox.sh: value-less flags, non-executable script, no leaked wrapper"
+else
+    fail "sbatch-sandbox.sh compat wrapper broken" "out=$_sbs_out tmp=$(ls -A "$_sbs_dir/tmp")"
+fi
 
 # ── AGENT_AUTH_MARKERS suppresses the warning when a marker file exists ──
 # Create a throwaway agent profile with a credential env var that IS set
@@ -3211,11 +3416,21 @@ if command -v pgrep &>/dev/null; then
         timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
             --project-dir "$PROJECT_DIR" -- sleep 20 &>/dev/null &
         local _parent_pid=$!
-        # Give chaperon time to spawn.
-        sleep 2
-        # Find the chaperon PID for this session.
-        local _chaperon_pid
-        _chaperon_pid=$(pgrep -f "chaperon/chaperon.sh" | head -1)
+        # Find THIS session's chaperon precisely: it is a direct child of
+        # sandbox-exec.sh, which is the only child of `timeout`. A bare
+        # `pgrep -f chaperon/chaperon.sh` also matches chaperons of other
+        # sandboxes on the host (a concurrent test run, the user's own
+        # agents), which made this test flaky and could kill a stranger's
+        # chaperon.
+        local _chaperon_pid="" _launcher_pid="" _w
+        for _w in $(seq 1 40); do
+            _launcher_pid=$(pgrep -P "$_parent_pid" | head -1)
+            if [[ -n "$_launcher_pid" ]]; then
+                _chaperon_pid=$(pgrep -P "$_launcher_pid" -f "chaperon/chaperon.sh" | head -1)
+            fi
+            [[ -n "$_chaperon_pid" ]] && break
+            sleep 0.25
+        done
         if [[ -z "$_chaperon_pid" ]]; then
             skip "Chaperon lifecycle test: could not locate chaperon process"
             kill "$_parent_pid" 2>/dev/null
