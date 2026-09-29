@@ -181,6 +181,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   compute-node sandbox re-reads config and the chaperon bakes the quiet
   decision into its job wrappers, never relying on forwarded copies.
 
+- **A launch no longer strips the read-only policy overlays from
+  sandboxes that are already running** (settylab/dotto-nexus#386). The
+  agent overlays rebuilt `sandbox-config/{CLAUDE.md,settings.json}` (and
+  `AGENTS.md`/`GEMINI.md`) with a temp file and rename on every launch,
+  including every sandbox-wrapped Slurm job re-entering on a compute
+  node. A rename over a path that is a bind mount point in another mount
+  namespace detaches that mount everywhere (and on NFS a rename by
+  another client does the same). So every other running sandbox of the
+  user silently lost its read-only merged config, and its agent could
+  rewrite its own permission rules and hooks. The merged files are now
+  left alone when unchanged and otherwise rewritten in place through an
+  `O_NOFOLLOW` descriptor. The symlink and hard-link protections of the
+  overlay hardening are kept.
+
+- **New mount guard (bwrap/firejail): a host-side watcher notices
+  protective mounts disappearing from a running sandbox** (the kernel
+  detaches mounts when another namespace renames or deletes the path; an
+  NFS client drops every mount below a directory it finds stale). The
+  watcher checks every `MOUNT_GUARD_INTERVAL` seconds (default 5) and
+  reports every loss on the launching terminal, syslog and tmux. When
+  the loss exposes a protected path (a `BLOCKED_FILES`/credential mask
+  or a read-only overlay in a writable directory), the default
+  `MOUNT_GUARD=kill` terminates the sandbox. `warn` only reports; `off`
+  disables. It is harden-only when an admin pins it.
+
+- **`--cleanup-materialized` keeps `BLOCKED_FILES` placeholders on
+  network filesystems.** Sandboxes on other hosts (e.g. Slurm jobs) may
+  have them mounted, and deleting them there unmasks the path; the live-
+  launch registry only sees this host.
+
 ### Added
 
 - **`HIDE_FROM_SANDBOX` — admin-enforced deny-list of sandbox-setting
@@ -345,6 +375,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Test suite.** The chaperon lifecycle test finds its own
   chaperon through the process tree instead of a global `pgrep`, which
   could pick another sandbox's chaperon.
+
+- Per-launch passwd/group dirs (#79) are pruned only when their launcher
+  has exited on this host, not after 24 h. On NFS home directories a
+  launch on another host used to delete the files a long-running
+  sandbox's `/etc/passwd` was bound from (`ESTALE`: `getpwuid()`, ssh
+  and git failed). Dirs from other hosts are removed after 30 days.
+
+- bwrap binds each protected agent config file once instead of once per
+  enabled agent.
 
 ## [0.13.1] - 2026-07-01
 
