@@ -86,7 +86,10 @@ _SRUN_ALLOC_FLAGS=" \
   --comment \
 "
 
-# ── Value flags (consume the next argument) ──────────────────────
+# ── Option-argument classes (see "Slurm option-argument classes" in
+#    _handler_lib.sh; classified against srun 23.11) ─────────────
+# _SRUN_VALUE_FLAGS: REQUIRED argument — consumes the next token when
+# given without `=`.
 _SRUN_VALUE_FLAGS=" \
   -n --ntasks \
   -N --nodes \
@@ -113,7 +116,6 @@ _SRUN_VALUE_FLAGS=" \
   --mem-bind \
   --gpu-bind \
   --het-group \
-  --kill-on-bad-exit \
   -A --account \
   -p --partition \
   -q --qos \
@@ -123,12 +125,17 @@ _SRUN_VALUE_FLAGS=" \
   --begin \
   --deadline \
   --constraint \
-  --nice \
   --priority \
   --signal \
   --wckey \
   --comment \
 "
+
+# _SRUN_OPTARG_FLAGS: OPTIONAL argument (`--flag[=value]`): a value
+# binds only with `=`; the next token is NEVER consumed (Slurm would run
+# it as the command). `--overlap` accepts an undocumented `=force`.
+_SRUN_OPTARG_FLAGS=" --exclusive --overlap --kill-on-bad-exit --nice "
+# Every other allowed flag takes no argument.
 
 # srun -o/-e/-i: slurmstepd opens these OUTSIDE the sandbox, as the
 # host user, before the compute-node sandbox boundary applies, and srun
@@ -150,10 +157,6 @@ _is_srun_allowed() {
         return 0
     fi
     return 1
-}
-
-_is_srun_value_flag() {
-    [[ "$_SRUN_VALUE_FLAGS" == *" $1 "* ]]
 }
 
 handle_srun() {
@@ -179,10 +182,22 @@ handle_srun() {
         fi
     fi
 
-    # Validate and filter arguments; collect the command after flags
+    # Validate and filter arguments; collect the command after flags.
+    # Every accepted flag is appended as ONE token (`--long=value` or the
+    # bare flag, see _slurm_normalize_flag); optional-argument flags
+    # never consume the next token.
     local validated_flags=()
     local command_args=()
     local i=0
+    _srun_accept_flag() {  # <arg>; uses i / REQ_ARGS / validated_flags of handle_srun
+        local _has_next=0
+        (( i + 1 < ${#REQ_ARGS[@]} )) && _has_next=1
+        _slurm_normalize_flag srun "$1" "$_SRUN_VALUE_FLAGS" "$_SRUN_OPTARG_FLAGS" \
+            "$_has_next" "${REQ_ARGS[$((i + 1))]-}" || return 1
+        if (( _SLURM_FLAG_CONSUMED )); then i=$((i + 1)); fi
+        validated_flags+=("$_SLURM_FLAG_TOKEN")
+        return 0
+    }
     while (( i < ${#REQ_ARGS[@]} )); do
         local arg="${REQ_ARGS[$i]}"
 
@@ -255,7 +270,7 @@ handle_srun() {
                 if ! _validate_slurm_io_path "srun $_io_flag" "$_io_val" "$project_dir" "${REQ_CWD:-$project_dir}"; then
                     return 1
                 fi
-                validated_flags+=("$_io_flag" "$_io_val")
+                validated_flags+=("$(_slurm_long_flag "$_io_flag")=$_io_val")
                 ;;
             --output=*|--error=*|--input=*)
                 local _io_val2="${arg#*=}"
@@ -270,31 +285,14 @@ handle_srun() {
                     _sandbox_warn "srun '$arg' is not allowed in step mode — steps inherit the parent job's resources. Use these flags with sbatch instead."
                     return 1
                 fi
-                validated_flags+=("$arg")
-                if [[ "$arg" != *=* ]] && _is_srun_value_flag "$arg" && (( i + 1 < ${#REQ_ARGS[@]} )); then
-                    (( i++ )) || true
-                    validated_flags+=("${REQ_ARGS[$i]}")
-                fi
+                _srun_accept_flag "$arg" || return 1
                 ;;
-            # ── --flag=value form ──
-            --*=*)
-                if _is_srun_allowed "$arg" "$mode"; then
-                    validated_flags+=("$arg")
-                else
-                    _sandbox_warn "srun flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox."
-                    return 1
-                fi
-                ;;
-            # ── -flag or --flag form ──
+            # ── -flag, --flag or --flag=value form ──
             -*)
                 if _is_srun_allowed "$arg" "$mode"; then
-                    validated_flags+=("$arg")
-                    if _is_srun_value_flag "$arg" && (( i + 1 < ${#REQ_ARGS[@]} )); then
-                        (( i++ )) || true
-                        validated_flags+=("${REQ_ARGS[$i]}")
-                    fi
+                    _srun_accept_flag "$arg" || return 1
                 else
-                    _sandbox_warn "srun flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox."
+                    _sandbox_warn "srun flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
                 ;;
@@ -353,6 +351,10 @@ handle_srun() {
     case "${SANDBOX_QUIET:-false}" in
         [Tt]rue|[Yy]es|1) _quiet_env=(/usr/bin/env SANDBOX_QUIET=true) ;;
     esac
+    # Defense in depth: nothing but self-contained flags may precede the
+    # chaperon's `--`, so the first word Slurm executes is always
+    # sandbox-exec.sh (or the /usr/bin/env prefix carrying it).
+    _assert_slurm_flag_argv srun "$_SRUN_VALUE_FLAGS" "${validated_flags[@]}" || return 1
     if [[ -n "$REQ_CWD" ]]; then
         (cd "$REQ_CWD" && "$real_srun" "${validated_flags[@]}" -- \
             "${_quiet_env[@]+"${_quiet_env[@]}"}" \

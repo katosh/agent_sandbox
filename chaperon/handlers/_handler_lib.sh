@@ -527,7 +527,17 @@ _SBATCH_ALLOWED_FLAGS=" \
   --version \
 "
 
-# Flags that consume a value argument (space-separated form: --flag value)
+# Slurm option classes (see "Slurm option-argument classes" below):
+#   _SBATCH_VALUE_FLAGS  — REQUIRED argument: `--flag value`,
+#                          `--flag=value`, `-f value`. Consumes the next
+#                          token when given without `=`.
+#   _SBATCH_OPTARG_FLAGS — OPTIONAL argument (`--flag[=value]`): a value
+#                          binds ONLY with `=`; a following token is never
+#                          consumed (Slurm's getopt treats it as the batch
+#                          script).
+#   every other allowed flag takes NO argument.
+# Classified against sbatch 23.11 (`sbatch --flag` / `--flag=x` probes).
+# Keep _STUB_VALUE_FLAGS in stubs/sbatch in sync.
 _SBATCH_VALUE_FLAGS=" \
   -A --account \
   -c --cpus-per-task \
@@ -557,7 +567,6 @@ _SBATCH_VALUE_FLAGS=" \
   --mem \
   --mem-per-cpu \
   --mem-per-gpu \
-  --nice \
   --ntasks-per-node \
   --cpus-per-gpu \
   --priority \
@@ -601,9 +610,133 @@ _is_denied_flag() {
     return 1
 }
 
+_SBATCH_OPTARG_FLAGS=" --exclusive --nice "
+
 # Check if a flag consumes a value argument.
 _is_value_flag() {
     [[ "$_SBATCH_VALUE_FLAGS" == *" $1 "* ]]
+}
+
+# ── Slurm option-argument classes ────────────────────────────────
+#
+# Slurm parses its command line with getopt_long, where every option is
+# one of: no argument, REQUIRED argument (`--flag value`, `--flag=value`,
+# `-f value`, `-fvalue`) or OPTIONAL argument (`--flag[=value]`, e.g.
+# srun `--kill-on-bad-exit[=0|1]`, `--nice[=adj]`, `--exclusive[=user]`):
+# an optional argument binds ONLY with `=`, the following token is never
+# consumed. If the chaperon treated an optional-argument flag as taking a
+# separate value, it would swallow the next token (`srun
+# --kill-on-bad-exit ./evil true`), while real Slurm would run that token
+# as the command / batch script, outside the sandbox-exec.sh wrapping.
+#
+# Two layers keep the chaperon's parse identical to Slurm's:
+#   1. per-tool lists: *_VALUE_FLAGS (required) and *_OPTARG_FLAGS
+#      (optional, never consume); everything else takes no argument;
+#   2. every validated flag is re-emitted as ONE self-contained token
+#      (`--long=value` for required-argument flags, the bare flag
+#      otherwise) and the user command / batch script is passed after an
+#      explicit `--` inserted by the chaperon. _assert_slurm_flag_argv
+#      checks that no bare word precedes that `--`, so even a
+#      misclassified flag cannot move a user token into Slurm's command
+#      slot.
+
+# _slurm_long_flag <flag> — print the long form of a (short) flag.
+# Only short flags whose meaning is the same for sbatch and srun.
+_slurm_long_flag() {
+    case "$1" in
+        --*) printf '%s' "$1" ;;
+        -A) printf -- '--account' ;;
+        -c) printf -- '--cpus-per-task' ;;
+        -d) printf -- '--dependency' ;;
+        -e) printf -- '--error' ;;
+        -G) printf -- '--gpus' ;;
+        -i) printf -- '--input' ;;
+        -J) printf -- '--job-name' ;;
+        -n) printf -- '--ntasks' ;;
+        -N) printf -- '--nodes' ;;
+        -o) printf -- '--output' ;;
+        -p) printf -- '--partition' ;;
+        -q) printf -- '--qos' ;;
+        -t) printf -- '--time' ;;
+        -w) printf -- '--nodelist' ;;
+        -x) printf -- '--exclude' ;;
+        *)  return 1 ;;
+    esac
+}
+
+# _slurm_normalize_flag <tool> <arg> <value_flags> <optarg_flags> <has_next> [next]
+#
+# Classifies an ALREADY ALLOW-LISTED flag token and produces the single
+# token to forward to Slurm. Sets in the caller's scope (do NOT call in
+# $(...)):
+#   _SLURM_FLAG_TOKEN    — `--long=value` or the bare flag
+#   _SLURM_FLAG_CONSUMED — 1 if <next> was consumed as the value, else 0
+# Returns 1 (with a message) for a value on a no-argument flag, a
+# short flag written with `=`, or a required value that is missing.
+_slurm_normalize_flag() {
+    local _tool="$1" _arg="$2" _req="$3" _opt="$4" _has_next="$5" _next="${6-}"
+    local _base _long
+    _SLURM_FLAG_TOKEN=""
+    _SLURM_FLAG_CONSUMED=0
+    case "$_arg" in
+        --*=*)
+            _base="${_arg%%=*}"
+            if [[ "$_req" == *" $_base "* || "$_opt" == *" $_base "* ]]; then
+                _SLURM_FLAG_TOKEN="$_arg"
+                return 0
+            fi
+            _sandbox_warn "$_tool flag '$_base' does not take a value."
+            return 1
+            ;;
+        --?*|-?)
+            if [[ "$_req" == *" $_arg "* ]]; then
+                if [[ "$_has_next" != 1 ]]; then
+                    _sandbox_warn "$_tool flag '$_arg' requires a value."
+                    return 1
+                fi
+                if ! _long="$(_slurm_long_flag "$_arg")"; then
+                    _sandbox_warn "internal error: no long form known for $_tool flag '$_arg'."
+                    return 1
+                fi
+                _SLURM_FLAG_TOKEN="$_long=$_next"
+                _SLURM_FLAG_CONSUMED=1
+                return 0
+            fi
+            # No-argument or optional-argument flag: never consumes.
+            _SLURM_FLAG_TOKEN="$_arg"
+            return 0
+            ;;
+    esac
+    _sandbox_warn "$_tool flag '$_arg' is not recognized (write '-X value' or '--long-name=value')."
+    return 1
+}
+
+# _assert_slurm_flag_argv <tool> <value_flags> <flag tokens...>
+#
+# Final check before exec'ing the real binary: every token that will
+# precede the chaperon's `--` must be a single self-contained flag. A
+# bare word, a lone `-`/`--`, or a required-argument flag without its
+# attached `=value` (which would make Slurm consume the NEXT token) is an
+# internal error: refuse rather than let Slurm pick a different command.
+_assert_slurm_flag_argv() {
+    local _tool="$1" _req="$2" _t
+    shift 2
+    for _t in "$@"; do
+        case "$_t" in
+            -|--|[!-]*|"")
+                _sandbox_warn "internal error: refusing to run $_tool: non-flag token '$_t' before the command separator."
+                return 1
+                ;;
+            --*=*) ;;
+            *)
+                if [[ "$_req" == *" $_t "* ]]; then
+                    _sandbox_warn "internal error: refusing to run $_tool: '$_t' would consume the next argument."
+                    return 1
+                fi
+                ;;
+        esac
+    done
+    return 0
 }
 
 # ── --export sanitisation ────────────────────────────────────────
@@ -843,11 +976,22 @@ validate_sbatch_args() {
                 _sandbox_warn "sbatch '--chdir' is not allowed — the working directory is set automatically to your current directory."
                 return 1
                 ;;
-            --output=*|-o=*|--error=*|-e=*)
-                # `=` form: extract value, transform, capture, re-pack.
-                local _flag="${arg%%=*}"
-                local _v="${arg#*=}"
-                local _t
+            --output=*|-o=*|--error=*|-e=*|--output|-o|--error|-e)
+                # `=` form or space form (--output <value>): extract the
+                # value, validate / transform, capture, and re-emit as a
+                # single `--output=<value>` token.
+                local _flag _v _t
+                if [[ "$arg" == *=* ]]; then
+                    _flag="${arg%%=*}"
+                    _v="${arg#*=}"
+                elif (( i + 1 < ${#REQ_ARGS[@]} )); then
+                    _flag="$arg"
+                    (( i++ ))
+                    _v="${REQ_ARGS[$i]}"
+                else
+                    _sandbox_warn "sbatch '$arg' requires a value."
+                    return 1
+                fi
                 # Without the staging transform (landlock) the path goes
                 # to slurmstepd verbatim: validate it instead.
                 if ! _slurm_output_feature_enabled \
@@ -856,25 +1000,7 @@ validate_sbatch_args() {
                 fi
                 _t="$(_maybe_transform_slurm_output_arg "$_flag" "$_v" "$_project_dir")"
                 _capture_slurm_output_pair "$_flag" "$_v" "$_t"
-                VALIDATED_ARGS+=("$_flag=$_t")
-                ;;
-            --output|-o|--error|-e)
-                # space form: --output <value>.
-                if (( i + 1 < ${#REQ_ARGS[@]} )); then
-                    (( i++ ))
-                    local _v="${REQ_ARGS[$i]}"
-                    local _t
-                    if ! _slurm_output_feature_enabled \
-                       && ! _validate_slurm_io_path "$arg" "$_v" "$_project_dir" "${REQ_CWD:-$_project_dir}"; then
-                        return 1
-                    fi
-                    _t="$(_maybe_transform_slurm_output_arg "$arg" "$_v" "$_project_dir")"
-                    _capture_slurm_output_pair "$arg" "$_v" "$_t"
-                    VALIDATED_ARGS+=("$arg" "$_t")
-                else
-                    _sandbox_warn "sbatch '$arg' requires a value."
-                    return 1
-                fi
+                VALIDATED_ARGS+=("$(_slurm_long_flag "$_flag")=$_t")
                 ;;
             --uid|--uid=*|--gid|--gid=*)
                 _sandbox_deny "sbatch '--uid/--gid' is not allowed — jobs must run as your own user."
@@ -916,25 +1042,21 @@ validate_sbatch_args() {
                     _USER_COMMENT="${REQ_ARGS[$i]}"
                 fi
                 ;;
-            --*=*)
-                if _is_allowed_flag "$arg"; then
-                    VALIDATED_ARGS+=("$arg")
-                else
+            -*)
+                # Allow-listed flag: classify (no / required / optional
+                # argument) and re-emit as one token (`--long=value` or
+                # the bare flag). Optional-argument flags (--nice,
+                # --exclusive) never consume the next token.
+                if ! _is_allowed_flag "$arg"; then
                     _sandbox_warn "sbatch flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
-                ;;
-            -*)
-                if _is_allowed_flag "$arg"; then
-                    VALIDATED_ARGS+=("$arg")
-                    if _is_value_flag "$arg" && (( i + 1 < ${#REQ_ARGS[@]} )); then
-                        (( i++ ))
-                        VALIDATED_ARGS+=("${REQ_ARGS[$i]}")
-                    fi
-                else
-                    _sandbox_warn "sbatch flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox."
-                    return 1
-                fi
+                local _has_next=0
+                (( i + 1 < ${#REQ_ARGS[@]} )) && _has_next=1
+                _slurm_normalize_flag sbatch "$arg" "$_SBATCH_VALUE_FLAGS" "$_SBATCH_OPTARG_FLAGS" \
+                    "$_has_next" "${REQ_ARGS[$((i + 1))]-}" || return 1
+                if (( _SLURM_FLAG_CONSUMED )); then i=$((i + 1)); fi
+                VALIDATED_ARGS+=("$_SLURM_FLAG_TOKEN")
                 ;;
             *)
                 _sandbox_warn "sbatch unexpected positional argument. Script files are handled by the stub — this should not happen."

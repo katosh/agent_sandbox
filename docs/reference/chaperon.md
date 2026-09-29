@@ -536,7 +536,13 @@ To block a command without proxying it, create a standalone stub that prints an 
 
 ### Adding a new allowed sbatch flag
 
-Add the flag to `_SBATCH_ALLOWED_FLAGS` in `handlers/_handler_lib.sh`. If it takes a value argument, also add it to `_SBATCH_VALUE_FLAGS`.
+Add the flag to `_SBATCH_ALLOWED_FLAGS` in `handlers/_handler_lib.sh`, then classify it exactly the way Slurm's getopt does (check with `sbatch --flag` and `sbatch --flag=x`):
+
+- **required argument** (`--flag value` and `--flag=value`): also add it to `_SBATCH_VALUE_FLAGS` and to `_STUB_VALUE_FLAGS` in `stubs/sbatch`; a short form also needs an entry in `_slurm_long_flag`;
+- **optional argument** (`--flag[=value]`, e.g. `--nice`, `--exclusive`): add it to `_SBATCH_OPTARG_FLAGS` only. A value binds only with `=`; the next word is never consumed (Slurm would take it as the batch script);
+- **no argument**: nothing else to do.
+
+The same classes apply to srun (`_SRUN_VALUE_FLAGS` / `_SRUN_OPTARG_FLAGS` in `handlers/srun.sh`). The handlers re-emit every flag as one token (`--long=value` or the bare flag) and pass the job after a chaperon-inserted `--`, so a misclassified flag cannot put a user word in Slurm's command slot; but a wrong class still changes what the agent's command means, so keep the lists exact.
 
 ### Configuring Slurm scope
 
