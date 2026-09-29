@@ -141,9 +141,57 @@ ENABLED_AGENTS=("claude" "codex" "gemini")
 HOME_ACCESS="tmpwrite"
 
 # Credential dirs that are ALWAYS hidden regardless of HOME_ACCESS mode.
-# In restricted mode these are hidden implicitly (never listed in HOME_READONLY).
-# In read/write modes they are explicitly blocked (tmpfs/blacklist).
+# In restricted/tmpwrite mode these are hidden unless listed in
+# HOME_READONLY/HOME_WRITABLE (the tmpfs HOME only shows listed paths).
+# In read/write modes they are masked unconditionally (tmpfs/blacklist).
 _HOME_ALWAYS_BLOCKED=(".ssh" ".aws" ".gnupg")
+
+# Further credential stores (dirs or files) hidden in read/write modes.
+# In tmpwrite/restricted mode they are already invisible unless listed.
+# To keep that mode's opt-in semantics, an entry listed VERBATIM in
+# HOME_READONLY / HOME_WRITABLE / HOME_SEEDED_FILES (e.g. the shipped
+# `".config/gh"` example) stays visible in read/write mode as well;
+# everything else is masked (bwrap: tmpfs over dirs, /dev/null over
+# files; firejail: blacklist; landlock cannot hide — it warns).
+# Not a config variable: configs can opt entries in, never shrink it.
+_HOME_CREDENTIAL_PATHS=(
+    ".netrc"                   # curl/wget/git HTTP basic auth
+    ".git-credentials"         # git credential-store
+    ".config/gh"               # GitHub CLI OAuth token (hosts.yml)
+    ".config/hub"              # hub CLI token
+    ".docker/config.json"      # registry auth
+    ".kube"                    # kubeconfig + cached tokens
+    ".config/gcloud"           # Google Cloud credentials
+    ".azure"                   # Azure CLI tokens
+    ".config/op"               # 1Password CLI session
+    ".config/helm"             # Helm repository credentials
+    ".terraform.d"             # Terraform Cloud login token
+    ".vault-token"             # HashiCorp Vault token
+    ".pgpass"                  # PostgreSQL passwords
+    ".pypirc"                  # PyPI upload tokens
+    ".cargo/credentials.toml"  # crates.io token
+    ".cargo/credentials"       # crates.io token (older cargo)
+)
+
+# Emit the $HOME-relative paths to mask in HOME_ACCESS=read|write, one
+# per line: every _HOME_ALWAYS_BLOCKED entry, plus each
+# _HOME_CREDENTIAL_PATHS entry not explicitly opted in (see above).
+_home_blocked_paths() {
+    local _p _l _listed
+    for _p in "${_HOME_ALWAYS_BLOCKED[@]}"; do
+        printf '%s\n' "$_p"
+    done
+    for _p in "${_HOME_CREDENTIAL_PATHS[@]}"; do
+        _listed=false
+        for _l in "${HOME_READONLY[@]+"${HOME_READONLY[@]}"}" \
+                  "${HOME_WRITABLE[@]+"${HOME_WRITABLE[@]}"}" \
+                  "${HOME_SEEDED_FILES[@]+"${HOME_SEEDED_FILES[@]}"}"; do
+            [[ "${_l%/}" == "$_p" ]] && { _listed=true; break; }
+        done
+        $_listed || printf '%s\n' "$_p"
+    done
+    return 0
+}
 
 BLOCKED_FILES=(
     # Per-agent instruction files (e.g. ~/.claude/CLAUDE.md,

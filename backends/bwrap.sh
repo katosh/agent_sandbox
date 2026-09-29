@@ -459,12 +459,6 @@ backend_prepare() {
             BWRAP_ARGS+=(--bind "$HOME" "$HOME")
         fi
 
-        # Always hide credential directories
-        for _blocked_sub in "${_HOME_ALWAYS_BLOCKED[@]}"; do
-            local _bp="$HOME/$_blocked_sub"
-            [[ -e "$_bp" ]] && BWRAP_ARGS+=(--tmpfs "$_bp")
-        done
-
         # In read mode, writable paths still need explicit rw bind
         if [[ "${HOME_ACCESS}" == "read" ]]; then
             for subdir in "${HOME_WRITABLE[@]}"; do
@@ -474,6 +468,24 @@ backend_prepare() {
                 fi
             done
         fi
+
+        # Always hide credential paths (_home_blocked_paths). Emitted
+        # AFTER the HOME_WRITABLE binds so a writable ancestor (e.g.
+        # `.config` over `.config/gh`) cannot re-expose them (bwrap:
+        # later wins). Directories get a tmpfs; files get /dev/null
+        # (a tmpfs cannot be mounted on a file). A symlinked file is
+        # masked at its resolved path — bwrap refuses to bind onto a
+        # symlink destination; reads through the link hit the mask.
+        local _bp _blocked_sub
+        while IFS= read -r _blocked_sub; do
+            _bp="$HOME/$_blocked_sub"
+            if [[ -d "$_bp" ]]; then
+                BWRAP_ARGS+=(--tmpfs "$_bp")
+            elif [[ -e "$_bp" ]]; then
+                [[ -L "$_bp" ]] && _bp="$(readlink -f "$_bp")"
+                BWRAP_ARGS+=(--ro-bind /dev/null "$_bp")
+            fi
+        done < <(_home_blocked_paths)
     fi
 
     BWRAP_ARGS+=(--ro-bind "$SANDBOX_DIR" "$SANDBOX_DIR")
