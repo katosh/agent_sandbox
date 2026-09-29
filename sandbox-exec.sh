@@ -98,6 +98,11 @@ done
 # (which is kernel-level: namespaces, Landlock rules, seccomp).
 unset SANDBOX_ACTIVE SANDBOX_BACKEND SANDBOX_PROJECT_DIR
 
+# Test-only switch of sandbox-lib.sh (function-library mode, skips all
+# config loading). Never honour it from the environment of a real
+# launch.
+unset _SANDBOX_LIB_NO_INIT
+
 # Apply backend override before sourcing sandbox-lib.sh
 if [[ -n "$BACKEND_OVERRIDE" ]]; then
     export SANDBOX_BACKEND="$BACKEND_OVERRIDE"

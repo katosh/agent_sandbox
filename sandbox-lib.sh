@@ -2494,6 +2494,15 @@ _classify_pasta_port_entry() {
 # prunes per-launch dirs (and legacy shared files) older than a day; a
 # launch binds within milliseconds of generating, so that window is safe.
 
+# Test hooks: _PASSWD_SRC_FILE / _GROUP_SRC_FILE redirect the base
+# passwd/group source (test.sh #79 cases set them AFTER sourcing this
+# file with _SANDBOX_LIB_NO_INIT=1). They must never come from the
+# environment: an inherited value (e.g. via a Slurm --export on the
+# compute-node re-entry, or the launch env) would let the caller choose
+# the /etc/passwd and /etc/group the sandbox sees. Drop any inherited
+# copy at source time; only in-process assignment after sourcing works.
+unset _PASSWD_SRC_FILE _GROUP_SRC_FILE
+
 generate_filtered_passwd() {
     _is_true "${FILTER_PASSWD:-true}" || return 0
 
