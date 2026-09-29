@@ -238,6 +238,8 @@ def _under(path, prefixes):
 def open_canonical_file(path):
     """Open canonical PATH walking from / with O_NOFOLLOW on every component."""
     parts = _split(path)
+    if not parts:
+        raise Refused("%s is not a regular file" % path)
     fd = os.open("/", DIR_FLAGS)
     try:
         for name in parts[:-1]:
