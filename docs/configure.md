@@ -281,6 +281,8 @@ If the materialization fails (non-writable parent like `/etc`, read-only mount),
 
 Pass `--cleanup-materialized` (or set `CLEANUP_MATERIALIZED_BLOCKED_FILES=1` in the environment or config) to have the launcher remove the placeholders post-exit. Cleanup is conservative: a file is removed only if it's still 0 bytes; a directory is removed only if it's still empty. Anything that grew (a real edit between launch and exit) is retained with a `kept` note on stderr.
 
+Placeholders are also kept while another sandbox might have them mounted: always while another agent-sandbox session runs on the same host, and always on a network filesystem (NFS, Lustre, GPFS, ...), where sandboxes on other hosts (for example sandbox-wrapped Slurm jobs) cannot be seen. Deleting a file that is a mount point in another sandbox detaches that mount there and unmasks the path.
+
 To opt out of the protection for a specific entry, remove it from `BLOCKED_FILES`. To make an entry permanently exist (no warning on each launch), run `mkdir -p "$(dirname X)" && touch X` once outside the sandbox.
 
 ```bash

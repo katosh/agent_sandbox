@@ -3180,9 +3180,19 @@ _cleanup_materialized_blocked_files() {
         fi
     fi
 
-    local _f _d _size _i
+    local _f _d _size _i _netfs_kept=0
     for _f in "${_MATERIALIZED_FILES[@]}"; do
         if [[ ! -e "$_f" ]]; then
+            continue
+        fi
+        # The registry only sees launches on THIS host. On a network
+        # filesystem a sandbox on another client (e.g. a sandbox-wrapped
+        # Slurm job on a compute node) may have this placeholder mounted
+        # over, and unlinking it here makes that client drop the mount
+        # (its dentry fails revalidation). Liveness on other hosts is
+        # unknowable, so keep network-filesystem placeholders.
+        if _path_on_network_fs "$_f"; then
+            _netfs_kept=$((_netfs_kept + 1))
             continue
         fi
         _size=$(stat -c %s "$_f" 2>/dev/null || echo unknown)
@@ -3200,13 +3210,32 @@ _cleanup_materialized_blocked_files() {
         for ((_i = ${#_MATERIALIZED_DIRS[@]} - 1; _i >= 0; _i--)); do
             _d="${_MATERIALIZED_DIRS[$_i]}"
             [[ -d "$_d" ]] || continue
+            _path_on_network_fs "$_d" && continue
             if ! rmdir "$_d" 2>/dev/null; then
                 echo "WARNING: kept '$_d': directory not empty." >&2
             fi
         done
     fi
+    if (( _netfs_kept > 0 )); then
+        echo "WARNING: kept $_netfs_kept materialized BLOCKED_FILES placeholder(s) on a network filesystem: sandboxes on other hosts may have them mounted, and deleting them would unmask the files there." >&2
+    fi
     $_have_lock && _live_registry_unlock
     return 0
+}
+
+# _path_on_network_fs PATH — true if PATH (or its nearest existing
+# ancestor) is on a filesystem shared with other hosts, where removing
+# or renaming an entry can detach mounts in sandboxes on OTHER clients
+# that no local check can see. Unknown filesystem types count as
+# network (fail safe: the caller keeps the file).
+_path_on_network_fs() {
+    local _p="$1" _t
+    while [[ -n "$_p" && ! -e "$_p" && "$_p" != "/" ]]; do _p="$(dirname -- "$_p")"; done
+    _t="$(stat -f -c %T -- "${_p:-/}" 2>/dev/null)" || return 0
+    case "$_t" in
+        nfs*|lustre|gpfs|cifs|smb*|ceph*|afs|fuse*|9p|gfs*|ocfs2|beegfs|panfs|glusterfs|wekafs|UNKNOWN*|unknown*|"") return 0 ;;
+    esac
+    return 1
 }
 
 # Reject command substitution or backticks in path arrays (defense in depth).
