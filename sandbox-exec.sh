@@ -516,6 +516,9 @@ _sandbox_cleanup() {
     if [[ "${_CLEANUP_MATERIALIZED:-0}" == "1" ]]; then
         _cleanup_materialized_blocked_files
     fi
+    if [[ -n "${_MOUNT_GUARD_PID:-}" ]]; then
+        kill "$_MOUNT_GUARD_PID" 2>/dev/null || true
+    fi
 }
 trap _sandbox_cleanup EXIT
 
@@ -544,5 +547,10 @@ if ! _is_true "${SANDBOX_QUIET:-false}"; then
     esac
     echo "sandbox: $SANDBOX_BACKEND | project: $PROJECT_DIR | home: $_home_label" >&2
 fi
+
+# Mount guard: host-side watcher that notices protective mounts
+# disappearing from the running sandbox (sandbox-lib.sh §Mount guard).
+# Started last, after the FD cleanup, so it holds nothing but /dev/null.
+_start_mount_guard "$PROJECT_DIR"
 
 backend_exec "$@"

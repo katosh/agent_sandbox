@@ -629,17 +629,30 @@ backend_prepare() {
     # create lock files, session data, caches, etc.  Then overlay the
     # merged instruction files (CLAUDE.md, settings.json) as individual
     # read-only bind-mounts so the agent cannot modify them.
+    #
+    # All config dirs first, then each protected file exactly once: a
+    # protected file inside a config dir bound LATER would otherwise be
+    # covered by that dir's writable bind (previously papered over by
+    # re-emitting every protected file after every dir, which stacked
+    # one mount per enabled agent on each file).
+    local _any_agent_dir=false
     for _agent_dir in "${_AGENT_SANDBOX_CONFIG_DIRS[@]:-}"; do
         if [[ -n "$_agent_dir" && -d "$_agent_dir" ]]; then
             BWRAP_ARGS+=(--bind "$_agent_dir" "$_agent_dir")
-            # Protect merged config files — agent must not modify these
-            for _protected in "${_AGENT_PROTECTED_FILES[@]:-}"; do
-                if [[ -f "$_protected" ]]; then
-                    BWRAP_ARGS+=(--ro-bind "$_protected" "$_protected")
-                fi
-            done
+            _any_agent_dir=true
         fi
     done
+    if $_any_agent_dir; then
+        # Protect merged config files — agent must not modify these
+        local -A _protected_seen=()
+        for _protected in "${_AGENT_PROTECTED_FILES[@]:-}"; do
+            [[ -n "$_protected" && -z "${_protected_seen[$_protected]:-}" ]] || continue
+            _protected_seen[$_protected]=1
+            if [[ -f "$_protected" ]]; then
+                BWRAP_ARGS+=(--ro-bind "$_protected" "$_protected")
+            fi
+        done
+    fi
 
     for blocked in "${EXTRA_BLOCKED_PATHS[@]}"; do
         if [[ -d "$blocked" ]]; then
@@ -859,6 +872,45 @@ backend_prepare() {
         BWRAP_ARGS+=(--unsetenv "$_hv")
     done < <(_hide_from_sandbox_names)
 
+}
+
+# backend_mount_expectations — the mounts BWRAP_ARGS asks for, one
+# "<kind> <dest>" per line (kind: rw | ro | mask), for the mount guard
+# (sandbox-lib.sh §Mount guard). Device nodes, /dev and /proc are left
+# out. An option this parser does not know makes it print nothing (the
+# guard then stays off rather than guess the argument layout).
+backend_mount_expectations() {
+    local -a _a=("${BWRAP_ARGS[@]}") _out=()
+    local _i=0 _o _n=${#_a[@]}
+    while (( _i < _n )); do
+        _o="${_a[_i]}"
+        case "$_o" in
+            --bind|--bind-try|--dev-bind|--dev-bind-try)
+                [[ "${_a[_i+2]:-}" == /dev || "${_a[_i+2]:-}" == /dev/* ]] \
+                    || _out+=("rw ${_a[_i+2]}")
+                _i=$((_i + 3)) ;;
+            --ro-bind|--ro-bind-try)
+                if [[ "${_a[_i+1]}" == /dev/null ]]; then
+                    _out+=("mask ${_a[_i+2]}")
+                else
+                    _out+=("ro ${_a[_i+2]}")
+                fi
+                _i=$((_i + 3)) ;;
+            --tmpfs)
+                [[ "${_a[_i+1]}" == /dev/* ]] || _out+=("mask ${_a[_i+1]}")
+                _i=$((_i + 2)) ;;
+            --setenv|--file|--bind-data|--ro-bind-data|--symlink|--chmod)
+                _i=$((_i + 3)) ;;
+            --unsetenv|--chdir|--proc|--dev|--dir|--remount-ro|--seccomp|--add-seccomp-fd|--perms|--size|--mqueue|--hostname|--uid|--gid|--lock-file|--sync-fd|--info-fd|--json-status-fd|--block-fd|--userns-block-fd|--cap-add|--cap-drop|--argv0|--exec-label|--file-label|--userns|--userns2|--pidns|--args)
+                _i=$((_i + 2)) ;;
+            --unshare-*|--share-net|--die-with-parent|--as-pid-1|--new-session|--clearenv|--disable-userns|--assert-userns-disabled)
+                _i=$((_i + 1)) ;;
+            *)
+                return 0 ;;
+        esac
+    done
+    (( ${#_out[@]} )) && printf '%s\n' "${_out[@]}"
+    return 0
 }
 
 backend_exec() {
