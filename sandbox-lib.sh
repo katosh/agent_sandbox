@@ -1173,6 +1173,55 @@ _narrow_allowed_project_parents() {
     ALLOWED_PROJECT_PARENTS=("${_effective[@]}")
 }
 
+# --- Writable-vs-admin-read-only overlap (HOME_READONLY escalation) ---
+#
+# _path_forms: print the lexically normalized form (`.`/`..`/`//`
+# collapsed, symlinks NOT followed) and the symlink-resolved form of
+# each argument, as "<lexical>\t<resolved>" lines. realpath -m accepts
+# missing components; falls back to the literal / _resolve_path.
+_path_forms() {
+    local _p _lex _res
+    for _p in "$@"; do
+        _lex="$(realpath -m -s -- "$_p" 2>/dev/null)" || _lex="$_p"
+        _res="$(realpath -m -- "$_p" 2>/dev/null)" || _res="$(_resolve_path "$_p")"
+        printf '%s\t%s\n' "$_lex" "$_res"
+    done
+}
+
+# Precompute the admin HOME_READONLY forms once per enforcement pass.
+# Sets _ADMIN_RO_NAMES / _ADMIN_RO_LEX / _ADMIN_RO_RES (parallel arrays).
+_collect_admin_ro_forms() {
+    _ADMIN_RO_NAMES=() _ADMIN_RO_LEX=() _ADMIN_RO_RES=()
+    local _aro _lex _res
+    for _aro in "${_ADMIN_HOME_READONLY[@]+"${_ADMIN_HOME_READONLY[@]}"}"; do
+        [[ -n "$_aro" ]] || continue
+        IFS=$'\t' read -r _lex _res < <(_path_forms "$HOME/$_aro")
+        _ADMIN_RO_NAMES+=("$_aro")
+        _ADMIN_RO_LEX+=("$_lex")
+        _ADMIN_RO_RES+=("$_res")
+    done
+}
+
+# _writable_overlaps_admin_ro ABS_PATH: if ABS_PATH (either form) is
+# equal to, under, or above any admin HOME_READONLY entry (either
+# form), print that admin entry and return 0. Requires
+# _collect_admin_ro_forms to have run.
+_writable_overlaps_admin_ro() {
+    local _w_lex _w_res _i _wf _rf
+    IFS=$'\t' read -r _w_lex _w_res < <(_path_forms "$1")
+    for ((_i = 0; _i < ${#_ADMIN_RO_NAMES[@]}; _i++)); do
+        for _wf in "$_w_lex" "$_w_res"; do
+            for _rf in "${_ADMIN_RO_LEX[$_i]}" "${_ADMIN_RO_RES[$_i]}"; do
+                if _path_under "$_wf" "$_rf" || _path_under "$_rf" "$_wf"; then
+                    printf '%s' "${_ADMIN_RO_NAMES[$_i]}"
+                    return 0
+                fi
+            done
+        done
+    done
+    return 1
+}
+
 # --- Restore one admin-enforced array ---
 #
 # Generic worker for every name in _ENFORCED_ARRAYS: warn about each
@@ -1286,13 +1335,6 @@ _enforce_admin_policy() {
         _restore_enforced_array "$_enf" "$_label"
     done
 
-    # HOME_READONLY → HOME_WRITABLE escalation
-    for _aro in "${_ADMIN_HOME_READONLY[@]}"; do
-        for _item in "${HOME_WRITABLE[@]}"; do
-            [[ "$_item" == "$_aro" ]] && echo "WARNING: ${_label} moved admin HOME_READONLY entry '${_aro}' to HOME_WRITABLE — reverted." >&2
-        done
-    done
-
     _enforce_admin_scalars "$_label"
 
     # --- Collect user-only additions (items not in admin snapshot) ---
@@ -1346,21 +1388,51 @@ _enforce_admin_policy() {
     # stripped + warned. Admin entries cannot be carved out by users.
     _strip_user_exceptions_covered_by_admin "$_label"
 
-    # HOME_WRITABLE: merge user additions, but strip admin HOME_READONLY items
+    # HOME_WRITABLE / EXTRA_WRITABLE_PATHS vs admin HOME_READONLY.
+    #
+    # A user writable entry is dropped when, after canonicalization, it
+    # is EQUAL to, BELOW or ABOVE an admin read-only entry:
+    #   equal — `.ssh/`, `./.ssh`, `.ssh//` are all `.ssh`; the old
+    #           literal string compare let those through;
+    #   below — `.ssh/authorized_keys` writable defeats `.ssh` read-only;
+    #   above — `.config` writable covers `.config/git` (bind order on
+    #           bwrap, additive rules on landlock).
+    # Both the lexical form and the symlink-resolved form of each side
+    # are compared, so `mylink -> .ssh` is caught too. EXTRA_WRITABLE_PATHS
+    # (absolute) is held to the same rule: `$HOME/.ssh` there is the
+    # same escalation. Admin-listed writable entries are kept as-is.
+    _collect_admin_ro_forms
+    local _conflict
     for _item in "${_user_hw[@]}"; do
         _in_admin=false
         for _a in "${_ADMIN_HOME_WRITABLE[@]}"; do
             [[ "$_item" == "$_a" ]] && { _in_admin=true; break; }
         done
-        if ! $_in_admin; then
-            # Check it's not an admin HOME_READONLY escalation
-            local _is_admin_ro=false
-            for _aro in "${_ADMIN_HOME_READONLY[@]}"; do
-                [[ "$_item" == "$_aro" ]] && { _is_admin_ro=true; break; }
-            done
-            $_is_admin_ro || HOME_WRITABLE+=("$_item")
+        $_in_admin && continue
+        if _conflict="$(_writable_overlaps_admin_ro "$HOME/$_item")"; then
+            if [[ "$_item" == "$_conflict" ]]; then
+                echo "WARNING: ${_label} moved admin HOME_READONLY entry '${_conflict}' to HOME_WRITABLE — reverted." >&2
+            else
+                echo "WARNING: ${_label} HOME_WRITABLE entry '${_item}' overlaps admin HOME_READONLY entry '${_conflict}' (same path, parent or child) — reverted." >&2
+            fi
+            continue
         fi
+        HOME_WRITABLE+=("$_item")
     done
+    local _ewp_clean=("${_ADMIN_EXTRA_WRITABLE_PATHS[@]+"${_ADMIN_EXTRA_WRITABLE_PATHS[@]}"}")
+    for _item in "${EXTRA_WRITABLE_PATHS[@]+"${EXTRA_WRITABLE_PATHS[@]}"}"; do
+        _in_admin=false
+        for _a in "${_ADMIN_EXTRA_WRITABLE_PATHS[@]+"${_ADMIN_EXTRA_WRITABLE_PATHS[@]}"}"; do
+            [[ "$_item" == "$_a" ]] && { _in_admin=true; break; }
+        done
+        $_in_admin && continue
+        if _conflict="$(_writable_overlaps_admin_ro "$_item")"; then
+            echo "WARNING: ${_label} EXTRA_WRITABLE_PATHS entry '${_item}' overlaps admin HOME_READONLY entry '${_conflict}' (same path, parent or child) — removed." >&2
+            continue
+        fi
+        _ewp_clean+=("$_item")
+    done
+    EXTRA_WRITABLE_PATHS=("${_ewp_clean[@]+"${_ewp_clean[@]}"}")
 
     # --- Enforce DENIED_WRITABLE_PATHS ---
     #
