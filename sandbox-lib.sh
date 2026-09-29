@@ -528,13 +528,18 @@ SANDBOX_NPROC_LIMIT=""
 # protective mounts the backend set up, every MOUNT_GUARD_INTERVAL
 # seconds, and reports any loss on the launching terminal (plus syslog
 # and tmux, when available):
+#   repair — put a lost read-only overlay or mask back in the
+#          running sandbox (bwrap: same kind of mount, same path, source
+#          verified; see backends/mount-repair.py) and report it; when
+#          that is impossible or unsafe (firejail, an old kernel, a
+#          symlink at the path), report as warn does.
 #   kill — terminate the sandbox when a loss exposes a
 #          protected path (a masked file/dir becomes visible, or a
 #          read-only overlay inside a writable host mount becomes
 #          writable); other losses are reported only.
-#   warn — (default) report every loss, never terminate.
+#   warn — (default) report every loss, never terminate or repair.
 #   off  — no watcher.
-# Harden-only under an admin pin (off < warn < kill).
+# Harden-only under an admin pin (off < warn < repair < kill).
 MOUNT_GUARD="warn"
 MOUNT_GUARD_INTERVAL=5
 
@@ -1570,7 +1575,9 @@ _enforce_admin_scalars() {
         fi
     fi
 
-    # Mount guard (tri-valued): harden-only. Ordering: off < warn < kill.
+    # Mount guard: harden-only. Ordering: off < warn < repair < kill
+    # (repair keeps the policy enforced after a loss; kill additionally
+    # guarantees the agent does nothing more once a path was exposed).
     if [[ -n "${_ADMIN_MOUNT_GUARD:-}" ]]; then
         if [[ "$(_mount_guard_strictness_idx "${MOUNT_GUARD:-warn}")" -lt \
               "$(_mount_guard_strictness_idx "$_ADMIN_MOUNT_GUARD")" ]]; then
@@ -3099,15 +3106,27 @@ _prepare_sandbox_env() {
 #   degraded — everything else (lost writable bind, loss that falls
 #              through to something read-only or to a tmpfs, loss of a
 #              system mask such as /usr/bin/sbatch). Reported only.
+# MOUNT_GUARD=repair (bwrap): a lost read-only overlay or mask is put
+# back by backends/mount-repair.py, which enters the sandbox's user and
+# mount namespaces (owned by the invoking user, so no privilege is
+# needed) and re-creates the same kind of mount: /dev/null or an empty
+# tmpfs for a mask, a read-only bind of the object now at the path for a
+# path bound onto itself. The backend marks which expectations can be
+# repaired ("<kind>:<how>"); only leaves (no other expected mount below)
+# qualify. A refused repair (symlink at the path, host object changed
+# type or owner, no kernel support) is reported like warn and retried
+# every interval, so a path that reappears is protected again; a repair
+# that ran but does not show up in the mount table is not retried.
 # Reports go to the launching terminal (the backend process's stderr,
 # /dev/tty as fallback) with a bell, to syslog (logger) and to tmux
-# (display-message) when available. Each path is reported once.
+# (display-message) when available. Each loss is reported once.
 
 _mount_guard_strictness_idx() {
     case "$1" in
-        off)  echo 0 ;;
-        warn) echo 1 ;;
-        *)    echo 2 ;;
+        off)    echo 0 ;;
+        warn)   echo 1 ;;
+        repair) echo 2 ;;
+        *)      echo 3 ;;
     esac
 }
 
@@ -3171,10 +3190,13 @@ _mg_children() {
 
 # _mount_guard_prepare PROJECT_DIR — fill the expectation arrays from the
 # backend's mount list. Returns 1 when there is nothing to guard.
-_MG_KIND=(); _MG_PATH=(); _MG_ESC=(); _MG_POLICY=()
+# _MG_HOW[i]: how MOUNT_GUARD=repair may re-create the mount (null |
+# tmpfs | ro; empty = not repairable); for ro, _MG_FTYPE/_MG_UID hold
+# the host object's type (f|d) and owner now, before the sandbox starts.
+_MG_KIND=(); _MG_PATH=(); _MG_ESC=(); _MG_POLICY=(); _MG_HOW=(); _MG_FTYPE=(); _MG_UID=()
 _mount_guard_prepare() {
-    local _proj="$1" _kind _path _e _r
-    _MG_KIND=(); _MG_PATH=(); _MG_ESC=(); _MG_POLICY=()
+    local _proj="$1" _kind _path _e _r _how
+    _MG_KIND=(); _MG_PATH=(); _MG_ESC=(); _MG_POLICY=(); _MG_HOW=(); _MG_FTYPE=(); _MG_UID=()
     declare -F backend_mount_expectations >/dev/null || return 1
     local -a _roots=("$HOME" "$_proj" "${SANDBOX_DIR:-}")
     local -A _exact=()
@@ -3189,7 +3211,10 @@ _mount_guard_prepare() {
     local -A _seen=()
     while read -r _kind _path; do
         [[ -n "$_path" && "$_path" == /* ]] || continue
+        _how="${_kind#*:}"; [[ "$_how" == "$_kind" ]] && _how=""
+        _kind="${_kind%%:*}"
         case "$_kind" in rw|ro|mask) ;; *) continue ;; esac
+        case "$_kind:$_how" in mask:null|mask:tmpfs|ro:same) ;; *) _how="" ;; esac
         _path="${_path%/}"; [[ -n "$_path" ]] || _path="/"
         [[ "$_path" == "/" ]] && continue
         local _policy=0
@@ -3214,14 +3239,64 @@ _mount_guard_prepare() {
         if [[ -n "${_seen[$_path]:-}" ]]; then
             # Later op at the same point wins (bwrap/firejail argv order).
             local _i="${_seen[$_path]}"
-            _MG_KIND[$_i]="$_kind"; _MG_POLICY[$_i]="$_policy"
+            _MG_KIND[$_i]="$_kind"; _MG_POLICY[$_i]="$_policy"; _MG_HOW[$_i]="$_how"
             continue
         fi
         _seen[$_path]="${#_MG_PATH[@]}"
         _MG_KIND+=("$_kind"); _MG_PATH+=("$_path")
-        _MG_ESC+=("$(_mg_esc "$_path")"); _MG_POLICY+=("$_policy")
+        _MG_ESC+=("$(_mg_esc "$_path")"); _MG_POLICY+=("$_policy"); _MG_HOW+=("$_how")
     done < <(backend_mount_expectations)
-    [[ ${#_MG_PATH[@]} -gt 0 ]]
+    [[ ${#_MG_PATH[@]} -gt 0 ]] || return 1
+    # Repairable: leaves only. Re-creating a mount that had other
+    # expected mounts below it would hide them (they went with it).
+    local _i _j _p
+    for _i in "${!_MG_PATH[@]}"; do
+        _MG_FTYPE[$_i]=""; _MG_UID[$_i]=""
+        [[ -n "${_MG_HOW[_i]}" ]] || continue
+        _p="${_MG_PATH[_i]}"
+        for _j in "${!_MG_PATH[@]}"; do
+            if [[ "${_MG_PATH[_j]}" == "$_p"/* ]]; then _MG_HOW[$_i]=""; break; fi
+        done
+        [[ "${_MG_HOW[_i]}" == same ]] || continue
+        _MG_HOW[$_i]=ro
+        if [[ -L "$_p" ]]; then _MG_HOW[$_i]=""
+        elif [[ -d "$_p" ]]; then _MG_FTYPE[$_i]=d
+        elif [[ -f "$_p" ]]; then _MG_FTYPE[$_i]=f
+        else _MG_HOW[$_i]=""
+        fi
+        [[ -n "${_MG_HOW[_i]}" ]] || continue
+        _MG_UID[$_i]="$(stat -c %u -- "$_p" 2>/dev/null)"
+        [[ "${_MG_UID[_i]}" =~ ^[0-9]+$ ]] || _MG_HOW[$_i]=""
+    done
+    return 0
+}
+
+# _mg_repair INDEX PID NS_INODE BASE_RO — re-create lost mount INDEX
+# inside the sandbox (MOUNT_GUARD=repair); a tmpfs mask that was
+# read-only (BASE_RO=1, e.g. under --remount-ro) comes back read-only.
+# Returns 0 when the helper reports
+# success; otherwise _MG_REPAIR_ERR holds the reason and the return
+# status is 1 (refused) or 2 (not possible here).
+_MG_REPAIR_ERR=""
+_mg_repair() {
+    local _i="$1" _helper="${SANDBOX_DIR:-}/backends/mount-repair.py" _rc
+    _MG_REPAIR_ERR=""
+    if [[ -z "${_MG_HOW[_i]:-}" ]]; then
+        _MG_REPAIR_ERR="not repairable (only leaf masks and read-only binds of a path onto itself are)"; return 2
+    fi
+    if [[ ! -f "$_helper" ]] || ! command -v python3 >/dev/null 2>&1; then
+        _MG_REPAIR_ERR="python3 or backends/mount-repair.py not available"; return 2
+    fi
+    local _how="${_MG_HOW[_i]}"
+    [[ "$_how" == tmpfs && "${4:-0}" == 1 ]] && _how=tmpfs-ro
+    local -a _args=("$2" "$3" "$_how" "${_MG_PATH[_i]}")
+    [[ "${_MG_HOW[_i]}" == ro ]] && _args+=("${_MG_FTYPE[_i]}" "${_MG_UID[_i]}")
+    _MG_REPAIR_ERR="$(timeout 10 python3 "$_helper" "${_args[@]}" 2>&1 >/dev/null)"; _rc=$?
+    _MG_REPAIR_ERR="${_MG_REPAIR_ERR//$'\n'/; }"
+    [[ $_rc -eq 0 ]] && return 0
+    [[ -n "$_MG_REPAIR_ERR" ]] || _MG_REPAIR_ERR="helper failed (status $_rc)"
+    [[ $_rc -eq 1 ]] && return 1
+    return 2
 }
 
 # _mg_evaluate INDEX BASE_RO — classify expectation INDEX against the
@@ -3360,8 +3435,14 @@ _mount_guard_run() {
     if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -d "$_CHAPERON_FIFO_DIR" && ! -L "$_CHAPERON_FIFO_DIR" ]]; then
         mkdir -- "$_CHAPERON_FIFO_DIR/.mount-guard-armed" 2>/dev/null || true
     fi
-    local -A _reported=()
-    local _mp _verdict _what _p _k
+    local -A _reported=() _repfail=()
+    local _mp _verdict _what _p _k _nsino="${_ns//[^0-9]/}" _rrc _gone
+    # repair is a bwrap feature (firejail's namespaces are root-owned and
+    # cannot be entered unprivileged): elsewhere it behaves as warn.
+    local _mg_note=""
+    if [[ "$_mode" == repair && "${SANDBOX_BACKEND:-}" != bwrap ]]; then
+        _mode=warn; _mg_note="; repair needs bwrap"
+    fi
     while :; do
         sleep "$_interval"
         _alive "$_lpid" "$_lstart" || return 0
@@ -3378,6 +3459,46 @@ _mount_guard_run() {
             _mg_evaluate "$_i" "${_base_ro[_i]}"
             _verdict="$_MG_VERDICT"; _what="$_MG_WHAT"
             [[ -n "$_verdict" ]] || continue
+            if [[ "$_mode" == repair ]]; then
+                # Only a mount that is gone can be re-created (a read-only
+                # mount turned writable cannot happen from outside).
+                _gone=""; [[ -z "${_MG_TOP_FS[$_mp]+x}" ]] && _gone=1
+                _rrc=2; _MG_REPAIR_ERR="the mount is still there but no longer read-only"
+                if [[ -n "$_gone" ]]; then
+                    _mg_repair "$_i" "$_target" "$_nsino" "${_base_ro[_i]}"; _rrc=$?
+                fi
+                if (( _rrc == 0 )); then
+                    # Trust the kernel's table, not the helper: the path
+                    # must be a mount point again, read-only unless tmpfs.
+                    if _mg_read_mountinfo "$_target" && [[ -n "${_MG_TOP_FS[$_mp]+x}" ]] \
+                       && { [[ "${_base_ro[_i]}" != 1 ]] || _mg_is_ro "${_MG_TOP_OPTS[$_mp]}"; }; then
+                        unset "_repfail[$_i]"
+                        if [[ "$_verdict" == EXPOSED ]]; then
+                            _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: protection LOST at ${_MG_PATH[_i]} (${_what}) and RESTORED (MOUNT_GUARD=repair). The path was unprotected for up to ${_interval}s before the repair; whatever the agent read or wrote there in that window is not undone."
+                        else
+                            _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: mount lost at ${_MG_PATH[_i]} (${_what}) and RESTORED (MOUNT_GUARD=repair)."
+                        fi
+                        continue
+                    fi
+                    _rrc=3; _MG_REPAIR_ERR="the repaired mount does not show in the sandbox's mount table"
+                fi
+                # A refusal (the path is missing, a symlink, changed) may
+                # clear up: retry every interval, report once. A repair
+                # that ran but is not visible is never retried (no
+                # stacking of mounts).
+                if [[ -n "${_repfail[$_i]:-}" ]]; then
+                    (( _rrc == 1 )) && continue
+                    _reported[$_i]=1; continue
+                fi
+                _repfail[$_i]=1
+                (( _rrc == 1 )) || _reported[$_i]=1
+                if [[ "$_verdict" == EXPOSED ]]; then
+                    _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: protection LOST at ${_MG_PATH[_i]} (${_what}). Could not restore it: ${_MG_REPAIR_ERR}. The sandbox no longer enforces its policy there; restart it (MOUNT_GUARD=repair, not terminating)."
+                else
+                    _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: mount lost at ${_MG_PATH[_i]} (${_what}). Could not restore it: ${_MG_REPAIR_ERR}. No protected path is exposed, but the sandbox is degraded; restart it."
+                fi
+                continue
+            fi
             _reported[$_i]=1
             if [[ "$_verdict" == EXPOSED ]]; then
                 if [[ "$_mode" == kill ]]; then
@@ -3388,7 +3509,7 @@ _mount_guard_run() {
                     _alive "$_lpid" "$_lstart" && kill -KILL "$_lpid" 2>/dev/null
                     return 0
                 fi
-                _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: protection LOST at ${_MG_PATH[_i]} (${_what}). The sandbox no longer enforces its policy there; restart it (MOUNT_GUARD=warn, not terminating)."
+                _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: protection LOST at ${_MG_PATH[_i]} (${_what}). The sandbox no longer enforces its policy there; restart it (MOUNT_GUARD=${MOUNT_GUARD:-warn}, not terminating${_mg_note})."
             else
                 _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: mount lost at ${_MG_PATH[_i]} (${_what}). No protected path is exposed, but the sandbox is degraded; restart it."
             fi
@@ -3935,9 +4056,9 @@ _validate_loaded_config() {
     fi
 
     case "${MOUNT_GUARD:-warn}" in
-        off|warn|kill) ;;
+        off|warn|repair|kill) ;;
         *)
-            echo "WARNING: MOUNT_GUARD='${MOUNT_GUARD}' invalid (off|warn|kill); using 'warn'." >&2
+            echo "WARNING: MOUNT_GUARD='${MOUNT_GUARD}' invalid (off|warn|repair|kill); using 'warn'." >&2
             MOUNT_GUARD=warn ;;
     esac
     if [[ ! "${MOUNT_GUARD_INTERVAL:-5}" =~ ^[1-9][0-9]{0,3}$ ]]; then

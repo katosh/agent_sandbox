@@ -877,7 +877,11 @@ backend_prepare() {
 # backend_mount_expectations — the mounts BWRAP_ARGS asks for, one
 # "<kind> <dest>" per line (kind: rw | ro | mask), for the mount guard
 # (sandbox-lib.sh §Mount guard). Device nodes, /dev and /proc are left
-# out. An option this parser does not know makes it print nothing (the
+# out. A kind may carry ":<how>", telling MOUNT_GUARD=repair how to
+# re-create it: mask:null (--ro-bind /dev/null), mask:tmpfs (--tmpfs),
+# ro:same (--ro-bind of a path onto itself). Read-only binds from
+# another source are not repairable (the source is usually not visible
+# inside, and a bind must come from the sandbox's own mount table). An option this parser does not know makes it print nothing (the
 # guard then stays off rather than guess the argument layout).
 backend_mount_expectations() {
     local -a _a=("${BWRAP_ARGS[@]}") _out=()
@@ -891,13 +895,15 @@ backend_mount_expectations() {
                 _i=$((_i + 3)) ;;
             --ro-bind|--ro-bind-try)
                 if [[ "${_a[_i+1]}" == /dev/null ]]; then
-                    _out+=("mask ${_a[_i+2]}")
+                    _out+=("mask:null ${_a[_i+2]}")
+                elif [[ "${_a[_i+1]}" == "${_a[_i+2]}" ]]; then
+                    _out+=("ro:same ${_a[_i+2]}")
                 else
                     _out+=("ro ${_a[_i+2]}")
                 fi
                 _i=$((_i + 3)) ;;
             --tmpfs)
-                [[ "${_a[_i+1]}" == /dev/* ]] || _out+=("mask ${_a[_i+1]}")
+                [[ "${_a[_i+1]}" == /dev/* ]] || _out+=("mask:tmpfs ${_a[_i+1]}")
                 _i=$((_i + 2)) ;;
             --setenv|--file|--bind-data|--ro-bind-data|--symlink|--chmod)
                 _i=$((_i + 3)) ;;

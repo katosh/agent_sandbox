@@ -37,7 +37,8 @@ BACKEND_FILES := backends/bwrap.sh \
                  backends/firejail.sh \
                  backends/landlock.sh \
                  backends/landlock-sandbox.py \
-                 backends/generate-seccomp.py
+                 backends/generate-seccomp.py \
+                 backends/mount-repair.py
 
 DOCS := README.md CHANGELOG.md docs/reference/chaperon.md \
         docs/admin/hardening.md docs/admin/install.md \
@@ -100,6 +101,7 @@ install-lib:
 	$(INSTALL) -m 644 $(addprefix $(SRC_DIR)/,$(BACKEND_FILES)) $(DESTDIR)$(LIBDIR)/backends/
 	chmod +x $(DESTDIR)$(LIBDIR)/backends/landlock-sandbox.py
 	chmod +x $(DESTDIR)$(LIBDIR)/backends/generate-seccomp.py
+	chmod +x $(DESTDIR)$(LIBDIR)/backends/mount-repair.py
 	@# bin/ (in-sandbox utilities — sandbox-notify, tmux config wrapper)
 	$(INSTALL) -d $(DESTDIR)$(LIBDIR)/bin
 	for f in $(SRC_DIR)/bin/*; do $(INSTALL) -m 755 "$$f" $(DESTDIR)$(LIBDIR)/bin/; done
