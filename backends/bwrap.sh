@@ -691,9 +691,19 @@ backend_prepare() {
     #
     # Null bytes in the BPF binary mean we MUST use a temp file — bash
     # variables silently truncate at \0.
+    #
+    # Every path that ends WITHOUT a filter warns loudly (not gated by
+    # SANDBOX_QUIET): previously a missing python3 skipped the filter
+    # silently, leaving io_uring / userfaultfd / TIOCSTI etc. reachable
+    # with no indication.
     _SECCOMP_TMPFILE=
     local _seccomp_py="${SANDBOX_DIR}/backends/generate-seccomp.py"
-    if [[ -f "$_seccomp_py" ]] && command -v python3 &>/dev/null; then
+    local _seccomp_skip=""
+    if [[ ! -f "$_seccomp_py" ]]; then
+        _seccomp_skip="generator $_seccomp_py is missing"
+    elif ! command -v python3 &>/dev/null; then
+        _seccomp_skip="python3 is not on PATH (needed to generate the BPF filter)"
+    else
         _SECCOMP_TMPFILE="$(mktemp "${TMPDIR:-/tmp}/bwrap-seccomp.XXXXXX")"
         if python3 "$_seccomp_py" > "$_SECCOMP_TMPFILE" 2>/dev/null; then
             local _bpf_size
@@ -702,15 +712,20 @@ backend_prepare() {
                 # Placeholder — replaced with real FD in backend_exec()
                 BWRAP_ARGS+=(--seccomp __SECCOMP_FD__)
             else
-                echo "sandbox: warning: seccomp BPF filter is empty, skipping" >&2
-                rm -f "$_SECCOMP_TMPFILE"
-                _SECCOMP_TMPFILE=
+                _seccomp_skip="the generated BPF filter is empty"
             fi
         else
-            echo "sandbox: warning: seccomp filter generation failed, skipping" >&2
+            _seccomp_skip="filter generation failed ($(uname -m) unsupported?)"
+        fi
+        if [[ -n "$_seccomp_skip" ]]; then
             rm -f "$_SECCOMP_TMPFILE"
             _SECCOMP_TMPFILE=
         fi
+    fi
+    if [[ -n "$_seccomp_skip" ]]; then
+        echo "sandbox: WARNING — running WITHOUT the seccomp filter: $_seccomp_skip." >&2
+        echo "  io_uring, userfaultfd, kexec, bpf, mount, ioctl(TIOCSTI) and the rest of the" >&2
+        echo "  denylist are NOT blocked in this session. Install python3 to restore it." >&2
     fi
 
     # Honor an inherited $SLURM_SUBMIT_DIR when it canonicalizes under

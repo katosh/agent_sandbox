@@ -5037,6 +5037,25 @@ if sandbox bash -c 'grep "^NoNewPrivs:" /proc/self/status | awk "{print \$2}"'; 
     fi
 fi
 
+# ── SEC-W: bwrap warns loudly when it runs without the seccomp filter ──
+# A missing/failing python3 used to skip the BPF filter silently.
+# Shadow python3 with a stub that fails, then check the dry-run stderr
+# (even with SANDBOX_QUIET=true, which the harness sets).
+if is_bwrap; then
+    _secw_bin=$(mktemp -d)
+    _TEST_TEMP_DIRS+=("$_secw_bin")
+    printf '#!/bin/sh\nexit 1\n' > "$_secw_bin/python3"; chmod +x "$_secw_bin/python3"
+    _secw_err=$(PATH="$_secw_bin:$PATH" "$SANDBOX_EXEC" --backend bwrap --dry-run \
+        --project-dir "$PROJECT_DIR" -- true 2>&1 >/dev/null)
+    if grep -q "WITHOUT the seccomp filter" <<<"$_secw_err"; then
+        pass "bwrap: running without the seccomp filter is announced loudly"
+    else
+        fail "bwrap: seccomp filter skipped without a warning" "$_secw_err"
+    fi
+    rm -rf "$_secw_bin"
+fi
+
+
 # ── N02: NoNewPrivs should neuter setuid binaries (behavioural, not flag-only) ──
 # sudo -n -u root id would only succeed if setuid worked. With NNP, the
 # setuid bit should be ignored and sudo should either fail to escalate
