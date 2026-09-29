@@ -116,8 +116,12 @@ _array_contains_() {
     return 1
 }
 
-# _overlay_write ROOT REL NAME MODE — atomically install stdin at
-# ROOT/REL/NAME with octal MODE. Never follows a symlink.
+# _overlay_write ROOT REL NAME MODE — install stdin at ROOT/REL/NAME
+# with octal MODE. Never follows a symlink. An existing file is kept
+# (unchanged content) or rewritten in place, never renamed over: the
+# merged files are read-only bind mount points in running sandboxes,
+# and replacing the dentry would detach those mounts (see
+# overlay-fs.py update_in_place_at).
 _overlay_write() {
     _overlay_fs write "$1" "$2" "$3" "$4"
 }

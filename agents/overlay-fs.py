@@ -29,8 +29,13 @@ Sub-commands (all paths absolute; REL is relative to ROOT; exit 0 = ok):
       owner-writable.
 
   write ROOT REL NAME MODE
-      Atomically replace ROOT/REL/NAME with stdin: O_EXCL temp file in
-      the same directory, fchmod MODE (octal), rename, verify by inode.
+      Install stdin at ROOT/REL/NAME with MODE (octal). An existing
+      single-link regular file of ours is left alone when the content is
+      unchanged and otherwise rewritten IN PLACE through an O_NOFOLLOW
+      fd: it is a read-only bind mount point in running sandboxes, and a
+      rename over it would detach that mount everywhere. Anything else
+      (absent, symlink, directory, fifo, planted hard link) is replaced
+      atomically: O_EXCL temp file, fchmod, rename, verify by inode.
 
   read ROOT REL [--allow PREFIX]... [--deny PREFIX]...
       Print ROOT/REL to stdout. A regular file is read without following
@@ -186,8 +191,90 @@ def rmtree_at(dfd, name):
     os.rmdir(name, dir_fd=dfd)
 
 
+def update_in_place_at(dfd, name, data, mode):
+    """Bring an existing dfd/name to DATA/MODE without replacing its dentry.
+
+    The merged files (sandbox-config/CLAUDE.md, settings.json, ...) are
+    read-only BIND MOUNT POINTS inside every running sandbox of this
+    user. rename() or unlink() of a path that is a mount point in another
+    mount namespace succeeds and DETACHES that mount in all namespaces
+    (Linux >= 3.18); on NFS the same happens when the rename is done by
+    another client (the other client's dentry fails revalidation and
+    d_invalidate() drops the mounts on it). So a launch that replaced
+    these files with a temp + rename silently stripped the read-only
+    overlay from every sandbox already running, and their agents could
+    then rewrite their own permission rules (settings.json is 0444 but
+    owned by the user, in a writable directory).
+
+    This keeps the inode: unchanged content is not written at all (the
+    common case: every launch, every Slurm re-entry), changed content
+    is written through the SAME inode, which live sandboxes also see.
+
+    Returns True if handled, False if the entry is absent or not a plain
+    file we may write through (caller then falls back to replacing it).
+    Never follows a symlink: O_NOFOLLOW on open, and the write goes
+    through a re-open of the verified fd (/proc/self/fd/N), not a path.
+    The entry must be a regular file owned by us with exactly one link:
+    a hard link planted from inside (landlock) would otherwise redirect
+    the write into the linked file.
+    """
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                     | O_CLOEXEC, dir_fd=dfd)
+    except OSError as e:
+        if e.errno in (errno.ENOENT, errno.ELOOP, errno.EACCES,
+                       errno.ENXIO, errno.EISDIR):
+            return False
+        raise
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return False
+        if st.st_uid != os.getuid() or st.st_nlink != 1:
+            warn("%s is not a single-link file of ours (links=%d, uid=%d); "
+                 "replacing it instead of writing through it"
+                 % (name, st.st_nlink, st.st_uid))
+            return False
+        if st.st_size == len(data) and read_fd_all(fd) == data:
+            if stat.S_IMODE(st.st_mode) != mode:
+                os.fchmod(fd, mode)
+            return True
+        # Content differs: make it writable (by fd), reopen the very same
+        # inode for writing, verify, write, trim, restore the mode.
+        os.fchmod(fd, 0o600)
+        try:
+            wfd = os.open("/proc/self/fd/%d" % fd, os.O_WRONLY | O_CLOEXEC)
+        except OSError:
+            os.fchmod(fd, stat.S_IMODE(st.st_mode))
+            return False
+        try:
+            wst = os.fstat(wfd)
+            if (wst.st_dev, wst.st_ino) != (st.st_dev, st.st_ino):
+                return False
+            view = memoryview(data)
+            off = 0
+            while off < len(data):
+                n = os.pwrite(wfd, view[off:], off)
+                off += n
+            os.ftruncate(wfd, len(data))
+        finally:
+            os.close(wfd)
+        os.fchmod(fd, mode)
+        return True
+    finally:
+        os.close(fd)
+
+
 def write_at(dfd, name, data, mode):
-    """Atomically install DATA at dfd/name. Returns True on success."""
+    """Install DATA at dfd/name. Returns True on success.
+
+    An existing plain file is updated in place (never renamed over; see
+    update_in_place_at). Only an absent entry, or one that is not a
+    plain single-link file of ours (symlink, directory, special file,
+    planted hard link), is (re)created with an O_EXCL temp + rename.
+    """
+    if update_in_place_at(dfd, name, data, mode):
+        return True
     for _ in range(5):
         tmp = ".%s.tmp.%s" % (name, _rand())
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW

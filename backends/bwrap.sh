@@ -618,17 +618,30 @@ backend_prepare() {
     # create lock files, session data, caches, etc.  Then overlay the
     # merged instruction files (CLAUDE.md, settings.json) as individual
     # read-only bind-mounts so the agent cannot modify them.
+    #
+    # All config dirs first, then each protected file exactly once: a
+    # protected file inside a config dir bound LATER would otherwise be
+    # covered by that dir's writable bind (previously papered over by
+    # re-emitting every protected file after every dir, which stacked
+    # one mount per enabled agent on each file).
+    local _any_agent_dir=false
     for _agent_dir in "${_AGENT_SANDBOX_CONFIG_DIRS[@]:-}"; do
         if [[ -n "$_agent_dir" && -d "$_agent_dir" ]]; then
             BWRAP_ARGS+=(--bind "$_agent_dir" "$_agent_dir")
-            # Protect merged config files — agent must not modify these
-            for _protected in "${_AGENT_PROTECTED_FILES[@]:-}"; do
-                if [[ -f "$_protected" ]]; then
-                    BWRAP_ARGS+=(--ro-bind "$_protected" "$_protected")
-                fi
-            done
+            _any_agent_dir=true
         fi
     done
+    if $_any_agent_dir; then
+        # Protect merged config files — agent must not modify these
+        local -A _protected_seen=()
+        for _protected in "${_AGENT_PROTECTED_FILES[@]:-}"; do
+            [[ -n "$_protected" && -z "${_protected_seen[$_protected]:-}" ]] || continue
+            _protected_seen[$_protected]=1
+            if [[ -f "$_protected" ]]; then
+                BWRAP_ARGS+=(--ro-bind "$_protected" "$_protected")
+            fi
+        done
+    fi
 
     for blocked in "${EXTRA_BLOCKED_PATHS[@]}"; do
         if [[ -d "$blocked" ]]; then
