@@ -198,6 +198,11 @@ export SANDBOX_BACKEND
 # requirement check / overlay execution which both iterate the list.
 _apply_agent_profiles
 
+# Capability warnings for the RESOLVED backend. Config validation runs
+# before detect_backend, while an auto-detected backend is still "auto";
+# after the agent profiles so their BLOCKED_FILES entries count.
+_warn_backend_feature_gaps
+
 # Prepare agent profiles (backend-independent). Only agents listed in
 # ENABLED_AGENTS are prepared. The requirement check emits warnings
 # if declared credentials/paths look unreachable.
