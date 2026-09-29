@@ -4,65 +4,47 @@
 # Merges GEMINI.md with sandbox instructions and sets GEMINI_CONFIG_DIR
 # so Gemini reads from the merged directory instead of ~/.gemini/ directly.
 #
-# Called by prepare_agent_configs() in sandbox-lib.sh.
+# Called by prepare_agent_configs() in sandbox-lib.sh. All file
+# operations go through agents/overlay-lib.sh / overlay-fs.py, which
+# never follow a symlink planted inside the (sandbox-writable) ~/.gemini.
 
 # agent_prepare_config PROJECT_DIR
 #   Merges config files and sets up the per-session config directory.
 agent_prepare_config() {
     local project_dir="$1"
+    _overlay_available gemini || return 0
 
     # --- Determine the real config directory ---
     # Always use ~/.gemini as the base (not GEMINI_CONFIG_DIR, which may
     # already point to sandbox-config from a parent sandbox invocation).
     local real_gemini_dir="$HOME/.gemini"
-
     local config_dir="$real_gemini_dir/sandbox-config"
-    chmod u+w "$config_dir" 2>/dev/null || true
-    mkdir -p "$config_dir"
+    [[ -d "$real_gemini_dir" ]] || return 0
+
+    _overlay_fs mkdir "$real_gemini_dir" sandbox-config || return 0
+    _overlay_read_policy "$project_dir"
 
     # --- Merge GEMINI.md ---
-    local sandbox_snippet="$(_agent_file gemini agent.md)"
-    local user_gemini_md="$real_gemini_dir/GEMINI.md"
     {
-        if [[ -f "$user_gemini_md" ]]; then
-            cat "$user_gemini_md"
-        fi
-        if [[ -f "$sandbox_snippet" ]]; then
-            echo ""
-            sed "s|__SANDBOX_DIR__|$SANDBOX_DIR|g" "$sandbox_snippet"
-        fi
-    } > "$config_dir/GEMINI.md.tmp.$$"
-    chmod a-w "$config_dir/GEMINI.md.tmp.$$" 2>/dev/null || true
-    if ! mv -f "$config_dir/GEMINI.md.tmp.$$" "$config_dir/GEMINI.md" 2>/dev/null; then
-        rm -f "$config_dir/GEMINI.md.tmp.$$" 2>/dev/null || true
-    fi
+        _overlay_read "$real_gemini_dir" GEMINI.md && echo ""
+        _overlay_snippet gemini
+    } | _overlay_write "$real_gemini_dir" sandbox-config GEMINI.md 0444 || true
 
-    # --- Merge settings.json ---
-    # Gemini CLI uses ~/.gemini/settings.json for user-level settings.
-    # Symlink it into the sandbox-config so the agent inherits user prefs.
-    local user_settings="$real_gemini_dir/settings.json"
-    if [[ -f "$user_settings" && ! -e "$config_dir/settings.json" ]]; then
-        ln -snf "$user_settings" "$config_dir/settings.json" 2>/dev/null || true
-    fi
+    # --- settings.json (copy-on-launch, host file protected) ---
+    # ~/.gemini/settings.json can define mcpServers / hooks that run
+    # UNSANDBOXED the next time the user runs gemini outside. The real
+    # file is ro-bound (bwrap) / --read-only (firejail); Gemini inside
+    # gets a private copy in sandbox-config that it may rewrite (/settings)
+    # without the change reaching the host file. A copy newer than the
+    # host file is kept across launches.
+    _overlay_protect_host_file "$real_gemini_dir" "" settings.json '{}'
 
     # --- Symlink everything else (preserve fresher sandbox copies) ---
-    for item in "$real_gemini_dir"/* "$real_gemini_dir"/.*; do
-        local name
-        name="$(basename "$item")"
-        [[ "$name" == "." || "$name" == ".." ]] && continue
-        case "$name" in
-            GEMINI.md|sandbox-config) continue ;;
-            .sandbox-GEMINI.md) continue ;;   # stale merged file from old overlay
-        esac
-        local target="$config_dir/$name"
-        if [[ -e "$target" && ! -L "$target" && "$target" -nt "$item" ]]; then
-            continue
-        fi
-        if [[ -L "$target" && "$(readlink "$target")" == "$item" ]]; then
-            continue
-        fi
-        ln -snf "$item" "$target" 2>/dev/null || true
-    done
+    _overlay_fs sync "$real_gemini_dir" sandbox-config "" \
+        --skip GEMINI.md --skip sandbox-config \
+        --skip .sandbox-GEMINI.md \
+        --copy settings.json \
+        "${_OVERLAY_POLICY[@]+"${_OVERLAY_POLICY[@]}"}" || true
 
     _AGENT_SANDBOX_CONFIG_DIRS+=("$config_dir")
     _AGENT_PROTECTED_FILES+=("$config_dir/GEMINI.md")

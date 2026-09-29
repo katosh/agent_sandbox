@@ -372,18 +372,32 @@ backend_prepare() {
         fi
     done
 
-    # Agent sandbox-config directories: make visible and read-only.
-    # In restricted/tmpwrite mode, --whitelist is needed to punch through
-    # the tmpfs overlay. In read/write mode, HOME is already fully
-    # visible — using --whitelist would trigger firejail's tmpfs HOME
-    # and break the full-HOME intent. Just mark read-only there.
+    # Agent sandbox-config directories: make visible (and, like bwrap,
+    # writable — the agent needs lock files, $CLAUDE_CONFIG_DIR/.claude.json,
+    # copy-on-launch configs such as codex's config.toml). The merged
+    # instruction/settings files inside are made read-only individually
+    # by the _AGENT_PROTECTED_FILES loop below. In restricted/tmpwrite
+    # mode, --whitelist is needed to punch through the tmpfs overlay. In
+    # read/write mode, HOME is already fully visible — using --whitelist
+    # would trigger firejail's tmpfs HOME and break the full-HOME intent.
     for _agent_dir in "${_AGENT_SANDBOX_CONFIG_DIRS[@]:-}"; do
         if [[ -n "$_agent_dir" && -d "$_agent_dir" ]]; then
             if [[ "${HOME_ACCESS:-restricted}" == "restricted" || "${HOME_ACCESS}" == "tmpwrite" ]]; then
                 FIREJAIL_ARGS+=(--whitelist="$_agent_dir")
             fi
-            FIREJAIL_ARGS+=(--read-only="$_agent_dir")
         fi
+    done
+
+    # Individual protected agent files: the merged instruction/settings
+    # copies AND the real host-executed agent config the overlays
+    # register (e.g. ~/.claude/settings.json, ~/.codex/config.toml),
+    # which sits inside a writable agent dir. Read-only inside so the
+    # agent cannot plant hooks / MCP servers that run unsandboxed on the
+    # user's next outside launch. Overlays only register regular files;
+    # a symlink is skipped (marking it would protect its target instead).
+    for _protected in "${_AGENT_PROTECTED_FILES[@]:-}"; do
+        [[ -n "$_protected" && -f "$_protected" && ! -L "$_protected" ]] || continue
+        FIREJAIL_ARGS+=(--read-only="$_protected")
     done
 
     # Extra blocked paths

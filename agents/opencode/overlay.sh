@@ -5,56 +5,40 @@
 # directory and sets OPENCODE_CONFIG_DIR so OpenCode reads from
 # the merged directory instead of ~/.config/opencode/ directly.
 #
-# Called by prepare_agent_configs() in sandbox-lib.sh.
+# Called by prepare_agent_configs() in sandbox-lib.sh. All file
+# operations go through agents/overlay-lib.sh / overlay-fs.py, which
+# never follow a symlink planted inside the (sandbox-writable)
+# ~/.config/opencode.
 
 # agent_prepare_config PROJECT_DIR
 #   Merges config files and sets up the per-session config directory.
 agent_prepare_config() {
     local project_dir="$1"
+    _overlay_available opencode || return 0
 
     # --- Determine the real config directory ---
     # Always use ~/.config/opencode as the base (not OPENCODE_CONFIG_DIR,
     # which may already point to sandbox-config from a parent invocation).
     local real_opencode_dir="$HOME/.config/opencode"
-
     local config_dir="$real_opencode_dir/sandbox-config"
-    chmod u+w "$config_dir" 2>/dev/null || true
-    mkdir -p "$config_dir"
+    [[ -d "$real_opencode_dir" ]] || return 0
+
+    _overlay_fs mkdir "$real_opencode_dir" sandbox-config || return 0
+    _overlay_read_policy "$project_dir"
 
     # --- Merge AGENTS.md ---
-    local sandbox_snippet="$(_agent_file opencode agent.md)"
-    local user_agents_md="$real_opencode_dir/AGENTS.md"
     {
-        if [[ -f "$user_agents_md" ]]; then
-            cat "$user_agents_md"
-        fi
-        if [[ -f "$sandbox_snippet" ]]; then
-            echo ""
-            sed "s|__SANDBOX_DIR__|$SANDBOX_DIR|g" "$sandbox_snippet"
-        fi
-    } > "$config_dir/AGENTS.md.tmp.$$"
-    chmod a-w "$config_dir/AGENTS.md.tmp.$$" 2>/dev/null || true
-    if ! mv -f "$config_dir/AGENTS.md.tmp.$$" "$config_dir/AGENTS.md" 2>/dev/null; then
-        rm -f "$config_dir/AGENTS.md.tmp.$$" 2>/dev/null || true
-    fi
+        _overlay_read "$real_opencode_dir" AGENTS.md && echo ""
+        _overlay_snippet opencode
+    } | _overlay_write "$real_opencode_dir" sandbox-config AGENTS.md 0444 || true
 
     # --- Symlink everything else (preserve fresher sandbox copies) ---
-    for item in "$real_opencode_dir"/* "$real_opencode_dir"/.*; do
-        local name
-        name="$(basename "$item")"
-        [[ "$name" == "." || "$name" == ".." ]] && continue
-        case "$name" in
-            AGENTS.md|sandbox-config) continue ;;
-        esac
-        local target="$config_dir/$name"
-        if [[ -e "$target" && ! -L "$target" && "$target" -nt "$item" ]]; then
-            continue
-        fi
-        if [[ -L "$target" && "$(readlink "$target")" == "$item" ]]; then
-            continue
-        fi
-        ln -snf "$item" "$target" 2>/dev/null || true
-    done
+    # Not protected here (see docs/reference/security.md): OpenCode also
+    # reads ~/.config/opencode/opencode.json directly (OPENCODE_CONFIG_DIR
+    # is an ADDITIONAL config dir) and rewrites it, so making it read-only
+    # would break the agent.
+    _overlay_fs sync "$real_opencode_dir" sandbox-config "" \
+        --skip AGENTS.md --skip sandbox-config || true
 
     _AGENT_SANDBOX_CONFIG_DIRS+=("$config_dir")
     _AGENT_PROTECTED_FILES+=("$config_dir/AGENTS.md")

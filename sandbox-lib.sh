@@ -3559,6 +3559,11 @@ prepare_agent_configs() {
             _AGENT_ENV_EXPORTS=()
             _AGENT_SANDBOX_CONFIG_DIRS=()
             _AGENT_PROTECTED_FILES=()
+            # Shared symlink-safe helpers (agents/overlay-lib.sh): every
+            # overlay file operation must go through them, since the
+            # overlays write into sandbox-writable directories.
+            # shellcheck disable=SC1091
+            [[ -f "$agents_dir/overlay-lib.sh" ]] && source "$agents_dir/overlay-lib.sh"
             # shellcheck disable=SC1090
             source "$overlay"
             agent_prepare_config "$project_dir"
