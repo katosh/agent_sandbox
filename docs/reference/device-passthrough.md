@@ -206,7 +206,7 @@ Targets in `test.sh` (config-aware, like the `S02_credentials` suite):
 | D04 | `DEVICES_BLACKLIST` enforcement: user `DEVICES+=(/dev/pts)` is dropped |
 | D05 | Glob `*` against missing host nodes → silent no-op (no error)    |
 | D06 | Deprecated `BIND_DEV_PTS=true` → `/dev/pts` appears, deprecation warning |
-| D07 | Backend skip: landlock/firejail emit a warning if `DEVICES` set  |
+| D07 | Backend skip: landlock emits a warning if `DEVICES` set (firejail maps `DEVICES` to `--private-dev` device classes, see configure.md) |
 
 ## Out of scope for this PR
 
