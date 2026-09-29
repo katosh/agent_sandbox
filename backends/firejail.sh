@@ -445,7 +445,11 @@ backend_exec() {
         unset "$_hv" 2>/dev/null || true
     done < <(_hide_from_sandbox_names)
 
-    firejail "${FIREJAIL_ARGS[@]}" -- "$@"
+    # exec (via _exec_or_run_sandbox) so the launcher PID becomes
+    # firejail: signals sent to the launcher reach the sandbox (firejail
+    # forwards them to its child) instead of killing only this shell and
+    # orphaning the sandboxed command.
+    _exec_or_run_sandbox firejail "${FIREJAIL_ARGS[@]}" -- "$@"
     exit $?
 }
 

@@ -267,7 +267,18 @@ backend_exec() {
         unset "$_hv" 2>/dev/null || true
     done < <(_hide_from_sandbox_names)
 
-    python3 "$LANDLOCK_SANDBOX" "${LANDLOCK_ARGS[@]}" -- "$@"
+    # Start in the project dir, like bwrap's --chdir and firejail's
+    # --private-cwd (honoring an inherited $SLURM_SUBMIT_DIR under the
+    # project). Without this the command ran in whatever cwd the
+    # launcher was started from, and the chaperon (which validates the
+    # request cwd against the project) refused srun/sbatch.
+    cd -- "$(_resolve_inherited_cwd "$_LANDLOCK_PROJECT_DIR")" || exit 1
+
+    # exec (via _exec_or_run_sandbox) so the launcher PID becomes the
+    # sandboxed process: signals sent to the launcher (kill -TERM,
+    # Slurm's job-step teardown) reach the command instead of killing
+    # only this shell and orphaning the command.
+    _exec_or_run_sandbox python3 "$LANDLOCK_SANDBOX" "${LANDLOCK_ARGS[@]}" -- "$@"
     exit $?
 }
 

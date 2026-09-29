@@ -7433,6 +7433,36 @@ fi
 
 echo ""
 
+# ── SIG01: SIGTERM to the launcher reaches the sandboxed command ──
+# firejail and landlock used to run the sandbox as a child of the
+# launcher shell (no exec, no forwarding), so `kill -TERM <launcher>`
+# killed only the shell and orphaned the sandboxed command. Checked in
+# the default (exec) mode and in --cleanup-materialized (child) mode.
+for _sig_mode in exec cleanup; do
+    _sig_tag="sbxsigtest$$x${_sig_mode}"
+    _sig_flags=()
+    [[ "$_sig_mode" == cleanup ]] && _sig_flags=(--cleanup-materialized)
+    "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" "${_sig_flags[@]}" --project-dir "$PROJECT_DIR" -- \
+        bash -c "exec -a $_sig_tag sleep 120" >/dev/null 2>&1 &
+    _sig_pid=$!
+    for _i in $(seq 1 100); do pgrep -f "$_sig_tag" >/dev/null && break; sleep 0.1; done
+    if ! pgrep -f "$_sig_tag" >/dev/null; then
+        skip "SIG01 ($_sig_mode): sandboxed command never started"
+        kill "$_sig_pid" 2>/dev/null; wait "$_sig_pid" 2>/dev/null
+        continue
+    fi
+    kill -TERM "$_sig_pid" 2>/dev/null
+    wait "$_sig_pid" 2>/dev/null
+    for _i in $(seq 1 30); do pgrep -f "$_sig_tag" >/dev/null || break; sleep 0.1; done
+    if pgrep -f "$_sig_tag" >/dev/null; then
+        fail "SIG01 ($_sig_mode): sandboxed command orphaned after SIGTERM to the launcher"
+        pkill -f "$_sig_tag" 2>/dev/null
+    else
+        pass "SIG01 ($_sig_mode): SIGTERM to the launcher terminates the sandboxed command"
+    fi
+done
+
+
 # ── 13. Lmod module loading ────────────────────────────────────────
 #
 # These tests require lmod installed and SANDBOX_TEST_LMOD=1 set.

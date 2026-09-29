@@ -2709,7 +2709,10 @@ _exec_or_run_sandbox() {
     if [[ "${_CLEANUP_MATERIALIZED:-0}" != "1" ]]; then
         exec "$@"
     fi
-    "$@" &
+    # `<&0` is load-bearing: without job control bash points a
+    # background command's stdin at /dev/null, which would leave an
+    # interactive agent with no input in --cleanup-materialized mode.
+    "$@" <&0 &
     _SANDBOX_CHILD_PID=$!
     trap '_sandbox_forward_signal TERM' TERM
     trap '_sandbox_forward_signal INT'  INT
