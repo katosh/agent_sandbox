@@ -469,6 +469,12 @@ HIDE_FROM_SANDBOX=(
     "SANDBOX_NPROC_LIMIT"
     "SANDBOX_CONF"
 )
+# Built-in floor, snapshotted before any config layer runs. Not a config
+# variable (configs cannot name it), so it survives `HIDE_FROM_SANDBOX=()`
+# in user config or conf.d even when no admin baseline exists:
+# _hide_from_sandbox_names always emits floor ∪ HIDE_FROM_SANDBOX.
+# Mirrors the _NETWORK_BLOCKLIST_DEFAULTS floor pattern.
+_HIDE_FROM_SANDBOX_DEFAULTS=("${HIDE_FROM_SANDBOX[@]}")
 
 # Credential-pattern globs: block env vars matching common credential naming
 # conventions. Configurable via sandbox.conf / user.conf (admin-enforced).
@@ -533,13 +539,21 @@ _is_allowed_env() {
 # outright — it is not a sandbox-setting var, and scrubbing it yields
 # a sandbox where nothing resolves; a listed PATH is always a
 # misconfiguration, so warn instead of obeying.
+#
+# The built-in defaults (_HIDE_FROM_SANDBOX_DEFAULTS) are always
+# emitted first, whatever the config layers did to HIDE_FROM_SANDBOX,
+# so the documented "users can add names but never remove default
+# entries" holds without an admin baseline too. Duplicates collapse.
 _hide_from_sandbox_names() {
-    local _hv
-    for _hv in "${HIDE_FROM_SANDBOX[@]+"${HIDE_FROM_SANDBOX[@]}"}"; do
+    local _hv _seen=" "
+    for _hv in "${_HIDE_FROM_SANDBOX_DEFAULTS[@]+"${_HIDE_FROM_SANDBOX_DEFAULTS[@]}"}" \
+               "${HIDE_FROM_SANDBOX[@]+"${HIDE_FROM_SANDBOX[@]}"}"; do
         if [[ "$_hv" == "PATH" ]]; then
             echo "WARNING: HIDE_FROM_SANDBOX entry 'PATH' would break every in-sandbox exec — ignored." >&2
             continue
         fi
+        [[ "$_seen" == *" $_hv "* ]] && continue
+        _seen+="$_hv "
         printf '%s\n' "$_hv"
     done
 }
@@ -770,6 +784,10 @@ _CONFIG_SCALARS=(
     LANDLOCK_REQUIRED_ABI LANDLOCK_HARD_REQUIREMENT
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
+# Consumed by _enforce_admin_policy (via _restore_enforced_array): every
+# name listed here is restored from its _ADMIN_<NAME> snapshot after each
+# untrusted layer. Adding a name here requires a matching snapshot line
+# in _snapshot_admin_config.
 _ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS EXTRA_BLOCKED_PATHS DEVICES_BLACKLIST NETWORK_BLOCKLIST NETWORK_BLOCKLIST_EXCEPT HIDE_FROM_SANDBOX)
 
 # --- Load an untrusted config file in an isolated subprocess ---
@@ -1152,6 +1170,36 @@ _narrow_allowed_project_parents() {
     ALLOWED_PROJECT_PARENTS=("${_effective[@]}")
 }
 
+# --- Restore one admin-enforced array ---
+#
+# Generic worker for every name in _ENFORCED_ARRAYS: warn about each
+# admin entry the loaded layer removed, then rebuild the array as the
+# admin snapshot (_ADMIN_<NAME>) followed by the layer's own additions
+# (entries not already in the snapshot), preserving order.
+#   $1 — array name (must have a matching _ADMIN_<NAME> snapshot)
+#   $2 — label for warnings ("User config", "Project config", …)
+_restore_enforced_array() {
+    local -n _rea_cur="$1"
+    local -n _rea_adm="_ADMIN_$1"
+    local _rea_label="$2" _rea_a _rea_i _rea_found
+    local _rea_out=("${_rea_adm[@]+"${_rea_adm[@]}"}")
+    for _rea_a in "${_rea_adm[@]+"${_rea_adm[@]}"}"; do
+        _rea_found=false
+        for _rea_i in "${_rea_cur[@]+"${_rea_cur[@]}"}"; do
+            [[ "$_rea_i" == "$_rea_a" ]] && { _rea_found=true; break; }
+        done
+        $_rea_found || echo "WARNING: ${_rea_label} removed admin-enforced $1 entry '${_rea_a}' — restored." >&2
+    done
+    for _rea_i in "${_rea_cur[@]+"${_rea_cur[@]}"}"; do
+        _rea_found=false
+        for _rea_a in "${_rea_adm[@]+"${_rea_adm[@]}"}"; do
+            [[ "$_rea_i" == "$_rea_a" ]] && { _rea_found=true; break; }
+        done
+        $_rea_found || _rea_out+=("$_rea_i")
+    done
+    _rea_cur=("${_rea_out[@]+"${_rea_out[@]}"}")
+}
+
 # --- Enforce admin harden-only scalars ---
 #
 # Security-critical booleans (PRIVATE_TMP, PRIVATE_IPC, FILTER_PASSWD):
@@ -1227,50 +1275,12 @@ _enforce_admin_policy() {
     # --- Warn about violations ---
     local _a _item _found _aro
 
-    # Enforced arrays: warn about removed admin entries
-    for _a in "${_ADMIN_BLOCKED_FILES[@]}"; do
-        _found=false
-        for _item in "${BLOCKED_FILES[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced BLOCKED_FILES entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_BLOCKED_ENV_VARS[@]}"; do
-        _found=false
-        for _item in "${BLOCKED_ENV_VARS[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced BLOCKED_ENV_VARS entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_BLOCKED_ENV_PATTERNS[@]}"; do
-        _found=false
-        for _item in "${BLOCKED_ENV_PATTERNS[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced BLOCKED_ENV_PATTERNS entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_HIDE_FROM_SANDBOX[@]}"; do
-        _found=false
-        for _item in "${HIDE_FROM_SANDBOX[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced HIDE_FROM_SANDBOX entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_EXTRA_BLOCKED_PATHS[@]}"; do
-        _found=false
-        for _item in "${EXTRA_BLOCKED_PATHS[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced EXTRA_BLOCKED_PATHS entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_DEVICES_BLACKLIST[@]}"; do
-        _found=false
-        for _item in "${DEVICES_BLACKLIST[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced DEVICES_BLACKLIST entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_NETWORK_BLOCKLIST[@]+"${_ADMIN_NETWORK_BLOCKLIST[@]}"}"; do
-        _found=false
-        for _item in "${NETWORK_BLOCKLIST[@]+"${NETWORK_BLOCKLIST[@]}"}"; do
-            [[ "$_item" == "$_a" ]] && { _found=true; break; }
-        done
-        $_found || echo "WARNING: ${_label} removed admin-enforced NETWORK_BLOCKLIST entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]+"${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
-        _found=false
-        for _item in "${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
-            [[ "$_item" == "$_a" ]] && { _found=true; break; }
-        done
-        $_found || echo "WARNING: ${_label} removed admin-enforced NETWORK_BLOCKLIST_EXCEPT entry '${_a}' — restored." >&2
+    # Enforced arrays — _ENFORCED_ARRAYS is the single source of truth:
+    # admin entries are restored (with a warning when a layer dropped
+    # one), then the layer's own additions are appended.
+    local _enf
+    for _enf in "${_ENFORCED_ARRAYS[@]}"; do
+        _restore_enforced_array "$_enf" "$_label"
     done
 
     # HOME_READONLY → HOME_WRITABLE escalation
@@ -1284,29 +1294,16 @@ _enforce_admin_policy() {
 
     # --- Collect user-only additions (items not in admin snapshot) ---
     # Save the user's arrays before restoring admin values.
-    local _user_bf=("${BLOCKED_FILES[@]}")
-    local _user_bev=("${BLOCKED_ENV_VARS[@]}")
-    local _user_bep=("${BLOCKED_ENV_PATTERNS[@]}")
     local _user_aev=("${ALLOWED_ENV_VARS[@]}")
-    local _user_hfs=("${HIDE_FROM_SANDBOX[@]}")
-    local _user_ebp=("${EXTRA_BLOCKED_PATHS[@]}")
     local _user_hw=("${HOME_WRITABLE[@]}")
     local _user_ewp=("${EXTRA_WRITABLE_PATHS[@]}")
     local _user_rom=("${READONLY_MOUNTS[@]}")
     local _user_hro=("${HOME_READONLY[@]}")
     local _user_hsf=("${HOME_SEEDED_FILES[@]}")
     local _user_app=("${ALLOWED_PROJECT_PARENTS[@]}")
-    local _user_dbl=("${DEVICES_BLACKLIST[@]}")
-    local _user_nbl=("${NETWORK_BLOCKLIST[@]+"${NETWORK_BLOCKLIST[@]}"}")
-    local _user_nbx=("${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}")
 
     # --- Restore admin base values ---
-    BLOCKED_FILES=("${_ADMIN_BLOCKED_FILES[@]}")
-    BLOCKED_ENV_VARS=("${_ADMIN_BLOCKED_ENV_VARS[@]}")
-    BLOCKED_ENV_PATTERNS=("${_ADMIN_BLOCKED_ENV_PATTERNS[@]}")
     ALLOWED_ENV_VARS=("${_ADMIN_ALLOWED_ENV_VARS[@]}")
-    HIDE_FROM_SANDBOX=("${_ADMIN_HIDE_FROM_SANDBOX[@]}")
-    EXTRA_BLOCKED_PATHS=("${_ADMIN_EXTRA_BLOCKED_PATHS[@]}")
     HOME_READONLY=("${_ADMIN_HOME_READONLY[@]}")
     HOME_SEEDED_FILES=("${_ADMIN_HOME_SEEDED_FILES[@]}")
     EXTRA_WRITABLE_PATHS=("${_ADMIN_EXTRA_WRITABLE_PATHS[@]}")
@@ -1319,9 +1316,6 @@ _enforce_admin_policy() {
     # snapshot.
     HOME_WRITABLE=("${_ADMIN_HOME_WRITABLE[@]}")
     DENIED_WRITABLE_PATHS=("${_ADMIN_DENIED_WRITABLE_PATHS[@]}")
-    DEVICES_BLACKLIST=("${_ADMIN_DEVICES_BLACKLIST[@]}")
-    NETWORK_BLOCKLIST=("${_ADMIN_NETWORK_BLOCKLIST[@]+"${_ADMIN_NETWORK_BLOCKLIST[@]}"}")
-    NETWORK_BLOCKLIST_EXCEPT=("${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]+"${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]}"}")
 
     # --- Merge: admin base + user-only additions ---
     local _in_admin
@@ -1337,24 +1331,16 @@ _enforce_admin_policy() {
             $_in_admin || _target_arr+=("$_item")
         done
     }
-    _merge_additions _user_bf   _ADMIN_BLOCKED_FILES          BLOCKED_FILES
-    _merge_additions _user_bev  _ADMIN_BLOCKED_ENV_VARS       BLOCKED_ENV_VARS
-    _merge_additions _user_bep  _ADMIN_BLOCKED_ENV_PATTERNS   BLOCKED_ENV_PATTERNS
     _merge_additions _user_aev  _ADMIN_ALLOWED_ENV_VARS       ALLOWED_ENV_VARS
-    _merge_additions _user_hfs  _ADMIN_HIDE_FROM_SANDBOX      HIDE_FROM_SANDBOX
-    _merge_additions _user_ebp  _ADMIN_EXTRA_BLOCKED_PATHS    EXTRA_BLOCKED_PATHS
     _merge_additions _user_ewp  _ADMIN_EXTRA_WRITABLE_PATHS   EXTRA_WRITABLE_PATHS
     _merge_additions _user_rom  _ADMIN_READONLY_MOUNTS        READONLY_MOUNTS
     _merge_additions _user_hro  _ADMIN_HOME_READONLY          HOME_READONLY
     _merge_additions _user_hsf  _ADMIN_HOME_SEEDED_FILES      HOME_SEEDED_FILES
     _narrow_allowed_project_parents _user_app "$_label"
-    _merge_additions _user_dbl  _ADMIN_DEVICES_BLACKLIST       DEVICES_BLACKLIST
-    _merge_additions _user_nbl  _ADMIN_NETWORK_BLOCKLIST       NETWORK_BLOCKLIST
-    # NETWORK_BLOCKLIST_EXCEPT merges similarly, but with an
-    # additional cover-check: user-exception entries that match (under
+    # NETWORK_BLOCKLIST_EXCEPT was merged above (it is in
+    # _ENFORCED_ARRAYS); it additionally gets a cover-check: user-exception entries that match (under
     # bash glob semantics) any admin-set NETWORK_BLOCKLIST entry are
     # stripped + warned. Admin entries cannot be carved out by users.
-    _merge_additions _user_nbx  _ADMIN_NETWORK_BLOCKLIST_EXCEPT  NETWORK_BLOCKLIST_EXCEPT
     _strip_user_exceptions_covered_by_admin "$_label"
 
     # HOME_WRITABLE: merge user additions, but strip admin HOME_READONLY items
