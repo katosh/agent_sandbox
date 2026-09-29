@@ -45,6 +45,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Concurrent launches no longer corrupt `/etc/passwd` in running
+  sandboxes (`#79`).** `generate_filtered_passwd` wrote the filtered
+  passwd/group/nsswitch.conf to one fixed shared path with a truncate
+  plus racy appends, and bwrap bind-mounts follow the inode, so a second
+  launch rewrote the files under every live sandbox. Symptoms were
+  `getpwuid()` failing, ssh's "No user exists for uid", and git over SSH
+  dying with a misleading "correct access rights" error. Each launch now
+  builds into its own `.passwd-filter/l.XXXXXX/` directory (all three
+  files, so group and nsswitch are covered too), so running sandboxes
+  keep their inode untouched. Output is validated before binding (7
+  fields per passwd line, 4 per group line, current uid present) and
+  the launch aborts with an error otherwise, rather than binding a
+  passwd without the current user. Per-launch dirs older than a day are
+  pruned on later launches; unlinking is safe for live sandboxes since
+  the mount holds the inode. The base set is now filtered strictly (7
+  passwd / 4 group fields, numeric id below 1000), so blank lines,
+  comments and NIS `+`/`-` lines in the host files are dropped instead
+  of failing validation. The exposed content is otherwise unchanged.
+
 - **`bin/tmux` wrapper now runs the newest tmux available instead of
   hardcoding `/usr/bin/tmux` — fixes TUI garbling on hosts with an
   ancient system tmux.** On hosts whose system tmux predates 3.2/3.3

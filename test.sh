@@ -1543,6 +1543,110 @@ else
 fi
 rm -f "$_hfs_err"
 
+# ── generate_filtered_passwd: per-launch isolation (#79) ─────────
+# Unit-style (no backend needed). A slow `getent` shim widens the race
+# window; N concurrent generations must each yield a well-formed file
+# containing the current uid, and an earlier file (what a running
+# sandbox is bound to) must never be mutated by later launches.
+_gfp_home="$(mktemp -d)"
+_gfp_shim="$(mktemp -d)"
+cat > "$_gfp_shim/getent" <<'SHIM'
+#!/bin/bash
+sleep 0.05
+exec "$_GFP_REAL_GETENT" "$@"
+SHIM
+chmod +x "$_gfp_shim/getent"
+export _GFP_REAL_GETENT="$(command -v getent)"
+_gfp_out="$(
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1 HOME="$_gfp_home"
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _USER_DATA_DIR="$_gfp_home/.config/agent-sandbox"
+    FILTER_PASSWD=true
+    PATH="$_gfp_shim:$PATH"
+    uid="$(id -u)"
+    generate_filtered_passwd || { echo "first generation failed"; exit 1; }
+    first="$_FILTERED_PASSWD"; first_sum="$(cksum < "$first")"
+    first_inode="$(stat -c %i "$first")"
+    for i in $(seq 1 12); do
+        ( generate_filtered_passwd && echo "$_FILTERED_PASSWD $_FILTERED_GROUP" \
+            > "$_gfp_home/res.$i" ) &
+    done
+    wait
+    [[ "$(ls "$_gfp_home"/res.* | wc -l)" -eq 12 ]] || { echo "missing results"; exit 1; }
+    for f in "$_gfp_home"/res.*; do
+        read -r pw gr < "$f"
+        [[ "$pw" != "$first" ]] || { echo "path reused: $pw"; exit 1; }
+        awk -F: 'NF != 7 { exit 1 }' "$pw" || { echo "malformed passwd $pw"; exit 1; }
+        awk -F: -v u="$uid" '$3 == u { f = 1 } END { exit !f }' "$pw" \
+            || { echo "uid missing in $pw"; exit 1; }
+        awk -F: 'NF != 4 { exit 1 }' "$gr" || { echo "malformed group $gr"; exit 1; }
+    done
+    [[ "$(cksum < "$first")" == "$first_sum" && "$(stat -c %i "$first")" == "$first_inode" ]] \
+        || { echo "earlier file mutated by later launch"; exit 1; }
+    [[ "$(sort -u "$_gfp_home"/res.* | wc -l)" -eq 12 ]] || { echo "launches shared paths"; exit 1; }
+    echo ok
+)"
+if [[ "$_gfp_out" == "ok" ]]; then
+    pass "generate_filtered_passwd: concurrent launches get independent, well-formed files (#79)"
+else
+    fail "generate_filtered_passwd: concurrency/isolation broken (#79)" "$_gfp_out"
+fi
+
+# Validation fails closed when the current uid cannot be resolved: shim
+# `id` to report a uid/name that exists nowhere.
+_gfp_out="$(
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1 HOME="$_gfp_home"
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _USER_DATA_DIR="$_gfp_home/.config/agent-sandbox"
+    FILTER_PASSWD=true
+    export _GFP_REAL_ID="$(command -v id)"
+    cat > "$_gfp_shim/id" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in
+    -u)  echo 61999 ;;
+    -un) echo nosuchuser_gfp ;;
+    *)   exec "$_GFP_REAL_ID" "$@" ;;
+esac
+SHIM
+    chmod +x "$_gfp_shim/id"
+    PATH="$_gfp_shim:$PATH"
+    if generate_filtered_passwd 2>/dev/null; then echo "accepted passwd without current uid"; exit 1; fi
+    echo ok
+)"
+if [[ "$_gfp_out" == "ok" ]]; then
+    pass "generate_filtered_passwd: refuses passwd lacking the current uid (#79)"
+else
+    fail "generate_filtered_passwd: accepted invalid passwd (#79)" "$_gfp_out"
+fi
+
+# Blank lines, comments and NIS +/- lines in the host passwd/group must be
+# dropped from the base set, not cause a refusal to launch (#79 review).
+printf 'root:x:0:0:root:/root:/bin/bash\n\n# comment\n+::::::\n+@netgroup\n-baduser\ndaemon:x:1:1:d:/:/usr/sbin/nologin\nbig:x:5000:5000:b:/:/bin/sh\n\n' > "$_gfp_home/src.passwd"
+printf 'root:x:0:\n\n# comment\n+:::\n+@ng\n-bad\nbiggrp:x:5000:\n' > "$_gfp_home/src.group"
+_gfp_out="$(
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1 HOME="$_gfp_home"
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _USER_DATA_DIR="$_gfp_home/.config/agent-sandbox"
+    FILTER_PASSWD=true
+    _PASSWD_SRC_FILE="$_gfp_home/src.passwd"
+    _GROUP_SRC_FILE="$_gfp_home/src.group"
+    generate_filtered_passwd || { echo "refused to launch"; exit 1; }
+    grep -qE '^(root|daemon):' "$_FILTERED_PASSWD" || { echo "system accounts lost"; exit 1; }
+    grep -qE '^(#|\+|-|big:|$)' "$_FILTERED_PASSWD" && { echo "junk/high-uid line leaked"; exit 1; }
+    grep -q '^root:' "$_FILTERED_GROUP" || { echo "root group lost"; exit 1; }
+    grep -qE '^(#|\+|-|biggrp:|$)' "$_FILTERED_GROUP" && { echo "junk line leaked into group"; exit 1; }
+    echo ok
+)"
+if [[ "$_gfp_out" == "ok" ]]; then
+    pass "generate_filtered_passwd: blank/comment/NIS lines in host files are dropped, not fatal (#79)"
+else
+    fail "generate_filtered_passwd: malformed host passwd/group lines broke generation (#79)" "$_gfp_out"
+fi
+rm -rf "$_gfp_home" "$_gfp_shim"
+
 # 3.8.3 — Keep-set invariant: inside the sandbox, the ONLY sandbox/
 # chaperon vars are the intentional orientation markers. Everything
 # else — including the harness's own exported SANDBOX_QUIET=true and

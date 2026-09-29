@@ -656,7 +656,9 @@ backend_prepare() {
     # Overlay /etc/passwd, /etc/group, and /etc/nsswitch.conf with filtered
     # versions containing only system accounts + current user and disable LDAP.
     if _is_true "${FILTER_PASSWD:-true}"; then
-        generate_filtered_passwd
+        # Fail closed: FILTER_PASSWD is a hardening setting, and a passwd
+        # lacking the current user breaks getpwuid() (ssh/git) (#79).
+        generate_filtered_passwd || exit 1
         if [[ -n "${_FILTERED_PASSWD:-}" && -f "${_FILTERED_PASSWD:-}" ]]; then
             BWRAP_ARGS+=(--ro-bind "$_FILTERED_PASSWD" /etc/passwd)
             BWRAP_ARGS+=(--ro-bind "$_FILTERED_GROUP" /etc/group)

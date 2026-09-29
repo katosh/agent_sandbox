@@ -2322,6 +2322,135 @@ _classify_pasta_port_entry() {
     echo "sandbox: NOTE — hostname/CIDR entry '${_entry}' cannot be enforced at pasta's port-level layer (no port to exclude); use the v1.2 L7 proxy for SNI-aware filtering or isolated mode for hard deny-all. Skipping." >&2
 }
 
+# ── Passwd filtering (LDAP/AD user enumeration prevention) ────────
+#
+# Generates a minimal /etc/passwd and /etc/nsswitch.conf for use inside
+# the sandbox.  The filtered passwd contains only system accounts
+# (UID < 1000) and the current user.  The filtered nsswitch.conf
+# replaces "ldap", "sss", and "compat" with "files" for the passwd
+# and group databases, so getent only returns local entries.
+#
+# Sets _FILTERED_PASSWD, _FILTERED_GROUP and _FILTERED_NSSWITCH to the
+# generated paths.  Backends that support file overlays (bwrap) use these
+# directly.
+#
+# Concurrency (#79): every call builds into its OWN fresh directory
+# ($_USER_DATA_DIR/.passwd-filter/l.XXXXXX), never a shared fixed path.
+# A bind mount follows the inode, so rewriting a shared file in place
+# would mutate /etc/passwd inside already-running sandboxes, and
+# concurrent launches would interleave partial writes.  Per-launch dirs
+# make instances fully independent.  The result is validated before use
+# (7 fields per passwd line, current uid present); on any failure the
+# function returns 1 and the caller must abort, since FILTER_PASSWD is a
+# hardening setting and binding a broken passwd is never correct.
+#
+# Cleanup: an unlinked file stays valid for a mount that already holds
+# its inode, so pruning can never break a running sandbox.  Each launch
+# prunes per-launch dirs (and legacy shared files) older than a day; a
+# launch binds within milliseconds of generating, so that window is safe.
+
+generate_filtered_passwd() {
+    _is_true "${FILTER_PASSWD:-true}" || return 0
+
+    local base="$_USER_DATA_DIR/.passwd-filter"
+    mkdir -p "$base" || { echo "sandbox: cannot create $base" >&2; return 1; }
+
+    # Best-effort prune of stale per-launch dirs and pre-#79 shared files.
+    find "$base" -mindepth 1 -maxdepth 1 -type d -name 'l.*' -mmin +1440 \
+        -exec rm -rf {} + 2>/dev/null || true
+    find "$base" -mindepth 1 -maxdepth 1 -type f -mmin +1440 \
+        -delete 2>/dev/null || true
+
+    local tmpdir
+    tmpdir="$(mktemp -d "$base/l.XXXXXX")" || {
+        echo "sandbox: cannot create per-launch dir under $base" >&2
+        return 1
+    }
+    chmod 755 "$tmpdir" 2>/dev/null || true
+
+    local my_uid my_name
+    my_uid="$(id -u)"
+    my_name="$(id -un)"
+
+    # Minimal passwd: system accounts (UID < 1000) from the local file.
+    # Does NOT use getent for the base set (that would pull all LDAP users).
+    # Strict: only well-formed records with a numeric uid.  A bare
+    # `$3 < 1000` also passes blank lines, `#` comments and NIS `+`/`-`
+    # lines (empty/non-numeric $3 compares as a string), which the
+    # validation below would then reject.  Source path is overridable
+    # for tests only.
+    awk -F: 'NF == 7 && $3 ~ /^[0-9]+$/ && $3 < 1000' "${_PASSWD_SRC_FILE:-/etc/passwd}" > "$tmpdir/passwd"
+
+    # Append specific users via getent (handles both local and LDAP).
+    # Current user + service users needed by tools inside the sandbox.
+    for _svc_user in "$my_name" slurm munge nobody; do
+        if ! grep -q "^${_svc_user}:" "$tmpdir/passwd"; then
+            getent passwd "$_svc_user" >> "$tmpdir/passwd" 2>/dev/null || true
+        fi
+    done
+    # Fallback: resolve the current user by uid if the name lookup missed.
+    if ! awk -F: -v u="$my_uid" '$3 == u { f = 1 } END { exit !f }' "$tmpdir/passwd"; then
+        getent passwd "$my_uid" >> "$tmpdir/passwd" 2>/dev/null || true
+    fi
+
+    # Validate before anything binds it: exactly 7 fields on every line,
+    # and the current uid must be present (getpwuid() must not fail).
+    if ! awk -F: 'NF != 7 { exit 1 }' "$tmpdir/passwd" \
+       || ! awk -F: -v u="$my_uid" '$3 == u { f = 1 } END { exit !f }' "$tmpdir/passwd"; then
+        echo "sandbox: generated filtered passwd is invalid (malformed line or uid $my_uid missing); refusing to launch with FILTER_PASSWD=true" >&2
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    # Minimal group: system groups (GID < 1000) from the local file.
+    awk -F: 'NF == 4 && $3 ~ /^[0-9]+$/ && $3 < 1000' "${_GROUP_SRC_FILE:-/etc/group}" > "$tmpdir/group"
+
+    # Append current user's groups, service groups, and well-known groups
+    # by name (nogroup/nfsnobody may appear via NFS even when not in id -G).
+    for _svc_group in nogroup nfsnobody; do
+        if ! grep -q "^${_svc_group}:" "$tmpdir/group"; then
+            getent group "$_svc_group" >> "$tmpdir/group" 2>/dev/null || true
+        fi
+    done
+    # Add all of the current user's groups (by GID and by name as fallback).
+    # This ensures `id` inside the sandbox shows the correct group names,
+    # even though supplementary groups are always preserved at the kernel level
+    # (bwrap does not use --unshare-user, so file permissions work regardless).
+    for _svc_gid in $(id -G) $(getent passwd slurm 2>/dev/null | cut -d: -f4) $(getent passwd munge 2>/dev/null | cut -d: -f4); do
+        if ! grep -q "^[^:]*:[^:]*:${_svc_gid}:" "$tmpdir/group"; then
+            getent group "$_svc_gid" >> "$tmpdir/group" 2>/dev/null || true
+        fi
+    done
+    # Fallback: also try by name (some LDAP setups resolve names but not GIDs)
+    for _svc_gname in $(id -Gn 2>/dev/null); do
+        if ! grep -q "^${_svc_gname}:" "$tmpdir/group"; then
+            getent group "$_svc_gname" >> "$tmpdir/group" 2>/dev/null || true
+        fi
+    done
+
+    # nsswitch.conf: replace ldap/sss/compat with files-only for passwd/group
+    if [[ -f /etc/nsswitch.conf ]]; then
+        sed -E \
+            -e 's/^(passwd|group):.*$/\1:         files/' \
+            /etc/nsswitch.conf > "$tmpdir/nsswitch.conf"
+    else
+        printf 'passwd:         files\ngroup:          files\nhosts:          files dns\n' \
+            > "$tmpdir/nsswitch.conf"
+    fi
+
+    # Group must be well-formed too (4 fields); a partial group file
+    # breaks id/getgrgid just like a partial passwd.
+    if ! awk -F: 'NF != 4 { exit 1 }' "$tmpdir/group"; then
+        echo "sandbox: generated filtered group is invalid (malformed line); refusing to launch with FILTER_PASSWD=true" >&2
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    _FILTERED_PASSWD="$tmpdir/passwd"
+    _FILTERED_GROUP="$tmpdir/group"
+    _FILTERED_NSSWITCH="$tmpdir/nsswitch.conf"
+}
+
 # ── Test-harness early-return ────────────────────────────────────
 #
 # Tests can source this file as a function library by setting
@@ -2881,79 +3010,6 @@ validate_project_dir() {
     echo "  Allowed prefixes: ${ALLOWED_PROJECT_PARENTS[*]}" >&2
     echo "  Edit ALLOWED_PROJECT_PARENTS in $SANDBOX_CONF to allow more." >&2
     return 1
-}
-
-# ── Passwd filtering (LDAP/AD user enumeration prevention) ────────
-#
-# Generates a minimal /etc/passwd and /etc/nsswitch.conf for use inside
-# the sandbox.  The filtered passwd contains only system accounts
-# (UID < 1000) and the current user.  The filtered nsswitch.conf
-# replaces "ldap", "sss", and "compat" with "files" for the passwd
-# and group databases, so getent only returns local entries.
-#
-# Sets _FILTERED_PASSWD and _FILTERED_NSSWITCH to the generated paths.
-# Backends that support file overlays (bwrap) use these directly.
-
-generate_filtered_passwd() {
-    _is_true "${FILTER_PASSWD:-true}" || return 0
-
-    local tmpdir="$_USER_DATA_DIR/.passwd-filter"
-    mkdir -p "$tmpdir"
-
-    local my_uid
-    my_uid="$(id -u)"
-
-    # Minimal passwd: system accounts (UID < 1000) from the local file.
-    # Does NOT use getent for the base set (that would pull all LDAP users).
-    awk -F: '($3 < 1000)' /etc/passwd > "$tmpdir/passwd"
-
-    # Append specific users via getent (handles both local and LDAP).
-    # Current user + service users needed by tools inside the sandbox.
-    for _svc_user in "$(id -un)" slurm munge nobody; do
-        if ! grep -q "^${_svc_user}:" "$tmpdir/passwd"; then
-            getent passwd "$_svc_user" >> "$tmpdir/passwd" 2>/dev/null || true
-        fi
-    done
-
-    # Minimal group: system groups (GID < 1000) from the local file.
-    awk -F: '($3 < 1000)' /etc/group > "$tmpdir/group"
-
-    # Append current user's groups, service groups, and well-known groups
-    # by name (nogroup/nfsnobody may appear via NFS even when not in id -G).
-    for _svc_group in nogroup nfsnobody; do
-        if ! grep -q "^${_svc_group}:" "$tmpdir/group"; then
-            getent group "$_svc_group" >> "$tmpdir/group" 2>/dev/null || true
-        fi
-    done
-    # Add all of the current user's groups (by GID and by name as fallback).
-    # This ensures `id` inside the sandbox shows the correct group names,
-    # even though supplementary groups are always preserved at the kernel level
-    # (bwrap does not use --unshare-user, so file permissions work regardless).
-    for _svc_gid in $(id -G) $(getent passwd slurm 2>/dev/null | cut -d: -f4) $(getent passwd munge 2>/dev/null | cut -d: -f4); do
-        if ! grep -q "^[^:]*:[^:]*:${_svc_gid}:" "$tmpdir/group"; then
-            getent group "$_svc_gid" >> "$tmpdir/group" 2>/dev/null || true
-        fi
-    done
-    # Fallback: also try by name (some LDAP setups resolve names but not GIDs)
-    for _svc_gname in $(id -Gn 2>/dev/null); do
-        if ! grep -q "^${_svc_gname}:" "$tmpdir/group"; then
-            getent group "$_svc_gname" >> "$tmpdir/group" 2>/dev/null || true
-        fi
-    done
-
-    # nsswitch.conf: replace ldap/sss/compat with files-only for passwd/group
-    if [[ -f /etc/nsswitch.conf ]]; then
-        sed -E \
-            -e 's/^(passwd|group):.*$/\1:         files/' \
-            /etc/nsswitch.conf > "$tmpdir/nsswitch.conf"
-    else
-        printf 'passwd:         files\ngroup:          files\nhosts:          files dns\n' \
-            > "$tmpdir/nsswitch.conf"
-    fi
-
-    _FILTERED_PASSWD="$tmpdir/passwd"
-    _FILTERED_GROUP="$tmpdir/group"
-    _FILTERED_NSSWITCH="$tmpdir/nsswitch.conf"
 }
 
 # ── Device passthrough resolution ──────────────────────────────────
