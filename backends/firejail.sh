@@ -546,13 +546,92 @@ backend_exec() {
     # firejail: signals sent to the launcher reach the sandbox (firejail
     # forwards them to its child) instead of killing only this shell and
     # orphaning the sandboxed command.
-    _exec_or_run_sandbox firejail "${FIREJAIL_ARGS[@]}" -- "$@"
+    _firejail_build_argv || exit 1
+    _exec_or_run_sandbox firejail "${_FJ_ARGV[@]}" -- "$@"
     exit $?
+}
+
+# ── Passing the options: profile files, not argv ─────────────────
+#
+# firejail refuses to start with more than 127 arguments (MAX_ARGS 128
+# in firejail.h, command included): "Error: too many arguments". A
+# default launch already needs ~100 options (upstream main: 92) and
+# every HOME_READONLY / BLOCKED_FILES / read-only cover entry adds one,
+# so FIREJAIL_ARGS goes into profile files instead. firejail turns each
+# command-line option into the same profile line internally
+# (`--read-only=X` -> "read-only X"), and entries keep their order, so
+# the semantics are unchanged. The profile parser, however, cuts a line
+# at '#', collapses runs of blanks and trims the ends: an option whose
+# text contains any of those (or a newline, which would inject a line)
+# stays on the command line, between the profiles, in its original
+# position. The files are unlinked before the exec; firejail reads them
+# through inherited descriptors (/proc/self/fd/N), so nothing is left
+# behind and no other process can swap them.
+_firejail_profile_safe() {
+    local _a="$1" _v=""
+    [[ "$_a" == --?* ]] || return 1
+    case "$_a" in
+        *$'\n'*|*$'\r'*|*$'\t'*|*'#'*|*'  '*) return 1 ;;
+    esac
+    [[ "$_a" == *=* ]] && _v="${_a#*=}"
+    [[ "$_v" != ' '* && "$_v" != *' ' ]] || return 1
+    (( ${#_a} < 4000 ))
+}
+
+_firejail_flush_profile() {
+    (( ${#_FJ_RUN[@]} )) || return 0
+    local _f="$_FJ_PROFILE_DIR/p${#_FJ_ARGV[@]}.profile" _fd _l
+    : > "$_f" || return 1
+    for _l in "${_FJ_RUN[@]}"; do
+        printf '%s\n' "$_l" >> "$_f" || return 1
+    done
+    exec {_fd}<"$_f" || return 1
+    _FJ_ARGV+=(--profile="/proc/self/fd/$_fd")
+    _FJ_PROFILES=$((_FJ_PROFILES + 1))
+    _FJ_RUN=()
+}
+
+# _firejail_build_argv — FIREJAIL_ARGS -> _FJ_ARGV (see above).
+_firejail_build_argv() {
+    local _a _name
+    _FJ_ARGV=(--quiet)   # first: also silences "Reading profile ..."
+    _FJ_RUN=()
+    _FJ_PROFILES=0
+    _FJ_PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-firejail-XXXXXX")" || {
+        echo "sandbox: ERROR — cannot create a temporary directory for the firejail profile." >&2
+        return 1
+    }
+    chmod 700 "$_FJ_PROFILE_DIR"
+    for _a in "${FIREJAIL_ARGS[@]}"; do
+        case "$_a" in --noprofile|--quiet) continue ;; esac
+        if _firejail_profile_safe "$_a"; then
+            _a="${_a#--}"
+            if [[ "$_a" == *=* ]]; then
+                _name="${_a%%=*}"
+                _FJ_RUN+=("$_name ${_a#*=}")
+            else
+                _FJ_RUN+=("$_a")
+            fi
+        else
+            _firejail_flush_profile || { rm -rf -- "$_FJ_PROFILE_DIR"; return 1; }
+            _FJ_ARGV+=("$_a")
+        fi
+    done
+    _firejail_flush_profile || { rm -rf -- "$_FJ_PROFILE_DIR"; return 1; }
+    rm -rf -- "$_FJ_PROFILE_DIR"
+    # --profile and --noprofile are mutually exclusive; without any
+    # profile file, keep firejail from loading its default profile.
+    (( _FJ_PROFILES )) || _FJ_ARGV=(--noprofile "${_FJ_ARGV[@]}")
+    if (( ${#_FJ_ARGV[@]} > 100 )); then
+        echo "sandbox: ERROR — ${#_FJ_ARGV[@]} firejail options must stay on the command line (paths containing '#', tabs or repeated spaces); firejail accepts at most 127 arguments." >&2
+        return 1
+    fi
 }
 
 backend_dry_run() {
     echo "# Backend: firejail"
     echo "# Binary: $(command -v firejail)"
+    echo "# (options are passed as profile files at launch; see _firejail_build_argv)"
     printf 'firejail \\\n'
     for arg in "${FIREJAIL_ARGS[@]}"; do
         printf '  %s \\\n' "$arg"
