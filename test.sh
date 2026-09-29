@@ -3131,11 +3131,21 @@ if command -v pgrep &>/dev/null; then
         timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
             --project-dir "$PROJECT_DIR" -- sleep 20 &>/dev/null &
         local _parent_pid=$!
-        # Give chaperon time to spawn.
-        sleep 2
-        # Find the chaperon PID for this session.
-        local _chaperon_pid
-        _chaperon_pid=$(pgrep -f "chaperon/chaperon.sh" | head -1)
+        # Find THIS session's chaperon precisely: it is a direct child of
+        # sandbox-exec.sh, which is the only child of `timeout`. A bare
+        # `pgrep -f chaperon/chaperon.sh` also matches chaperons of other
+        # sandboxes on the host (a concurrent test run, the user's own
+        # agents), which made this test flaky and could kill a stranger's
+        # chaperon.
+        local _chaperon_pid="" _launcher_pid="" _w
+        for _w in $(seq 1 40); do
+            _launcher_pid=$(pgrep -P "$_parent_pid" | head -1)
+            if [[ -n "$_launcher_pid" ]]; then
+                _chaperon_pid=$(pgrep -P "$_launcher_pid" -f "chaperon/chaperon.sh" | head -1)
+            fi
+            [[ -n "$_chaperon_pid" ]] && break
+            sleep 0.25
+        done
         if [[ -z "$_chaperon_pid" ]]; then
             skip "Chaperon lifecycle test: could not locate chaperon process"
             kill "$_parent_pid" 2>/dev/null
