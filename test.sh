@@ -4325,6 +4325,95 @@ else
     fail "chaperon followed a symlinked .sandbox-state component"
 fi
 
+# 6.7m. Without the staging transform (landlock) sbatch --output/--error
+# go to slurmstepd verbatim, so the chaperon validates them (C9): project
+# directory, no `..`, no symlink component or target, safe % patterns.
+if (
+    set -u
+    export SANDBOX_BACKEND=landlock
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    _p="$_H67_DIR/proj-m"; _o="$_H67_DIR/outside-m"
+    mkdir -p "$_p/sub" "$_p/real" "$_o"
+    ln -s "$_o" "$_p/link"
+    ln -s "$HOME/.bashrc" "$_p/lnk.out"
+    ln -s "$_o/x" "$_p/o-1234.log"
+    PROJECT_DIR="$_p"; REQ_CWD="$_p"; _bad=0
+    for _v in "$HOME/.bashrc" /etc/cron.d/x ../x sub/../../x "$_p/../outside-m/x" \
+              link/x lnk.out "$_p/lnk.out" 'out-%x.log' 'out-%q.log' 'a\b' \
+              'logs-%j/out' 'o-%j.log' sub/; do
+        for _form in eq sp short; do
+            case $_form in
+                eq)    REQ_ARGS=("--output=$_v") ;;
+                sp)    REQ_ARGS=(--error "$_v") ;;
+                short) REQ_ARGS=(-o "$_v") ;;
+            esac
+            _err="$(validate_sbatch_args 2>&1)" && { echo "accepted ($_form): $_v"; _bad=1; continue; }
+            [[ "$_err" == *"refused:"* ]] || { echo "unclear ($_form) $_v: $_err"; _bad=1; }
+        done
+    done
+    for _v in out.log 'sub/out-%j_%4t.log' "$_p/real/o.log" /dev/null 'o%%x.log' 'new/o.log' 'slurm-%A_%a.out'; do
+        REQ_ARGS=("--output=$_v")
+        validate_sbatch_args 2>/dev/null || { echo "rejected: $_v"; _bad=1; continue; }
+        [[ " ${VALIDATED_ARGS[*]} " == *" --output=$_v "* ]] || { echo "value changed: ${VALIDATED_ARGS[*]}"; _bad=1; }
+    done
+    exit $_bad
+); then
+    pass "landlock: sbatch --output/--error outside the project, via '..'/symlinks, onto a symlink or with %x refused; project paths accepted"
+else
+    fail "landlock: sbatch --output/--error path validation wrong"
+fi
+
+# 6.7n. Same for #SBATCH -o/--output/--error directives (landlock): a bad
+# path fails the submission; a good one is re-emitted canonically.
+if (
+    set -u
+    export SANDBOX_BACKEND=landlock
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    _p="$_H67_DIR/proj-n"; mkdir -p "$_p"
+    ln -s "$HOME/.bashrc" "$_p/evil.out"
+    PROJECT_DIR="$_p"; REQ_CWD="$_p"; REQ_ARGS=(); validate_sbatch_args || exit 1
+    _w="$_H67_DIR/n-wrapper"; _bad=0
+    for _d in "--output=$HOME/.bashrc" "-e $HOME/.profile" "--error=evil.out" \
+              '--output="a b.log"' '--output=../x.log'; do
+        create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH '"$_d"$'\necho hi' "$_w" 2>/dev/null \
+            && { echo "directive accepted: $_d"; _bad=1; }
+    done
+    create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH -o  out-%j.log\n#SBATCH --error=err.log\necho hi' "$_w" 2>/dev/null \
+        || { echo "good directives rejected"; _bad=1; }
+    grep -qx '#SBATCH -o out-%j.log' "$_w" && grep -qx '#SBATCH --error=err.log' "$_w" \
+        || { echo "not re-emitted canonically"; _bad=1; }
+    exit $_bad
+); then
+    pass "landlock: #SBATCH --output/--error directives validated (bad path fails the job, good path re-emitted)"
+else
+    fail "landlock: #SBATCH --output/--error directive validation wrong"
+fi
+
+# 6.7o. srun -o/-e/-i (validated on every backend; srun has no staging):
+# symlink components / targets and %x refused, project paths accepted.
+if (
+    set -u
+    export _REC_OUT="$_H67_DIR/srun-o.argv" REAL_SRUN="$_H67_DIR/recorder" SLURM_JOB_ID=4242 SANDBOX_QUIET=false
+    source "$SCRIPT_DIR/chaperon/handlers/srun.sh"
+    _p="$_H67_DIR/proj-o"; _o="$_H67_DIR/outside-o"; mkdir -p "$_p" "$_o"
+    ln -s "$_o" "$_p/link"; ln -s "$HOME/.aws/credentials" "$_p/in.txt"
+    REQ_CWD="$_p"; _bad=0
+    for _a in "-o|$HOME/.bashrc" "-o|link/x.log" "--error=link/x.log" "-i|in.txt" \
+              "--input=in.txt" "-o|out-%x.log" "-e|../x"; do
+        IFS='|' read -r -a REQ_ARGS <<< "$_a"; REQ_ARGS+=(-- true)
+        : > "$_REC_OUT"
+        handle_srun "$_p" /opt/sbx/sandbox-exec.sh >/dev/null 2>&1 && { echo "accepted: $_a"; _bad=1; }
+        [[ -s "$_REC_OUT" ]] && { echo "srun invoked for: $_a"; _bad=1; }
+    done
+    REQ_ARGS=(-o 'out-%j-%t.log' -- true)
+    handle_srun "$_p" /opt/sbx/sandbox-exec.sh >/dev/null 2>&1 || { echo "good -o rejected"; _bad=1; }
+    exit $_bad
+); then
+    pass "srun -o/-e/-i: symlinked dirs/targets, '..', %x and out-of-project paths refused; project path accepted"
+else
+    fail "srun -o/-e/-i path validation wrong"
+fi
+
 # 6.7i. Running chaperon: handlers are loaded once at startup (C4) and
 # the logged cwd is escaped (C5). Uses a private copy of chaperon/ so
 # a handler file can be modified after startup; REAL_SINFO echoes argv.
