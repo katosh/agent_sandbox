@@ -215,7 +215,7 @@ FILTER_PASSWD=true
 #               behaviour. Use only when the workload explicitly needs
 #               host-equivalent network reach AND host-side mail policy
 #               already covers identity-hijack.
-#     filtered: new netns + helper (pasta or slirp4netns); applies the
+#     filtered: new netns + pasta helper; applies the
 #               default-deny floor below plus user/admin NETWORK_BLOCKLIST
 #               additions. The agent retains general outbound TCP/UDP/DNS
 #               but loses the threat-class ports.
@@ -1541,8 +1541,9 @@ _snapshot_admin_config() {
 # emitted on the fail path.
 #
 # Backend capability matrix:
-#   bwrap    — open ✓ ; filtered ✓ if helper present (pasta or
-#              slirp4netns on PATH, or the shipped tools/pasta/pasta) ;
+#   bwrap    — open ✓ ; filtered ✓ if pasta is present (on PATH, or
+#              the shipped tools/pasta/<arch>/pasta; slirp4netns does
+#              not count) ;
 #              isolated ✓ (native --unshare-net flag)
 #   firejail — open ✓ ; filtered ✓ (--netfilter, needs nft on PATH) ;
 #              isolated ✓ (--net=none)
@@ -1584,8 +1585,15 @@ _network_fallback_strictness_idx() {
 #      because it's typically newer than the in-tree pin.
 #   2. tools/pasta/<arch>/pasta — the shipped static binary (see
 #      tools/pasta/README.md for fetch + license details).
-#   3. `command -v slirp4netns` — older fallback (GPL-2.0 source-
-#      offer obligation; less preferred and currently degraded).
+#
+# slirp4netns is deliberately NOT a candidate. It has a different CLI
+# than pasta and no port-exclusion flags, so it cannot deliver
+# `filtered`. It used to be returned here, which made the probe run it
+# with pasta's argv, declare `filtered` supported, and then silently
+# exec the sandbox with --unshare-net (no network at all), bypassing
+# NETWORK_FILTER_FALLBACK=open. Now a slirp4netns-only host simply has
+# no filtered helper and the configured fallback policy applies
+# (_prepare_network_helper_probe names slirp4netns in the reason).
 _resolve_network_helper() {
     if command -v pasta &>/dev/null; then
         command -v pasta
@@ -1605,10 +1613,6 @@ _resolve_network_helper() {
     # v1.0's tools/pasta/fetch.sh still resolve.
     if [[ -x "$SANDBOX_DIR/tools/pasta/pasta" ]]; then
         echo "$SANDBOX_DIR/tools/pasta/pasta"
-        return 0
-    fi
-    if command -v slirp4netns &>/dev/null; then
-        command -v slirp4netns
         return 0
     fi
     return 1
@@ -1687,7 +1691,12 @@ _prepare_network_helper_probe() {
         *) return 0 ;;
     esac
     local _helper
-    _helper="$(_resolve_network_helper)" || return 0
+    if ! _helper="$(_resolve_network_helper)"; then
+        if command -v slirp4netns &>/dev/null; then
+            _NETWORK_HELPER_DEGRADED_REASON="filtered mode requires pasta; only slirp4netns was found ($(command -v slirp4netns)), which agent-sandbox does not support (no port-exclusion interface). Install pasta (passt) or run tools/pasta/fetch.sh."
+        fi
+        return 0
+    fi
     _NETWORK_HELPER_RESOLVED_PATH="$_helper"
     if _pasta_can_forward_outbound "$_helper"; then
         return 0
@@ -1818,8 +1827,7 @@ EOF
 #   _NETWORK_FILTER_RESOLVED  — one of open|filtered|isolated
 #   _NETWORK_FILTER_REASON    — human-readable rationale (for logging)
 #   _NETWORK_FILTER_HELPER    — for filtered mode, the resolved network
-#                               helper binary path (pasta / slirp4netns;
-#                               empty otherwise)
+#                               pasta binary path (empty otherwise)
 # Exits with diagnostic on irrecoverable mismatch.
 resolve_network_filter_mode() {
     local _backend="$1"

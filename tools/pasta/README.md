@@ -48,9 +48,8 @@ order:
 2. `<SANDBOX_DIR>/tools/pasta/<arch>/pasta` — the shipped binary
    landed there by `make install` (or by running `./tools/pasta/fetch.sh`
    in a dev tree)
-3. `command -v slirp4netns` — alternative helper (older, slower, GPL
-   source-offer obligation; less preferred, currently degraded to
-   isolated fallback)
+(slirp4netns is not used: it cannot enforce the port blocklist, so a
+slirp4netns-only host goes through the normal fallback policy.)
 
 If the resolver finds none of these, it falls back per
 `NETWORK_FILTER_FALLBACK` (default `stricter` → `isolated`; loud

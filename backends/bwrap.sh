@@ -865,16 +865,9 @@ backend_exec() {
           && -n "${_NETWORK_FILTER_HELPER:-}" ]]; then
         local _pasta="$_NETWORK_FILTER_HELPER"
 
-        # slirp4netns has a different CLI shape than pasta. We treat it
-        # as a degraded path: emit a loud warning + fall through to
-        # plain --unshare-net (effectively isolated). Full slirp4netns
-        # wiring is reserved for a follow-up.
-        if [[ "$(basename -- "$_pasta")" == "slirp4netns"* ]]; then
-            echo "sandbox: WARNING — slirp4netns helper detected but v1.1 only wires the pasta path; degrading to isolated mode." >&2
-            BWRAP_ARGS+=(--unshare-net)
-            _exec_or_run_sandbox "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
-            exit $?
-        fi
+        # Only pasta is ever resolved as the filtered-mode helper
+        # (_resolve_network_helper); slirp4netns-only hosts go through
+        # the normal NETWORK_FILTER_FALLBACK policy instead.
 
         local _pasta_args=(--foreground --quiet)
         if [[ -n "${_NETWORK_FILTER_PASTA_TCP_SPEC:-}" ]]; then

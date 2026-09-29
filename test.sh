@@ -6010,6 +6010,37 @@ else
     pass "Network filter: stricter policy on landlock fails (no stricter mode available)"
 fi
 
+# slirp4netns must not count as a filtered-mode helper (L8). It was
+# resolved as one, the probe "passed" with pasta's argv, and the exec
+# path then silently fell to --unshare-net (no network), ignoring
+# NETWORK_FILTER_FALLBACK=open. Now a slirp4netns-only host has no
+# helper and the normal fallback applies, naming slirp4netns.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1 SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    _fake=$(mktemp -d); trap 'rm -rf "$_fake"' EXIT
+    printf '#!/bin/sh\nexit 0\n' > "$_fake/slirp4netns"; chmod +x "$_fake/slirp4netns"
+    ln -s "$(command -v bash)" "$_fake/bash"
+    for _t in mktemp rm uname timeout readlink dirname basename cat; do
+        _p=$(command -v "$_t") && ln -sf "$_p" "$_fake/$_t"
+    done
+    _orig_path="$PATH"
+    PATH="$_fake"; SANDBOX_DIR="$_fake"   # no pasta on PATH, no shipped pasta
+    _resolve_network_helper >/dev/null && { echo "slirp4netns resolved as helper"; exit 1; }
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=open
+    resolve_network_filter_mode bwrap 2>"$_fake/err"
+    PATH="$_orig_path"
+    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || { echo "resolved=$_NETWORK_FILTER_RESOLVED"; exit 1; }
+    grep -q "only slirp4netns was found" "$_fake/err" || { echo "no slirp4netns reason"; cat "$_fake/err"; exit 1; }
+    [[ -z "$_NETWORK_FILTER_HELPER" ]] || { echo "helper=$_NETWORK_FILTER_HELPER"; exit 1; }
+); then
+    pass "slirp4netns-only host: filtered falls back per NETWORK_FILTER_FALLBACK (not silently isolated)"
+else
+    fail "slirp4netns-only host: resolver still treats slirp4netns as a filtered helper"
+fi
+
+
 # ── 11.4.proxied: agent-sandbox-proxy.py unit tests ─────────────
 # v0.10.1 proxied-mode helper. Exercises the policy-check boundary:
 # spawn the daemon with a tight blocklist + a single EXCEPT entry,

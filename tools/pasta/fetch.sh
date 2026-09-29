@@ -23,7 +23,7 @@
 # nft to deliver `NETWORK_FILTER_MODE=filtered` enforcement. The
 # helper-probe in sandbox-lib.sh::_resolve_network_helper finds this
 # binary at runtime when nothing on PATH supersedes it. Probe order:
-# PATH `pasta` → tools/pasta/<arch>/pasta → PATH `slirp4netns`.
+# PATH `pasta` → tools/pasta/<arch>/pasta (slirp4netns is not used).
 
 set -euo pipefail
 

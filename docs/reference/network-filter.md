@@ -360,9 +360,12 @@ agent-sandbox auto-detects `pasta` at session-start. Probe order:
    Fred Hutch SciComp tracks a `passt` module request at
    [FredHutch/easybuild-life-sciences#578](https://github.com/FredHutch/easybuild-life-sciences/issues/578)
    (eventual upgrade path; until then the shipped binary covers FH).
-4. **`command -v slirp4netns`** — older, slower fallback. v1.1
-   reserves slirp4netns support and currently downgrades to isolated
-   mode with a warning when only slirp4netns is present.
+slirp4netns is **not** a filtered-mode helper (different CLI, no
+port-exclusion interface). A host with only slirp4netns has no
+filtered helper, and the normal `NETWORK_FILTER_FALLBACK` policy
+applies; the fallback warning names the slirp4netns binary it found.
+(Earlier releases resolved slirp4netns anyway and then silently ran
+the sandbox with no network, ignoring `NETWORK_FILTER_FALLBACK=open`.)
 
 If pasta is missing or its forwarding probe trips, the resolver
 falls back per `NETWORK_FILTER_FALLBACK` (default `open`; loud
