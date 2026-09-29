@@ -316,6 +316,204 @@ else
     fail "(h) admin '/' did not admit arbitrary path" "rc=$RC out=$OUT"
 fi
 
+# ══════════════════════════════════════════════════════════════════
+#  Admin enforcement through the REAL layer loader
+# ══════════════════════════════════════════════════════════════════
+#
+# run_layers drives the production functions (_select_config_files →
+# _load_config_layers → optional snippet) against a scratch admin dir,
+# instead of re-implementing Phase 1–3 like run_admin_phase1 does.
+# HOME is faked via a `getent` shell function (sandbox-lib.sh resolves
+# HOME from the passwd database, not $HOME), so the real
+# ~/.config/agent-sandbox is never read or written.
+#
+#   $1 — admin sandbox.conf content ("" = no admin baseline)
+#   $2 — user-layer content, written to $SCRATCH/alt.conf
+#   $3 — "sandbox_conf" to point SANDBOX_CONF at alt.conf, else the
+#        content goes to the fake ~/.config/agent-sandbox/user.conf
+#        (admin) or sandbox.conf (no admin)
+#   $4 — bash snippet run after the layers are loaded
+#   $5 — extra env assignments (e.g. "PRIVATE_TMP=false"), optional
+# Exposes SCRATCH (fake HOME is $SCRATCH/home) to $4 via the env.
+run_layers() {
+    local _admin_content="$1" _user_content="$2" _mode="$3" _snippet="$4" _extra_env="${5:-}"
+    SCRATCH="$(mktemp -d)"
+    mkdir -p "$SCRATCH/home/.config/agent-sandbox" "$SCRATCH/admin"
+    [[ -n "$_admin_content" ]] && printf '%s\n' "$_admin_content" > "$SCRATCH/admin/sandbox.conf"
+    local _sc=""
+    if [[ "$_mode" == "sandbox_conf" ]]; then
+        printf '%s\n' "$_user_content" > "$SCRATCH/alt.conf"
+        _sc="$SCRATCH/alt.conf"
+    elif [[ -n "$_admin_content" ]]; then
+        printf '%s\n' "$_user_content" > "$SCRATCH/home/.config/agent-sandbox/user.conf"
+    else
+        printf '%s\n' "$_user_content" > "$SCRATCH/home/.config/agent-sandbox/sandbox.conf"
+    fi
+    OUT="$(env -u SANDBOX_CONF $_extra_env SCRATCH="$SCRATCH" ${_sc:+SANDBOX_CONF="$_sc"} \
+        _SANDBOX_LIB_NO_INIT=1 SANDBOX_QUIET=true bash -c '
+        set -uo pipefail
+        getent() {
+            if [[ "$1" == passwd && "$2" == "$(id -un)" ]]; then
+                echo "$(id -un):x:$(id -u):$(id -g)::$SCRATCH/home:/bin/bash"
+            else command getent "$@"; fi
+        }
+        source "'"$LIB"'"
+        _select_config_files "$SCRATCH/admin"
+        echo "ADMIN_CONF=${_ADMIN_CONF:-none}"
+        echo "USER_CONF=${_USER_CONF}"
+        _load_config_layers
+        '"$_snippet"'
+    ' 2>&1)"
+    RC=$?
+    rm -rf "$SCRATCH"
+}
+
+# ──────────────────────────────────────────────────────────────────
+#  (i) SANDBOX_CONF swaps only the user layer — admin still applies (F3)
+# ──────────────────────────────────────────────────────────────────
+echo "(i) SANDBOX_CONF cannot bypass the admin baseline"
+run_layers $'PRIVATE_TMP=true\nNETWORK_FILTER_MODE=isolated\nBLOCKED_ENV_VARS+=("ADMIN_SECRET_X")' \
+           $'PRIVATE_TMP=false\nNETWORK_FILTER_MODE=open\nBLOCKED_ENV_VARS=()' \
+           sandbox_conf \
+           'echo "EFF PRIVATE_TMP=$PRIVATE_TMP NETWORK_FILTER_MODE=$NETWORK_FILTER_MODE BEV=${BLOCKED_ENV_VARS[*]}"'
+if [[ $RC -eq 0 ]] \
+    && echo "$OUT" | grep -q "ADMIN_CONF=.*/admin/sandbox.conf" \
+    && echo "$OUT" | grep -q "USER_CONF=.*/alt.conf" \
+    && echo "$OUT" | grep -q "EFF PRIVATE_TMP=true NETWORK_FILTER_MODE=isolated BEV=.*ADMIN_SECRET_X"; then
+    pass "(i) SANDBOX_CONF replaces the user layer; admin pins still enforced"
+else
+    fail "(i) SANDBOX_CONF skipped or weakened the admin baseline" "rc=$RC out=$OUT"
+fi
+
+echo "(i2) SANDBOX_CONF without an admin baseline is the only config"
+run_layers '' 'PRIVATE_TMP=false' sandbox_conf 'echo "EFF PRIVATE_TMP=$PRIVATE_TMP"'
+if [[ $RC -eq 0 ]] && echo "$OUT" | grep -q "ADMIN_CONF=none" \
+    && echo "$OUT" | grep -q "EFF PRIVATE_TMP=false"; then
+    pass "(i2) no admin baseline: SANDBOX_CONF file is the effective user config"
+else
+    fail "(i2) SANDBOX_CONF user-only mode broken" "rc=$RC out=$OUT"
+fi
+
+# ──────────────────────────────────────────────────────────────────
+#  (j) HOME_WRITABLE / EXTRA_WRITABLE_PATHS vs admin HOME_READONLY (F2)
+# ──────────────────────────────────────────────────────────────────
+echo "(j) Writable entries equal/below/above admin read-only are reverted"
+run_layers 'HOME_READONLY+=(".ssh" ".config/git")' \
+           $'HOME_WRITABLE+=(".ssh/" "./.ssh" ".ssh//" ".ssh/authorized_keys" ".config" "sshlink" ".cache/uv" "myproj-data")\nEXTRA_WRITABLE_PATHS+=("$HOME/.ssh/" "$HOME/./.config/git/sub" "/var/tmp/ok-extra")' \
+           user \
+           'printf "HW:%s\n" "${HOME_WRITABLE[@]}"; printf "EWP:%s\n" "${EXTRA_WRITABLE_PATHS[@]}"' \
+           ''
+_j_out="$OUT"; _j_rc=$RC
+_j_ok=true
+for _bad in '.ssh/' './.ssh' '.ssh//' '.ssh/authorized_keys' '.config'; do
+    echo "$_j_out" | grep -qxF "HW:$_bad" && { _j_ok=false; echo "    kept bad HW: $_bad"; }
+    echo "$_j_out" | grep -qF "HOME_WRITABLE entry '$_bad' overlaps admin HOME_READONLY" \
+        || echo "$_j_out" | grep -qF "moved admin HOME_READONLY entry" || { _j_ok=false; echo "    no warning for $_bad"; }
+done
+for _good in '.cache/uv' 'myproj-data'; do
+    echo "$_j_out" | grep -qxF "HW:$_good" || { _j_ok=false; echo "    dropped good HW: $_good"; }
+done
+echo "$_j_out" | grep -qE '^EWP:.*/\.ssh/?$' && { _j_ok=false; echo "    kept EXTRA_WRITABLE_PATHS ~/.ssh"; }
+echo "$_j_out" | grep -q '^EWP:.*config/git/sub' && { _j_ok=false; echo "    kept EXTRA_WRITABLE_PATHS under .config/git"; }
+echo "$_j_out" | grep -qxF 'EWP:/var/tmp/ok-extra' || { _j_ok=false; echo "    dropped unrelated EXTRA_WRITABLE_PATHS"; }
+if [[ $_j_rc -eq 0 ]] && $_j_ok; then
+    pass "(j) non-canonical / parent / child spellings of admin RO entries rejected; unrelated kept"
+else
+    fail "(j) admin HOME_READONLY escalation via path spelling" "rc=$_j_rc out=$_j_out"
+fi
+
+echo "(j2) Symlink to an admin read-only dir is rejected"
+# The link must exist before the check runs, so create it in the
+# snippet and re-run enforcement on a fresh HOME_WRITABLE.
+run_layers 'HOME_READONLY+=(".ssh")' 'HOME_WRITABLE+=("sshlink")' user '
+    mkdir -p "$HOME/.ssh"; ln -s "$HOME/.ssh" "$HOME/sshlink"
+    HOME_WRITABLE=("${_ADMIN_HOME_WRITABLE[@]}" "sshlink")
+    _enforce_admin_policy "Recheck"
+    printf "HW:%s\n" "${HOME_WRITABLE[@]}"'
+if [[ $RC -eq 0 ]] && ! echo "$OUT" | grep -qxF "HW:sshlink" \
+    && echo "$OUT" | grep -qF "HOME_WRITABLE entry 'sshlink' overlaps admin HOME_READONLY entry '.ssh'"; then
+    pass "(j2) symlinked alias of an admin read-only dir rejected"
+else
+    fail "(j2) symlink alias escaped the HOME_READONLY check" "rc=$RC out=$OUT"
+fi
+
+# ──────────────────────────────────────────────────────────────────
+#  (k) _ENFORCED_ARRAYS drives enforcement; HIDE_FROM_SANDBOX floor (F5)
+# ──────────────────────────────────────────────────────────────────
+echo "(k) Every _ENFORCED_ARRAYS name restores admin entries after '=()'"
+# Admin adds a sentinel to every enforced array; the user empties them
+# all. Each sentinel must come back (with a warning). Iterating the
+# declared list makes the list itself load-bearing: an array listed
+# there but not enforced (or vice versa) fails here.
+run_layers '
+for _n in "${_ENFORCED_ARRAYS[@]}"; do eval "$_n+=(\"ADMIN_SENTINEL_$_n\")"; done' \
+    'BLOCKED_FILES=(); BLOCKED_ENV_VARS=(); BLOCKED_ENV_PATTERNS=(); EXTRA_BLOCKED_PATHS=(); DEVICES_BLACKLIST=(); NETWORK_BLOCKLIST=(); NETWORK_BLOCKLIST_EXCEPT=(); HIDE_FROM_SANDBOX=()' \
+    user '
+    for _n in "${_ENFORCED_ARRAYS[@]}"; do
+        declare -n _arr="$_n"
+        _hit=false
+        for _v in "${_arr[@]}"; do [[ "$_v" == "ADMIN_SENTINEL_$_n" ]] && _hit=true; done
+        $_hit && echo "RESTORED:$_n" || echo "LOST:$_n"
+        unset -n _arr
+    done
+    echo "COUNT:${#_ENFORCED_ARRAYS[@]}"'
+_k_expected="$(echo "$OUT" | sed -n 's/^COUNT://p')"
+if [[ $RC -eq 0 ]] && ! echo "$OUT" | grep -q '^LOST:' \
+    && [[ -n "$_k_expected" && "$(echo "$OUT" | grep -c '^RESTORED:')" -eq "$_k_expected" ]] \
+    && echo "$OUT" | grep -q "removed admin-enforced HIDE_FROM_SANDBOX entry 'ADMIN_SENTINEL_HIDE_FROM_SANDBOX' — restored"; then
+    pass "(k) all $_k_expected _ENFORCED_ARRAYS restored admin entries (with warnings)"
+else
+    fail "(k) an enforced array lost its admin entries" "rc=$RC out=$OUT"
+fi
+
+echo "(k2) Built-in HIDE_FROM_SANDBOX defaults survive HIDE_FROM_SANDBOX=() without admin"
+run_layers '' 'HIDE_FROM_SANDBOX=("MY_EXTRA_HIDE")' user '_hide_from_sandbox_names'
+_k2_ok=true
+for _d in SLURM_SCOPE CHAPERON_LOG_LEVEL CHAPERON_LOG_RETAIN_DAYS SANDBOX_QUIET HOME_ACCESS SANDBOX_NPROC_LIMIT SANDBOX_CONF MY_EXTRA_HIDE; do
+    echo "$OUT" | grep -qx "$_d" || { _k2_ok=false; echo "    missing $_d"; }
+done
+if [[ $RC -eq 0 ]] && $_k2_ok; then
+    pass "(k2) defaults + user additions emitted after user replaced the array"
+else
+    fail "(k2) built-in HIDE_FROM_SANDBOX defaults removable by user config" "rc=$RC out=$OUT"
+fi
+
+# ──────────────────────────────────────────────────────────────────
+#  (l) Launch overrides: env beats config, admin beats env (F4)
+# ──────────────────────────────────────────────────────────────────
+echo "(l) Env override beats user config; admin pin beats env override"
+run_layers '' 'PRIVATE_TMP=true' user '_apply_launch_overrides; echo "EFF PRIVATE_TMP=$PRIVATE_TMP"' 'PRIVATE_TMP=false'
+_l1="$OUT"; _l1_rc=$RC
+run_layers 'PRIVATE_TMP=true' '' user '_apply_launch_overrides; echo "EFF PRIVATE_TMP=$PRIVATE_TMP"' 'PRIVATE_TMP=false'
+if [[ $_l1_rc -eq 0 && $RC -eq 0 ]] && echo "$_l1" | grep -q "EFF PRIVATE_TMP=false" \
+    && echo "$OUT" | grep -q "EFF PRIVATE_TMP=true" \
+    && echo "$OUT" | grep -q "Launch override (env/CLI) weakened admin-enforced PRIVATE_TMP=true"; then
+    pass "(l) env override wins over config, loses to admin pin (with warning)"
+else
+    fail "(l) launch override precedence wrong" "no-admin: $_l1 | admin: $OUT"
+fi
+
+# ──────────────────────────────────────────────────────────────────
+#  (m) SANDBOX_ENV cannot carry settings (F1)
+# ──────────────────────────────────────────────────────────────────
+echo "(m) SANDBOX_ENV rejects config/launcher/hidden/blocked names"
+run_layers 'NETWORK_FILTER_MODE=isolated' \
+    'SANDBOX_ENV+=("NETWORK_FILTER_MODE=open" "PRIVATE_TMP=false" "HOME_ACCESS=write" "_PASSWD_SRC_FILE=/x" "SANDBOX_CONF=/x" "CHAPERON_LOG_LEVEL=debug" "GITHUB_TOKEN=t" "BAD-NAME=1" "noequals" "PATH=/opt/x:/usr/bin" "MY_TOOL_HOME=/opt/tool")' \
+    user '_prepare_sandbox_env; echo "PATHV=$_SANDBOX_ENV_PATH"; printf "CHILD:%s\n" "${_SANDBOX_CHILD_ENV[@]}"; echo "EFF NFM=$NETWORK_FILTER_MODE"'
+_m_ok=true
+for _n in NETWORK_FILTER_MODE PRIVATE_TMP HOME_ACCESS _PASSWD_SRC_FILE SANDBOX_CONF CHAPERON_LOG_LEVEL GITHUB_TOKEN BAD-NAME; do
+    echo "$OUT" | grep -q "^CHILD:$_n=" && { _m_ok=false; echo "    accepted $_n"; }
+    echo "$OUT" | grep -qF "SANDBOX_ENV entry '$_n' ignored" || { _m_ok=false; echo "    no warning for $_n"; }
+done
+echo "$OUT" | grep -qxF "CHILD:MY_TOOL_HOME=/opt/tool" || { _m_ok=false; echo "    dropped MY_TOOL_HOME"; }
+echo "$OUT" | grep -qxF "PATHV=/opt/x:/usr/bin" || { _m_ok=false; echo "    PATH not split out"; }
+echo "$OUT" | grep -qxF "EFF NFM=isolated" || { _m_ok=false; echo "    NETWORK_FILTER_MODE changed"; }
+if [[ $RC -eq 0 ]] && $_m_ok; then
+    pass "(m) SANDBOX_ENV: settings/internal/hidden/blocked names rejected, plain vars + PATH kept"
+else
+    fail "(m) SANDBOX_ENV validation" "rc=$RC out=$OUT"
+fi
+
 # ──────────────────────────────────────────────────────────────────
 #  Summary
 # ──────────────────────────────────────────────────────────────────
