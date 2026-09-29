@@ -160,6 +160,7 @@ The following are intentionally not blocked and will not be:
 | Agent tampers with sandbox scripts | Read-only mount (bwrap/firejail) / not protected (Landlock) | **Hard** (bwrap/firejail) / **None** (Landlock) — see [Admin Hardening §2](../admin/hardening.md) |
 | Agent plants config that runs **unsandboxed** the next time the user starts the agent outside the sandbox (hooks, MCP servers, `notify` commands, a replacement agent binary) | The real host-executed config files are read-only inside: `~/.claude/settings.json`, `~/.claude.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.pi/agent/settings.json`; the agent gets private copies in `sandbox-config/` instead. `~/.local/share/claude` (native-installer binaries) is read-only. Plugins, skills, extensions and other agent config directories stay writable — see [Agent config left behind](#agent-config-left-behind-for-your-next-unsandboxed-session) | **Partial** (bwrap/firejail) / **Weak** (Landlock: only `~/.claude.json` and `~/.local/share/claude`) / **None** (`HOME_ACCESS=write`) |
 | Host-side agent overlay tricked into writing through an agent-planted symlink | Overlays run outside the sandbox but write into sandbox-writable dirs (`~/.claude/sandbox-config`, …). All their file operations use directory file descriptors with `O_NOFOLLOW`, `O_EXCL` temp files and inode-verified renames (`agents/overlay-fs.py`); a symlinked source file is only followed to a target the sandbox can already read | **Hard** — all backends |
+| A protective mount disappears from a **running** sandbox (read-only overlay or `BLOCKED_FILES` mask detached by a rename/unlink from another mount namespace, or by an NFS client dropping a stale directory) | The launcher never renames over or deletes a path another sandbox may have mounted: the merged agent config is rewritten in place (unchanged content not at all), `--cleanup-materialized` keeps placeholders while other sandboxes run on the host and always on network filesystems. Losses caused by anything else on the host are detected by the [mount guard](../configure.md#mount_guard), which terminates the sandbox (`MOUNT_GUARD=kill`, default) when a protected path is exposed | **Detect + terminate** within `MOUNT_GUARD_INTERVAL` (bwrap/firejail) / N/A (Landlock) — see [Mounts that vanish](#mounts-that-vanish-from-a-running-sandbox) |
 | Agent bypasses `BLOCKED_FILES` via symlinked ancestor | bwrap binds `/dev/null` at both the literal and resolved leaf paths. The literal-path bind catches the case where a writable parent is a symlink on the host: mount overlays are path-keyed, so a /dev/null mount on the resolved path is missed when the agent opens the file via the symlinked path | **Hard** (bwrap) / Path-based (firejail) / N/A (Landlock — `BLOCKED_FILES` has no effect) |
 | `BLOCKED_FILES` entry doesn't exist on host (silent no-op) | At config-load, `sandbox-exec.sh` materializes a zero-byte placeholder for every missing entry under writable parents (with a per-path `WARNING:` on stderr) and refuses to start (with the full list of failing entries) when materialization fails. Closes a pre-v0.12.0 gap where the bwrap/firejail backends skipped the bind for missing entries, leaving the path unenforced; also pre-empts bwrap's own `ensure_file → creat()` ([utils.c, v0.11.0](https://github.com/containers/bubblewrap/blob/v0.11.0/utils.c#L480-L498)) from creating a host stub during mount setup. Opt-in `--cleanup-materialized` removes empty placeholders on sandbox exit. See [#73](https://github.com/katosh/agent_sandbox/issues/73) | **Hard** (bwrap/firejail; materialize-warn or fail-loud) / N/A (Landlock) |
 | SSH escape (if `~/.ssh` exposed) | Not protected — sandbox does not restrict network | **None** — agent can SSH to localhost or other nodes to get an unsandboxed shell. **Do not expose `~/.ssh`** unless you understand this risk. |
@@ -290,6 +291,59 @@ a symlink (e.g. a `CLAUDE.md` kept in a dotfiles repo) is followed only
 when its target is something the sandbox can already read; otherwise
 the overlay warns and skips it. Without `python3` the overlays are
 skipped with a warning rather than falling back to shell.
+
+An existing merged file is never renamed over: unchanged content is not
+written at all, changed content is written in place through an
+`O_NOFOLLOW` descriptor (a planted hard link or symlink at that name is
+replaced instead of written through). The reason is the next section.
+
+### Mounts that vanish from a running sandbox
+
+A bind mount inside a sandbox sits on a directory entry the host shares.
+Linux lets another mount namespace `rename()` over, `unlink()` or
+`rmdir()` such an entry, and then **detaches every mount on it in every
+namespace** (since 3.18). On NFS the same happens when another client
+renames or deletes the entry, or when the client finds a cached
+directory stale: `d_invalidate()` detaches all mounts at or below it.
+The sandbox then sees whatever lies underneath: the host file behind a
+read-only overlay (now writable, if its directory is), the real content
+behind a `/dev/null` or tmpfs mask.
+
+Up to 0.13.1 every launch, including every sandbox-wrapped Slurm job
+re-entering on a compute node, rebuilt `sandbox-config/CLAUDE.md` and
+`settings.json` with a temp file and a rename. That silently stripped the
+read-only overlay from every sandbox of the user that was already
+running, and their agents could rewrite their own permission rules and
+hooks ([settylab/dotto-nexus#386](https://github.com/settylab/dotto-nexus/issues/386)).
+Fixed: the overlays write in place.
+
+What the launcher cannot prevent, because the actor is not
+agent-sandbox:
+
+- you (or `claude` running outside) saving `~/.claude/settings.json`,
+  an agent's instruction file or a `BLOCKED_FILES` entry with an editor
+  or tool that writes a temp file and renames it;
+- a package upgrade replacing a masked binary (`/usr/bin/sbatch`),
+  configuration management rewriting `/etc/nsswitch.conf`;
+- an NFS server or network problem making the client treat the project
+  or home directory as stale (#386, second mechanism);
+- a process outside any mount namespace (a Landlock sandbox, an
+  unsandboxed shell) renaming a masked path on the same project.
+
+The **mount guard** covers these: a watcher outside the sandbox compares
+the sandbox's mount table with what the backend set up every
+`MOUNT_GUARD_INTERVAL` seconds and, by default, terminates the sandbox
+when a loss exposes a protected path; a loss that fails closed (for
+example the project bind falling through to a read-only parent) is
+reported but not fatal. Between the loss and the next check (5 s by
+default) the path is exposed. See
+[`MOUNT_GUARD`](../configure.md#mount_guard).
+
+Layout also limits the blast radius. A mount point that is itself in a
+tmpfs (everything bound into the blank `$HOME` of `restricted` and
+`tmpwrite` mode) cannot be detached from the host. Paths below a
+writable host bind (the project dir, `~/.claude`) and everything under a
+bind of the real `$HOME` (`HOME_ACCESS=read|write`) can.
 
 ## Cooperative reinforcement: agent-side awareness
 
