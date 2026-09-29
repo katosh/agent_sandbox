@@ -2640,6 +2640,18 @@ _classify_pasta_port_entry() {
 # copy at source time; only in-process assignment after sourcing works.
 unset _PASSWD_SRC_FILE _GROUP_SRC_FILE
 
+# Echo the start time (clock ticks since boot, /proc/PID/stat field 22)
+# of PID, or nothing if it is not running. Pid + start time identifies a
+# process across PID reuse.
+_proc_starttime() {
+    local _stat
+    _stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+    _stat="${_stat##*) }"
+    # shellcheck disable=SC2086  # intentional word split of stat fields
+    set -- $_stat
+    printf '%s' "${20:-}"
+}
+
 # Per-launch passwd dirs are the bind SOURCES of /etc/passwd, /etc/group
 # and /etc/nsswitch.conf in a running sandbox. Removing a source never
 # detaches the mount (it pins the inode) on a local filesystem, but the
@@ -3118,17 +3130,6 @@ _live_registry_dir() {
     printf '%s/agent-sandbox-live-%s' "${_base%/}" "$(id -u)"
 }
 
-# Echo the start time (clock ticks since boot, /proc/PID/stat field 22)
-# of PID, or nothing if it is not running. Pid + start time identifies a
-# process across PID reuse.
-_proc_starttime() {
-    local _stat
-    _stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
-    _stat="${_stat##*) }"
-    # shellcheck disable=SC2086  # intentional word split of stat fields
-    set -- $_stat
-    printf '%s' "${20:-}"
-}
 
 # Open + lock the registry dir; sets _LIVE_REG_DIR and _LIVE_REG_LOCKFD.
 # Best effort: returns 1 (caller proceeds unguarded) if the dir cannot
