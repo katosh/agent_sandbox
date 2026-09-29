@@ -86,10 +86,16 @@ handle_sbatch() {
         local wrapper
         wrapper="$(mktemp "${TMPDIR:-/tmp}/chaperon-wrapper-XXXXXX.sh")"
 
-        create_wrapped_script "$sandbox_exec" "$project_dir" "$REQ_SCRIPT" "$wrapper" \
-            "${REQ_SCRIPT_ARGS[@]+"${REQ_SCRIPT_ARGS[@]}"}"
+        if ! create_wrapped_script "$sandbox_exec" "$project_dir" "$REQ_SCRIPT" "$wrapper" \
+            "${REQ_SCRIPT_ARGS[@]+"${REQ_SCRIPT_ARGS[@]}"}"; then
+            rm -f "$wrapper"
+            return 1
+        fi
 
-        _materialise_staging_dirs
+        if ! _materialise_staging_dirs; then
+            rm -f "$wrapper"
+            return 1
+        fi
 
         # Submit and clean up the local wrapper (only needed on login node).
         local rc=0
