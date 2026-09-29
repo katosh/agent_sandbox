@@ -220,6 +220,144 @@ _prepare_staging_output_path() {
     return 0
 }
 
+# ── Slurm --output / --error / --input path validation ───────────
+#
+# slurmstepd opens --output / --error / --input OUTSIDE the sandbox, as
+# the host user, and follows symlinks. Where the chaperon does not
+# redirect them into the RO staging dir (sbatch on landlock; srun on
+# every backend) the path itself must be safe:
+#   - no backslash (Slurm strips `\` and disables % expansion, so `.\.`
+#     would become `..`) and no `..` component (the kernel resolves `..`
+#     after following symlinks, so lexical checks would not hold);
+#   - only % patterns whose expansion cannot contain `/` (%A %a %J %j %N
+#     %n %s %t %u %%, optional zero-pad digits), and only in the file
+#     name; %x (job name, agent controlled) and unknown ones are refused;
+#   - the directory part, resolved against the submission cwd, must be
+#     inside the project dir with no symlink component;
+#   - the target must not already exist as a symlink (for a patterned
+#     file name: no symlink in the directory may match the pattern).
+# `/dev/null` is always accepted. Returns 1 with a _sandbox_deny message
+# otherwise. Residual: the directory is agent-writable on landlock, so a
+# symlink planted AFTER this check can still race slurmstepd's open().
+
+_slurm_io_deny() {
+    _sandbox_deny "Slurm '$1 $2' refused: $3. slurmstepd opens this file outside the sandbox, so it must be a plain path inside the project directory ($4)."
+}
+
+# _validate_slurm_io_path <flag> <value> <project_dir> [cwd]
+_validate_slurm_io_path() {
+    local _flag="$1" _val="$2" _proj="$3" _cwd="${4:-$3}"
+    [[ -z "$_val" || "$_val" == /dev/null ]] && return 0
+
+    if [[ "$_val" == *\\* ]]; then
+        _slurm_io_deny "$_flag" "$_val" "backslashes are not allowed" "$_proj"; return 1
+    fi
+    if [[ "/$_val/" == */../* ]]; then
+        _slurm_io_deny "$_flag" "$_val" "'..' components are not allowed" "$_proj"; return 1
+    fi
+    if [[ "$_val" == */ ]]; then
+        _slurm_io_deny "$_flag" "$_val" "the path names a directory" "$_proj"; return 1
+    fi
+
+    local _dirpart="" _leaf="$_val"
+    if [[ "$_val" == */* ]]; then
+        _dirpart="${_val%/*}"
+        _leaf="${_val##*/}"
+        [[ -z "$_dirpart" ]] && _dirpart="/"
+    fi
+
+    # Directory part: no % at all (patterns there cannot be checked now).
+    if [[ "$_dirpart" == *%* ]]; then
+        _slurm_io_deny "$_flag" "$_val" "% patterns are only allowed in the file name" "$_proj"; return 1
+    fi
+
+    # File name: allowed patterns only; build a [[ == ]] glob (patterns →
+    # *, glob metacharacters escaped).
+    local _glob="" _i=0 _n=${#_leaf} _c _j _spec _patterned=false
+    while (( _i < _n )); do
+        _c="${_leaf:_i:1}"
+        if [[ "$_c" == "%" ]]; then
+            _j=$((_i + 1))
+            while (( _j < _n )) && [[ "${_leaf:_j:1}" == [0-9] ]]; do _j=$((_j + 1)); done
+            _spec="${_leaf:_j:1}"
+            case "$_spec" in
+                %) _glob+="%" ;;
+                A|a|J|j|N|n|s|t|u) _glob+="*"; _patterned=true ;;
+                x) _slurm_io_deny "$_flag" "$_val" "'%x' (job name) could change the directory" "$_proj"; return 1 ;;
+                *) _slurm_io_deny "$_flag" "$_val" "unsupported '%${_leaf:_i+1:_j-_i}' pattern" "$_proj"; return 1 ;;
+            esac
+            _i=$((_j + 1))
+            continue
+        fi
+        case "$_c" in
+            '*'|'?'|'['|']') _glob+="\\$_c" ;;
+            *) _glob+="$_c" ;;
+        esac
+        _i=$((_i + 1))
+    done
+
+    # Resolve the directory against the physical cwd; map to the
+    # project's real path (it may be spelled via its literal path).
+    local _proj_real _cwd_phys _dir _rel
+    _proj_real="$(realpath -e -- "$_proj" 2>/dev/null)" || {
+        _slurm_io_deny "$_flag" "$_val" "the project dir does not resolve" "$_proj"; return 1; }
+    _cwd_phys="$(cd "$_cwd" 2>/dev/null && pwd -P)" || _cwd_phys="$_proj_real"
+    if [[ -z "$_dirpart" ]]; then
+        _dir="$_cwd_phys"
+    elif [[ "$_dirpart" == /* ]]; then
+        _dir="$_dirpart"
+    else
+        _dir="$_cwd_phys/$_dirpart"
+    fi
+    while [[ "$_dir" == *//* ]]; do _dir="${_dir//\/\//\/}"; done
+    while [[ "$_dir" == */./* ]]; do _dir="${_dir//\/.\//\/}"; done
+    _dir="${_dir%/.}"; _dir="${_dir%/}"
+    if [[ "$_dir" == "$_proj_real" || "$_dir" == "$_proj_real"/* ]]; then
+        _rel="${_dir#"$_proj_real"}"
+    elif [[ "$_dir" == "${_proj%/}" || "$_dir" == "${_proj%/}"/* ]]; then
+        _rel="${_dir#"${_proj%/}"}"
+    else
+        _slurm_io_deny "$_flag" "$_val" "directory '${_dir:-/}' is outside the project" "$_proj"; return 1
+    fi
+
+    # No symlink component between the project root and the directory.
+    local _cur="$_proj_real" _comp _saved_ifs="$IFS"
+    local -a _rcomps
+    IFS='/'
+    # shellcheck disable=SC2206  # split on / is intentional
+    _rcomps=( $_rel )
+    IFS="$_saved_ifs"
+    for _comp in "${_rcomps[@]}"; do
+        [[ -z "$_comp" ]] && continue
+        _cur="$_cur/$_comp"
+        if [[ -L "$_cur" ]]; then
+            _slurm_io_deny "$_flag" "$_val" "'$_cur' is a symlink" "$_proj"; return 1
+        fi
+        [[ -e "$_cur" ]] || break      # Slurm won't create it; nothing to follow
+        if [[ ! -d "$_cur" ]]; then
+            _slurm_io_deny "$_flag" "$_val" "'$_cur' is not a directory" "$_proj"; return 1
+        fi
+    done
+
+    # Target must not already be a symlink.
+    local _tdir="$_proj_real$_rel"
+    if ! $_patterned; then
+        if [[ -L "$_tdir/$_leaf" ]]; then
+            _slurm_io_deny "$_flag" "$_val" "'$_tdir/$_leaf' is a symlink" "$_proj"; return 1
+        fi
+    elif [[ -d "$_tdir" ]]; then
+        local _f
+        for _f in "$_tdir"/* "$_tdir"/.*; do
+            [[ -L "$_f" ]] || continue
+            # shellcheck disable=SC2053  # pattern match intended
+            if [[ "${_f##*/}" == $_glob ]]; then
+                _slurm_io_deny "$_flag" "$_val" "existing symlink '$_f' matches the file pattern" "$_proj"; return 1
+            fi
+        done
+    fi
+    return 0
+}
+
 # ── Slurm --output / --error path transformation ─────────────────
 #
 # Transform a user-supplied --output / --error value into an absolute
@@ -709,6 +847,12 @@ validate_sbatch_args() {
                 local _flag="${arg%%=*}"
                 local _v="${arg#*=}"
                 local _t
+                # Without the staging transform (landlock) the path goes
+                # to slurmstepd verbatim: validate it instead.
+                if ! _slurm_output_feature_enabled \
+                   && ! _validate_slurm_io_path "$_flag" "$_v" "$_project_dir" "${REQ_CWD:-$_project_dir}"; then
+                    return 1
+                fi
                 _t="$(_maybe_transform_slurm_output_arg "$_flag" "$_v" "$_project_dir")"
                 _capture_slurm_output_pair "$_flag" "$_v" "$_t"
                 VALIDATED_ARGS+=("$_flag=$_t")
@@ -719,6 +863,10 @@ validate_sbatch_args() {
                     (( i++ ))
                     local _v="${REQ_ARGS[$i]}"
                     local _t
+                    if ! _slurm_output_feature_enabled \
+                       && ! _validate_slurm_io_path "$arg" "$_v" "$_project_dir" "${REQ_CWD:-$_project_dir}"; then
+                        return 1
+                    fi
                     _t="$(_maybe_transform_slurm_output_arg "$arg" "$_v" "$_project_dir")"
                     _capture_slurm_output_pair "$arg" "$_v" "$_t"
                     VALIDATED_ARGS+=("$arg" "$_t")
@@ -902,7 +1050,7 @@ create_wrapped_script() {
     # legitimate resource directives (--mem, --partition, --time, etc.).
     local safe_directives=""
     local stripped_count=0
-    local _export_directive_failed=false _dir_export_value=""
+    local _export_directive_failed=false _dir_export_value="" _io_directive_failed=false
     local -a _dir_export_assign=()
     # Agent-supplied NAME=VALUE pairs from a CLI --export (set by
     # validate_sbatch_args); replaced below by the last #SBATCH --export
@@ -1016,13 +1164,43 @@ create_wrapped_script() {
                             # above already rejects the attack at the body level).
                             local _new_val_quoted
                             printf -v _new_val_quoted '%q' "$_new_val"
-                            _new_line="#SBATCH $flag_name=$_new_val_quoted"
+                            # Short flags take the value as a separate
+                            # token (`-o=x` would make the value "=x").
+                            if [[ "$flag_name" == --* ]]; then
+                                _new_line="#SBATCH $flag_name=$_new_val_quoted"
+                            else
+                                _new_line="#SBATCH $flag_name $_new_val_quoted"
+                            fi
                             # Capture for env-var passing — last directive wins,
                             # matching command-line `validate_sbatch_args` semantics.
                             _capture_slurm_output_pair "$flag_name" "$_dval" "$_new_val"
                             safe_directives+="$_new_line"$'\n'
                         else
-                            safe_directives+="$line"$'\n'
+                            # No staging (landlock): slurmstepd opens the
+                            # path verbatim, so validate it and re-emit
+                            # canonically. Values Slurm's tokenizer could
+                            # read differently (quotes, whitespace, #) are
+                            # refused; a refused directive fails the job.
+                            local _lval
+                            case "$directive_body" in
+                                --*=*) _lval="${directive_body#*=}" ;;
+                                --*)   _lval="${directive_body#* }" ;;
+                                *)     _lval="${directive_body:2}" ;;
+                            esac
+                            _lval="${_lval#"${_lval%%[![:space:]]*}"}"
+                            _lval="${_lval%"${_lval##*[![:space:]]}"}"
+                            if [[ -z "$_lval" || "$_lval" == *[[:space:]\"\'#]* ]]; then
+                                _sandbox_deny "#SBATCH $flag_name value '${_lval}' must be a single unquoted path (no whitespace, quotes or '#'); pass it on the sbatch command line instead."
+                                _io_directive_failed=true
+                            elif _validate_slurm_io_path "$flag_name" "$_lval" "$project_dir" "${REQ_CWD:-$project_dir}"; then
+                                if [[ "$flag_name" == --* ]]; then
+                                    safe_directives+="#SBATCH $flag_name=$_lval"$'\n'
+                                else
+                                    safe_directives+="#SBATCH $flag_name $_lval"$'\n'
+                                fi
+                            else
+                                _io_directive_failed=true
+                            fi
                         fi
                         ;;
                     *)
@@ -1041,7 +1219,7 @@ create_wrapped_script() {
 
     # A rejected --export directive fails the whole submission: silently
     # dropping it would change the job's environment semantics.
-    if $_export_directive_failed; then
+    if $_export_directive_failed || $_io_directive_failed; then
         return 1
     fi
     if [[ -n "$_dir_export_value" ]]; then

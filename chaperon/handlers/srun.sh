@@ -130,32 +130,15 @@ _SRUN_VALUE_FLAGS=" \
   --comment \
 "
 
-# Require an srun -o/-e/-i path to resolve under the project dir.
-# slurmstepd opens --output/--error/--input OUTSIDE the sandbox, as the
-# host user, before the compute-node sandbox boundary applies. An
-# unrestricted path is therefore an arbitrary host-file write
-# (--output/--error → e.g. ~/.ssh/authorized_keys, ~/.bashrc) or read
-# (--input → e.g. ~/.aws/credentials piped into the job) — a confinement
-# escape even though the task itself is sandboxed. Relative paths are
-# resolved against the validated submission cwd (REQ_CWD, already checked
-# to be under the project dir) or the project dir. realpath -m
-# canonicalizes without requiring the file to exist (--output creates it)
-# and collapses any `..` traversal. Returns 0 if contained, 1 otherwise.
-_srun_io_path_under_project() {
-    local _val="$1" _project_dir="$2" _cwd="$3"
-    [[ -n "$_val" ]] || return 0
-    local _base="${_cwd:-$_project_dir}"
-    local _abs
-    if [[ "$_val" == /* ]]; then
-        _abs="$_val"
-    else
-        _abs="$_base/$_val"
-    fi
-    local _canon _proj_canon
-    _canon="$(realpath -m -- "$_abs" 2>/dev/null)" || return 1
-    _proj_canon="$(realpath -m -- "$_project_dir" 2>/dev/null)" || return 1
-    [[ "$_canon" == "$_proj_canon" || "$_canon" == "$_proj_canon"/* ]]
-}
+# srun -o/-e/-i: slurmstepd opens these OUTSIDE the sandbox, as the
+# host user, before the compute-node sandbox boundary applies, and srun
+# has no staging redirect on any backend. An unrestricted path is an
+# arbitrary host-file write (--output/--error → e.g. ~/.bashrc) or read
+# (--input → e.g. ~/.aws/credentials piped into the job). Validated by
+# _validate_slurm_io_path (_handler_lib.sh): project-contained directory
+# resolved against the validated submission cwd, no `..`, no symlink
+# components, no existing symlink target, only directory-neutral %
+# patterns and only in the file name.
 
 _is_srun_allowed() {
     local base="${1%%=*}"
@@ -261,7 +244,7 @@ handle_srun() {
                 ;;
             # ── Output/error/input: opened by slurmstepd OUTSIDE the sandbox.
             #    Restrict to paths under the project dir (see
-            #    _srun_io_path_under_project). Handles the space-separated
+            #    _validate_slurm_io_path). Handles the space-separated
             #    forms here; the --flag=value forms are handled below. ──
             -o|--output|-e|--error|-i|--input)
                 local _io_flag="$arg" _io_val=""
@@ -269,16 +252,14 @@ handle_srun() {
                     (( i++ )) || true
                     _io_val="${REQ_ARGS[$i]}"
                 fi
-                if ! _srun_io_path_under_project "$_io_val" "$project_dir" "$REQ_CWD"; then
-                    _sandbox_deny "srun '$_io_flag $_io_val' is not allowed — --output/--error/--input files are opened by Slurm outside the sandbox, so the path must stay within the project directory ($project_dir). Use a project-relative path."
+                if ! _validate_slurm_io_path "srun $_io_flag" "$_io_val" "$project_dir" "${REQ_CWD:-$project_dir}"; then
                     return 1
                 fi
                 validated_flags+=("$_io_flag" "$_io_val")
                 ;;
             --output=*|--error=*|--input=*)
                 local _io_val2="${arg#*=}"
-                if ! _srun_io_path_under_project "$_io_val2" "$project_dir" "$REQ_CWD"; then
-                    _sandbox_deny "srun '$arg' is not allowed — --output/--error/--input files are opened by Slurm outside the sandbox, so the path must stay within the project directory ($project_dir). Use a project-relative path."
+                if ! _validate_slurm_io_path "srun ${arg%%=*}" "$_io_val2" "$project_dir" "${REQ_CWD:-$project_dir}"; then
                     return 1
                 fi
                 validated_flags+=("$arg")
