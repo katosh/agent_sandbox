@@ -528,14 +528,14 @@ SANDBOX_NPROC_LIMIT=""
 # protective mounts the backend set up, every MOUNT_GUARD_INTERVAL
 # seconds, and reports any loss on the launching terminal (plus syslog
 # and tmux, when available):
-#   kill — (default) terminate the sandbox when a loss exposes a
+#   kill — terminate the sandbox when a loss exposes a
 #          protected path (a masked file/dir becomes visible, or a
 #          read-only overlay inside a writable host mount becomes
 #          writable); other losses are reported only.
-#   warn — report every loss, never terminate.
+#   warn — (default) report every loss, never terminate.
 #   off  — no watcher.
 # Harden-only under an admin pin (off < warn < kill).
-MOUNT_GUARD="kill"
+MOUNT_GUARD="warn"
 MOUNT_GUARD_INTERVAL=5
 
 # Landlock ABI floor (landlock backend only). Empty means "use the
@@ -1572,7 +1572,7 @@ _enforce_admin_scalars() {
 
     # Mount guard (tri-valued): harden-only. Ordering: off < warn < kill.
     if [[ -n "${_ADMIN_MOUNT_GUARD:-}" ]]; then
-        if [[ "$(_mount_guard_strictness_idx "${MOUNT_GUARD:-kill}")" -lt \
+        if [[ "$(_mount_guard_strictness_idx "${MOUNT_GUARD:-warn}")" -lt \
               "$(_mount_guard_strictness_idx "$_ADMIN_MOUNT_GUARD")" ]]; then
             echo "WARNING: ${_label} weakened admin-enforced MOUNT_GUARD='${_ADMIN_MOUNT_GUARD}' to '${MOUNT_GUARD}' — restored." >&2
             MOUNT_GUARD="$_ADMIN_MOUNT_GUARD"
@@ -2918,7 +2918,7 @@ _load_config_layers() {
             _ADMIN_MOUNT_GUARD="$MOUNT_GUARD"
         else
             _ADMIN_MOUNT_GUARD=""
-            MOUNT_GUARD="kill"
+            MOUNT_GUARD="warn"
         fi
         if declare -p ALLOWED_PROJECT_PARENTS &>/dev/null; then
             _admin_set_app=true
@@ -3318,7 +3318,7 @@ _mount_guard_notify() {
 # _mount_guard_run LAUNCHER_PID — the watcher loop (run in background).
 _mount_guard_run() {
     local _lpid="$1" _lstart _target="" _tstart _ns _tries=0 _prev="" _cur
-    local _mode="${MOUNT_GUARD:-kill}" _interval="${MOUNT_GUARD_INTERVAL:-5}"
+    local _mode="${MOUNT_GUARD:-warn}" _interval="${MOUNT_GUARD_INTERVAL:-5}"
     _lstart="$(_proc_starttime "$_lpid")" || return 0
     _alive() { [[ "$(_proc_starttime "$1" 2>/dev/null)" == "$2" ]]; }
 
@@ -3409,7 +3409,7 @@ _mount_guard_main() {
 # _start_mount_guard PROJECT_DIR — fork the watcher (bwrap/firejail).
 _MOUNT_GUARD_PID=""
 _start_mount_guard() {
-    [[ "${MOUNT_GUARD:-kill}" != off ]] || return 0
+    [[ "${MOUNT_GUARD:-warn}" != off ]] || return 0
     case "${SANDBOX_BACKEND:-}" in bwrap|firejail) ;; *) return 0 ;; esac
     [[ -r /proc/self/mountinfo ]] || return 0
     declare -F backend_mount_expectations >/dev/null || return 0
@@ -3934,11 +3934,11 @@ _validate_loaded_config() {
         unset _dev_entry
     fi
 
-    case "${MOUNT_GUARD:-kill}" in
+    case "${MOUNT_GUARD:-warn}" in
         off|warn|kill) ;;
         *)
-            echo "WARNING: MOUNT_GUARD='${MOUNT_GUARD}' invalid (off|warn|kill); using 'kill'." >&2
-            MOUNT_GUARD=kill ;;
+            echo "WARNING: MOUNT_GUARD='${MOUNT_GUARD}' invalid (off|warn|kill); using 'warn'." >&2
+            MOUNT_GUARD=warn ;;
     esac
     if [[ ! "${MOUNT_GUARD_INTERVAL:-5}" =~ ^[1-9][0-9]{0,3}$ ]]; then
         echo "WARNING: MOUNT_GUARD_INTERVAL='${MOUNT_GUARD_INTERVAL}' invalid (whole seconds, 1-9999); using 5." >&2

@@ -202,8 +202,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   watcher checks every `MOUNT_GUARD_INTERVAL` seconds (default 5) and
   reports every loss on the launching terminal, syslog and tmux. When
   the loss exposes a protected path (a `BLOCKED_FILES`/credential mask
-  or a read-only overlay in a writable directory), the default
-  `MOUNT_GUARD=kill` terminates the sandbox. `warn` only reports; `off`
+  or a read-only overlay in a writable directory), the report says so
+  prominently. The default `MOUNT_GUARD=warn` never terminates the
+  sandbox; `kill` (opt-in) terminates it on such an exposure; `off`
   disables. It is harden-only when an admin pins it.
 
 - **`--cleanup-materialized` keeps `BLOCKED_FILES` placeholders on

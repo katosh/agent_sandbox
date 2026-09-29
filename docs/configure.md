@@ -89,7 +89,7 @@ Without an admin baseline, `~/.config/agent-sandbox/sandbox.conf` is the only co
 | [`PRIVATE_IPC`](#private_ipc) | scalar | **harden-only** | `true` |
 | [`FILTER_PASSWD`](#filter_passwd) | scalar | **harden-only** | `true` |
 | [`SANDBOX_NPROC_LIMIT`](#sandbox_nproc_limit) | scalar | no | `""` (unlimited) |
-| [`MOUNT_GUARD`](#mount_guard) | scalar | **harden-only** when set by the admin (off < warn < kill) | `kill` |
+| [`MOUNT_GUARD`](#mount_guard) | scalar | **harden-only** when set by the admin (off < warn < kill) | `warn` |
 | [`MOUNT_GUARD_INTERVAL`](#mount_guard) | scalar | no | `5` (seconds) |
 | [`SANDBOX_QUIET`](#sandbox_quiet) | scalar | no | `false` |
 | [`NETWORK_FILTER_MODE`](#network_filter_mode) | scalar | **harden-only** (user can only request equal or stricter) | `filtered` |
@@ -541,13 +541,13 @@ A bind mount can disappear from a sandbox **while it runs**. Linux detaches ever
 
 On bwrap and firejail a watcher runs outside the sandbox for the whole session. Every `MOUNT_GUARD_INTERVAL` seconds it compares the sandbox's mount table with the mounts the backend set up and reports each loss once, with a bell, on the launching terminal (and to syslog, and as a tmux message when `$TMUX` is set):
 
-- **exposed**: a mask, or a read-only overlay that now sits in a writable host mount, is gone on a policy path (under `$HOME`, the project dir, an `EXTRA_WRITABLE_PATHS` entry or the install dir, or a `BLOCKED_FILES`/`EXTRA_BLOCKED_PATHS` entry), or a read-only mount turned read-write. With `kill` the sandbox is terminated.
+- **exposed**: a mask, or a read-only overlay that now sits in a writable host mount, is gone on a policy path (under `$HOME`, the project dir, an `EXTRA_WRITABLE_PATHS` entry or the install dir, or a `BLOCKED_FILES`/`EXTRA_BLOCKED_PATHS` entry), or a read-only mount turned read-write. With `kill` (opt-in) the sandbox is terminated.
 - **degraded**: any other loss (a writable bind, a loss that falls through to something read-only or to a tmpfs, a system mask such as `/usr/bin/sbatch`). Reported only.
 
-`warn` reports both kinds and never terminates; `off` disables the watcher. Landlock has no mounts to watch. On firejail the report reaches the terminal only when stderr is a terminal (the setuid firejail process hides its descriptors); syslog always gets it.
+`warn` (the default) reports both kinds and never terminates; `off` disables the watcher. Landlock has no mounts to watch. On firejail the report reaches the terminal only when stderr is a terminal (the setuid firejail process hides its descriptors); syslog always gets it.
 
 ```bash
-MOUNT_GUARD="warn"          # long-running orchestrators that would rather be told than killed
+MOUNT_GUARD="kill"          # terminate instead of warning when a protected path is exposed
 MOUNT_GUARD_INTERVAL=10
 ```
 
