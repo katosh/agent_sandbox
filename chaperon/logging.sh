@@ -172,6 +172,34 @@ chaperon_log() {
     echo "$line" >&2
 }
 
+# chaperon_log_escape <string>
+#
+# Print <string> with every control character made visible, so an
+# attacker-controlled field (args, cwd, command name, shebang) can never
+# start a new log line or smuggle terminal escapes: \n, \r, \t become
+# the two-character sequences, backslash is doubled so the encoding is
+# unambiguous, and any other C0/DEL byte becomes \xHH.
+chaperon_log_escape() {
+    local _s="$1" _out="" _c _i _hex
+    _s="${_s//\\/\\\\}"
+    _s="${_s//$'\n'/\\n}"
+    _s="${_s//$'\r'/\\r}"
+    _s="${_s//$'\t'/\\t}"
+    if [[ "$_s" == *[[:cntrl:]]* ]]; then
+        for (( _i = 0; _i < ${#_s}; _i++ )); do
+            _c="${_s:_i:1}"
+            if [[ "$_c" == [[:cntrl:]] ]]; then
+                printf -v _hex '\\x%02X' "'$_c"
+                _out+="$_hex"
+            else
+                _out+="$_c"
+            fi
+        done
+        _s="$_out"
+    fi
+    printf '%s' "$_s"
+}
+
 # chaperon_log_file — returns the current log file path (for diagnostics)
 chaperon_log_file() {
     echo "${_CHAPERON_LOG_FILE:-<none>}"
