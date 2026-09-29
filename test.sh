@@ -1793,8 +1793,11 @@ if [[ -d "$HOME/.claude" ]] || command -v claude &>/dev/null; then
             else
                 fail "Host-executed agent config writable inside the sandbox" "$OUTPUT"
             fi
-            [[ "$OUTPUT" == *"AU=1"* ]] && pass "DISABLE_AUTOUPDATER=1 exported (claude version store is read-only)" \
-                || fail "DISABLE_AUTOUPDATER not exported into the sandbox" "$OUTPUT"
+            if [[ "$OUTPUT" == *"AU=1"* ]]; then
+                pass "DISABLE_AUTOUPDATER=1 exported (claude version store is read-only)"
+            else
+                fail "DISABLE_AUTOUPDATER not exported into the sandbox" "$OUTPUT"
+            fi
         else
             fail "Host-executed agent config probe failed to run" "$OUTPUT $OUTPUT_ERR"
         fi
