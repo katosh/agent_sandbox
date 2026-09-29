@@ -89,7 +89,9 @@ if command -v bwrap &>/dev/null; then
         # Check if a newer bwrap is available via lmod
         if type module &>/dev/null; then
             _spider_out=$(module spider bubblewrap 2>&1 || true)
-            _lmod_match=$(echo "$_spider_out" | grep -oE 'bubblewrap/[^ ]+' | sort -V | tail -1)
+            # `|| true`: under `set -euo pipefail` a grep with no match
+            # would otherwise abort the installer silently.
+            _lmod_match=$(echo "$_spider_out" | grep -oE 'bubblewrap/[^ ]+' | sort -V | tail -1 || true)
             if [[ -n "$_lmod_match" ]]; then
                 echo "  Or use lmod — add to sandbox.conf: SANDBOX_MODULES=(\"$_lmod_match\")"
             fi
@@ -131,7 +133,8 @@ else
         # module spider outputs to stderr; search for bubblewrap modules
         _spider_out=$(module spider bubblewrap 2>&1 || true)
         # Extract the most recent version line, e.g. "bubblewrap/0.11.1-GCCcore-12.3.0"
-        _lmod_match=$(echo "$_spider_out" | grep -oE 'bubblewrap/[^ ]+' | sort -V | tail -1)
+        # `|| true`: a grep with no match must not abort under pipefail.
+        _lmod_match=$(echo "$_spider_out" | grep -oE 'bubblewrap/[^ ]+' | sort -V | tail -1 || true)
         if [[ -n "$_lmod_match" ]]; then
             _lmod_suggestion="$_lmod_match"
         fi
@@ -219,7 +222,7 @@ mkdir -p "$SANDBOX_DIR/chaperon/handlers"
 mkdir -p "$SANDBOX_DIR/chaperon/stubs"
 mkdir -p "$SANDBOX_DIR/conf.d"
 
-for file in sandbox-lib.sh sandbox-exec.sh sbatch-sandbox.sh srun-sandbox.sh sandbox-tmux.conf test.sh test-admin.sh VERSION; do
+for file in sandbox-lib.sh sandbox-exec.sh sbatch-sandbox.sh srun-sandbox.sh sandbox-tmux.conf test.sh test-admin.sh test-admin-narrowing.sh VERSION; do
     [[ -f "$SCRIPT_DIR/$file" ]] && cp "$SCRIPT_DIR/$file" "$SANDBOX_DIR/$file"
 done
 
@@ -247,12 +250,20 @@ if [[ -d "$SCRIPT_DIR/agents" ]]; then
             rm -f "$SANDBOX_DIR/agents/$local_agent/$_stale" 2>/dev/null || true
         done
     done
+    # Top-level agent files: sandbox-help.md (referenced by every
+    # agent.md), overlay-lib.sh + overlay-fs.py (required by overlays).
+    for file in "$SCRIPT_DIR"/agents/*.md "$SCRIPT_DIR"/agents/*.sh "$SCRIPT_DIR"/agents/*.py; do
+        [[ -f "$file" ]] || continue
+        cp "$file" "$SANDBOX_DIR/agents/"
+    done
     echo "  ✓ Agent profiles installed ($(ls -d "$SANDBOX_DIR"/agents/*/ 2>/dev/null | wc -l) agents)"
 fi
 
-# Chaperon: secure Slurm proxy
-for file in chaperon.sh protocol.sh; do
-    cp "$SCRIPT_DIR/chaperon/$file" "$SANDBOX_DIR/chaperon/$file"
+# Chaperon: secure Slurm proxy. Copy every top-level chaperon/*.sh
+# (chaperon.sh, protocol.sh, logging.sh, ...) — a hard-coded list here
+# once missed logging.sh, and the chaperon then died on startup.
+for file in "$SCRIPT_DIR"/chaperon/*.sh; do
+    cp "$file" "$SANDBOX_DIR/chaperon/"
 done
 for file in "$SCRIPT_DIR"/chaperon/handlers/*.sh; do
     cp "$file" "$SANDBOX_DIR/chaperon/handlers/"
@@ -260,6 +271,16 @@ done
 for file in "$SCRIPT_DIR"/chaperon/stubs/*; do
     cp "$file" "$SANDBOX_DIR/chaperon/stubs/"
 done
+
+# tools/: proxy (NETWORK_FILTER_MODE=proxied), mail-block
+# (NETWORK_MAIL_BLOCK) and the shipped pasta binary
+# (NETWORK_FILTER_MODE=filtered). Mirrors `make install-lib`.
+if [[ -d "$SCRIPT_DIR/tools" ]]; then
+    mkdir -p "$SANDBOX_DIR/tools"
+    cp -R "$SCRIPT_DIR/tools/." "$SANDBOX_DIR/tools/"
+    find "$SANDBOX_DIR/tools" -type f \( -name '*.py' -o -name '*.sh' -o -name pasta \) \
+        -exec chmod +x {} + 2>/dev/null || true
+fi
 
 # Copy example conf.d files (don't overwrite user customizations)
 for file in "$SCRIPT_DIR"/conf.d/*.conf; do
