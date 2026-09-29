@@ -9,6 +9,165 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **sbatch `--export` no longer lets the agent run code outside the
+  sandbox.** The generated job wrapper runs unsandboxed on the
+  compute node, and `--export` (or `#SBATCH --export`) values were
+  passed to Slurm unfiltered, so an agent could inject shell or loader
+  variables (`BASH_ENV`, `LD_*`, `PATH`) or sandbox settings
+  (`SANDBOX_CONF`, `HOME_ACCESS`, ...) into it. Reproduced on real Slurm
+  with bwrap, firejail and landlock. The chaperon now hands Slurm only
+  `ALL`, `NONE`, `NIL` or bare variable names; `NAME=VALUE` pairs are
+  applied inside the sandbox via `env`. Shell, loader, Slurm and
+  sandbox-control names and every launcher config variable are
+  rejected. The wrapper itself is now `#!/bin/bash -p`, runs only
+  builtins before an absolute-path `exec` of `sandbox-exec.sh`, and
+  unsets launcher and `SANDBOX_*` variables first.
+
+- **srun job steps are now sandboxed.** Inside an allocation, step
+  mode exec'd the real `srun`, so slurmstepd ran the step outside the
+  sandbox with the chaperon's host environment. Step commands are now
+  wrapped in `sandbox-exec.sh --project-dir <dir> --` like allocation
+  mode. The docs that claimed this already held are corrected.
+
+- **`.sandbox-state/` can no longer be turned into a symlink attack
+ .** The state dir was created by the chaperon after the
+  sandbox started, so the first session in a project had it writable.
+  An agent could plant a symlink under `slurm-logs/` and have slurmstepd
+  write job output through it into a real `$HOME` file, or replace
+  `.sandbox-state` itself with a symlink. The launcher now creates
+  `.sandbox-state/{slurm-logs,chaperon}` before the backend starts
+  (read-only from the first session on bwrap and firejail), repairs
+  symlinked components with a warning, and purges symlinks, hard links
+  and special files found under it. The chaperon separately refuses any
+  symlinked or foreign-owned component before creating staging files.
+
+- **Slurm output and input paths are validated where no staging
+  applies.** On landlock, `sbatch --output/--error` (CLI and
+  `#SBATCH`) go to slurmstepd verbatim, and `srun -o/-e/-i` on every
+  backend were only checked by realpath containment. They must now
+  resolve to a directory inside the project with no symlink component;
+  `..`, backslashes, `%x` and unknown `%` patterns are refused.
+  Landlock keeps a residual race (see Changed and the docs), because the
+  project dir stays writable there.
+
+- **Host-side agent-config overlays no longer follow agent-planted
+  symlinks.** The claude, codex, gemini, pi and opencode overlays
+  run on the host before launch and used `cp -rn`, fixed `*.tmp.$$`
+  names and `>` redirects inside directories the agent can write. A
+  planted symlink made the host write attacker data into `~/.ssh`,
+  `~/.local/bin` or `~/.bashrc`, or copy a secret into a sandbox-readable
+  file. All overlay file operations now go through
+  `agents/overlay-fs.py` (dir fds, `O_NOFOLLOW`, `O_EXCL` random temp
+  names, inode-verified renames, no-clobber merge that never follows or
+  copies links). Without `python3` the overlays are skipped with a
+  warning.
+
+- **Admin baseline can no longer be skipped with `SANDBOX_CONF`.**
+  The variable now replaces only the user config layer; the admin
+  `sandbox.conf` is always loaded and enforced. Before, setting it
+  (directly, or through the sbatch `--export` path above) dropped every
+  admin pin.
+
+- **`SANDBOX_ENV` can no longer change sandbox settings.** Entries
+  were exported into the launcher after admin enforcement, so
+  `NETWORK_FILTER_MODE=open` or `PRIVATE_TMP=false` overrode admin
+  harden-only values. Entries now apply only to the sandboxed command.
+  Config variables, launcher-internal names (`_*`, `SANDBOX_*`,
+  `CHAPERON_*`, `LANDLOCK_*`, `NETWORK_*`), hidden and blocked names are
+  rejected with a warning. `PATH` still applies host-side.
+
+- **Admin `HOME_READONLY` can no longer be escalated by path spelling
+ .** The check against user `HOME_WRITABLE` and
+  `EXTRA_WRITABLE_PATHS` was a string compare, so `.ssh/`,
+  `./.config/git`, a parent directory or a symlink alias passed. Entries
+  equal to, inside or above an admin read-only entry (normalised and
+  symlink-resolved) are reverted with a warning.
+
+- **`~/.config/agent-sandbox` is read-only inside the sandbox in every
+  `HOME_ACCESS` mode.** In `HOME_ACCESS=write` an agent could edit
+  `sandbox.conf` or `conf.d/` (and thereby `SANDBOX_ENV`, `PATH` and
+  other non-admin settings) to take effect at the next launch. bwrap and
+  firejail now bind it read-only; landlock cannot subtract a path from
+  a granted `$HOME` and only warns.
+
+- **`EXTRA_WRITABLE_PATHS` can no longer re-expose masked paths.**
+  Writable grants were emitted after the protective overlays, undoing
+  `BLOCKED_FILES`, `EXTRA_BLOCKED_PATHS`, credential masks and the
+  read-only `.sandbox-state`. They are now emitted first on bwrap and
+  firejail. Entries equal to or above `$HOME` are ignored with a
+  warning on all backends.
+
+- **A project dir above `$HOME` is rejected.** `/home` or `/` as
+  `--project-dir` (when `ALLOWED_PROJECT_PARENTS` allowed it) was bound
+  writable over the whole home directory. Rejected like `$HOME` itself.
+
+- **Firejail: the host filesystem outside `$HOME` is read-only.**
+  Every user-writable directory outside `$HOME` (shared lab or scratch
+  storage, other projects) was writable in the sandbox. Firejail now
+  starts with `--read-only=/` and re-opens only the project dir,
+  `EXTRA_WRITABLE_PATHS`, `HOME_WRITABLE`, `$HOME` in
+  `HOME_ACCESS=write`, the chaperon FIFO dir and, with
+  `PRIVATE_TMP=false`, `/tmp`. Reads outside `$HOME` still follow Unix
+  permissions.
+
+- **`HOME_ACCESS=read|write` hides more credential stores.**
+  `.netrc`, `.git-credentials`, `.config/gh`, `.docker/config.json`,
+  `.kube`, `.config/gcloud`, `.azure`, `.config/op`, `.config/helm`,
+  `.terraform.d`, `.vault-token`, `.pgpass`, `.pypirc` and
+  `.cargo/credentials` were visible in those modes. bwrap and firejail
+  now mask them; landlock cannot and warns.
+
+- **Host-executed agent config is read-only inside the sandbox (O2,
+  partial).** `~/.claude/settings.json`, `~/.claude.json`,
+  `~/.codex/config.toml`, `~/.gemini/settings.json`,
+  `~/.pi/agent/settings.json` and Claude's native binaries under
+  `~/.local/share/claude` could be edited by the agent to run code the
+  next time the user starts the agent outside the sandbox. Codex,
+  Gemini and pi get copy-on-launch private copies. On landlock only
+  `~/.claude.json` and `~/.local/share/claude` are protected. Plugins,
+  skills, commands and hook scripts stay writable (see the
+  tamper-resistance section of `docs/reference/security.md`).
+
+- **Explicit launch choices beat `conf.d`.** `--backend` and the
+  `PRIVATE_TMP`, `PRIVATE_IPC`, `FILTER_PASSWD`, `NETWORK_*` env
+  overrides were restored before `conf.d` was loaded, so a per-project
+  file silently beat the command line. They now apply after `conf.d`
+  and are still checked against admin pins; validation runs on the
+  final configuration.
+
+- **`HIDE_FROM_SANDBOX` defaults are a floor.**
+  `HIDE_FROM_SANDBOX=()` in user config removed the built-in defaults
+  when no admin baseline existed, leaking `SLURM_SCOPE`, `HOME_ACCESS`
+  and `SANDBOX_QUIET` into the sandbox. `_ENFORCED_ARRAYS` is now
+  actually consulted, so the #75 test checks real behaviour.
+
+- **Test hooks are ignored from the environment.**
+  `_PASSWD_SRC_FILE` and `_GROUP_SRC_FILE` (added with the #79 fix)
+  could choose the sandbox's `/etc/passwd` and `/etc/group`.
+  `sandbox-exec.sh` also clears `_SANDBOX_LIB_NO_INIT`.
+
+- **`--cleanup-materialized` no longer unmasks files in concurrent
+  sandboxes.** Deleting a placeholder that another sandbox had
+  `/dev/null` mounted over detached that mount, letting the other
+  agent write the host file. Launches now register in a per-user,
+  per-host registry and cleanup keeps placeholders while others are
+  alive.
+
+- **Chaperon handlers are loaded once at startup.** The chaperon
+  re-sourced `handlers/<cmd>.sh` on every request, so a writable install
+  dir (for example landlock with the install under a writable path)
+  meant host code execution by editing a handler.
+
+- **bwrap announces loudly when it runs without the seccomp filter
+ .** A missing `python3` or generator, or a failed filter, used
+  to skip it silently. The warning ignores `SANDBOX_QUIET`. There is no
+  hard-fail toggle yet.
+
+- **`PRIVATE_TMP=false` now warns.** The chaperon FIFO and helper
+  sockets then live in the shared host `/tmp`, reachable from other
+  sandboxes of the same user. The warning is the only mitigation so
+  far.
+
 - **Sandbox-setting env vars no longer forward into the sandbox
   (`#75`).** The launcher exported `SLURM_SCOPE`, `CHAPERON_LOG_LEVEL`,
   `CHAPERON_LOG_RETAIN_DAYS` — and, since v0.13.1, `SANDBOX_QUIET` —
@@ -42,6 +201,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   accidental `export` in the launcher fails CI instead of shipping.
   Documented in `sandbox.conf`, `sandbox-admin.conf`, and
   `docs/configure.md`.
+
+- **`agents/overlay-fs.py` and `agents/overlay-lib.sh`,** the
+  fd-based helpers behind the symlink-safe overlays.
+- **Regression tests** for every fix above: `test.sh` section 6.7
+  (chaperon), `.sandbox-state` lifecycle, EXTRA_WRITABLE ordering,
+  project-dir ancestors, signal forwarding, registry, seccomp warning,
+  overlay symlink attacks and config/admin enforcement; plus 8 new
+  cases in `test-admin-narrowing.sh`.
+
+### Changed
+
+- **Compute-node jobs no longer inherit sandbox-setting env overrides.**
+  The job wrapper unsets launcher and `SANDBOX_*` variables, so
+  `HOME_ACCESS`, `NETWORK_FILTER_MODE`, `PRIVATE_TMP`, `SLURM_SCOPE` and
+  similar set in the launch environment do not reach jobs; the compute
+  node resolves them from the config files. Put persistent choices in
+  config.
+- **`sbatch --export` semantics.** Denied names are rejected even as
+  bare names (`--export=ALL,PATH`, `LD_LIBRARY_PATH`, `SLURM_*`); set
+  them in the job script instead. `--export=NONE,FOO=bar` is rejected.
+  With `ALL,FOO=bar` the in-sandbox value wins. `#SBATCH --export`
+  values containing whitespace, quotes, `#` or backslash are refused
+  (use the CLI). `NAME=VALUE` may now set a `BLOCKED_ENV_VARS` name to
+  the agent's own value inside the sandbox.
+- **Stricter Slurm I/O paths.** `srun -o/-e/-i` on all backends and
+  `sbatch -o/-e` on landlock refuse any symlink component (even one
+  pointing inside the project), `..`, backslashes, `%x`, and `%`
+  patterns in the directory part.
+- **`SANDBOX_ENV`:** entries naming settings or blocked variables are
+  ignored with a warning (move settings to plain config lines; use
+  `ALLOWED_ENV_VARS` for secrets). Except `PATH`, entries no longer
+  reach the chaperon or other host-side processes, so a `SLURM_CONF`
+  needed by `sbatch` must be set in the launch environment.
+- **Admin baseline present:** `HOME_WRITABLE` entries under or over an
+  admin read-only entry (including defaults such as `.local/bin`,
+  `micromamba`) are reverted, for example `HOME_WRITABLE+=(".local")`.
+- **`conf.d` can no longer override `--backend` or env overrides,** and
+  validation warnings may now appear for `conf.d`-set values.
+- **`HOME_ACCESS=read|write` tools lose stored credentials** (git HTTPS
+  store, `gh`, docker, kube, cloud CLIs) unless the path is listed
+  verbatim in `HOME_READONLY`/`HOME_WRITABLE` or the token is passed via
+  `ALLOWED_ENV_VARS`.
+- **`~/.config/agent-sandbox` is read-only in `HOME_ACCESS=write`.**
+  Edit sandbox config from outside the sandbox.
+- **Claude cannot self-update inside the sandbox** (`~/.local/share/
+  claude` is read-only and `DISABLE_AUTOUPDATER=1` is set); run
+  `claude update` outside. Opt out with `.local/share/claude` in
+  `HOME_WRITABLE`. In-sandbox Codex, Gemini and pi settings changes stay
+  in the private copy and are refreshed when the host file is newer.
+- **A `CLAUDE.md` or `AGENTS.md` that is a symlink into an unexposed
+  directory** is no longer merged into the sandbox config (warning);
+  add the directory to `HOME_READONLY`.
+- **Overlays need `python3`;** without it they are skipped with a
+  warning.
+- **Firejail projects/paths outside `$HOME`:** writes there now need
+  the project dir, `EXTRA_WRITABLE_PATHS` or `HOME_WRITABLE`.
+- **Landlock:** the launcher purge protects later sessions, but do not
+  run landlock sessions concurrently with bwrap or firejail sessions on
+  the same project (a landlock agent can write `.sandbox-state/`).
+  Landlock also keeps a race on Slurm output paths (a symlink planted
+  after validation, including at the implicit default `slurm-<id>.out`).
+- **Misc:** `.sandbox-state` component dirs are created mode 0700;
+  backslashes in logged args are doubled; `PRIVATE_TMP=false` prints a
+  warning; the launch registry lives in
+  `${XDG_RUNTIME_DIR:-$TMPDIR}/agent-sandbox-live-<uid>/`.
 
 ### Fixed
 
@@ -83,6 +307,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   specific binary regardless of version. After `brew install tmux`
   outside the sandbox, the wrapper picks it up automatically on the
   next sandbox start — no configuration needed.
+
+- **Chaperon audit log lines can no longer be forged.** `cwd`,
+  args, shebang and FIFO paths are escaped (backslash, `\n`, `\r`,
+  `\t`, other control bytes as `\xHH`).
+- **Per-launch `/tmp` dirs are cleaned up.** `chaperon-*`,
+  `agent-sandbox-proxy-*` and `agent-sandbox-mailblock-*` were never
+  removed after a normal run. They now carry an owner tag, the
+  chaperon removes its own on exit (also on SIGHUP), and each launch
+  prunes dirs whose owner is gone (untagged legacy dirs after 7 days).
+- **Signals reach the sandbox on firejail and landlock.** Both
+  now exec into the sandbox like bwrap; `kill -TERM` on the launcher
+  used to orphan the sandboxed command.
+- **Landlock starts in the project directory,** honouring
+  `$SLURM_SUBMIT_DIR` under it, like bwrap and firejail. The chaperon
+  refused `srun` and `sbatch` from landlock sessions started elsewhere.
+- **slirp4netns is no longer mistaken for pasta.** A
+  slirp4netns-only host "supported" `filtered` mode and then ran with no
+  network, ignoring `NETWORK_FILTER_FALLBACK=open`. Only pasta counts
+  now, so the normal fallback applies and the warning names slirp4netns.
+- **The sbatch handler fails the request when wrapper generation
+  fails,** and short-flag `#SBATCH -o/-e` directives are emitted as
+  `-o value` (was `-o=value`, read as the path `=value`).
+- **Firejail: a project dir inside the sandbox install dir is writable
+  again** (the install-dir `--read-only` came after the project grant),
+  and `sandbox-config/` is writable as on bwrap. Only protected files
+  are `--read-only`.
+- **`install.sh` produced a broken install.** It now installs
+  `chaperon/logging.sh`, `tools/`, `agents/sandbox-help.md`, the overlay
+  helpers and `test-admin-narrowing.sh` (the chaperon died on startup
+  after a fresh install), and no longer exits silently under
+  `set -euo pipefail` when lmod finds no bubblewrap module.
+- **Deprecated `sbatch-sandbox.sh`.** Value-less flags such as
+  `--exclusive` no longer swallow the script name, scripts without `+x`
+  run through their shebang, the generated `/tmp/sbatch-sandbox-*.sh`
+  is removed, and `TMPDIR` is honoured.
+- **Test suite.** The chaperon lifecycle test finds its own
+  chaperon through the process tree instead of a global `pgrep`, which
+  could pick another sandbox's chaperon.
 
 ## [0.13.1] - 2026-07-01
 
