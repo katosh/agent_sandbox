@@ -2067,6 +2067,29 @@ else
     skip "Agent overlay symlink tests: python3 not available"
 fi
 
+# ── sbatch-sandbox.sh (deprecated compat wrapper) ──
+# Unit-style with a fake sbatch that runs the generated wrapper inline and
+# a stub sandbox-exec.sh next to a copy of the script: (a) a value-less
+# flag before the script must not swallow the script name, (b) a script
+# without +x still runs (via its #! line, as real sbatch does), (c) the
+# generated wrapper is removed once sbatch returns.
+_sbs_dir="$(mktemp -d)"
+trap_rm_dir "$_sbs_dir"
+mkdir -p "$_sbs_dir/tmp"
+cp "$SCRIPT_DIR/sbatch-sandbox.sh" "$_sbs_dir/"
+printf '#!/bin/bash\nwhile [[ $1 != -- ]]; do shift; done; shift; exec "$@"\n' > "$_sbs_dir/sandbox-exec.sh"
+printf '#!/bin/bash\nlast="${@: -1}"; echo "ARGS:$*"; bash "$last"\n' > "$_sbs_dir/fake-sbatch"
+printf '#!/bin/bash\necho "JOB-RAN:$*"\n' > "$_sbs_dir/job.sh"   # deliberately not executable
+chmod +x "$_sbs_dir/sandbox-exec.sh" "$_sbs_dir/fake-sbatch"
+_sbs_out="$(cd "$_sbs_dir" && TMPDIR="$_sbs_dir/tmp" REAL_SBATCH="$_sbs_dir/fake-sbatch" \
+    bash "$_sbs_dir/sbatch-sandbox.sh" --exclusive -pdebug --hold job.sh a1 2>&1)"
+if [[ "$_sbs_out" == *"JOB-RAN:a1"* && "$_sbs_out" == *"ARGS:--exclusive -pdebug --hold "* ]] \
+   && [[ -z "$(ls -A "$_sbs_dir/tmp")" ]]; then
+    pass "sbatch-sandbox.sh: value-less flags, non-executable script, no leaked wrapper"
+else
+    fail "sbatch-sandbox.sh compat wrapper broken" "out=$_sbs_out tmp=$(ls -A "$_sbs_dir/tmp")"
+fi
+
 # ── AGENT_AUTH_MARKERS suppresses the warning when a marker file exists ──
 # Create a throwaway agent profile with a credential env var that IS set
 # but blocked. With an auth marker present, the warning should NOT fire
