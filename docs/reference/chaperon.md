@@ -36,8 +36,9 @@ sandbox-exec.sh
               - stub srun → writes to req FIFO → chaperon validates flags:
                   alloc mode (login node): wraps command in sandbox-exec.sh,
                     calls real srun → compute node runs sandboxed
-                  step mode (compute node, SLURM_JOB_ID set): execs real
-                    srun directly for job-step launching (MPI)
+                  step mode (compute node, SLURM_JOB_ID set): also wraps
+                    the command in sandbox-exec.sh (steps are started by
+                    slurmstepd outside any sandbox), calls real srun
               - stub scancel → writes to req FIFO → chaperon validates
                 job scope, calls real scancel
 ```
@@ -51,7 +52,7 @@ sandbox-exec.sh
 | **chaperon.sh** | Main loop: reads requests from FIFO, dispatches to handlers, writes responses |
 | **handlers/_handler_lib.sh** | Shared utilities: argument whitelisting, CWD validation, job wrapping, comment tag encoding/stripping |
 | **handlers/sbatch.sh** | Validates args, wraps job in `sandbox-exec.sh`, submits to real sbatch |
-| **handlers/srun.sh** | Validates flags; allocation mode wraps in `sandbox-exec.sh`, step mode execs real srun |
+| **handlers/srun.sh** | Validates flags; wraps the command in `sandbox-exec.sh` in both allocation and step mode |
 | **handlers/scancel.sh** | Validates job scope, forwards to real scancel |
 | **handlers/squeue.sh** | Scopes output to session/project, strips chaperon tags |
 | **handlers/scontrol.sh** | Scoped `show job`, `hold`, `release`, `requeue`, `update`; strips chaperon tags |
@@ -146,13 +147,14 @@ The communication channel uses named pipes (FIFOs) in a per-session temporary di
 3. **Per-request response pipes**: Each stub creates an atomically-named directory (`mktemp -d`) containing a response FIFO (`fifo`), sends the path in the request, and reads the response from it. This eliminates the TOCTOU window that `mktemp -u` + `mkfifo` would have. The FIFO is created with `mkfifo -m 600` (permissions set atomically).
 4. **No FD inheritance needed**: Unlike socketpairs, FIFOs are filesystem-backed and survive bwrap's FD closing (which closes all FDs > 2). No exemptions needed.
 5. **Timeouts**: The stub reads responses with a 30-second timeout (`chaperon_read_response` in `_stub_lib.sh`) to prevent infinite hangs if the chaperon dies. The chaperon uses a 30-second body read timeout and a 10-second response write timeout to prevent stalls from malicious or dead stubs. All internal squeue calls (for scope resolution) use `timeout 10`.
-6. **Cleanup on exit**: The chaperon's EXIT trap removes the entire FIFO directory.
+6. **Cleanup on exit**: The chaperon's EXIT trap (also run on SIGTERM/SIGINT/SIGHUP) removes the entire FIFO directory, plus the launch's proxy-socket and mail-block stub directories, which `sandbox-exec.sh` passes as extra arguments. Each per-launch directory also carries an `.owner` tag (`<host> <pid-ns> <pid> <starttime>`); every launch prunes directories whose tagged owner is gone (untagged, pre-upgrade directories after 7 days), covering a SIGKILLed chaperon.
+7. **Shared `/tmp`**: with `PRIVATE_TMP=false` these directories sit in the host `/tmp` that other sandboxes of the same user also see, so a sibling sandbox can reach this session's chaperon FIFO. `sandbox-exec.sh` prints a warning in that configuration (bwrap/firejail).
 
 ## Chaperon Lifecycle
 
 1. **Creation**: `sandbox-exec.sh` creates a FIFO directory via `mktemp -d` and a request pipe via `mkfifo`, launches `chaperon.sh` as a background process, and exports `_CHAPERON_FIFO_DIR` for the sandbox.
-2. **Logging**: The chaperon initializes structured logging via `logging.sh` (see [Logging](#logging) below). The log file is created before the main loop starts.
-3. **Orphan prevention**: The chaperon sets `PR_SET_PDEATHSIG` via Python/ctypes so it receives SIGTERM if its parent (sandbox-exec.sh) dies. This prevents orphaned chaperon processes.
+2. **Logging**: The chaperon loads all handlers, then initializes structured logging via `logging.sh` (see [Logging](#logging) below). The log file is created before the main loop starts. Agent-controlled fields (command, args, cwd, shebang, handler stderr) are logged with control characters escaped (`\n`, `\r`, `\t`, `\xHH`, backslash doubled), so a request cannot forge additional log lines.
+3. **Orphan prevention**: The chaperon polls its parent's liveness (`kill -0 $PPID`) every 5 seconds while idle and exits (running its cleanup trap) once the parent is gone. (The Python/ctypes `PR_SET_PDEATHSIG` call only affects the short-lived Python child and is kept as a best-effort no-op.)
 4. **Signal handling**: SIGTERM and SIGINT are trapped for clean shutdown (FD cleanup, shutdown log entry).
 5. **Main loop**: Reads requests inline with timeouts (30-second body timeout to prevent stalls from malformed requests), dispatches to the appropriate handler with FD 3 closed (`3>&-`) to prevent child processes from inheriting the request FIFO, captures stdout/stderr, and writes the response via the held response FD with a 10-second write timeout. Each request is logged with its full arguments, and handler stderr (including `_sandbox_deny` / `_sandbox_warn` messages) is captured in the log.
 6. **Exit**: On read error, parent death (liveness polling), or signal, the chaperon logs shutdown, removes the FIFO directory, and exits 0.
@@ -243,7 +245,7 @@ For deeper tracing, set `CHAPERON_LOG_LEVEL=debug` to capture handler success ex
 
 ## Handler Dispatch
 
-Filesystem-based: when a request for command `X` arrives, the chaperon looks for `handlers/X.sh` and calls `handle_X()`. If no handler exists, `handlers/blocked.sh` is used.
+All `handlers/*.sh` files are sourced **once, at chaperon startup**; each request for command `X` is dispatched to `handle_X()` if that handler was loaded, otherwise to `handle_blocked()`. Handler files are never re-read while the chaperon runs, so modifying the install tree after launch cannot inject code into the host-side chaperon.
 
 This design makes it trivial to add support for new commands (drop a handler file) or block them (they're blocked by default).
 
@@ -253,8 +255,9 @@ The sbatch handler (`handlers/sbatch.sh`) performs four validation/transformatio
 
 1. **CWD validation**: The requested working directory must be a physical path under the project directory (resolves symlinks to prevent escape). Both sbatch and srun (allocation mode) validate CWD.
 2. **Argument whitelisting**: Every flag is checked against `_SBATCH_ALLOWED_FLAGS` (~40 safe flags). Denied flags cause immediate rejection with a clear error message.
-3. **`--output` / `--error` path transformation** (bwrap/firejail only): values are redirected to `$project_dir/.sandbox-state/slurm-logs/`; the in-sandbox wrapper creates a relative symlink from the user's intended path to the staging file. Closes the slurmstepd-side `O_NOFOLLOW`-absence escape (e.g., `sbatch --output=/etc/cron.d/evil`). Disabled on landlock — see [`docs/reference/chaperon-output-staging.md`](chaperon-output-staging.md).
-4. **Job wrapping**: The user's script is written to a temp file, and a wrapper script is generated that runs it inside `sandbox-exec.sh --project-dir $PROJECT_DIR`. The wrapper is submitted to the real sbatch.
+3. **`--output` / `--error` path transformation** (bwrap/firejail only): values are redirected to `$project_dir/.sandbox-state/slurm-logs/`; the in-sandbox wrapper creates a relative symlink from the user's intended path to the staging file. Closes the slurmstepd-side `O_NOFOLLOW`-absence escape (e.g., `sbatch --output=/etc/cron.d/evil`). Disabled on landlock — see [`docs/reference/chaperon-output-staging.md`](chaperon-output-staging.md). Before creating or using `.sandbox-state/`, `slurm-logs/` or `chaperon/`, the chaperon walks each component and refuses the submission if any is a symlink, is not a directory owned by the user, or does not canonicalise to the literal path; it also refuses if the staging file already exists as a symlink. The chaperon log falls back to the XDG location in that case.
+4. **`--export` rewriting**: `--export` (CLI, or the last `#SBATCH --export` directive when the CLI has none) is parsed and only `ALL`, `NONE`, `NIL` or a comma list of bare variable **names** is passed to Slurm. `NAME=VALUE` pairs are applied inside the sandbox instead (`/usr/bin/env NAME=VALUE <interpreter>` as the command handed to `sandbox-exec.sh`), so agent-chosen values never reach the host-side job environment. Names must match `^[A-Za-z_][A-Za-z0-9_]*$`; shell/loader/Slurm/sandbox control names (`BASH_ENV`, `ENV`, `BASH_FUNC_*`, `SHELLOPTS`, `BASHOPTS`, `PS4`, `LD_*`, `GCONV_PATH`, `PATH`, `SANDBOX_*`, `_SANDBOX*`, `_CHAPERON*`, `CHAPERON_*`, `REAL_*`, `SLURM_*`, `_PASSWD_SRC_FILE`, `_GROUP_SRC_FILE`, `BWRAP`, and every launcher config variable) are rejected.
+5. **Job wrapping**: A self-contained wrapper is generated that runs the script inside `sandbox-exec.sh --project-dir $PROJECT_DIR`, and is submitted to the real sbatch. The wrapper runs on the compute node **outside** the sandbox, so it does not trust its environment: it starts with `#!/bin/bash -p` (no `BASH_ENV`/`ENV`, no imported functions), runs only builtins before the absolute-path `sandbox-exec.sh` exec (the script body is captured with `read`, not `cat`), and unsets launcher-config variables (`SANDBOX_CONF`, `HOME_ACCESS`, `BWRAP`, `PRIVATE_TMP`, `NETWORK_FILTER_MODE`, `_PASSWD_SRC_FILE`, …, `SANDBOX_*`, `REAL_*`, `BASH_ENV`, `ENV`) before it. The compute-node sandbox therefore resolves its settings from the config files, not from the job environment.
 
 ### Job Tagging and Scoping via `--comment`
 
@@ -272,7 +275,7 @@ chaperon:sid=<session_id>,proj=<project_hash>[,user=<original_comment>]:END
 
 | Field | Content | Purpose |
 |---|---|---|
-| `sid` | `<PID>.<epoch>` | Unique per chaperon instance (session scope). Set once at startup and guarded against re-initialization when `_handler_lib.sh` is re-sourced per handler dispatch. |
+| `sid` | `<PID>.<epoch>` | Unique per chaperon instance (session scope). Set once at startup and guarded against re-initialization when `_handler_lib.sh` is sourced by each handler file. |
 | `proj` | First 12 hex of `md5(project_dir)` | Groups jobs by project (project scope) |
 | `user` | User's original `--comment` value (percent-encoded) | Preserves user metadata |
 | `:END` | Literal end marker | Unambiguous tag boundary for stripping (colons are percent-encoded in user values, so `:END` cannot appear inside the encoded comment) |
@@ -336,7 +339,9 @@ The srun handler (`handlers/srun.sh`) operates in two modes:
 
 **Step mode** (`SLURM_JOB_ID` set — inside a compute-node allocation):
 1. Validates flags against a step-only whitelist (no scheduling flags — steps inherit the job's resources)
-2. Execs real srun directly — the command runs within the existing sandboxed allocation
+2. Wraps the command in `sandbox-exec.sh --project-dir $DIR` exactly like allocation mode, then calls real srun. Step tasks are spawned by `slurmstepd` on the allocated nodes, outside any sandbox: the sandbox that encloses the calling job does **not** extend to them. Each task therefore runs its own `sandbox-exec.sh` (multi-task steps get one sandbox per task).
+
+`--export` is not on the srun whitelist in either mode (rejected as an unrecognized flag).
 
 **Denied srun flags** (both modes):
 
