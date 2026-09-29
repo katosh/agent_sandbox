@@ -160,7 +160,7 @@ The following are intentionally not blocked and will not be:
 | Agent tampers with sandbox scripts | Read-only mount (bwrap/firejail) / not protected (Landlock) | **Hard** (bwrap/firejail) / **None** (Landlock) — see [Admin Hardening §2](../admin/hardening.md) |
 | Agent plants config that runs **unsandboxed** the next time the user starts the agent outside the sandbox (hooks, MCP servers, `notify` commands, a replacement agent binary) | The real host-executed config files are read-only inside: `~/.claude/settings.json`, `~/.claude.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.pi/agent/settings.json`; the agent gets private copies in `sandbox-config/` instead. `~/.local/share/claude` (native-installer binaries) is read-only. Plugins, skills, extensions and other agent config directories stay writable — see [Agent config left behind](#agent-config-left-behind-for-your-next-unsandboxed-session) | **Partial** (bwrap/firejail) / **Weak** (Landlock: only `~/.claude.json` and `~/.local/share/claude`) / **None** (`HOME_ACCESS=write`) |
 | Host-side agent overlay tricked into writing through an agent-planted symlink | Overlays run outside the sandbox but write into sandbox-writable dirs (`~/.claude/sandbox-config`, …). All their file operations use directory file descriptors with `O_NOFOLLOW`, `O_EXCL` temp files and inode-verified renames (`agents/overlay-fs.py`); a symlinked source file is only followed to a target the sandbox can already read | **Hard** — all backends |
-| A protective mount disappears from a **running** sandbox (read-only overlay or `BLOCKED_FILES` mask detached by a rename/unlink from another mount namespace, or by an NFS client dropping a stale directory) | The launcher never renames over or deletes a path another sandbox may have mounted: the merged agent config is rewritten in place (unchanged content not at all), `--cleanup-materialized` keeps placeholders while other sandboxes run on the host and always on network filesystems. Losses caused by anything else on the host are detected by the [mount guard](../configure.md#mount_guard), which warns loudly (`MOUNT_GUARD=warn`, default) or terminates the sandbox (`MOUNT_GUARD=kill`) when a protected path is exposed | **Detect** (warn; terminate with `kill`) within `MOUNT_GUARD_INTERVAL` (bwrap/firejail) / N/A (Landlock) — see [Mounts that vanish](#mounts-that-vanish-from-a-running-sandbox) |
+| A protective mount disappears from a **running** sandbox (read-only overlay or `BLOCKED_FILES` mask detached by a rename/unlink from another mount namespace, or by an NFS client dropping a stale directory) | The launcher never renames over or deletes a path another sandbox may have mounted: the merged agent config is rewritten in place (unchanged content not at all), `--cleanup-materialized` keeps placeholders while other sandboxes run on the host and always on network filesystems. Losses caused by anything else on the host are detected by the [mount guard](../configure.md#mount_guard), which puts the lost mask or read-only overlay back (`MOUNT_GUARD=repair`, default; bwrap only, falls back to a warning elsewhere or when the path is now a symlink), warns (`warn`) or terminates the sandbox (`kill`) when a protected path is exposed | **Detect + repair** within `MOUNT_GUARD_INTERVAL` (bwrap; exposed until then) / **Detect** (firejail; terminate with `kill`) / N/A (Landlock) — see [Mounts that vanish](#mounts-that-vanish-from-a-running-sandbox) |
 | Agent bypasses `BLOCKED_FILES` via symlinked ancestor | bwrap binds `/dev/null` at both the literal and resolved leaf paths. The literal-path bind catches the case where a writable parent is a symlink on the host: mount overlays are path-keyed, so a /dev/null mount on the resolved path is missed when the agent opens the file via the symlinked path | **Hard** (bwrap) / Path-based (firejail) / N/A (Landlock — `BLOCKED_FILES` has no effect) |
 | `BLOCKED_FILES` entry doesn't exist on host (silent no-op) | At config-load, `sandbox-exec.sh` materializes a zero-byte placeholder for every missing entry under writable parents (with a per-path `WARNING:` on stderr) and refuses to start (with the full list of failing entries) when materialization fails. Closes a pre-v0.12.0 gap where the bwrap/firejail backends skipped the bind for missing entries, leaving the path unenforced; also pre-empts bwrap's own `ensure_file → creat()` ([utils.c, v0.11.0](https://github.com/containers/bubblewrap/blob/v0.11.0/utils.c#L480-L498)) from creating a host stub during mount setup. Opt-in `--cleanup-materialized` removes empty placeholders on sandbox exit. See [#73](https://github.com/katosh/agent_sandbox/issues/73) | **Hard** (bwrap/firejail; materialize-warn or fail-loud) / N/A (Landlock) |
 | SSH escape (if `~/.ssh` exposed) | Not protected — sandbox does not restrict network | **None** — agent can SSH to localhost or other nodes to get an unsandboxed shell. **Do not expose `~/.ssh`** unless you understand this risk. |
@@ -341,12 +341,51 @@ agent-sandbox:
 The **mount guard** covers these: a watcher outside the sandbox compares
 the sandbox's mount table with what the backend set up every
 `MOUNT_GUARD_INTERVAL` seconds and reports every loss loudly, flagging
-the ones that expose a protected path. With `MOUNT_GUARD=kill` (opt-in)
-it also terminates the sandbox on such an exposure; a loss that fails
-closed (for example the project bind falling through to a read-only
-parent) is never fatal. Between the loss and the next check (5 s by
-default) the path is exposed. See
+the ones that expose a protected path. On bwrap the default
+`MOUNT_GUARD=repair` then puts the lost mask or read-only overlay back.
+With `MOUNT_GUARD=kill` (opt-in) it terminates the sandbox on such an
+exposure instead; a loss that fails closed (for example the project bind
+falling through to a read-only parent) is never fatal. Between the loss
+and the next check (5 s by default) the path is exposed; a repair does
+not undo what the agent read or wrote there in that window. See
 [`MOUNT_GUARD`](../configure.md#mount_guard).
+
+How the repair works, and why it cannot widen access:
+
+- **No privilege needed.** bwrap's mount namespace belongs to a user
+  namespace the invoking user created, so a host process of that user
+  has every capability in it. The helper (`backends/mount-repair.py`)
+  enters that user namespace (the owner of the mount namespace, found
+  with `NS_GET_USERNS`, which is not the agent's own nested one) and the
+  mount namespace. The agent itself holds no capability there and cannot
+  undo the repaired mount; in a user namespace of its own the mount is
+  locked like the originals.
+- **Same kind of mount, same path.** `/dev/null` (checked to be the null
+  device) over a masked file, an empty tmpfs over a masked directory,
+  and, for a path bwrap bound read-only onto itself, a read-only bind of
+  the object that is at that path now. None of these reveals anything
+  the sandbox could not already see or grants write access. Read-only
+  binds from a different source (`/etc/passwd` from the filtered copy)
+  are not repaired: a bind must come from the sandbox's own mount table,
+  where that source is not visible.
+- **No symlinks, verified objects.** Every component of the path is
+  opened with `O_NOFOLLOW`, on the host and inside the sandbox, and the
+  mount is attached through the verified file descriptor (fd-based
+  mount API: `open_tree`, `fsmount`, `mount_setattr`, `move_mount`). A
+  symlink anywhere in the path (for example one the agent planted while
+  the path was exposed) or a missing target is refused. For a read-only
+  bind the object the sandbox sees must be the host's object (device
+  and inode), and the host object must have kept its type and owner.
+  The guard then checks the kernel's mount table itself.
+- **Leaves only.** A mount that had other expected mounts below it (the
+  tmpfs `$HOME`, a read-only `$HOME` with writable children) is not
+  re-created, because it would hide what was below. Writable binds are
+  never re-created.
+- **Content is not restored.** For a read-only overlay the repair binds
+  what is at the path now. If the agent rewrote it while it was exposed,
+  that content is now read-only. The report says the path was exposed;
+  if that matters, restart the sandbox and check the file, or use
+  `MOUNT_GUARD=kill`.
 
 Layout also limits the blast radius. A mount point that is itself in a
 tmpfs (everything bound into the blank `$HOME` of `restricted` and

@@ -15,7 +15,7 @@ Each layer adds to the previous. The admin layer (when present) is the **securit
 
 **`SANDBOX_CONF`** (environment) points the **user layer** (3) at a different file. It only swaps that one layer: the admin baseline (2) and `conf.d` (4) still load, and admin enforcement still applies to whatever the file contains.
 
-**Launch overrides win over every config layer.** `--backend` / `SANDBOX_BACKEND`, and the env vars `PRIVATE_TMP`, `PRIVATE_IPC`, `FILTER_PASSWD`, `NETWORK_FILTER_MODE`, `NETWORK_FILTER_FALLBACK`, `NETWORK_MAIL_BLOCK`, `MOUNT_GUARD`, `HOME_ACCESS`, `SANDBOX_QUIET`, `SANDBOX_NPROC_LIMIT` and `SLURM_SCOPE`, are applied **after** `conf.d`, so neither `sandbox.conf` nor a per-project file can override an explicit launch choice. An admin pin still beats them (the value is restored with a `WARNING: Launch override (env/CLI) weakened …` line). Config consistency checks (e.g. the `HOME_READONLY`/`HOME_WRITABLE` overlap warning, the `BIND_DEV_PTS` notice, the Landlock feature warnings) run on this final configuration.
+**Launch overrides win over every config layer.** `--backend` / `SANDBOX_BACKEND`, and the env vars `PRIVATE_TMP`, `PRIVATE_IPC`, `FILTER_PASSWD`, `NETWORK_FILTER_MODE`, `NETWORK_FILTER_FALLBACK`, `NETWORK_MAIL_BLOCK`, `MOUNT_GUARD`, `MOUNT_GUARD_INTERVAL`, `HOME_ACCESS`, `SANDBOX_QUIET`, `SANDBOX_NPROC_LIMIT` and `SLURM_SCOPE`, are applied **after** `conf.d`, so neither `sandbox.conf` nor a per-project file can override an explicit launch choice. An admin pin still beats them (the value is restored with a `WARNING: Launch override (env/CLI) weakened …` line). Config consistency checks (e.g. the `HOME_READONLY`/`HOME_WRITABLE` overlap warning, the `BIND_DEV_PTS` notice, the Landlock feature warnings) run on this final configuration.
 
 User config is loaded in an isolated subprocess (no eval in the parent), then variable values are extracted via a three-layer-validated `declare -p` round-trip. Configs cannot mutate the sandbox via shell-level side effects — `set`, `trap DEBUG`, `IFS=`, exports, `eval` overrides, background jobs, etc. all stay inside the subprocess and are dropped. Unknown variable names produce a one-line warning at startup so stale config from older versions surfaces instead of silently breaking.
 
@@ -46,7 +46,7 @@ This set is exactly `_ENFORCED_ARRAYS` in `sandbox-lib.sh`; the enforcer iterate
 | `PRIVATE_IPC` | IPC namespace isolated per sandbox (locked on). |
 | `FILTER_PASSWD` | LDAP/AD user enumeration filtered (locked on). |
 
-The tri-valued network scalars (`NETWORK_FILTER_MODE`, `NETWORK_FILTER_FALLBACK`, `NETWORK_MAIL_BLOCK`) and `MOUNT_GUARD` (off < warn < kill; enforced only when the admin file sets it) are harden-only as well: user config, `conf.d` and launch-time env overrides may only request an equal or stricter value than the admin pin.
+The tri-valued network scalars (`NETWORK_FILTER_MODE`, `NETWORK_FILTER_FALLBACK`, `NETWORK_MAIL_BLOCK`) and `MOUNT_GUARD` (off < warn < repair < kill; enforced only when the admin file sets it) are harden-only as well: user config, `conf.d` and launch-time env overrides may only request an equal or stricter value than the admin pin.
 
 None of these can be changed through [`SANDBOX_ENV`](#sandbox_env): it applies to the sandboxed command only and rejects config-variable names.
 
@@ -89,7 +89,7 @@ Without an admin baseline, `~/.config/agent-sandbox/sandbox.conf` is the only co
 | [`PRIVATE_IPC`](#private_ipc) | scalar | **harden-only** | `true` |
 | [`FILTER_PASSWD`](#filter_passwd) | scalar | **harden-only** | `true` |
 | [`SANDBOX_NPROC_LIMIT`](#sandbox_nproc_limit) | scalar | no | `""` (unlimited) |
-| [`MOUNT_GUARD`](#mount_guard) | scalar | **harden-only** when set by the admin (off < warn < kill) | `warn` |
+| [`MOUNT_GUARD`](#mount_guard) | scalar | **harden-only** when set by the admin (off < warn < repair < kill) | `repair` |
 | [`MOUNT_GUARD_INTERVAL`](#mount_guard) | scalar | no | `5` (seconds) |
 | [`SANDBOX_QUIET`](#sandbox_quiet) | scalar | no | `false` |
 | [`NETWORK_FILTER_MODE`](#network_filter_mode) | scalar | **harden-only** (user can only request equal or stricter) | `filtered` |
@@ -534,7 +534,7 @@ SANDBOX_NPROC_LIMIT="4096"
 
 ### `MOUNT_GUARD`
 
-**Type** scalar (`kill` | `warn` | `off`) · **Admin-enforced** harden-only when the admin file sets it · **Default** `kill`
+**Type** scalar (`repair` | `kill` | `warn` | `off`) · **Admin-enforced** harden-only when the admin file sets it (off < warn < repair < kill) · **Default** `repair`
 Also `MOUNT_GUARD_INTERVAL` (whole seconds, default `5`).
 
 A bind mount can disappear from a sandbox **while it runs**. Linux detaches every mount on a path that is renamed over or deleted from another mount namespace, and an NFS client that finds a cached directory stale detaches every mount at or below it, in every namespace. Examples: an editor or `claude` outside the sandbox saving `~/.claude/settings.json` through a temp file and rename; a package upgrade replacing a masked `/usr/bin/sbatch`; a file server hiccup on the project filesystem. The path then shows whatever is mounted underneath. For the project dir that is usually a read-only parent (writes fail), but a lost read-only overlay or `BLOCKED_FILES` mask **fails open**.
@@ -544,11 +544,13 @@ On bwrap and firejail a watcher runs outside the sandbox for the whole session. 
 - **exposed**: a mask, or a read-only overlay that now sits in a writable host mount, is gone on a policy path (under `$HOME`, the project dir, an `EXTRA_WRITABLE_PATHS` entry or the install dir, or a `BLOCKED_FILES`/`EXTRA_BLOCKED_PATHS` entry), or a read-only mount turned read-write. With `kill` (opt-in) the sandbox is terminated.
 - **degraded**: any other loss (a writable bind, a loss that falls through to something read-only or to a tmpfs, a system mask such as `/usr/bin/sbatch`). Reported only.
 
-`warn` (the default) reports both kinds and never terminates; `off` disables the watcher. Landlock has no mounts to watch. On firejail the report reaches the terminal only when stderr is a terminal (the setuid firejail process hides its descriptors); syslog always gets it.
+`repair` (the default) puts a lost mask or read-only overlay back into the running sandbox and reports it (`… and RESTORED`). It re-creates the same kind of mount the backend set up, at the same path: `/dev/null` over a masked file, an empty tmpfs over a masked directory, a read-only bind of whatever is now at a path that was bound read-only onto itself (your `~/.claude/settings.json` after `claude` outside rewrote it, `.sandbox-state` after it was replaced). A repair never shows the sandbox anything it cannot already see and never grants write access. It is refused, and reported as by `warn`, when the path is now a symlink (for example one the agent planted while the path was exposed), is missing, changed type or owner, or when other expected mounts lived below it (a tmpfs `$HOME`); a refused repair is retried every interval, so a path that reappears is protected again. Writable binds are never re-created. Between the loss and the repair the path was exposed for up to `MOUNT_GUARD_INTERVAL` seconds, and whatever the agent read or wrote in that window stands; the report says so. Repair needs bwrap, Linux 5.12 or newer and `python3`; firejail's namespaces belong to root and cannot be entered, so there (and wherever repair is impossible) `repair` behaves as `warn`.
+
+`warn` reports both kinds and never terminates or repairs; `kill` terminates the sandbox on an exposure (and repairs nothing); `off` disables the watcher. Landlock has no mounts to watch. On firejail the report reaches the terminal only when stderr is a terminal (the setuid firejail process hides its descriptors); syslog always gets it.
 
 ```bash
-MOUNT_GUARD="kill"          # terminate instead of warning when a protected path is exposed
-MOUNT_GUARD_INTERVAL=10
+MOUNT_GUARD="kill"          # terminate instead of repairing when a protected path is exposed
+MOUNT_GUARD_INTERVAL=2      # shorter exposure window before a repair (default 5)
 ```
 
 ### `SANDBOX_QUIET`

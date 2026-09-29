@@ -203,9 +203,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   reports every loss on the launching terminal, syslog and tmux. When
   the loss exposes a protected path (a `BLOCKED_FILES`/credential mask
   or a read-only overlay in a writable directory), the report says so
-  prominently. The default `MOUNT_GUARD=warn` never terminates the
-  sandbox; `kill` (opt-in) terminates it on such an exposure; `off`
-  disables. It is harden-only when an admin pins it.
+  prominently. On bwrap the default `MOUNT_GUARD=repair` puts the lost
+  mount back (see the next entry); `warn` only reports; `kill` (opt-in)
+  terminates the sandbox on such an exposure; `off` disables. It is
+  harden-only when an admin pins it (off < warn < repair < kill).
+
+- **The mount guard repairs lost masks and read-only overlays in running
+  bwrap sandboxes (`MOUNT_GUARD=repair`, default).** bwrap's mount
+  namespace belongs to a user namespace the user created, so the guard
+  can enter it without privilege (`backends/mount-repair.py`) and
+  re-create the same kind of mount at the same path: `/dev/null` over a
+  masked file, an empty tmpfs over a masked directory, a read-only bind
+  of whatever is now at a path that was bound read-only onto itself
+  (e.g. `~/.claude/settings.json` after `claude` outside rewrote it).
+  A repair can only hide or make read-only what the sandbox already
+  sees. Paths are opened without following symlinks and the object is
+  verified, so a symlink the agent planted while the path was exposed
+  is refused, with a warning. The path is exposed for up to
+  `MOUNT_GUARD_INTERVAL` seconds before the repair, and anything the
+  agent wrote in that window stays. Needs Linux 5.12 and `python3`;
+  firejail (root-owned namespaces) and older kernels get the warning.
+  `MOUNT_GUARD_INTERVAL` can now also be set per launch from the
+  environment.
 
 - **`--cleanup-materialized` keeps `BLOCKED_FILES` placeholders on
   network filesystems.** Sandboxes on other hosts (e.g. Slurm jobs) may
