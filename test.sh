@@ -5662,7 +5662,10 @@ if has_mount_ns; then
     # Use the lower-level sandbox-exec.sh directly so we can pass the
     # new --cleanup-materialized flag (the `sandbox` test helper wraps
     # for the default flag set).
-    OUTPUT="$("$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --cleanup-materialized --project-dir "$PROJECT_DIR" -- bash -c "true" 2>&1)"
+    # Private XDG_RUNTIME_DIR: isolate the live-launch registry so other
+    # sandboxes running on the host do not (correctly) veto the cleanup.
+    local _s09_rt; _s09_rt="$(mktemp -d)"; _TEST_TEMP_DIRS+=("$_s09_rt")
+    OUTPUT="$(XDG_RUNTIME_DIR="$_s09_rt" "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --cleanup-materialized --project-dir "$PROJECT_DIR" -- bash -c "true" 2>&1)"
     if [[ ! -e "$_s09_target" ]]; then
         pass "S09: --cleanup-materialized removed 0-byte placeholder on exit"
     else
@@ -5701,7 +5704,8 @@ if has_mount_ns; then
         printf 'user-edit\n' > "$_s10_target"
     ) &
     local _s10_writer_pid=$!
-    OUTPUT_ERR="$("$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --cleanup-materialized --project-dir "$PROJECT_DIR" -- bash -c "sleep 1.2; true" 2>&1 1>/dev/null)"
+    local _s10_rt; _s10_rt="$(mktemp -d)"; _TEST_TEMP_DIRS+=("$_s10_rt")
+    OUTPUT_ERR="$(XDG_RUNTIME_DIR="$_s10_rt" "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --cleanup-materialized --project-dir "$PROJECT_DIR" -- bash -c "sleep 1.2; true" 2>&1 1>/dev/null)"
     wait "$_s10_writer_pid" 2>/dev/null || true
     if [[ -e "$_s10_target" ]] \
        && [[ "$(stat -c %s "$_s10_target" 2>/dev/null)" != "0" ]] \
