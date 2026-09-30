@@ -106,17 +106,28 @@ handle_sbatch() {
         fi
 
         # Submit and clean up the local wrapper (only needed on login node).
+        # The wrapper goes after an explicit `--`, and every token before
+        # it must be a self-contained flag, so the batch script Slurm
+        # runs is exactly the chaperon's wrapper (never a user token that
+        # a misclassified flag left behind).
+        if ! _assert_slurm_flag_argv sbatch "$_SBATCH_VALUE_FLAGS" "${VALIDATED_ARGS[@]}"; then
+            rm -f "$wrapper"
+            return 1
+        fi
         local rc=0
-        "$real_sbatch" "${VALIDATED_ARGS[@]}" "$wrapper" || rc=$?
+        "$real_sbatch" "${VALIDATED_ARGS[@]}" -- "$wrapper" || rc=$?
         rm -f "$wrapper"
         return "$rc"
     else
         # No script: pass through flags (e.g., --help, --version, --test-only).
         # Only validate_sbatch_args could have populated captures here.
         _materialise_staging_dirs || return 1
+        _assert_slurm_flag_argv sbatch "$_SBATCH_VALUE_FLAGS" "${VALIDATED_ARGS[@]}" || return 1
 
+        # stdin is /dev/null: without a script argument sbatch reads the
+        # batch script from stdin, which must never supply an unwrapped one.
         local rc=0
-        "$real_sbatch" "${VALIDATED_ARGS[@]}" || rc=$?
+        "$real_sbatch" "${VALIDATED_ARGS[@]}" </dev/null || rc=$?
         return "$rc"
     fi
 }

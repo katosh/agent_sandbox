@@ -369,9 +369,12 @@ _validate_slurm_io_path() {
 #     contained — `__updir__` is a literal directory name, can't
 #     traverse out of the staging subtree).
 #   - `.` and empty components are dropped (path normalisation).
-#   - `%`-patterns (`%j`, `%A`, `%a`, `%N`, `%u`, `%x`, `%t`) survive
+#   - `%`-patterns (`%j`, `%A`, `%a`, `%N`, `%u`, `%t`, ...) survive
 #     intact; slurmstepd substitutes them at file-open time, so the
 #     resolved on-disk staging path becomes the runtime location.
+#     Callers MUST first run _check_staged_slurm_io_value: `%x` (job
+#     name) and a backslash (stripped by Slurm, `.\.` → `..`) could
+#     otherwise leave the staging subtree at open time.
 #
 # Why transform rather than validate-and-reject: the staging dir is
 # bind-mounted read-only inside the sandbox (bwrap/firejail), so an
@@ -527,7 +530,17 @@ _SBATCH_ALLOWED_FLAGS=" \
   --version \
 "
 
-# Flags that consume a value argument (space-separated form: --flag value)
+# Slurm option classes (see "Slurm option-argument classes" below):
+#   _SBATCH_VALUE_FLAGS  — REQUIRED argument: `--flag value`,
+#                          `--flag=value`, `-f value`. Consumes the next
+#                          token when given without `=`.
+#   _SBATCH_OPTARG_FLAGS — OPTIONAL argument (`--flag[=value]`): a value
+#                          binds ONLY with `=`; a following token is never
+#                          consumed (Slurm's getopt treats it as the batch
+#                          script).
+#   every other allowed flag takes NO argument.
+# Classified against sbatch 23.11 (`sbatch --flag` / `--flag=x` probes).
+# Keep _STUB_VALUE_FLAGS in stubs/sbatch in sync.
 _SBATCH_VALUE_FLAGS=" \
   -A --account \
   -c --cpus-per-task \
@@ -557,7 +570,6 @@ _SBATCH_VALUE_FLAGS=" \
   --mem \
   --mem-per-cpu \
   --mem-per-gpu \
-  --nice \
   --ntasks-per-node \
   --cpus-per-gpu \
   --priority \
@@ -601,9 +613,199 @@ _is_denied_flag() {
     return 1
 }
 
+_SBATCH_OPTARG_FLAGS=" --exclusive --nice "
+
 # Check if a flag consumes a value argument.
 _is_value_flag() {
     [[ "$_SBATCH_VALUE_FLAGS" == *" $1 "* ]]
+}
+
+# ── Slurm option-argument classes ────────────────────────────────
+#
+# Slurm parses its command line with getopt_long, where every option is
+# one of: no argument, REQUIRED argument (`--flag value`, `--flag=value`,
+# `-f value`, `-fvalue`) or OPTIONAL argument (`--flag[=value]`, e.g.
+# srun `--kill-on-bad-exit[=0|1]`, `--nice[=adj]`, `--exclusive[=user]`):
+# an optional argument binds ONLY with `=`, the following token is never
+# consumed. If the chaperon treated an optional-argument flag as taking a
+# separate value, it would swallow the next token (`srun
+# --kill-on-bad-exit ./evil true`), while real Slurm would run that token
+# as the command / batch script, outside the sandbox-exec.sh wrapping.
+#
+# Two layers keep the chaperon's parse identical to Slurm's:
+#   1. per-tool lists: *_VALUE_FLAGS (required) and *_OPTARG_FLAGS
+#      (optional, never consume); everything else takes no argument;
+#   2. every validated flag is re-emitted as ONE self-contained token
+#      (`--long=value` for required-argument flags, the bare flag
+#      otherwise) and the user command / batch script is passed after an
+#      explicit `--` inserted by the chaperon. _assert_slurm_flag_argv
+#      checks that no bare word precedes that `--`, so even a
+#      misclassified flag cannot move a user token into Slurm's command
+#      slot.
+
+# _slurm_long_flag <flag> — print the long form of a (short) flag.
+# Only short flags whose meaning is the same for sbatch and srun.
+_slurm_long_flag() {
+    case "$1" in
+        --*) printf '%s' "$1" ;;
+        -A) printf -- '--account' ;;
+        -c) printf -- '--cpus-per-task' ;;
+        -d) printf -- '--dependency' ;;
+        -e) printf -- '--error' ;;
+        -G) printf -- '--gpus' ;;
+        -i) printf -- '--input' ;;
+        -J) printf -- '--job-name' ;;
+        -n) printf -- '--ntasks' ;;
+        -N) printf -- '--nodes' ;;
+        -o) printf -- '--output' ;;
+        -p) printf -- '--partition' ;;
+        -q) printf -- '--qos' ;;
+        -t) printf -- '--time' ;;
+        -w) printf -- '--nodelist' ;;
+        -x) printf -- '--exclude' ;;
+        *)  return 1 ;;
+    esac
+}
+
+# _slurm_normalize_flag <tool> <arg> <value_flags> <optarg_flags> <has_next> [next]
+#
+# Classifies an ALREADY ALLOW-LISTED flag token and produces the single
+# token to forward to Slurm. Sets in the caller's scope (do NOT call in
+# $(...)):
+#   _SLURM_FLAG_TOKEN    — `--long=value` or the bare flag
+#   _SLURM_FLAG_CONSUMED — 1 if <next> was consumed as the value, else 0
+# Returns 1 (with a message) for a value on a no-argument flag, a
+# short flag written with `=`, or a required value that is missing.
+_slurm_normalize_flag() {
+    local _tool="$1" _arg="$2" _req="$3" _opt="$4" _has_next="$5" _next="${6-}"
+    local _base _long
+    _SLURM_FLAG_TOKEN=""
+    _SLURM_FLAG_CONSUMED=0
+    case "$_arg" in
+        --*=*)
+            _base="${_arg%%=*}"
+            if [[ "$_req" == *" $_base "* || "$_opt" == *" $_base "* ]]; then
+                _SLURM_FLAG_TOKEN="$_arg"
+                return 0
+            fi
+            _sandbox_warn "$_tool flag '$_base' does not take a value."
+            return 1
+            ;;
+        --?*|-?)
+            if [[ "$_req" == *" $_arg "* ]]; then
+                if [[ "$_has_next" != 1 ]]; then
+                    _sandbox_warn "$_tool flag '$_arg' requires a value."
+                    return 1
+                fi
+                if ! _long="$(_slurm_long_flag "$_arg")"; then
+                    _sandbox_warn "internal error: no long form known for $_tool flag '$_arg'."
+                    return 1
+                fi
+                _SLURM_FLAG_TOKEN="$_long=$_next"
+                _SLURM_FLAG_CONSUMED=1
+                return 0
+            fi
+            # No-argument or optional-argument flag: never consumes.
+            _SLURM_FLAG_TOKEN="$_arg"
+            return 0
+            ;;
+    esac
+    _sandbox_warn "$_tool flag '$_arg' is not recognized (write '-X value' or '--long-name=value')."
+    return 1
+}
+
+# _assert_slurm_flag_argv <tool> <value_flags> <flag tokens...>
+#
+# Final check before exec'ing the real binary: every token that will
+# precede the chaperon's `--` must be a single self-contained flag. A
+# bare word, a lone `-`/`--`, or a required-argument flag without its
+# attached `=value` (which would make Slurm consume the NEXT token) is an
+# internal error: refuse rather than let Slurm pick a different command.
+_assert_slurm_flag_argv() {
+    local _tool="$1" _req="$2" _t
+    shift 2
+    for _t in "$@"; do
+        case "$_t" in
+            -|--|[!-]*|"")
+                _sandbox_warn "internal error: refusing to run $_tool: non-flag token '$_t' before the command separator."
+                return 1
+                ;;
+            --*=*) ;;
+            *)
+                if [[ "$_req" == *" $_t "* ]]; then
+                    _sandbox_warn "internal error: refusing to run $_tool: '$_t' would consume the next argument."
+                    return 1
+                fi
+                ;;
+        esac
+    done
+    return 0
+}
+
+# _validate_slurm_job_name <origin> <value>
+#
+# The job name is agent-controlled and expands into `%x` in Slurm file
+# name patterns (opened by slurmstepd outside the sandbox). `%x` is
+# refused in --output/--error/--input anyway; as defense in depth the
+# name itself may not contain `/` or `\` and may not be `.` or `..`.
+# <value> may carry one pair of surrounding quotes (#SBATCH form).
+_validate_slurm_job_name() {
+    local _origin="$1" _v="$2"
+    if [[ "$_v" == */* || "$_v" == *\\* ]]; then
+        _sandbox_deny "$_origin '$_v' refused: a job name may not contain '/' or '\\' (it expands into Slurm's %x file name pattern)."
+        return 1
+    fi
+    _v="${_v#"${_v%%[![:space:]]*}"}"
+    _v="${_v%"${_v##*[![:space:]]}"}"
+    if [[ ${#_v} -ge 2 && ( "$_v" == \"*\" || "$_v" == \'*\' ) ]]; then
+        _v="${_v:1:${#_v}-2}"
+    fi
+    if [[ "$_v" == "." || "$_v" == ".." ]]; then
+        _sandbox_deny "$_origin '$_v' refused: a job name may not be '.' or '..'."
+        return 1
+    fi
+    return 0
+}
+
+# _check_staged_slurm_io_value <flag> <value>
+#
+# --output/--error values that go through the bwrap/firejail staging
+# transform keep their % patterns for slurmstepd to expand OUTSIDE the
+# sandbox. Only patterns whose expansion cannot contain `/` are allowed
+# (%A %a %J %j %N %n %s %t %u %%, optional zero-pad digits); `%x` (job
+# name, agent controlled) and unknown patterns are refused. A backslash
+# is refused too: Slurm strips backslashes (and skips pattern expansion)
+# at open time, so `.\./` would become `../` after the transform.
+# Same pattern policy as _validate_slurm_io_path (C9).
+_check_staged_slurm_io_value() {
+    local _flag="$1" _val="$2" _i=0 _j _n _spec
+    _n=${#_val}
+    if [[ "$_val" == *\\* ]]; then
+        _sandbox_deny "Slurm '$_flag $_val' refused: backslashes are not allowed (slurmstepd strips them at open time)."
+        return 1
+    fi
+    while (( _i < _n )); do
+        if [[ "${_val:_i:1}" == "%" ]]; then
+            _j=$((_i + 1))
+            while (( _j < _n )) && [[ "${_val:_j:1}" == [0-9] ]]; do _j=$((_j + 1)); done
+            _spec="${_val:_j:1}"
+            case "$_spec" in
+                %|A|a|J|j|N|n|s|t|u) ;;
+                x)
+                    _sandbox_deny "Slurm '$_flag $_val' refused: '%x' (job name) is agent-controlled and could change the directory slurmstepd writes to."
+                    return 1
+                    ;;
+                *)
+                    _sandbox_deny "Slurm '$_flag $_val' refused: unsupported '%${_val:_i+1:_j-_i}' pattern."
+                    return 1
+                    ;;
+            esac
+            _i=$((_j + 1))
+            continue
+        fi
+        _i=$((_i + 1))
+    done
+    return 0
 }
 
 # ── --export sanitisation ────────────────────────────────────────
@@ -843,38 +1045,34 @@ validate_sbatch_args() {
                 _sandbox_warn "sbatch '--chdir' is not allowed — the working directory is set automatically to your current directory."
                 return 1
                 ;;
-            --output=*|-o=*|--error=*|-e=*)
-                # `=` form: extract value, transform, capture, re-pack.
-                local _flag="${arg%%=*}"
-                local _v="${arg#*=}"
-                local _t
-                # Without the staging transform (landlock) the path goes
-                # to slurmstepd verbatim: validate it instead.
-                if ! _slurm_output_feature_enabled \
-                   && ! _validate_slurm_io_path "$_flag" "$_v" "$_project_dir" "${REQ_CWD:-$_project_dir}"; then
-                    return 1
-                fi
-                _t="$(_maybe_transform_slurm_output_arg "$_flag" "$_v" "$_project_dir")"
-                _capture_slurm_output_pair "$_flag" "$_v" "$_t"
-                VALIDATED_ARGS+=("$_flag=$_t")
-                ;;
-            --output|-o|--error|-e)
-                # space form: --output <value>.
-                if (( i + 1 < ${#REQ_ARGS[@]} )); then
+            --output=*|-o=*|--error=*|-e=*|--output|-o|--error|-e)
+                # `=` form or space form (--output <value>): extract the
+                # value, validate / transform, capture, and re-emit as a
+                # single `--output=<value>` token.
+                local _flag _v _t
+                if [[ "$arg" == *=* ]]; then
+                    _flag="${arg%%=*}"
+                    _v="${arg#*=}"
+                elif (( i + 1 < ${#REQ_ARGS[@]} )); then
+                    _flag="$arg"
                     (( i++ ))
-                    local _v="${REQ_ARGS[$i]}"
-                    local _t
-                    if ! _slurm_output_feature_enabled \
-                       && ! _validate_slurm_io_path "$arg" "$_v" "$_project_dir" "${REQ_CWD:-$_project_dir}"; then
-                        return 1
-                    fi
-                    _t="$(_maybe_transform_slurm_output_arg "$arg" "$_v" "$_project_dir")"
-                    _capture_slurm_output_pair "$arg" "$_v" "$_t"
-                    VALIDATED_ARGS+=("$arg" "$_t")
+                    _v="${REQ_ARGS[$i]}"
                 else
                     _sandbox_warn "sbatch '$arg' requires a value."
                     return 1
                 fi
+                if _slurm_output_feature_enabled; then
+                    # Staged (bwrap/firejail): % patterns survive the
+                    # transform, so only directory-neutral ones may.
+                    _check_staged_slurm_io_value "$_flag" "$_v" || return 1
+                elif ! _validate_slurm_io_path "$_flag" "$_v" "$_project_dir" "${REQ_CWD:-$_project_dir}"; then
+                    # Without the staging transform (landlock) the path
+                    # goes to slurmstepd verbatim: validate it instead.
+                    return 1
+                fi
+                _t="$(_maybe_transform_slurm_output_arg "$_flag" "$_v" "$_project_dir")"
+                _capture_slurm_output_pair "$_flag" "$_v" "$_t"
+                VALIDATED_ARGS+=("$(_slurm_long_flag "$_flag")=$_t")
                 ;;
             --uid|--uid=*|--gid|--gid=*)
                 _sandbox_deny "sbatch '--uid/--gid' is not allowed — jobs must run as your own user."
@@ -916,25 +1114,21 @@ validate_sbatch_args() {
                     _USER_COMMENT="${REQ_ARGS[$i]}"
                 fi
                 ;;
-            --*=*)
-                if _is_allowed_flag "$arg"; then
-                    VALIDATED_ARGS+=("$arg")
-                else
+            -*)
+                # Allow-listed flag: classify (no / required / optional
+                # argument) and re-emit as one token (`--long=value` or
+                # the bare flag). Optional-argument flags (--nice,
+                # --exclusive) never consume the next token.
+                if ! _is_allowed_flag "$arg"; then
                     _sandbox_warn "sbatch flag '${arg%%=*}' is not recognized. Only whitelisted flags are allowed inside the sandbox."
                     return 1
                 fi
-                ;;
-            -*)
-                if _is_allowed_flag "$arg"; then
-                    VALIDATED_ARGS+=("$arg")
-                    if _is_value_flag "$arg" && (( i + 1 < ${#REQ_ARGS[@]} )); then
-                        (( i++ ))
-                        VALIDATED_ARGS+=("${REQ_ARGS[$i]}")
-                    fi
-                else
-                    _sandbox_warn "sbatch flag '$arg' is not recognized. Only whitelisted flags are allowed inside the sandbox."
-                    return 1
-                fi
+                local _has_next=0
+                (( i + 1 < ${#REQ_ARGS[@]} )) && _has_next=1
+                _slurm_normalize_flag sbatch "$arg" "$_SBATCH_VALUE_FLAGS" "$_SBATCH_OPTARG_FLAGS" \
+                    "$_has_next" "${REQ_ARGS[$((i + 1))]-}" || return 1
+                if (( _SLURM_FLAG_CONSUMED )); then i=$((i + 1)); fi
+                VALIDATED_ARGS+=("$_SLURM_FLAG_TOKEN")
                 ;;
             *)
                 _sandbox_warn "sbatch unexpected positional argument. Script files are handled by the stub — this should not happen."
@@ -942,6 +1136,13 @@ validate_sbatch_args() {
                 ;;
         esac
         (( i++ ))
+    done
+    # The job name expands into %x (see _validate_slurm_job_name).
+    local _va
+    for _va in "${VALIDATED_ARGS[@]+"${VALIDATED_ARGS[@]}"}"; do
+        if [[ "$_va" == --job-name=* ]]; then
+            _validate_slurm_job_name "sbatch --job-name" "${_va#--job-name=}" || return 1
+        fi
     done
     _EXPORT_ENV_ASSIGNMENTS=("${_cli_export_assignments[@]+"${_cli_export_assignments[@]}"}")
     return 0
@@ -1086,10 +1287,26 @@ create_wrapped_script() {
             # signature. Single-flag-per-directive is the Slurm
             # convention; multi-flag lines are rare in practice and
             # always recoverable by splitting onto separate lines.
-            if [[ "$directive_body" == *[[:space:]]--* ]]; then
+            # A single dash smuggles just as well (`#SBATCH --hold
+            # -e/path` sets --error), so any whitespace-then-`-` counts.
+            if [[ "$directive_body" == *[[:space:]]-* ]]; then
                 _sandbox_deny "#SBATCH directive '${directive_body}' contains multiple flag tokens; only one flag per #SBATCH line is allowed (whitespace-smuggling defense, ASB-2026-001)."
                 stripped_count=$((stripped_count + 1))
                 continue
+            fi
+
+            # A short no-argument flag followed by more characters is a
+            # getopt option cluster: `#SBATCH -He/path` is `-H -e /path`.
+            # Only required-argument short flags may carry an attached
+            # value (`-Jname`, `-o file`).
+            if [[ "$flag_name" == -[!-] ]] && ! _is_value_flag "$flag_name"; then
+                local _rest="${directive_body:2}"
+                _rest="${_rest%"${_rest##*[![:space:]]}"}"
+                if [[ -n "$_rest" ]]; then
+                    _sandbox_deny "#SBATCH directive '${directive_body}' attaches characters to the no-argument flag '$flag_name' (getopt would read them as further options)."
+                    stripped_count=$((stripped_count + 1))
+                    continue
+                fi
             fi
 
             # Explicit security-critical deny-list parity with the
@@ -1136,6 +1353,21 @@ create_wrapped_script() {
                 continue
             fi
 
+            # Job name: expands into %x (see _validate_slurm_job_name).
+            if [[ "$flag_name" == "-J" || "$flag_name" == "--job-name" ]]; then
+                local _jval
+                case "$directive_body" in
+                    --*=*) _jval="${directive_body#*=}" ;;
+                    --*)   _jval="${directive_body#--job-name}" ;;
+                    *)     _jval="${directive_body:2}" ;;
+                esac
+                _jval="${_jval%%#*}"
+                if ! _validate_slurm_job_name "#SBATCH $flag_name" "$_jval"; then
+                    _io_directive_failed=true
+                    continue
+                fi
+            fi
+
             if [[ -n "$flag_name" ]] && _is_allowed_flag "$flag_name"; then
                 # Transform --output / --error values inside #SBATCH
                 # directives so the redirect-to-staging contract applies
@@ -1151,11 +1383,18 @@ create_wrapped_script() {
                             case "$directive_body" in
                                 --*=*) _dval="${directive_body#*=}" ;;
                                 --*)   _dval="${directive_body#* }" ;;
-                                *)     _dval="${directive_body:3}"  ;;  # -o val / -e val
+                                *)     _dval="${directive_body:2}"  ;;  # -o val / -oval
                             esac
-                            # Trim trailing whitespace / comments — defensive.
+                            # Trim surrounding whitespace / comments — defensive.
                             _dval="${_dval%%#*}"
+                            _dval="${_dval#"${_dval%%[![:space:]]*}"}"
                             _dval="${_dval%"${_dval##*[![:space:]]}"}"
+                            # % patterns survive the transform: only
+                            # directory-neutral ones (no %x), no backslash.
+                            if ! _check_staged_slurm_io_value "#SBATCH $flag_name" "$_dval"; then
+                                _io_directive_failed=true
+                                continue
+                            fi
                             _new_val="$(_transform_slurm_output_path "$_dval" "$project_dir")"
                             # Reconstruct as `#SBATCH <flag>=<new_val>` (canonical
                             # form). Quote the value via printf %q so a path with
@@ -1344,7 +1583,9 @@ create_wrapped_script() {
         # heredoc-style assembly — values pre-quoted via printf %q so they
         # survive embedding regardless of special chars. The prelude is
         # bash syntax; emitted only into bash contexts (see embedding
-        # below — non-bash shell scripts skip it).
+        # below — non-bash shell scripts skip it). `%x` is not resolved:
+        # the chaperon refuses it in both templates
+        # (_check_staged_slurm_io_value), so it can never reach here.
         _slurm_link_prelude="$(cat <<EOF
 # --- agent-sandbox: link intended slurm output paths to staging ---
 _sandbox_slurm_resolve_pat() {
@@ -1357,7 +1598,6 @@ _sandbox_slurm_resolve_pat() {
     _p="\${_p//%n/\${SLURM_NODEID:-0}}"
     _p="\${_p//%t/\${SLURM_PROCID:-0}}"
     _p="\${_p//%u/\${USER:-}}"
-    _p="\${_p//%x/\${SLURM_JOB_NAME:-}}"
     printf '%s' "\$_p"
 }
 _sandbox_link_slurm_output() {

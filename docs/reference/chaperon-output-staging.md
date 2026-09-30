@@ -29,6 +29,8 @@ Done in `chaperon/handlers/_handler_lib.sh::_transform_slurm_output_path` (pure 
 | `%`-pattern (`%j` etc.)    | Left intact                               | slurmstepd substitutes at open time  |
 | `..foo` (literal filename) | Left alone                                | Component-aware; only exact `..` triggers |
 
+Before the transform, the value is checked (`_check_staged_slurm_io_value`, CLI and `#SBATCH`): only directory-neutral `%` patterns (`%A %a %J %j %N %n %s %t %u %%`, optional zero-pad digits) may survive, because slurmstepd expands them outside the sandbox. `%x` (the agent-chosen job name, e.g. `-J ../../x`) and unknown patterns are refused, and so is a backslash (Slurm strips backslashes at open time, so `.\.` would become `..` after the transform). Job names containing `/` or `\`, or equal to `.`/`..`, are refused on every backend as well.
+
 Examples (with `$project_dir = /p`):
 
 | User input              | Chaperon-transformed staging path                        |
@@ -44,7 +46,7 @@ Examples (with `$project_dir = /p`):
 `chaperon/handlers/_handler_lib.sh::create_wrapped_script` emits a small bash prelude that runs **inside the sandbox** as the first action of the wrapped job (after the cwd-restore from #66, before the user's script body). The prelude:
 
 1. Reads the user's intended template (`$_USER_SLURM_OUTPUT` / `_ERROR`) and staging template (`$_STAGING_SLURM_*`) — embedded as literal `printf %q` strings in the wrapper.
-2. Resolves Slurm `%`-patterns against `$SLURM_JOB_ID` / `$SLURM_ARRAY_*` / `$SLURMD_NODENAME` / `$SLURM_NODEID` / `$SLURM_PROCID` / `$USER` / `$SLURM_JOB_NAME` to get the final on-disk paths.
+2. Resolves Slurm `%`-patterns against `$SLURM_JOB_ID` / `$SLURM_ARRAY_*` / `$SLURMD_NODENAME` / `$SLURM_NODEID` / `$SLURM_PROCID` / `$USER` (`%x` never reaches the prelude, see above) to get the final on-disk paths.
 3. `mkdir -p`s the intended path's parent (inside the sandbox — fails gracefully if not writable).
 4. Computes a relative path from intended-parent to staging via `realpath --relative-to`, so the symlink survives `$project_dir` rename/relocation.
 5. Removes anything pre-existing at the intended path (matches Slurm's default `O_TRUNC` overwrite semantics).

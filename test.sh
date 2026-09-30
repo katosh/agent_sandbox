@@ -4912,7 +4912,7 @@ if (
     REQ_ARGS=(-n 2 -- hostname -s); REQ_CWD=""
     handle_srun /proj /opt/sbx/sandbox-exec.sh >/dev/null 2>&1 || exit 1
     mapfile -t _argv < "$_REC_OUT"
-    _want=(-n 2 -- /opt/sbx/sandbox-exec.sh --project-dir /proj -- hostname -s)
+    _want=(--ntasks=2 -- /opt/sbx/sandbox-exec.sh --project-dir /proj -- hostname -s)
     [[ "${_argv[*]}" == "${_want[*]}" ]] || { echo "got: ${_argv[*]}"; exit 1; }
     # quiet sessions keep the absolute-path env prefix in step mode too
     SANDBOX_QUIET=true
@@ -5071,6 +5071,195 @@ if (
     pass "srun -o/-e/-i: symlinked dirs/targets, '..', %x and out-of-project paths refused; project path accepted"
 else
     fail "srun -o/-e/-i path validation wrong"
+fi
+
+# 6.7p. Optional-argument flags (srun -K/--kill-on-bad-exit[=0|1],
+# --nice[=adj], --exclusive[=user]) bind a value only with `=`. The
+# chaperon used to consume the next word as their value, while Slurm ran
+# that word as the command / batch script, outside sandbox-exec.sh. The
+# real binary's argv must be `<flag tokens> -- <sandbox-exec.sh>
+# --project-dir <dir> -- <user cmd>` (srun) / `<flag tokens> -- <wrapper>`
+# (sbatch), every flag token self-contained (`--long=value` or bare).
+_h67p_argv_ok() {  # <argv file> <tail...>: flags only before the first --, then exactly <tail>
+    local _f="$1"; shift
+    local -a _a; mapfile -t _a < "$_f"
+    local _k=0 _n=${#_a[@]}
+    while (( _k < _n )) && [[ "${_a[$_k]}" != "--" ]]; do
+        case "${_a[$_k]}" in
+            --*=*) ;;
+            -[!-]|--[!-]*) [[ "${_a[$_k]}" == *=* ]] && return 1 ;;
+            *) echo "user token before --: ${_a[$_k]}"; return 1 ;;
+        esac
+        _k=$((_k + 1))
+    done
+    (( _k < _n )) || { echo "no -- in argv"; return 1; }
+    local -a _tail=("${_a[@]:_k+1}")
+    [[ "${_tail[*]}" == "$*" && ${#_tail[@]} -eq $# ]] || { echo "after --: ${_tail[*]} (want $*)"; return 1; }
+}
+if (
+    set -u
+    export _REC_OUT="$_H67_DIR/srun-p.argv" REAL_SRUN="$_H67_DIR/recorder" SANDBOX_QUIET=false
+    unset SLURM_JOB_ID
+    source "$SCRIPT_DIR/chaperon/handlers/srun.sh"
+    _p="$_H67_DIR/proj-p"; mkdir -p "$_p"; REQ_CWD=""; _bad=0
+    _se=/opt/sbx/sandbox-exec.sh
+    _run() { : > "$_REC_OUT"; REQ_ARGS=("$@"); handle_srun "$_p" "$_se" >/dev/null 2>&1; }
+    _run --kill-on-bad-exit ./evil true || { echo "rejected -K form"; _bad=1; }
+    _h67p_argv_ok "$_REC_OUT" "$_se" --project-dir "$_p" -- ./evil true || _bad=1
+    _run --nice ./evil arg || { echo "rejected --nice"; _bad=1; }
+    _h67p_argv_ok "$_REC_OUT" "$_se" --project-dir "$_p" -- ./evil arg || _bad=1
+    _run --exclusive --overlap ./evil || { echo "rejected --exclusive"; _bad=1; }
+    _h67p_argv_ok "$_REC_OUT" "$_se" --project-dir "$_p" -- ./evil || _bad=1
+    _run --kill-on-bad-exit=1 --nice=5 -n 2 -J myjob true || { echo "rejected =forms"; _bad=1; }
+    _h67p_argv_ok "$_REC_OUT" "$_se" --project-dir "$_p" -- true || _bad=1
+    for _t in --kill-on-bad-exit=1 --nice=5 --ntasks=2 --job-name=myjob; do
+        grep -qx -- "$_t" "$_REC_OUT" || { echo "missing $_t"; _bad=1; }
+    done
+    # Step mode: same argv shape.
+    SLURM_JOB_ID=4242 _run --kill-on-bad-exit ./evil true || { echo "step: rejected"; _bad=1; }
+    _h67p_argv_ok "$_REC_OUT" "$_se" --project-dir "$_p" -- ./evil true || _bad=1
+    # A value on a no-argument flag, a short flag with `=`, a trailing
+    # required-argument flag: refused, srun never invoked.
+    for _a in "--label=./evil|true" "-n=2|true" "-l|-n"; do
+        IFS='|' read -r -a _aa <<< "$_a"
+        _run "${_aa[@]}" && { echo "accepted: $_a"; _bad=1; }
+        [[ -s "$_REC_OUT" ]] && { echo "srun invoked for: $_a"; _bad=1; }
+    done
+    # The final assertion refuses non-flag tokens outright.
+    _assert_slurm_flag_argv srun "$_SRUN_VALUE_FLAGS" --ntasks=2 ./evil 2>/dev/null && { echo "assert passed bare word"; _bad=1; }
+    _assert_slurm_flag_argv srun "$_SRUN_VALUE_FLAGS" -n 2>/dev/null && { echo "assert passed bare -n"; _bad=1; }
+    _assert_slurm_flag_argv srun "$_SRUN_VALUE_FLAGS" -- 2>/dev/null && { echo "assert passed --"; _bad=1; }
+    _assert_slurm_flag_argv srun "$_SRUN_VALUE_FLAGS" --ntasks=2 -l --nice 2>/dev/null || { echo "assert refused good argv"; _bad=1; }
+    exit $_bad
+); then
+    pass "srun optional-argument flags (--kill-on-bad-exit, --nice, --exclusive) never consume the command; argv is '<flags> -- sandbox-exec.sh --project-dir <dir> -- <cmd>'"
+else
+    fail "srun optional-argument flag moved a user token into Slurm's command slot (or argv shape wrong)"
+fi
+
+if (
+    set -u
+    export _REC_OUT="$_H67_DIR/sbatch-p.argv" REAL_SBATCH="$_H67_DIR/recorder"
+    _bad=0
+    for _be in bwrap landlock; do
+        export SANDBOX_BACKEND=$_be
+        (
+            source "$SCRIPT_DIR/chaperon/handlers/sbatch.sh"
+            _p="$_H67_DIR/proj-p-$_be"; mkdir -p "$_p"; _bad=0
+            REQ_CWD="$_p"; REQ_SCRIPT=$'#!/bin/bash\necho hi'; REQ_SCRIPT_ARGS=()
+            _run() { : > "$_REC_OUT"; REQ_ARGS=("$@"); handle_sbatch "$_p" /opt/sbx/sandbox-exec.sh >/dev/null 2>&1; }
+            _wrapper_last() {
+                local -a _a; mapfile -t _a < "$_REC_OUT"
+                local _w="${_a[${#_a[@]}-1]}"
+                [[ "${_a[${#_a[@]}-2]}" == "--" && "$_w" == */chaperon-wrapper-*.sh ]] \
+                    || { echo "$_be: last args not '-- <wrapper>': ${_a[*]}"; return 1; }
+                _h67p_argv_ok "$_REC_OUT" "$_w"
+            }
+            # The handler receives what the stub forwards: `--nice` then
+            # (formerly) a stray word. It must not be forwarded as a value.
+            _run --nice || { echo "$_be: --nice rejected"; _bad=1; }
+            _wrapper_last || _bad=1
+            _run --nice ./evil && { echo "$_be: stray word after --nice accepted"; _bad=1; }
+            _run --nice=5 --exclusive -J myjob --output=slurm-%j.out -n 2 || { echo "$_be: good flags rejected"; _bad=1; }
+            _wrapper_last || _bad=1
+            for _t in --nice=5 --exclusive --job-name=myjob --ntasks=2; do
+                grep -qx -- "$_t" "$_REC_OUT" || { echo "$_be: missing $_t"; _bad=1; }
+            done
+            grep -qE -- '^--output=.*slurm-%j\.out$' "$_REC_OUT" || { echo "$_be: --output missing"; _bad=1; }
+            # Script-less (--help/--version) path: flags only, no stray word.
+            REQ_SCRIPT=""
+            _run --version || { echo "$_be: --version rejected"; _bad=1; }
+            grep -qx -- --version "$_REC_OUT" && ! grep -qv -- '^-' "$_REC_OUT" \
+                || { echo "$_be: --version argv: $(cat "$_REC_OUT")"; _bad=1; }
+            exit $_bad
+        ) || _bad=1
+    done
+    # The in-sandbox stub classifies --nice the same way: the word after
+    # it is the batch script (read and sent as SCRIPT), not a value.
+    _sd="$_H67_DIR/stub-p"; mkdir -p "$_sd"
+    cp "$SCRIPT_DIR/chaperon/stubs/sbatch" "$_sd/sbatch"
+    printf '%s\n' 'chaperon_call() { printf "%s\n" "$@" > "$_REC_OUT"; printf "%s" "$_CHAPERON_SCRIPT" > "$_REC_OUT.script"; }' > "$_sd/_stub_lib.sh"
+    printf '#!/bin/bash\necho job\n' > "$_sd/job.sh"
+    (cd "$_sd" && bash ./sbatch --nice job.sh) || { echo "stub failed"; _bad=1; }
+    [[ "$(tr '\n' ' ' < "$_REC_OUT")" == "sbatch --nice " ]] || { echo "stub args: $(cat "$_REC_OUT")"; _bad=1; }
+    grep -qx 'echo job' "$_REC_OUT.script" || { echo "stub did not send job.sh as the script"; _bad=1; }
+    (cd "$_sd" && bash ./sbatch --mem 4G job.sh) || { echo "stub failed (--mem)"; _bad=1; }
+    [[ "$(tr '\n' ' ' < "$_REC_OUT")" == "sbatch --mem 4G " ]] || { echo "stub --mem args: $(cat "$_REC_OUT")"; _bad=1; }
+    exit $_bad
+); then
+    pass "sbatch --nice/--exclusive never consume the next word (handler + stub); argv is '<flags> -- <wrapper>'; --nice=5, -J myjob, --output=slurm-%j.out kept"
+else
+    fail "sbatch optional-argument flag handling / argv shape wrong"
+fi
+
+# 6.7q. %x (agent-controlled job name) in --output/--error is refused on
+# the staging path too (bwrap/firejail; slurmstepd expands it outside
+# the sandbox, `-J ../../x` escaped the staging dir), as are unknown
+# % patterns and backslashes (`.\.` → `..` at open time). Job names with
+# `/` or equal to `.`/`..` are refused on every backend, CLI and #SBATCH.
+if (
+    set -u
+    _bad=0
+    for _be in bwrap firejail landlock; do
+        (
+            export SANDBOX_BACKEND=$_be
+            source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+            _p="$_H67_DIR/proj-q"; mkdir -p "$_p"
+            PROJECT_DIR="$_p"; REQ_CWD="$_p"; _bad=0
+            for _a in "--output=%x" "--output=logs/%x.out" "-o|%x" "--error|%5x.err" \
+                      "-o|out-%q.log" '--output=.\./.\./x' \
+                      "-J|../x" "--job-name=a/b" "--job-name=.." "-J|." '--job-name=a\b'; do
+                IFS='|' read -r -a REQ_ARGS <<< "$_a"
+                _err="$(validate_sbatch_args 2>&1)" && { echo "$_be: accepted $_a"; _bad=1; continue; }
+                [[ "$_err" == *"refused"* ]] || { echo "$_be: unclear message for $_a: $_err"; _bad=1; }
+            done
+            REQ_ARGS=(-J myjob --output=slurm-%j.out --error=err-%A_%4a.log)
+            validate_sbatch_args 2>/dev/null || { echo "$_be: ordinary -J/--output rejected"; _bad=1; }
+            [[ " ${VALIDATED_ARGS[*]} " == *" --job-name=myjob "* ]] || { echo "$_be: job name lost: ${VALIDATED_ARGS[*]}"; _bad=1; }
+            # #SBATCH directives: %x in --output/-o, and bad job names.
+            REQ_ARGS=(); validate_sbatch_args || exit 1
+            _w="$_H67_DIR/q-wrapper-$_be"
+            for _d in "--output=%x" "-o %x.log" "--error=x-%x" "-J ../../x" "--job-name=a/b" \
+                      "--job-name ../x" "-J.." '--output=a\b'; do
+                create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH '"$_d"$'\necho hi' "$_w" 2>/dev/null \
+                    && { echo "$_be: directive accepted: $_d"; _bad=1; }
+            done
+            create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH -J myjob\n#SBATCH --output=slurm-%j.out\necho hi' "$_w" 2>/dev/null \
+                || { echo "$_be: ordinary directives rejected"; _bad=1; }
+            grep -qx '#SBATCH -J myjob' "$_w" || { echo "$_be: -J directive dropped"; _bad=1; }
+            grep -q '%x' "$_w" && { echo "$_be: %x in wrapper"; _bad=1; }
+            exit $_bad
+        ) || _bad=1
+    done
+    exit $_bad
+); then
+    pass "%x / unknown % / backslash in --output/--error refused on every backend (CLI + #SBATCH); job names with '/' or '.'/'..' refused; -J myjob --output=slurm-%j.out works"
+else
+    fail "%x or unsafe job name reaches slurmstepd's --output/--error path"
+fi
+
+# 6.7r. #SBATCH option clusters and single-dash smuggling: Slurm reads
+# `#SBATCH -He/path` as `-H -e /path` and `#SBATCH --hold -e/path` as two
+# options, which set --error behind the directive filter's back.
+if (
+    set -u
+    export SANDBOX_BACKEND=bwrap
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    _p="$_H67_DIR/proj-r"; mkdir -p "$_p"
+    PROJECT_DIR="$_p"; REQ_CWD="$_p"; REQ_ARGS=(); validate_sbatch_args || exit 1
+    _w="$_H67_DIR/r-wrapper"; _bad=0
+    for _d in "-He$HOME/.bashrc" "-Ho/tmp/x" "--hold -e$HOME/.bashrc" "--mem=4G -o/tmp/x"; do
+        create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH '"$_d"$'\necho hi' "$_w" 2>/dev/null || continue
+        grep -qF -- "$_d" "$_w" && { echo "smuggled directive emitted: $_d"; _bad=1; }
+    done
+    create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH -H\n#SBATCH -Jmy-job\n#SBATCH --time=1-00:00:00\necho hi' "$_w" 2>/dev/null \
+        || { echo "ordinary directives rejected"; _bad=1; }
+    grep -qx '#SBATCH -H' "$_w" && grep -qx '#SBATCH -Jmy-job' "$_w" || { echo "ordinary directives dropped"; _bad=1; }
+    exit $_bad
+); then
+    pass "#SBATCH short-option clusters (-He/path) and single-dash multi-option lines are not forwarded"
+else
+    fail "#SBATCH option cluster / single-dash smuggling reaches Slurm"
 fi
 
 # 6.7i. Running chaperon: handlers are loaded once at startup (C4) and
