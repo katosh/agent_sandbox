@@ -230,7 +230,7 @@ for file in "$SCRIPT_DIR"/bin/*; do
     cp "$file" "$SANDBOX_DIR/bin/"
 done
 
-for file in bwrap.sh firejail.sh landlock.sh landlock-sandbox.py generate-seccomp.py; do
+for file in bwrap.sh firejail.sh landlock.sh landlock-sandbox.py generate-seccomp.py mount-repair.py; do
     cp "$SCRIPT_DIR/backends/$file" "$SANDBOX_DIR/backends/$file"
 done
 
