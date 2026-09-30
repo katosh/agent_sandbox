@@ -449,6 +449,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - bwrap binds each protected agent config file once instead of once per
   enabled agent.
 
+- **Firejail: host filesystem outside the grants is read-only on every
+  mount, and group-writable project dirs owned by someone else are
+  writable again.** PR #80's `--read-only=/` plus `--read-write=<grant>`
+  had two problems: firejail refuses `--read-write` for a read-only
+  directory the caller does not own (the warning was hidden by
+  `--quiet`), so a project or `EXTRA_WRITABLE_PATHS` entry on shared lab
+  storage owned by root or the PI came out read-only; and `--read-
+  only=/` is not recursive in firejail, so every separate mount
+  (NFS/Lustre/GPFS trees, `/boot`, `/run/lock`) stayed writable. The
+  launcher now remounts each entry of `/` read-only itself and descends
+  only into directories that contain a grant the user does not own.
+  Residual: new files can be created directly in those parent
+  directories (listed in a warning at launch). A foreign-owned grant
+  that would still end up read-only (below `$HOME` rules or `/etc`,
+  `/usr`, ...) refuses to start.
+
+- **Firejail: `/run` is a private tmpfs.** Only `/run/systemd/resolve`
+  (and `/run/nscd` with `FILTER_PASSWD=false`) is visible, like bwrap's
+  `--tmpfs /run`. `/run/lock`, `/run/screen` etc. are no longer
+  writable, and host daemon sockets under `/run` (screen, MySQL, slapd
+  `ldapi`, journald, uuidd, munge, D-Bus) are unreachable. Previously
+  only a hand-picked list was hidden.
+
+- **Firejail: private `/dev` (`--private-dev`).** Other terminals'
+  `/dev/pts/N`, `/dev/mqueue`, `/dev/fuse`, `/dev/vfio`, `/dev/net/tun`,
+  loop devices etc. are gone; ptys, tmux and `script` work. `DEVICES`
+  selects firejail's device classes; the default NVIDIA list now keeps
+  the GPU nodes (the unconditional `--no3d` used to hide them). A
+  `DEVICES` node firejail cannot carry falls back to the host `/dev`
+  with a warning. `PRIVATE_IPC=true` now gives a private, usable
+  `/dev/shm` (Python `multiprocessing` / `shared_memory` work again)
+  instead of blocking it.
+
+- **Landlock warnings no longer vanish under `SANDBOX_BACKEND=auto`.**
+  The `FILTER_PASSWD`, `BLOCKED_FILES`, munge-socket and `DEVICES`
+  warnings ran before backend auto-detection and were skipped exactly on
+  hosts that land on Landlock automatically. They now run after
+  detection. Fixed
+
+- **Firejail: Slurm through the chaperon works again.** Firejail
+  sessions exec into the setuid firejail binary, whose `/proc/PID/ns`
+  the user cannot read; every later launch (another sandbox, or the
+  nested launch of each `srun` job step) took the session for dead and
+  deleted its chaperon FIFO dir. `srun` always failed, `sbatch` failed
+  once any other sandbox started.
+
+- **Firejail: no more "too many arguments".** Firejail refuses 128+
+  arguments; a default launch already needed ~100 and each
+  `BLOCKED_FILES`/`HOME_READONLY` entry adds one (30 extra
+  `BLOCKED_FILES` entries: `argc (136) >= MAX_ARGS (128)`). Options are
+  now passed as profile files through inherited descriptors.
+
+- **Firejail: `PRIVATE_TMP=false` shares `/tmp`.** The `--whitelist` of
+  the chaperon FIFO dir made firejail mount a private tmpfs on `/tmp`
+  anyway (and, with `$TMPDIR` on e.g. `/fh/scratch`, hid the rest of
+  `/fh`). It is now used only where the parent is a tmpfs already.
+
+- Docs: firejail rows in `docs/reference/security.md` now say what is
+  enforced (writes, sockets, user enumeration, seccomp scope and the
+  aarch64 caveat, TIOCSTI, devices). The `DEVICES` startup warning no
+  longer cites a `--private-dev` firejail did not use.
+
 ## [0.13.1] - 2026-07-01
 
 ### Added
