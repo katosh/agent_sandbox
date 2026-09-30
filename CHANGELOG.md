@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **chaperon: optional-argument Slurm flags no longer swallow the
+  command.** `srun --kill-on-bad-exit` and `--nice` (srun, sbatch and
+  the in-sandbox sbatch stub) were classified as taking a separate
+  value. The chaperon consumed the next word as that value, but Slurm
+  binds optional arguments only with `=` and ran that word as the
+  command or batch script, outside `sandbox-exec.sh`. Flags now have
+  three classes matching Slurm's getopt tables (no argument, required
+  argument, optional argument that binds only with `=`), checked against
+  srun/sbatch 23.11.
+
+- **chaperon: srun/sbatch argv is built defensively.** Every validated
+  flag is re-emitted as one self-contained token (`--long=value` or the
+  bare flag). The job goes after a chaperon-inserted `--`: srun gets
+  `<flags> -- sandbox-exec.sh --project-dir <dir> -- <cmd>`, sbatch gets
+  `<flags> -- <wrapper>`. Before the real binary runs,
+  `_assert_slurm_flag_argv` refuses any bare word, lone `-`/`--`, or
+  required-argument flag that has no attached value. A value on a no-
+  argument flag (`--label=x`) and a short flag written with `=` (`-n=2`)
+  are refused. Script-less sbatch (`--help`/`--version`) runs with stdin
+  from `/dev/null`. The legacy `srun-sandbox.sh` gets the same list fix
+  and the `--`.
+
+- **chaperon: `%x` refused in sbatch `--output`/`--error` on
+  bwrap/firejail.** The staging transform kept `%x` (the job name),
+  which slurmstepd expands outside the sandbox. `-J ../../x --output=%x`
+  could therefore write outside `.sandbox-state/slurm-logs`. The staged
+  path now follows the same pattern policy as the landlock/srun
+  validator: only `%A %a %J %j %N %n %s %t %u %%` are allowed; `%x`,
+  unknown patterns and backslashes are refused. Slurm strips
+  backslashes, so `.\.` would become `..`. The rule applies to the CLI
+  and to `#SBATCH`. The in-sandbox symlink prelude no longer expands
+  `%x`.
+
+- **chaperon: job names validated.** `-J`/`--job-name` (sbatch, srun
+  allocation mode, `#SBATCH`) may not contain `/` or `\` and may not be
+  `.` or `..`.
+
+- **chaperon: `#SBATCH` option clusters and single-dash smuggling
+  refused.** Slurm reads `#SBATCH -He/path` as `-H -e /path`, and
+  `#SBATCH --hold -e/path` as two options. Both set `--error` without
+  passing the output validator or staging. The multi-option check now
+  refuses any whitespace followed by `-`. A short no-argument flag with
+  characters attached is also refused.
+
 - **sbatch `--export` no longer lets the agent run code outside the
   sandbox.** The generated job wrapper runs unsandboxed on the
   compute node, and `--export` (or `#SBATCH --export`) values were
