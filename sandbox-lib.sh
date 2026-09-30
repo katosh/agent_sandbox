@@ -3931,6 +3931,43 @@ load_project_config() {
     _validate_path_array EXTRA_WRITABLE_PATHS "${EXTRA_WRITABLE_PATHS[@]}"
 }
 
+# _warn_backend_feature_gaps — warn about configured features the
+# RESOLVED backend cannot enforce. Called by sandbox-exec.sh right after
+# detect_backend (and before any backend_prepare), so SANDBOX_BACKEND is
+# bwrap / firejail / landlock here, never "auto". firejail's own DEVICES
+# handling (--private-dev classes) warns from backends/firejail.sh.
+_warn_backend_feature_gaps() {
+    case "${SANDBOX_BACKEND:-}" in
+        landlock)
+            if _is_true "${FILTER_PASSWD:-true}"; then
+                echo "WARNING: FILTER_PASSWD=true has no effect with the Landlock backend (no mount namespace)." >&2
+                echo "  User enumeration prevention requires bwrap or firejail." >&2
+            fi
+            if [[ ${#BLOCKED_FILES[@]} -gt 0 ]]; then
+                echo "WARNING: BLOCKED_FILES has no effect with the Landlock backend." >&2
+                echo "  Individual file blocking requires bwrap or firejail." >&2
+            fi
+            if [[ -e /run/munge/munge.socket.2 ]]; then
+                echo "WARNING: Landlock cannot block AF_UNIX connect() — the munge socket is reachable." >&2
+                echo "  Agents can bypass the chaperon and submit arbitrary Slurm jobs." >&2
+                echo "  Use bwrap/firejail, or deploy the SPANK plugin (docs/admin/hardening.md §1)." >&2
+            fi
+            if _is_true "${BIND_DEV_PTS:-false}"; then
+                echo "WARNING: BIND_DEV_PTS has no effect with the Landlock backend (the whole host /dev stays visible)." >&2
+            fi
+            if [[ ${#DEVICES[@]} -gt 0 && "${DEVICES[*]}" != "${_DEFAULT_DEVICES[*]}" ]]; then
+                echo "WARNING: DEVICES has no effect with the Landlock backend (no mount namespace)." >&2
+                echo "  The whole host /dev stays visible; a per-node allow-list requires bwrap." >&2
+            fi
+            ;;
+        firejail)
+            if _is_true "${BIND_DEV_PTS:-false}"; then
+                echo "WARNING: BIND_DEV_PTS has no effect with the firejail backend (--private-dev mounts its own devpts)." >&2
+            fi
+            ;;
+    esac
+}
+
 # Fail early if HOME is unset (many paths depend on it).
 if [[ -z "${HOME:-}" ]]; then
     echo "Error: \$HOME is not set." >&2
@@ -3984,31 +4021,12 @@ _validate_loaded_config() {
         done
     done
 
-    # Warn when backend-specific features are used with an incompatible backend.
-    if [[ "${SANDBOX_BACKEND:-auto}" == "landlock" ]]; then
-        if _is_true "${FILTER_PASSWD:-true}"; then
-            echo "WARNING: FILTER_PASSWD=true has no effect with the Landlock backend (no mount namespace)." >&2
-            echo "  User enumeration prevention requires bwrap or firejail." >&2
-        fi
-        if [[ ${#BLOCKED_FILES[@]} -gt 0 ]]; then
-            echo "WARNING: BLOCKED_FILES has no effect with the Landlock backend." >&2
-            echo "  Individual file blocking requires bwrap or firejail." >&2
-        fi
-        if [[ -e /run/munge/munge.socket.2 ]]; then
-            echo "WARNING: Landlock cannot block AF_UNIX connect() — the munge socket is reachable." >&2
-            echo "  Agents can bypass the chaperon and submit arbitrary Slurm jobs." >&2
-            echo "  Use bwrap/firejail, or deploy the SPANK plugin (docs/admin/hardening.md §1)." >&2
-        fi
-    fi
-    if [[ "${SANDBOX_BACKEND:-auto}" != "bwrap" && "${SANDBOX_BACKEND:-auto}" != "auto" ]]; then
-        if _is_true "${BIND_DEV_PTS:-false}"; then
-            echo "WARNING: BIND_DEV_PTS only applies to the bwrap backend." >&2
-        fi
-        if [[ ${#DEVICES[@]} -gt 0 && "${DEVICES[*]}" != "${_DEFAULT_DEVICES[*]}" ]]; then
-            echo "WARNING: DEVICES only applies to the bwrap backend." >&2
-            echo "  /dev passthrough requires a mount namespace; firejail's --private-dev is coarser, landlock has no FS isolation." >&2
-        fi
-    fi
+    # Backend-specific capability warnings (Landlock FILTER_PASSWD,
+    # BLOCKED_FILES, munge, DEVICES) run from _warn_backend_feature_gaps
+    # once detect_backend has resolved SANDBOX_BACKEND=auto: here the
+    # backend is still "auto" whenever it is auto-detected, and the
+    # warnings used to be skipped exactly on the hosts that land on
+    # Landlock by auto-detection.
 
     # BIND_DEV_PTS deprecation shim. Old configs that say `BIND_DEV_PTS=true`
     # used to bind the host /dev into the sandbox to give tmux a working pty.

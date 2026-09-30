@@ -1052,14 +1052,20 @@ rm -rf "$_l2_conf" "$_l2_fix" "$_l2_marker" "$PROJECT_DIR/.sandbox-state/.l2-pro
 # user-writable dir outside $HOME and /tmp via
 # SANDBOX_TEST_HOST_WRITABLE_DIR (e.g. a group-writable /fh/fast path).
 if is_firejail; then
+    # The read-only cover remounts every top-level entry (here /usr)
+    # itself: `--read-only=/` is not recursive in firejail (only the
+    # root filesystem, not /boot, NFS project trees, ...) and would
+    # stop firejail from re-opening a project the user does not own.
     _l9_args=$("$SANDBOX_EXEC" --backend firejail --dry-run --project-dir "$PROJECT_DIR" -- true 2>/dev/null)
-    _l9_ro=$(grep -n -- '--read-only=/ ' <<<"$_l9_args" | head -1 | cut -d: -f1)
+    _l9_ro=$(grep -n -- '--read-only=/usr ' <<<"$_l9_args" | head -1 | cut -d: -f1)
     _l9_rw=$(grep -n -- "--read-write=$PROJECT_DIR " <<<"$_l9_args" | head -1 | cut -d: -f1)
     _l9_st=$(grep -n -- "--read-only=$PROJECT_DIR/.sandbox-state " <<<"$_l9_args" | tail -1 | cut -d: -f1)
-    if [[ -n "$_l9_ro" && -n "$_l9_rw" && -n "$_l9_st" && $_l9_ro -lt $_l9_rw && $_l9_rw -lt $_l9_st ]]; then
-        pass "firejail argv: --read-only=/ first, project --read-write, .sandbox-state --read-only last"
+    if grep -q -- '--read-only=/ ' <<<"$_l9_args"; then
+        fail "firejail argv still uses the non-recursive --read-only=/"
+    elif [[ -n "$_l9_ro" && -n "$_l9_rw" && -n "$_l9_st" && $_l9_ro -lt $_l9_rw && $_l9_rw -lt $_l9_st ]]; then
+        pass "firejail argv: read-only cover (/usr) first, project --read-write, .sandbox-state --read-only last"
     else
-        fail "firejail argv ordering wrong (ro=/ line $_l9_ro, rw project $_l9_rw, ro state $_l9_st)"
+        fail "firejail argv ordering wrong (ro /usr line $_l9_ro, rw project $_l9_rw, ro state $_l9_st)"
     fi
     if [[ -n "${SANDBOX_TEST_HOST_WRITABLE_DIR:-}" && -d "$SANDBOX_TEST_HOST_WRITABLE_DIR" && -w "$SANDBOX_TEST_HOST_WRITABLE_DIR" ]]; then
         _l9_m="$SANDBOX_TEST_HOST_WRITABLE_DIR/.sandbox-l9-marker-$$"
@@ -1078,6 +1084,233 @@ if is_firejail; then
     fi
 fi
 
+
+# ── Firejail: writable paths owned by someone else (F1) ──
+# firejail refuses `--read-write` for a read-only directory the user
+# does not own ("not allowed to change X to read-write", hidden by
+# --quiet). A project / EXTRA_WRITABLE_PATHS entry on shared storage
+# owned by root or the PI and group-writable for the user (the normal
+# HPC layout) therefore came out read-only on firejail only. Needs such
+# a directory; creating one needs root, so it is taken from
+# SANDBOX_TEST_FOREIGN_WRITABLE_DIR (e.g. `sudo install -d -o root
+# -g "$(id -gn)" -m 2775 /srv/sbx-foreign`).
+if is_firejail; then
+    _f1_dir="${SANDBOX_TEST_FOREIGN_WRITABLE_DIR:-}"
+    if [[ -n "$_f1_dir" && -d "$_f1_dir" && -w "$_f1_dir" \
+          && "$(stat -c %u "$_f1_dir" 2>/dev/null)" != "$(id -u)" ]]; then
+        _f1_dir="$(cd "$_f1_dir" && pwd -P)"
+        _f1_conf=$(mktemp); trap_rm_path "$_f1_conf"
+        cat "$SANDBOX_CONF" > "$_f1_conf"
+        printf 'ALLOWED_PROJECT_PARENTS+=(%q)\nEXTRA_WRITABLE_PATHS+=(%q)\n' \
+            "$(dirname "$_f1_dir")" "$_f1_dir" >> "$_f1_conf"
+        _f1_m="$_f1_dir/.sandbox-f1-marker-$$"
+        _TEST_TEMP_FILES+=("$_f1_m" "$_f1_dir/.sandbox-f1-proj-$$")
+        # (a) as EXTRA_WRITABLE_PATHS entry, project elsewhere
+        _f1_out=$(SANDBOX_CONF="$_f1_conf" timeout 60 "$SANDBOX_EXEC" --backend firejail \
+            --project-dir "$PROJECT_DIR" -- bash -c "echo x > '$_f1_m' && echo F1_EXTRA_OK" 2>&1)
+        if [[ "$_f1_out" == *F1_EXTRA_OK* && -f "$_f1_m" ]]; then
+            pass "firejail: EXTRA_WRITABLE_PATHS entry owned by another user (group-writable) is writable"
+        else
+            fail "firejail: foreign group-writable EXTRA_WRITABLE_PATHS entry not writable" "$_f1_out"
+        fi
+        rm -f "$_f1_m"
+        # (b) as the project dir
+        _f1_out=$(SANDBOX_CONF="$_f1_conf" timeout 60 "$SANDBOX_EXEC" --backend firejail \
+            --project-dir "$_f1_dir" -- bash -c "echo x > '$_f1_dir/.sandbox-f1-proj-$$' && echo F1_PROJ_OK" 2>&1)
+        if [[ "$_f1_out" == *F1_PROJ_OK* && -f "$_f1_dir/.sandbox-f1-proj-$$" ]]; then
+            pass "firejail: project dir owned by another user (group-writable) is writable"
+        else
+            fail "firejail: foreign group-writable project dir not writable" "$_f1_out"
+        fi
+        rm -f "$_f1_dir/.sandbox-f1-proj-$$"
+        rm -rf "$_f1_dir/.sandbox-state" 2>/dev/null
+    else
+        skip "firejail foreign-owned writable dir: set SANDBOX_TEST_FOREIGN_WRITABLE_DIR to a dir owned by another user (e.g. root) that is group-writable for you; creating one needs sudo"
+    fi
+
+    # Separate mounts outside the grants must be read-only as well:
+    # `--read-only=/` stopped at the root filesystem. Pick a host mount
+    # point outside the special trees (firejail masks /boot itself) that
+    # is read-write on the host, and check that the top-most mount at
+    # that path inside is read-only.
+    _f1_mnt=$(awk '$6 ~ /^rw/ {print $5}' /proc/self/mountinfo | grep -v -E '^/$|^/(proc|sys|dev|run|tmp|boot|var/lib/docker|snap)(/|$)' \
+              | while IFS= read -r _m; do [[ "$_m" == *'\'* || "$HOME" == "$_m"* || "$_m" == "$HOME"* || "$PROJECT_DIR" == "$_m"* ]] || { echo "$_m"; break; }; done)
+    if [[ -n "$_f1_mnt" ]]; then
+        sandbox bash -c "awk -v m='$_f1_mnt' '\$5 == m {o=\$6} END {print o}' /proc/self/mountinfo"
+        if [[ "$OUTPUT" == ro* ]]; then
+            pass "firejail: separate host mount $_f1_mnt is read-only inside"
+        else
+            fail "firejail: separate host mount $_f1_mnt not read-only inside" "$OUTPUT $OUTPUT_ERR"
+        fi
+    else
+        skip "firejail separate-mount read-only check: no read-write mount outside /, \$HOME and the special trees on this host"
+    fi
+fi
+
+# ── Firejail: /run and /dev (F2, F14) ──
+# /run is a tmpfs with only the resolver dir (like bwrap's --tmpfs
+# /run): nothing under the host /run is writable (/run/lock is 1777 on
+# the host) or connectable. /dev is a private --private-dev /dev: no
+# /dev/mqueue, no other terminals' ptys, but ptys can be allocated.
+if is_firejail; then
+    _f2_sockdir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    _f2_sock=""
+    if [[ -d "$_f2_sockdir" && -w "$_f2_sockdir" ]] && command -v python3 >/dev/null; then
+        _f2_sock="$_f2_sockdir/sbx-f2-$$.sock"
+        python3 -c 'import socket,sys,time
+s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1); time.sleep(40)' "$_f2_sock" &
+        _f2_pid=$!
+        for _i in 1 2 3 4 5 6 7 8 9 10; do [[ -S "$_f2_sock" ]] && break; sleep 0.2; done
+    fi
+    sandbox bash -c '
+        for d in /run /run/lock /run/user /dev /dev/mqueue /dev/shm; do
+            if ( : > "$d/.sbx-f2-$$" ) 2>/dev/null; then echo "WRITABLE:$d"; rm -f "$d/.sbx-f2-$$"; fi
+        done
+        [ -e /run/lock ] && echo HAS_RUN_LOCK
+        [ -e /dev/mqueue ] && echo HAS_MQUEUE
+        [ -e /run/munge ] && echo HAS_MUNGE
+        echo RUN=$(ls /run | tr "\n" " ")
+        if [ -n "'"$_f2_sock"'" ]; then
+            python3 -c "import socket,sys
+s=socket.socket(socket.AF_UNIX)
+try:
+    s.connect(sys.argv[1]); print(\"SOCK_CONNECTED\")
+except OSError as e: print(\"SOCK_REFUSED\", e.strerror)" "'"$_f2_sock"'"
+        fi
+        python3 -c "import os,pty; m,s=pty.openpty(); print(\"PTY_OK\")" 2>&1
+        ls /dev/pts | tr "\n" " "; echo
+        echo DONE'
+    if [[ "$OUTPUT" != *DONE* ]]; then
+        fail "firejail /run//dev probe did not run" "$OUTPUT_ERR"
+    else
+        if [[ "$OUTPUT" == *WRITABLE:/run* ]]; then
+            fail "firejail: something under /run is writable" "$OUTPUT"
+        else
+            pass "firejail: /run (incl. /run/lock, /run/user) not writable"
+        fi
+        if [[ "$OUTPUT" == *HAS_RUN_LOCK* || "$OUTPUT" == *HAS_MUNGE* ]]; then
+            fail "firejail: host /run entries visible (expected a tmpfs with the resolver only)" "$OUTPUT"
+        else
+            pass "firejail: host /run hidden (tmpfs, resolver only)"
+        fi
+        if [[ -n "$_f2_sock" ]]; then
+            if [[ "$OUTPUT" == *SOCK_REFUSED* ]]; then
+                pass "firejail: host socket under /run/user not connectable"
+            else
+                fail "firejail: host socket under /run/user connectable or probe failed" "$OUTPUT"
+            fi
+        else
+            skip "firejail /run socket check: no writable XDG_RUNTIME_DIR or python3"
+        fi
+        if [[ "$OUTPUT" == *HAS_MQUEUE* || "$OUTPUT" == *WRITABLE:/dev/mqueue* ]] \
+           || grep -qx 'WRITABLE:/dev' <<<"$OUTPUT"; then
+            fail "firejail: /dev/mqueue present or /dev writable (expected --private-dev)" "$OUTPUT"
+        else
+            pass "firejail: private /dev (no /dev/mqueue)"
+        fi
+        if [[ "$OUTPUT" == *PTY_OK* ]]; then
+            pass "firejail: pty allocation works under --private-dev"
+        else
+            fail "firejail: pty allocation failed under --private-dev" "$OUTPUT"
+        fi
+    fi
+    [[ -n "${_f2_pid:-}" ]] && kill "$_f2_pid" 2>/dev/null; wait "${_f2_pid:-}" 2>/dev/null
+    rm -f "${_f2_sock:-}"
+    unset _f2_pid
+fi
+
+# ── PRIVATE_TMP=false shares the host /tmp; true isolates it (F6) ──
+# Firejail used to get a fresh /tmp even with PRIVATE_TMP=false: the
+# --whitelist of the chaperon FIFO dir (under /tmp) makes firejail
+# mount a tmpfs on /tmp. Now the whitelist is only used where the parent
+# is replaced anyway.
+if has_mount_ns; then
+    _f6_conf=$(mktemp); trap_rm_path "$_f6_conf"
+    cat "$SANDBOX_CONF" > "$_f6_conf"
+    echo 'PRIVATE_TMP=false' >> "$_f6_conf"
+    _f6_host="/tmp/.sbx-f6-host-$$"; _f6_in="/tmp/.sbx-f6-in-$$"
+    _TEST_TEMP_FILES+=("$_f6_host" "$_f6_in")
+    echo host > "$_f6_host"
+    _f6_out=$(SANDBOX_CONF="$_f6_conf" SANDBOX_QUIET=true timeout 60 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- bash -c "cat '$_f6_host' 2>/dev/null && echo F6_SEEN; echo in > '$_f6_in'; echo F6_DONE" 2>&1)
+    if [[ "$_f6_out" == *F6_SEEN* && -f "$_f6_in" ]]; then
+        pass "PRIVATE_TMP=false: host /tmp shared both ways ($CURRENT_BACKEND)"
+    else
+        fail "PRIVATE_TMP=false: /tmp not shared ($CURRENT_BACKEND)" "$_f6_out"
+    fi
+    rm -f "$_f6_in"
+    sandbox bash -c "cat '$_f6_host' 2>/dev/null && echo F6_SEEN; echo in > '$_f6_in'; echo F6_DONE"
+    if [[ "$OUTPUT" == *F6_DONE* && "$OUTPUT" != *F6_SEEN* && ! -e "$_f6_in" ]]; then
+        pass "PRIVATE_TMP=true: /tmp private ($CURRENT_BACKEND)"
+    else
+        fail "PRIVATE_TMP=true: /tmp not private ($CURRENT_BACKEND)" "$OUTPUT $OUTPUT_ERR"
+    fi
+    rm -f "$_f6_host" "$_f6_in"
+fi
+
+# ── Firejail: a new launch must not prune a live session's FIFO dir ──
+# firejail sessions exec into the setuid firejail binary, whose
+# /proc/<pid>/ns is unreadable for the user; every later launch (any
+# other sandbox, and the nested launch of each srun job step) took the
+# session for dead and deleted its chaperon FIFO dir, breaking Slurm.
+if is_firejail; then
+    _fp_file="$PROJECT_DIR/.sbx-fifo-path-$$"
+    _TEST_TEMP_FILES+=("$_fp_file")
+    rm -f "$_fp_file"
+    SANDBOX_QUIET=true timeout 40 "$SANDBOX_EXEC" --backend firejail --project-dir "$PROJECT_DIR" -- \
+        bash -c "echo \"\$_CHAPERON_FIFO_DIR\" > '$_fp_file'; sleep 12" >/dev/null 2>&1 &
+    _fp_pid=$!
+    for _i in $(seq 1 40); do [[ -s "$_fp_file" ]] && break; sleep 0.25; done
+    _fp_dir="$(cat "$_fp_file" 2>/dev/null)"
+    if [[ -n "$_fp_dir" && -d "$_fp_dir" ]]; then
+        "$SANDBOX_EXEC" --backend firejail --dry-run --project-dir "$PROJECT_DIR" -- true >/dev/null 2>&1
+        if [[ -p "$_fp_dir/req" ]]; then
+            pass "firejail: a new launch keeps a running session's chaperon FIFO dir"
+        else
+            fail "firejail: a new launch pruned a running session's chaperon FIFO dir ($_fp_dir)"
+        fi
+    else
+        fail "firejail: FIFO-prune probe session did not start"
+    fi
+    kill "$_fp_pid" 2>/dev/null; wait "$_fp_pid" 2>/dev/null
+    rm -f "$_fp_file"
+fi
+
+# ── Landlock picked by auto-detection still prints its warnings (F3) ──
+# The landlock capability warnings (FILTER_PASSWD, BLOCKED_FILES, munge,
+# DEVICES) ran during config validation, before detect_backend, where
+# SANDBOX_BACKEND is still "auto": exactly the hosts that land on
+# landlock by auto-detection got no warning. Hide bwrap (BWRAP override)
+# and firejail (PATH without it) so auto resolves to landlock.
+if is_landlock; then
+    _f3_bin=$(mktemp -d); trap_rm_path "$_f3_bin"
+    _f3_path="$_f3_bin"
+    IFS=: read -r -a _f3_dirs <<<"$PATH"
+    for _f3_d in "${_f3_dirs[@]}"; do
+        [[ -d "$_f3_d" ]] || continue
+        for _f3_e in "$_f3_d"/*; do
+            _f3_b="${_f3_e##*/}"
+            [[ "$_f3_b" == firejail || "$_f3_b" == bwrap ]] && continue
+            [[ -e "$_f3_bin/$_f3_b" ]] || ln -s "$_f3_e" "$_f3_bin/$_f3_b" 2>/dev/null
+        done
+    done
+    _f3_conf=$(mktemp); trap_rm_path "$_f3_conf"
+    cat "$SANDBOX_CONF" > "$_f3_conf"
+    printf 'SANDBOX_BACKEND=auto\nFILTER_PASSWD=true\nBLOCKED_FILES+=(%q)\n' "$PROJECT_DIR/.sbx-f3-blocked-$$" >> "$_f3_conf"
+    _TEST_TEMP_FILES+=("$PROJECT_DIR/.sbx-f3-blocked-$$")
+    _f3_out=$(env -u SANDBOX_BACKEND BWRAP=/nonexistent/bwrap PATH="$_f3_path" SANDBOX_CONF="$_f3_conf" \
+        timeout 60 "$SANDBOX_EXEC" --project-dir "$PROJECT_DIR" -- bash -c 'echo "F3_BACKEND=$SANDBOX_BACKEND"' 2>&1)
+    rm -f "$PROJECT_DIR/.sbx-f3-blocked-$$"
+    if [[ "$_f3_out" != *F3_BACKEND=landlock* ]]; then
+        skip "landlock auto-detect warnings: auto did not resolve to landlock here"
+    elif [[ "$_f3_out" == *"BLOCKED_FILES has no effect with the Landlock backend"* \
+            && "$_f3_out" == *"FILTER_PASSWD=true has no effect with the Landlock backend"* ]]; then
+        pass "landlock chosen by auto-detection prints the BLOCKED_FILES / FILTER_PASSWD warnings"
+    else
+        fail "landlock chosen by auto-detection printed no capability warnings" "$_f3_out"
+    fi
+    rm -rf "$_f3_bin"
+fi
 
 # ── HOME_ACCESS modes ──
 # HOME_ACCESS=read — real home visible, but writes rejected outside allowlist.
@@ -7266,8 +7499,9 @@ else
 fi
 
 # PRIVATE_IPC: /dev/shm isolation. bwrap mounts a private tmpfs; firejail
-# blacklists /dev/shm (firejail's --tmpfs is silently ignored on /dev paths);
-# landlock has no namespace support so /dev/shm is shared with the host.
+# gets an empty /dev/shm inside its --private-dev /dev (blacklisted only
+# when DEVICES forces the host /dev); landlock has no namespace support
+# so /dev/shm is shared with the host.
 _shm_marker="/dev/shm/sandbox-probe-$$"
 _TEST_TEMP_FILES+=("$_shm_marker")
 if sandbox bash -c "echo inside > '$_shm_marker'" 2>/dev/null; then
@@ -7288,7 +7522,7 @@ if sandbox bash -c "echo inside > '$_shm_marker'" 2>/dev/null; then
     fi
 else
     if has_mount_ns; then
-        # Write was blocked (e.g., firejail --blacklist=/dev/shm) — that's
+        # Write was blocked (firejail on the host /dev: --blacklist=/dev/shm) — that's
         # effective isolation, just via blocking rather than private tmpfs.
         pass "PRIVATE_IPC: /dev/shm blocked inside sandbox"
     else
@@ -8946,7 +9180,7 @@ _dev07_err=$(mktemp); trap_rm_path "$_dev07_err"
 SANDBOX_CONF="$_dev07_conf" "$SANDBOX_EXEC" --backend landlock --dry-run \
     --project-dir "$PROJECT_DIR" -- true >"$_dev07_err.out" 2>"$_dev07_err" || true
 _dev07_stderr=$(cat "$_dev07_err")
-if [[ "$_dev07_stderr" == *"DEVICES only applies to the bwrap backend"* ]]; then
+if [[ "$_dev07_stderr" == *"DEVICES has no effect with the Landlock backend"* ]]; then
     pass "DEV07: non-bwrap backend warns when DEVICES is configured"
 else
     # Some installs may not have landlock available — check if the

@@ -198,6 +198,11 @@ export SANDBOX_BACKEND
 # requirement check / overlay execution which both iterate the list.
 _apply_agent_profiles
 
+# Capability warnings for the RESOLVED backend. Config validation runs
+# before detect_backend, while an auto-detected backend is still "auto";
+# after the agent profiles so their BLOCKED_FILES entries count.
+_warn_backend_feature_gaps
+
 # Prepare agent profiles (backend-independent). Only agents listed in
 # ENABLED_AGENTS are prepared. The requirement check emits warnings
 # if declared credentials/paths look unreachable.
@@ -278,6 +283,22 @@ _launch_owner_tag() {
     _ns="$(stat -L -c %i "/proc/$_pid/ns/pid" 2>/dev/null)" || return 1
     printf '%s %s %s %s' "${HOSTNAME:-$(hostname 2>/dev/null)}" "$_ns" "$_pid" "${_f[19]:-?}"
 }
+# _launch_owner_alive PID NS STARTTIME — the tagged launcher still runs.
+# On firejail the launcher PID exec's into the setuid firejail binary,
+# whose /proc/PID/ns/ is not readable by the user (ptrace access check
+# against euid 0). A matching start time on this host is then enough:
+# treating the owner as dead deleted a LIVE session's chaperon FIFO dir
+# whenever the same user started another sandbox (including the nested
+# launch of every srun job step), which broke Slurm in that session.
+_launch_owner_alive() {
+    local _pid="$1" _ns="$2" _st="$3" _stat _cur
+    { IFS= read -r _stat < "/proc/$_pid/stat"; } 2>/dev/null || return 1
+    local -a _f
+    read -r -a _f <<< "${_stat##*) }"
+    [[ "${_f[19]:-?}" == "$_st" ]] || return 1
+    _cur="$(stat -L -c %i "/proc/$_pid/ns/pid" 2>/dev/null)" || return 0
+    [[ "$_cur" == "$_ns" ]]
+}
 _tag_launch_dir() {
     [[ -n "${1:-}" && -d "$1" && ! -L "$1" ]] || return 0
     { _launch_owner_tag "$$" && echo; } > "$1/.owner" 2>/dev/null || true
@@ -292,7 +313,7 @@ _prune_stale_launch_dirs() {
         if [[ -f "$_d/.owner" && ! -L "$_d/.owner" ]]; then
             _h=""; read -r _h _ns _pid _st < "$_d/.owner" 2>/dev/null || [[ -n "$_h" ]] || continue
             [[ "$_h" == "$_me_host" && "$_ns" == "$_me_ns" && "$_pid" =~ ^[0-9]+$ ]] || continue
-            [[ "$(_launch_owner_tag "$_pid" 2>/dev/null)" == "$_h $_ns $_pid $_st" ]] && continue
+            _launch_owner_alive "$_pid" "$_ns" "$_st" && continue
             rm -rf -- "$_d" 2>/dev/null || true
         else
             _untagged+=("$_d")

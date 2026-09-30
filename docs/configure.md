@@ -313,7 +313,7 @@ DEVICES=(
 )
 ```
 
-Device nodes to expose inside the sandbox. **bwrap only** — firejail and Landlock have their own device-handling models. Each entry is bind-mounted via `bwrap --dev-bind PATH PATH` after `bwrap --dev /dev` has set up the minimal devtmpfs.
+Device nodes to expose inside the sandbox. Per-node on **bwrap**: each entry is bind-mounted via `bwrap --dev-bind PATH PATH` after `bwrap --dev /dev` has set up the minimal devtmpfs. **firejail** gives the sandbox a private `/dev` (`--private-dev`) and can only carry its own device classes into it (`/dev/nvidia0`–`9`, `nvidiactl`, `nvidia-modeset`, `nvidia-uvm`, `/dev/dri`, sound, video, hidraw/USB, input, `/dev/sr0`); `DEVICES` selects which classes stay, and any other resolved node makes firejail fall back to the host `/dev` with a warning. **Landlock** cannot restrict `/dev` at all (warned at launch).
 
 Glob patterns are expanded against the host `/dev` at sandbox spawn time; entries that match nothing are silently dropped (so the NVIDIA defaults are a safe no-op on CPU-only nodes). After expansion, `DEVICES_BLACKLIST` is enforced — any resolved path matching a blacklist glob is dropped with a stderr notice.
 
@@ -504,7 +504,7 @@ Isolate `/tmp` with a private tmpfs. Each sandbox gets its own `/tmp`. Set to `f
 
 Isolate the SysV IPC namespace and `/dev/shm`. Each sandbox gets its own IPC namespace, preventing the agent from reading or corrupting shared memory of processes outside the sandbox. MPI/NCCL within a single Slurm job are unaffected — all ranks share one sandbox.
 
-**Backend support:** bwrap (`--unshare-ipc` + private `/dev/shm` tmpfs) and firejail (`--ipc-namespace`). Landlock cannot isolate IPC.
+**Backend support:** bwrap (`--unshare-ipc` + private `/dev/shm` tmpfs) and firejail (`--ipc-namespace` + an empty private `/dev/shm` in its private `/dev`; `/dev/shm` is blocked instead when `DEVICES` forces the host `/dev`). Landlock cannot isolate IPC.
 
 ### `FILTER_PASSWD`
 
