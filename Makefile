@@ -37,7 +37,8 @@ BACKEND_FILES := backends/bwrap.sh \
                  backends/firejail.sh \
                  backends/landlock.sh \
                  backends/landlock-sandbox.py \
-                 backends/generate-seccomp.py
+                 backends/generate-seccomp.py \
+                 backends/mount-repair.py
 
 DOCS := README.md CHANGELOG.md docs/reference/chaperon.md \
         docs/admin/hardening.md docs/admin/install.md \
@@ -100,6 +101,7 @@ install-lib:
 	$(INSTALL) -m 644 $(addprefix $(SRC_DIR)/,$(BACKEND_FILES)) $(DESTDIR)$(LIBDIR)/backends/
 	chmod +x $(DESTDIR)$(LIBDIR)/backends/landlock-sandbox.py
 	chmod +x $(DESTDIR)$(LIBDIR)/backends/generate-seccomp.py
+	chmod +x $(DESTDIR)$(LIBDIR)/backends/mount-repair.py
 	@# bin/ (in-sandbox utilities — sandbox-notify, tmux config wrapper)
 	$(INSTALL) -d $(DESTDIR)$(LIBDIR)/bin
 	for f in $(SRC_DIR)/bin/*; do $(INSTALL) -m 755 "$$f" $(DESTDIR)$(LIBDIR)/bin/; done
@@ -170,10 +172,11 @@ install-lib:
 		done; \
 		chmod +x $(DESTDIR)$(LIBDIR)/agents/$$agent/overlay.sh 2>/dev/null || true; \
 	done
-	@# Top-level agent docs
-	@for f in $(SRC_DIR)/agents/*.md; do \
+	@# Top-level agent docs + shared overlay helpers (overlay-lib.sh,
+	@# overlay-fs.py — required by every agents/*/overlay.sh)
+	@for f in $(SRC_DIR)/agents/*.md $(SRC_DIR)/agents/*.sh $(SRC_DIR)/agents/*.py; do \
 		[ -f "$$f" ] && $(INSTALL) -m 644 "$$f" $(DESTDIR)$(LIBDIR)/agents/; \
-	done
+	done; true
 	@# Chaperon
 	$(INSTALL) -d $(DESTDIR)$(LIBDIR)/chaperon/handlers
 	$(INSTALL) -d $(DESTDIR)$(LIBDIR)/chaperon/stubs

@@ -64,7 +64,10 @@ fi
 # (the script file).  Without this, boolean flags like --parsable
 # cause the next positional to be mistaken for a flag value.
 
-# Flags that consume a subsequent value token (space-separated form).
+# Flags that consume a subsequent value token (space-separated form):
+# Slurm's REQUIRED-argument flags only. Optional-argument flags
+# (--nice[=adj], --exclusive[=user]) bind a value only with `=`, so the
+# next token is the script, exactly as real sbatch parses it.
 # Keep in sync with _SBATCH_VALUE_FLAGS in handlers/_handler_lib.sh.
 _STUB_VALUE_FLAGS=" \
   -A --account \
@@ -86,6 +89,7 @@ _STUB_VALUE_FLAGS=" \
   --constraint \
   --cpu-freq \
   --deadline \
+  --export \
   --gres \
   --gpus-per-node \
   --gpus-per-task \
@@ -94,7 +98,6 @@ _STUB_VALUE_FLAGS=" \
   --mem \
   --mem-per-cpu \
   --mem-per-gpu \
-  --nice \
   --ntasks-per-node \
   --cpus-per-gpu \
   --priority \

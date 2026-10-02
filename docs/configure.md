@@ -13,6 +13,10 @@ Every knob the sandbox honours, what it does, what it defaults to, whether an ad
 
 Each layer adds to the previous. The admin layer (when present) is the **security baseline**: certain values land in the layer-2 snapshot and the user's layer-3/4 entries are merged on top such that the user can append but not remove. See [admin enforcement](#admin-enforcement-model) below for the exact rules.
 
+**`SANDBOX_CONF`** (environment) points the **user layer** (3) at a different file. It only swaps that one layer: the admin baseline (2) and `conf.d` (4) still load, and admin enforcement still applies to whatever the file contains.
+
+**Launch overrides win over every config layer.** `--backend` / `SANDBOX_BACKEND`, and the env vars `PRIVATE_TMP`, `PRIVATE_IPC`, `FILTER_PASSWD`, `NETWORK_FILTER_MODE`, `NETWORK_FILTER_FALLBACK`, `NETWORK_MAIL_BLOCK`, `MOUNT_GUARD`, `MOUNT_GUARD_INTERVAL`, `HOME_ACCESS`, `SANDBOX_QUIET`, `SANDBOX_NPROC_LIMIT` and `SLURM_SCOPE`, are applied **after** `conf.d`, so neither `sandbox.conf` nor a per-project file can override an explicit launch choice. An admin pin still beats them (the value is restored with a `WARNING: Launch override (env/CLI) weakened …` line). Config consistency checks (e.g. the `HOME_READONLY`/`HOME_WRITABLE` overlap warning, the `BIND_DEV_PTS` notice, the Landlock feature warnings) run on this final configuration.
+
 User config is loaded in an isolated subprocess (no eval in the parent), then variable values are extracted via a three-layer-validated `declare -p` round-trip. Configs cannot mutate the sandbox via shell-level side effects — `set`, `trap DEBUG`, `IFS=`, exports, `eval` overrides, background jobs, etc. all stay inside the subprocess and are dropped. Unknown variable names produce a one-line warning at startup so stale config from older versions surfaces instead of silently breaking.
 
 ## Admin enforcement model
@@ -28,6 +32,11 @@ When `/app/lib/agent-sandbox/sandbox.conf` exists, it is sourced first as a trus
 | `BLOCKED_ENV_PATTERNS` | Site-wide credential-pattern globs. |
 | `EXTRA_BLOCKED_PATHS` | Site-wide path blocklist (e.g. clinical data, regulated datasets). |
 | `DEVICES_BLACKLIST` | Site-wide device-node blocklist (e.g. `/dev/pts` to refuse the kernel-<6.2 TIOCSTI workaround). |
+| `HIDE_FROM_SANDBOX` | Host-side setting names kept out of the sandbox. (Its built-in defaults are a floor even without an admin baseline.) |
+| `NETWORK_BLOCKLIST` | Site-wide network-filter blocklist. |
+| `NETWORK_BLOCKLIST_EXCEPT` | Admin exceptions stay; user exceptions covered by an admin `NETWORK_BLOCKLIST` entry are stripped. |
+
+This set is exactly `_ENFORCED_ARRAYS` in `sandbox-lib.sh`; the enforcer iterates that list.
 
 **Enforced scalars** (security-critical booleans) — admin can set to `true` and the user cannot weaken to `false`. Attempting it produces `WARNING: weakened admin-enforced X=true → restored.` and the value is restored.
 
@@ -37,7 +46,11 @@ When `/app/lib/agent-sandbox/sandbox.conf` exists, it is sourced first as a trus
 | `PRIVATE_IPC` | IPC namespace isolated per sandbox (locked on). |
 | `FILTER_PASSWD` | LDAP/AD user enumeration filtered (locked on). |
 
-**`HOME_READONLY` → `HOME_WRITABLE` escalation prevented** — if the admin lists an entry in `HOME_READONLY`, the user cannot move it to `HOME_WRITABLE`. The sandbox warns and reverts.
+The tri-valued network scalars (`NETWORK_FILTER_MODE`, `NETWORK_FILTER_FALLBACK`, `NETWORK_MAIL_BLOCK`) and `MOUNT_GUARD` (off < warn < repair < kill; enforced only when the admin file sets it) are harden-only as well: user config, `conf.d` and launch-time env overrides may only request an equal or stricter value than the admin pin.
+
+None of these can be changed through [`SANDBOX_ENV`](#sandbox_env): it applies to the sandboxed command only and rejects config-variable names.
+
+**`HOME_READONLY` → writable escalation prevented** — a user `HOME_WRITABLE` or `EXTRA_WRITABLE_PATHS` entry is reverted with a warning when, after canonicalization, it is **equal to, inside, or a parent of** an admin `HOME_READONLY` entry. Both the lexically normalized path (`./.ssh`, `.ssh/`, `.ssh//` are all `.ssh`) and the symlink-resolved path are compared, so a symlink alias (`mylink -> .ssh`) is caught too. Examples with admin `HOME_READONLY=(".ssh" ".config/git")`: `.ssh/`, `.ssh/authorized_keys`, `.config`, and `EXTRA_WRITABLE_PATHS+=("$HOME/.ssh")` are all reverted.
 
 **`DENIED_WRITABLE_PATHS`** — admin-only deny-list (no user-side equivalent). Any user `EXTRA_WRITABLE_PATHS` or `HOME_WRITABLE` entry that resolves under a denied path is stripped with a warning. Symlinks are resolved on both sides so a writable path can't bypass the blocklist by pointing at a denied target.
 
@@ -55,10 +68,10 @@ Without an admin baseline, `~/.config/agent-sandbox/sandbox.conf` is the only co
 | [`READONLY_MOUNTS`](#readonly_mounts) | array | additive merge | system paths + `/app` |
 | [`HOME_ACCESS`](#home_access) | scalar | no | `tmpwrite` |
 | [`HOME_READONLY`](#home_readonly) | array | RO→WR escalation blocked | shell + tool defaults |
-| [`HOME_WRITABLE`](#home_writable) | array | additive; admin RO entries can't move here; respects `DENIED_WRITABLE_PATHS` | `.cache/uv` + agent profile additions |
+| [`HOME_WRITABLE`](#home_writable) | array | additive; may not equal, contain or sit inside an admin RO entry; respects `DENIED_WRITABLE_PATHS` | `.cache/uv` + agent profile additions |
 | [`HOME_SEEDED_FILES`](#home_seeded_files) | array | additive | `.gitconfig` |
 | [`EXTRA_BLOCKED_PATHS`](#extra_blocked_paths) | array | **yes** (admin entries restored) | `()` |
-| [`EXTRA_WRITABLE_PATHS`](#extra_writable_paths) | array | additive; respects `DENIED_WRITABLE_PATHS` | `()` |
+| [`EXTRA_WRITABLE_PATHS`](#extra_writable_paths) | array | additive; respects `DENIED_WRITABLE_PATHS` and admin `HOME_READONLY` | `()` |
 | [`DENIED_WRITABLE_PATHS`](#denied_writable_paths) | array | **admin-only** | `()` |
 | [`BLOCKED_FILES`](#blocked_files) | array | **yes** | `()` + per-agent additions |
 | [`DEVICES`](#devices) | array | additive; vetoed by `DEVICES_BLACKLIST` | NVIDIA driver nodes |
@@ -68,7 +81,7 @@ Without an admin baseline, `~/.config/agent-sandbox/sandbox.conf` is the only co
 | [`BLOCKED_ENV_PATTERNS`](#blocked_env_patterns) | array | **yes** | `SSH_*`, `*_TOKEN`, `*_SECRET`, … |
 | [`ALLOWED_ENV_VARS`](#allowed_env_vars) | array | additive | agent API-key names |
 | [`HIDE_FROM_SANDBOX`](#hide_from_sandbox) | array | **yes** | host-side setting names (`SLURM_SCOPE`, `CHAPERON_LOG_*`, `SANDBOX_QUIET`, …) |
-| [`SANDBOX_ENV`](#sandbox_env) | array | additive | `()` |
+| [`SANDBOX_ENV`](#sandbox_env) | array | additive; child-only, cannot set config/launcher names | `()` |
 | [`SANDBOX_BACKEND`](#sandbox_backend) | scalar | no | `auto` (bwrap → firejail → landlock) |
 | [`SANDBOX_PREFERRED_BACKENDS`](#sandbox_backend) | (set inline via `SANDBOX_BACKEND` only) | — | — |
 | [`SANDBOX_MODULES`](#sandbox_modules) | array | additive | `()` |
@@ -76,6 +89,8 @@ Without an admin baseline, `~/.config/agent-sandbox/sandbox.conf` is the only co
 | [`PRIVATE_IPC`](#private_ipc) | scalar | **harden-only** | `true` |
 | [`FILTER_PASSWD`](#filter_passwd) | scalar | **harden-only** | `true` |
 | [`SANDBOX_NPROC_LIMIT`](#sandbox_nproc_limit) | scalar | no | `""` (unlimited) |
+| [`MOUNT_GUARD`](#mount_guard) | scalar | **harden-only** when set by the admin (off < warn < repair < kill) | `repair` |
+| [`MOUNT_GUARD_INTERVAL`](#mount_guard) | scalar | no | `5` (seconds) |
 | [`SANDBOX_QUIET`](#sandbox_quiet) | scalar | no | `false` |
 | [`NETWORK_FILTER_MODE`](#network_filter_mode) | scalar | **harden-only** (user can only request equal or stricter) | `filtered` |
 | [`NETWORK_FILTER_FALLBACK`](#network_filter_fallback) | scalar | **harden-only** | `open` |
@@ -130,6 +145,10 @@ Controls how much of `$HOME` the agent sees and whether unlisted writes persist.
 
 Credential dirs (`.ssh`, `.aws`, `.gnupg`) are always blocked, regardless of mode.
 
+The sandbox's own config dir, `~/.config/agent-sandbox` (`sandbox.conf`/`user.conf`, `conf.d/`, `agents/` templates, the per-launch filtered passwd/group files), is always **read-only** inside the sandbox, regardless of mode, so the agent cannot weaken its next launch. It is applied after every writable grant, so `HOME_ACCESS=write`, `HOME_WRITABLE+=(".config")`, the project dir or an `EXTRA_WRITABLE_PATHS` entry cannot re-expose it (a symlinked config dir is protected at both the link and its target). This is not configurable; edit the config from outside the sandbox. The Landlock backend cannot carve a read-only sub-path out of a writable grant and warns instead.
+
+In `read` and `write` mode the real `$HOME` is visible, so further credential stores are masked as well (bwrap: tmpfs over directories, `/dev/null` over files; firejail: blacklisted): `.netrc`, `.git-credentials`, `.config/gh`, `.config/hub`, `.docker/config.json`, `.kube`, `.config/gcloud`, `.azure`, `.config/op`, `.config/helm`, `.terraform.d`, `.vault-token`, `.pgpass`, `.pypirc`, `.cargo/credentials(.toml)`. In `tmpwrite`/`restricted` mode these are already invisible unless you list them. To keep one visible in `read`/`write` mode, list it **verbatim** in `HOME_READONLY` (or `HOME_WRITABLE`), exactly as you would in `tmpwrite` mode, e.g. `HOME_READONLY+=(".config/gh")`; `.ssh`, `.aws` and `.gnupg` cannot be opted in this way. The Landlock backend cannot hide any sub-path of a granted `$HOME` (additive rules) and warns instead.
+
 ### `HOME_READONLY`
 
 **Type** array · **Admin-enforced** RO→WR escalation blocked · **Default** shell + tool config dotfiles (`.bashrc`, `.zshrc`, `.vimrc`, `.tmux.conf`, `.linuxbrew`, `.local/bin`, `micromamba`, `.condarc`, …)
@@ -151,7 +170,7 @@ HOME_READONLY+=(
 
 Subdirectories and files of `$HOME` with **read+write** access. Missing entries are auto-created as empty dirs before the sandbox launches, so first-time in-sandbox auth works for agents.
 
-If the admin baseline lists an entry in `HOME_READONLY`, the user cannot promote it to `HOME_WRITABLE` — the sandbox warns and reverts.
+If the admin baseline lists an entry in `HOME_READONLY`, the user cannot make it writable — not by listing it here under another spelling (`./.ssh`, `.ssh/`), not via a parent (`.config` over admin `.config/git`) or child (`.ssh/authorized_keys`), and not via a symlink alias. The sandbox warns and reverts (see [admin enforcement](#admin-enforcement-model)).
 
 ```bash
 HOME_WRITABLE+=(
@@ -213,6 +232,8 @@ EXTRA_WRITABLE_PATHS=(
 )
 ```
 
+Entries that are `$HOME` itself or one of its parents (e.g. `/home`, `/`) are ignored with a warning: a writable bind that covers `$HOME` would undo the home isolation (credential masks, protected agent config). Protective overlays (`BLOCKED_FILES`, `EXTRA_BLOCKED_PATHS`, the read-only agent config files, `.sandbox-state/`, the sandbox install dir) always win over an `EXTRA_WRITABLE_PATHS` entry that contains them. The same `$HOME`-or-parent rule applies to the project directory.
+
 ### `DENIED_WRITABLE_PATHS`
 
 **Type** array · **Admin-enforced** **admin-only** (no user-side counterpart; the variable is editable in user config but only the admin snapshot is honoured) · **Default** `()`
@@ -264,6 +285,8 @@ If the materialization fails (non-writable parent like `/etc`, read-only mount),
 
 Pass `--cleanup-materialized` (or set `CLEANUP_MATERIALIZED_BLOCKED_FILES=1` in the environment or config) to have the launcher remove the placeholders post-exit. Cleanup is conservative: a file is removed only if it's still 0 bytes; a directory is removed only if it's still empty. Anything that grew (a real edit between launch and exit) is retained with a `kept` note on stderr.
 
+Placeholders are also kept while another sandbox might have them mounted: always while another agent-sandbox session runs on the same host, and always on a network filesystem (NFS, Lustre, GPFS, ...), where sandboxes on other hosts (for example sandbox-wrapped Slurm jobs) cannot be seen. Deleting a file that is a mount point in another sandbox detaches that mount there and unmasks the path.
+
 To opt out of the protection for a specific entry, remove it from `BLOCKED_FILES`. To make an entry permanently exist (no warning on each launch), run `mkdir -p "$(dirname X)" && touch X` once outside the sandbox.
 
 ```bash
@@ -290,7 +313,7 @@ DEVICES=(
 )
 ```
 
-Device nodes to expose inside the sandbox. **bwrap only** — firejail and Landlock have their own device-handling models. Each entry is bind-mounted via `bwrap --dev-bind PATH PATH` after `bwrap --dev /dev` has set up the minimal devtmpfs.
+Device nodes to expose inside the sandbox. Per-node on **bwrap**: each entry is bind-mounted via `bwrap --dev-bind PATH PATH` after `bwrap --dev /dev` has set up the minimal devtmpfs. **firejail** gives the sandbox a private `/dev` (`--private-dev`) and can only carry its own device classes into it (`/dev/nvidia0`–`9`, `nvidiactl`, `nvidia-modeset`, `nvidia-uvm`, `/dev/dri`, sound, video, hidraw/USB, input, `/dev/sr0`); `DEVICES` selects which classes stay, and any other resolved node makes firejail fall back to the host `/dev` with a warning. **Landlock** cannot restrict `/dev` at all (warned at launch).
 
 Glob patterns are expanded against the host `/dev` at sandbox spawn time; entries that match nothing are silently dropped (so the NVIDIA defaults are a safe no-op on CPU-only nodes). After expansion, `DEVICES_BLACKLIST` is enforced — any resolved path matching a blacklist glob is dropped with a stderr notice.
 
@@ -407,6 +430,8 @@ ALLOWED_ENV_VARS+=(
 
 Sandbox-**setting** env vars scrubbed from the sandboxed environment. These names configure the sandbox and chaperon on the **host** side and have no consumer inside the sandbox — forwarding them only tells an agent about its operator's configuration (logging policy, Slurm scoping, quiet mode). The scrub applies **after** the intentional orientation markers are set and is **not** overridden by [`ALLOWED_ENV_VARS`](#allowed_env_vars): the list is admin-enforced, so users and projects can add names but never remove admin or default entries.
 
+The built-in defaults are a floor even without an admin baseline: `HIDE_FROM_SANDBOX=()` (or any reassignment) in `sandbox.conf` or `conf.d` still hides them, and only adds whatever the new list contains.
+
 The markers `SANDBOX_ACTIVE`, `SANDBOX_BACKEND`, `SANDBOX_PROJECT_DIR`, and `_CHAPERON_FIFO_DIR` are deliberately **not** hidden by default. Add `SANDBOX_BACKEND` to conceal which confinement mechanism is in use:
 
 ```bash
@@ -419,7 +444,11 @@ HIDE_FROM_SANDBOX+=("SANDBOX_BACKEND")
 
 **Type** array of `KEY=VALUE` strings · **Admin-enforced** additive · **Default** `()`
 
-Per-project environment variables applied to the host environment **before** the backend runs, so backend `PATH` prepends (chaperon stubs, sandbox bin) layer on top naturally. Set in `conf.d/*.conf` files guarded by `_PROJECT_DIR` so they only fire for the matching project.
+Per-project environment variables for the **sandboxed command**. Set in `conf.d/*.conf` files guarded by `_PROJECT_DIR` so they only fire for the matching project.
+
+- Entries are applied to the sandboxed command only (as `env NAME=VALUE… CMD` inside the sandbox). They never reach the launcher, the chaperon or the backend binary, so they cannot change how the sandbox itself is built.
+- `PATH` is the exception: it is set on the host before the backend runs, so the backend's `PATH` prepends (chaperon stubs, sandbox bin) layer on top naturally. (Host commands the launcher runs, such as Slurm commands brokered by the chaperon, see this `PATH` too.)
+- Rejected with a `WARNING: SANDBOX_ENV entry 'NAME' ignored: …` line: names that are not valid identifiers; sandbox config variables (`NETWORK_FILTER_MODE`, `PRIVATE_TMP`, `HOME_ACCESS`, … — set those as config values, where admin enforcement applies); launcher-internal names (leading `_`) and the `SANDBOX_*`, `CHAPERON_*`, `LANDLOCK_*`, `NETWORK_*` families; names in `HIDE_FROM_SANDBOX`; names blocked by `BLOCKED_ENV_VARS` / `BLOCKED_ENV_PATTERNS` (add them to `ALLOWED_ENV_VARS` to pass them); and names an enabled agent profile sets (e.g. `CLAUDE_CONFIG_DIR`).
 
 ```bash
 # conf.d/genomics.conf
@@ -475,7 +504,7 @@ Isolate `/tmp` with a private tmpfs. Each sandbox gets its own `/tmp`. Set to `f
 
 Isolate the SysV IPC namespace and `/dev/shm`. Each sandbox gets its own IPC namespace, preventing the agent from reading or corrupting shared memory of processes outside the sandbox. MPI/NCCL within a single Slurm job are unaffected — all ranks share one sandbox.
 
-**Backend support:** bwrap (`--unshare-ipc` + private `/dev/shm` tmpfs) and firejail (`--ipc-namespace`). Landlock cannot isolate IPC.
+**Backend support:** bwrap (`--unshare-ipc` + private `/dev/shm` tmpfs) and firejail (`--ipc-namespace` + an empty private `/dev/shm` in its private `/dev`; `/dev/shm` is blocked instead when `DEVICES` forces the host `/dev`). Landlock cannot isolate IPC.
 
 ### `FILTER_PASSWD`
 
@@ -501,6 +530,27 @@ Defense-in-depth against fork bombs. Caps the total processes the sandbox user c
 
 ```bash
 SANDBOX_NPROC_LIMIT="4096"
+```
+
+### `MOUNT_GUARD`
+
+**Type** scalar (`repair` | `kill` | `warn` | `off`) · **Admin-enforced** harden-only when the admin file sets it (off < warn < repair < kill) · **Default** `repair`
+Also `MOUNT_GUARD_INTERVAL` (whole seconds, default `5`).
+
+A bind mount can disappear from a sandbox **while it runs**. Linux detaches every mount on a path that is renamed over or deleted from another mount namespace, and an NFS client that finds a cached directory stale detaches every mount at or below it, in every namespace. Examples: an editor or `claude` outside the sandbox saving `~/.claude/settings.json` through a temp file and rename; a package upgrade replacing a masked `/usr/bin/sbatch`; a file server hiccup on the project filesystem. The path then shows whatever is mounted underneath. For the project dir that is usually a read-only parent (writes fail), but a lost read-only overlay or `BLOCKED_FILES` mask **fails open**.
+
+On bwrap and firejail a watcher runs outside the sandbox for the whole session. Every `MOUNT_GUARD_INTERVAL` seconds it compares the sandbox's mount table with the mounts the backend set up and reports each loss once, with a bell, on the launching terminal (and to syslog, and as a tmux message when `$TMUX` is set):
+
+- **exposed**: a mask, or a read-only overlay that now sits in a writable host mount, is gone on a policy path (under `$HOME`, the project dir, an `EXTRA_WRITABLE_PATHS` entry or the install dir, or a `BLOCKED_FILES`/`EXTRA_BLOCKED_PATHS` entry), or a read-only mount turned read-write. With `kill` (opt-in) the sandbox is terminated.
+- **degraded**: any other loss (a writable bind, a loss that falls through to something read-only or to a tmpfs, a system mask such as `/usr/bin/sbatch`). Reported only.
+
+`repair` (the default) puts a lost mask or read-only overlay back into the running sandbox and reports it (`… and RESTORED`). It re-creates the same kind of mount the backend set up, at the same path: `/dev/null` over a masked file, an empty tmpfs over a masked directory, a read-only bind of whatever is now at a path that was bound read-only onto itself (your `~/.claude/settings.json` after `claude` outside rewrote it, `.sandbox-state` after it was replaced). A repair never shows the sandbox anything it cannot already see and never grants write access. It is refused, and reported as by `warn`, when the path is now a symlink (for example one the agent planted while the path was exposed), is missing, changed type or owner, or when other expected mounts lived below it (a tmpfs `$HOME`); a refused repair is retried every interval, so a path that reappears is protected again. Writable binds are never re-created. Between the loss and the repair the path was exposed for up to `MOUNT_GUARD_INTERVAL` seconds, and whatever the agent read or wrote in that window stands; the report says so. Repair needs bwrap, Linux 5.12 or newer and `python3`; firejail's namespaces belong to root and cannot be entered, so there (and wherever repair is impossible) `repair` behaves as `warn`.
+
+`warn` reports both kinds and never terminates or repairs; `kill` terminates the sandbox on an exposure (and repairs nothing); `off` disables the watcher. Landlock has no mounts to watch. On firejail the report reaches the terminal only when stderr is a terminal (the setuid firejail process hides its descriptors); syslog always gets it.
+
+```bash
+MOUNT_GUARD="kill"          # terminate instead of repairing when a protected path is exposed
+MOUNT_GUARD_INTERVAL=2      # shorter exposure window before a repair (default 5)
 ```
 
 ### `SANDBOX_QUIET`
@@ -750,6 +800,8 @@ SANDBOX_ENV+=(
 ```
 
 The `_PROJECT_DIR` variable is set by the sandbox before sourcing conf.d files. Returning early when the project doesn't match keeps the file a no-op for unrelated projects.
+
+conf.d files are untrusted layers like `sandbox.conf`: admin enforcement is re-applied after them, and explicit launch overrides (`--backend`, the env vars listed under [How config is loaded](#how-config-is-loaded)) still win over anything they set.
 
 See `conf.d/example.conf` in the install for a template.
 

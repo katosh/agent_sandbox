@@ -459,12 +459,6 @@ backend_prepare() {
             BWRAP_ARGS+=(--bind "$HOME" "$HOME")
         fi
 
-        # Always hide credential directories
-        for _blocked_sub in "${_HOME_ALWAYS_BLOCKED[@]}"; do
-            local _bp="$HOME/$_blocked_sub"
-            [[ -e "$_bp" ]] && BWRAP_ARGS+=(--tmpfs "$_bp")
-        done
-
         # In read mode, writable paths still need explicit rw bind
         if [[ "${HOME_ACCESS}" == "read" ]]; then
             for subdir in "${HOME_WRITABLE[@]}"; do
@@ -474,9 +468,37 @@ backend_prepare() {
                 fi
             done
         fi
+
+        # Always hide credential paths (_home_blocked_paths). Emitted
+        # AFTER the HOME_WRITABLE binds so a writable ancestor (e.g.
+        # `.config` over `.config/gh`) cannot re-expose them (bwrap:
+        # later wins). Directories get a tmpfs; files get /dev/null
+        # (a tmpfs cannot be mounted on a file). A symlinked file is
+        # masked at its resolved path — bwrap refuses to bind onto a
+        # symlink destination; reads through the link hit the mask.
+        local _bp _blocked_sub
+        while IFS= read -r _blocked_sub; do
+            _bp="$HOME/$_blocked_sub"
+            if [[ -d "$_bp" ]]; then
+                BWRAP_ARGS+=(--tmpfs "$_bp")
+            elif [[ -e "$_bp" ]]; then
+                [[ -L "$_bp" ]] && _bp="$(readlink -f "$_bp")"
+                BWRAP_ARGS+=(--ro-bind /dev/null "$_bp")
+            fi
+        done < <(_home_blocked_paths)
     fi
 
-    BWRAP_ARGS+=(--ro-bind "$SANDBOX_DIR" "$SANDBOX_DIR")
+    # Sandbox install dir: read-only. Emitted here only when the project
+    # lives inside it (developing agent-sandbox itself), so the later
+    # writable project bind still wins for the project subtree.
+    # Otherwise it is emitted AFTER the project / EXTRA_WRITABLE_PATHS
+    # binds below, so a project or extra dir that CONTAINS the install
+    # dir cannot make the sandbox's own scripts writable.
+    local _sandbox_dir_ro_late=true
+    if _path_under "$project_dir" "$SANDBOX_DIR"; then
+        BWRAP_ARGS+=(--ro-bind "$SANDBOX_DIR" "$SANDBOX_DIR")
+        _sandbox_dir_ro_late=false
+    fi
 
     # Bind the project dir writable. Emitted HERE — before the
     # BLOCKED_FILES / EXTRA_BLOCKED_PATHS overlays and the .sandbox-state
@@ -496,6 +518,46 @@ backend_prepare() {
     if [[ "$project_dir" != "$HOME" ]]; then
         BWRAP_ARGS+=(--bind "$project_dir" "$project_dir")
     fi
+
+    # Additional writable directories. Emitted HERE, with the project
+    # bind and BEFORE every protective overlay below (BLOCKED_FILES,
+    # agent config RO files, EXTRA_BLOCKED_PATHS, .sandbox-state RO), so
+    # those overlays win at overlapping paths (bwrap: last wins).
+    # Previously they were bound after the overlays and silently
+    # re-exposed anything masked beneath them. Entries equal to or
+    # above $HOME are dropped by _effective_extra_writable_paths.
+    local _extra_rw
+    while IFS= read -r _extra_rw; do
+        if [[ -d "$_extra_rw" ]]; then
+            BWRAP_ARGS+=(--bind "$_extra_rw" "$_extra_rw")
+        fi
+    done < <(_effective_extra_writable_paths)
+
+    if $_sandbox_dir_ro_late; then
+        BWRAP_ARGS+=(--ro-bind "$SANDBOX_DIR" "$SANDBOX_DIR")
+    fi
+
+    # read/write HOME modes: re-apply the credential masks after the
+    # writable binds above, so an extra/project dir that contains one
+    # of them (e.g. a project dir that is a parent of ~/.ssh's target)
+    # cannot re-expose it.
+    if [[ "${HOME_ACCESS:-restricted}" == "read" || "${HOME_ACCESS:-restricted}" == "write" ]]; then
+        for _blocked_sub in "${_HOME_ALWAYS_BLOCKED[@]}"; do
+            local _bp="$HOME/$_blocked_sub"
+            [[ -e "$_bp" ]] && BWRAP_ARGS+=(--tmpfs "$_bp")
+        done
+    fi
+
+    # Always-read-only $HOME paths (_HOME_ALWAYS_READONLY, e.g. the
+    # sandbox's own ~/.config/agent-sandbox), every HOME_ACCESS mode.
+    # Emitted AFTER all writable binds above (HOME=write, HOME_WRITABLE,
+    # project dir, EXTRA_WRITABLE_PATHS) so none of them can re-expose
+    # it (bwrap: later wins), and BEFORE the BLOCKED_FILES /
+    # EXTRA_BLOCKED_PATHS overlays below so those still mask inside it.
+    local _aro
+    while IFS= read -r _aro; do
+        [[ -n "$_aro" ]] && BWRAP_ARGS+=(--ro-bind "$_aro" "$_aro")
+    done < <(_home_always_readonly_targets "$project_dir")
 
     # Agent-specific file hiding (e.g., CLAUDE.md, AGENTS.md) is handled
     # by BLOCKED_FILES, populated from agents/*/config.conf by _apply_agent_profiles().
@@ -567,17 +629,30 @@ backend_prepare() {
     # create lock files, session data, caches, etc.  Then overlay the
     # merged instruction files (CLAUDE.md, settings.json) as individual
     # read-only bind-mounts so the agent cannot modify them.
+    #
+    # All config dirs first, then each protected file exactly once: a
+    # protected file inside a config dir bound LATER would otherwise be
+    # covered by that dir's writable bind (previously papered over by
+    # re-emitting every protected file after every dir, which stacked
+    # one mount per enabled agent on each file).
+    local _any_agent_dir=false
     for _agent_dir in "${_AGENT_SANDBOX_CONFIG_DIRS[@]:-}"; do
         if [[ -n "$_agent_dir" && -d "$_agent_dir" ]]; then
             BWRAP_ARGS+=(--bind "$_agent_dir" "$_agent_dir")
-            # Protect merged config files — agent must not modify these
-            for _protected in "${_AGENT_PROTECTED_FILES[@]:-}"; do
-                if [[ -f "$_protected" ]]; then
-                    BWRAP_ARGS+=(--ro-bind "$_protected" "$_protected")
-                fi
-            done
+            _any_agent_dir=true
         fi
     done
+    if $_any_agent_dir; then
+        # Protect merged config files — agent must not modify these
+        local -A _protected_seen=()
+        for _protected in "${_AGENT_PROTECTED_FILES[@]:-}"; do
+            [[ -n "$_protected" && -z "${_protected_seen[$_protected]:-}" ]] || continue
+            _protected_seen[$_protected]=1
+            if [[ -f "$_protected" ]]; then
+                BWRAP_ARGS+=(--ro-bind "$_protected" "$_protected")
+            fi
+        done
+    fi
 
     for blocked in "${EXTRA_BLOCKED_PATHS[@]}"; do
         if [[ -d "$blocked" ]]; then
@@ -589,35 +664,19 @@ backend_prepare() {
     # BLOCKED_FILES / EXTRA_BLOCKED_PATHS inside it stay masked.)
 
     # .sandbox-state/ — chaperon-owned state subdir, RO-overlaid AFTER
-    # the writable project bind (path-keyed, later wins) so the agent
-    # can't tamper with the chaperon's slurm-log staging area or the
-    # chaperon diagnostic log. Threat-model framing + the distinction
+    # the writable project / extra binds (path-keyed, later wins) so the
+    # agent can't tamper with the chaperon's slurm-log staging area or
+    # the chaperon diagnostic log. Threat-model framing + the distinction
     # from reverted PR #50 is documented at sandbox-lib.sh's
-    # `.sandbox-state/` section. Only overlay when the dir exists —
-    # the chaperon mkdir's it lazily on first slurm submission.
+    # `.sandbox-state/` section. sandbox-exec.sh creates and sanitizes
+    # the dir (_prepare_sandbox_state_dir) BEFORE backend_prepare, so it
+    # always exists here; a missing dir means that step was bypassed and
+    # we fail closed rather than start with a writable staging area.
     local _state_dir="$project_dir/.sandbox-state"
-    if [[ -d "$_state_dir" ]]; then
-        BWRAP_ARGS+=(--ro-bind "$_state_dir" "$_state_dir")
+    if [[ ! -d "$_state_dir" || -L "$_state_dir" ]]; then
+        _prepare_sandbox_state_dir "$project_dir" bwrap || exit 1
     fi
-
-    # .sandbox-state/ — chaperon-owned state subdir, RO-overlaid AFTER
-    # the writable project bind (path-keyed, later wins) so the agent
-    # can't tamper with the chaperon's slurm-log staging area or the
-    # chaperon diagnostic log. Threat-model framing + the distinction
-    # from reverted PR #50 is documented at sandbox-lib.sh's
-    # `.sandbox-state/` section. Only overlay when the dir exists —
-    # the chaperon mkdir's it lazily on first slurm submission.
-    local _state_dir="$project_dir/.sandbox-state"
-    if [[ -d "$_state_dir" ]]; then
-        BWRAP_ARGS+=(--ro-bind "$_state_dir" "$_state_dir")
-    fi
-
-    # Additional writable directories
-    for _extra_rw in "${EXTRA_WRITABLE_PATHS[@]}"; do
-        if [[ -d "$_extra_rw" ]]; then
-            BWRAP_ARGS+=(--bind "$_extra_rw" "$_extra_rw")
-        fi
-    done
+    BWRAP_ARGS+=(--ro-bind "$_state_dir" "$_state_dir")
 
     # Mount /run as a tmpfs, then selectively bind only what's needed.
     # Mounting all of /run exposes D-Bus, systemd user sockets, and
@@ -656,7 +715,9 @@ backend_prepare() {
     # Overlay /etc/passwd, /etc/group, and /etc/nsswitch.conf with filtered
     # versions containing only system accounts + current user and disable LDAP.
     if _is_true "${FILTER_PASSWD:-true}"; then
-        generate_filtered_passwd
+        # Fail closed: FILTER_PASSWD is a hardening setting, and a passwd
+        # lacking the current user breaks getpwuid() (ssh/git) (#79).
+        generate_filtered_passwd || exit 1
         if [[ -n "${_FILTERED_PASSWD:-}" && -f "${_FILTERED_PASSWD:-}" ]]; then
             BWRAP_ARGS+=(--ro-bind "$_FILTERED_PASSWD" /etc/passwd)
             BWRAP_ARGS+=(--ro-bind "$_FILTERED_GROUP" /etc/group)
@@ -689,9 +750,19 @@ backend_prepare() {
     #
     # Null bytes in the BPF binary mean we MUST use a temp file — bash
     # variables silently truncate at \0.
+    #
+    # Every path that ends WITHOUT a filter warns loudly (not gated by
+    # SANDBOX_QUIET): previously a missing python3 skipped the filter
+    # silently, leaving io_uring / userfaultfd / TIOCSTI etc. reachable
+    # with no indication.
     _SECCOMP_TMPFILE=
     local _seccomp_py="${SANDBOX_DIR}/backends/generate-seccomp.py"
-    if [[ -f "$_seccomp_py" ]] && command -v python3 &>/dev/null; then
+    local _seccomp_skip=""
+    if [[ ! -f "$_seccomp_py" ]]; then
+        _seccomp_skip="generator $_seccomp_py is missing"
+    elif ! command -v python3 &>/dev/null; then
+        _seccomp_skip="python3 is not on PATH (needed to generate the BPF filter)"
+    else
         _SECCOMP_TMPFILE="$(mktemp "${TMPDIR:-/tmp}/bwrap-seccomp.XXXXXX")"
         if python3 "$_seccomp_py" > "$_SECCOMP_TMPFILE" 2>/dev/null; then
             local _bpf_size
@@ -700,15 +771,20 @@ backend_prepare() {
                 # Placeholder — replaced with real FD in backend_exec()
                 BWRAP_ARGS+=(--seccomp __SECCOMP_FD__)
             else
-                echo "sandbox: warning: seccomp BPF filter is empty, skipping" >&2
-                rm -f "$_SECCOMP_TMPFILE"
-                _SECCOMP_TMPFILE=
+                _seccomp_skip="the generated BPF filter is empty"
             fi
         else
-            echo "sandbox: warning: seccomp filter generation failed, skipping" >&2
+            _seccomp_skip="filter generation failed ($(uname -m) unsupported?)"
+        fi
+        if [[ -n "$_seccomp_skip" ]]; then
             rm -f "$_SECCOMP_TMPFILE"
             _SECCOMP_TMPFILE=
         fi
+    fi
+    if [[ -n "$_seccomp_skip" ]]; then
+        echo "sandbox: WARNING — running WITHOUT the seccomp filter: $_seccomp_skip." >&2
+        echo "  io_uring, userfaultfd, kexec, bpf, mount, ioctl(TIOCSTI) and the rest of the" >&2
+        echo "  denylist are NOT blocked in this session. Install python3 to restore it." >&2
     fi
 
     # Honor an inherited $SLURM_SUBMIT_DIR when it canonicalizes under
@@ -798,6 +874,51 @@ backend_prepare() {
 
 }
 
+# backend_mount_expectations — the mounts BWRAP_ARGS asks for, one
+# "<kind> <dest>" per line (kind: rw | ro | mask), for the mount guard
+# (sandbox-lib.sh §Mount guard). Device nodes, /dev and /proc are left
+# out. A kind may carry ":<how>", telling MOUNT_GUARD=repair how to
+# re-create it: mask:null (--ro-bind /dev/null), mask:tmpfs (--tmpfs),
+# ro:same (--ro-bind of a path onto itself). Read-only binds from
+# another source are not repairable (the source is usually not visible
+# inside, and a bind must come from the sandbox's own mount table). An option this parser does not know makes it print nothing (the
+# guard then stays off rather than guess the argument layout).
+backend_mount_expectations() {
+    local -a _a=("${BWRAP_ARGS[@]}") _out=()
+    local _i=0 _o _n=${#_a[@]}
+    while (( _i < _n )); do
+        _o="${_a[_i]}"
+        case "$_o" in
+            --bind|--bind-try|--dev-bind|--dev-bind-try)
+                [[ "${_a[_i+2]:-}" == /dev || "${_a[_i+2]:-}" == /dev/* ]] \
+                    || _out+=("rw ${_a[_i+2]}")
+                _i=$((_i + 3)) ;;
+            --ro-bind|--ro-bind-try)
+                if [[ "${_a[_i+1]}" == /dev/null ]]; then
+                    _out+=("mask:null ${_a[_i+2]}")
+                elif [[ "${_a[_i+1]}" == "${_a[_i+2]}" ]]; then
+                    _out+=("ro:same ${_a[_i+2]}")
+                else
+                    _out+=("ro ${_a[_i+2]}")
+                fi
+                _i=$((_i + 3)) ;;
+            --tmpfs)
+                [[ "${_a[_i+1]}" == /dev/* ]] || _out+=("mask:tmpfs ${_a[_i+1]}")
+                _i=$((_i + 2)) ;;
+            --setenv|--file|--bind-data|--ro-bind-data|--symlink|--chmod)
+                _i=$((_i + 3)) ;;
+            --unsetenv|--chdir|--proc|--dev|--dir|--remount-ro|--seccomp|--add-seccomp-fd|--perms|--size|--mqueue|--hostname|--uid|--gid|--lock-file|--sync-fd|--info-fd|--json-status-fd|--block-fd|--userns-block-fd|--cap-add|--cap-drop|--argv0|--exec-label|--file-label|--userns|--userns2|--pidns|--args)
+                _i=$((_i + 2)) ;;
+            --unshare-*|--share-net|--die-with-parent|--as-pid-1|--new-session|--clearenv|--disable-userns|--assert-userns-disabled)
+                _i=$((_i + 1)) ;;
+            *)
+                return 0 ;;
+        esac
+    done
+    (( ${#_out[@]} )) && printf '%s\n' "${_out[@]}"
+    return 0
+}
+
 backend_exec() {
     # Scrub sensitive vars from OUR environment before exec'ing bwrap.
     # --unsetenv only cleans the child (PID 2); bwrap itself is PID 1
@@ -863,16 +984,9 @@ backend_exec() {
           && -n "${_NETWORK_FILTER_HELPER:-}" ]]; then
         local _pasta="$_NETWORK_FILTER_HELPER"
 
-        # slirp4netns has a different CLI shape than pasta. We treat it
-        # as a degraded path: emit a loud warning + fall through to
-        # plain --unshare-net (effectively isolated). Full slirp4netns
-        # wiring is reserved for a follow-up.
-        if [[ "$(basename -- "$_pasta")" == "slirp4netns"* ]]; then
-            echo "sandbox: WARNING — slirp4netns helper detected but v1.1 only wires the pasta path; degrading to isolated mode." >&2
-            BWRAP_ARGS+=(--unshare-net)
-            _exec_or_run_sandbox "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
-            exit $?
-        fi
+        # Only pasta is ever resolved as the filtered-mode helper
+        # (_resolve_network_helper); slirp4netns-only hosts go through
+        # the normal NETWORK_FILTER_FALLBACK policy instead.
 
         local _pasta_args=(--foreground --quiet)
         if [[ -n "${_NETWORK_FILTER_PASTA_TCP_SPEC:-}" ]]; then

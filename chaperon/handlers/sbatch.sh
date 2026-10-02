@@ -67,13 +67,21 @@ handle_sbatch() {
     # --error) AND create_wrapped_script (#SBATCH-directive --output /
     # --error) have populated _STAGING_SLURM_*. Per-caller invocation
     # below.
+    #
+    # Refuses (returns 1) if any .sandbox-state component or the staging
+    # file itself is a symlink — see _sandbox_state_safe_mkdir.
     _materialise_staging_dirs() {
         [[ -z "${_STAGING_SLURM_OUTPUT:-}" && -z "${_STAGING_SLURM_ERROR:-}" ]] && return 0
-        _ensure_sandbox_state_dir "$project_dir"
-        [[ -n "${_STAGING_SLURM_OUTPUT:-}" ]] && \
-            mkdir -p -- "$(dirname -- "$_STAGING_SLURM_OUTPUT")" 2>/dev/null
-        [[ -n "${_STAGING_SLURM_ERROR:-}" ]] && \
-            mkdir -p -- "$(dirname -- "$_STAGING_SLURM_ERROR")" 2>/dev/null
+        if ! _ensure_sandbox_state_dir "$project_dir"; then
+            _sandbox_deny "refusing to submit: '$project_dir/.sandbox-state' failed the symlink/ownership check (see message above)."
+            return 1
+        fi
+        if [[ -n "${_STAGING_SLURM_OUTPUT:-}" ]]; then
+            _prepare_staging_output_path "$project_dir" "$_STAGING_SLURM_OUTPUT" || return 1
+        fi
+        if [[ -n "${_STAGING_SLURM_ERROR:-}" ]]; then
+            _prepare_staging_output_path "$project_dir" "$_STAGING_SLURM_ERROR" || return 1
+        fi
         return 0
     }
 
@@ -86,23 +94,40 @@ handle_sbatch() {
         local wrapper
         wrapper="$(mktemp "${TMPDIR:-/tmp}/chaperon-wrapper-XXXXXX.sh")"
 
-        create_wrapped_script "$sandbox_exec" "$project_dir" "$REQ_SCRIPT" "$wrapper" \
-            "${REQ_SCRIPT_ARGS[@]+"${REQ_SCRIPT_ARGS[@]}"}"
+        if ! create_wrapped_script "$sandbox_exec" "$project_dir" "$REQ_SCRIPT" "$wrapper" \
+            "${REQ_SCRIPT_ARGS[@]+"${REQ_SCRIPT_ARGS[@]}"}"; then
+            rm -f "$wrapper"
+            return 1
+        fi
 
-        _materialise_staging_dirs
+        if ! _materialise_staging_dirs; then
+            rm -f "$wrapper"
+            return 1
+        fi
 
         # Submit and clean up the local wrapper (only needed on login node).
+        # The wrapper goes after an explicit `--`, and every token before
+        # it must be a self-contained flag, so the batch script Slurm
+        # runs is exactly the chaperon's wrapper (never a user token that
+        # a misclassified flag left behind).
+        if ! _assert_slurm_flag_argv sbatch "$_SBATCH_VALUE_FLAGS" "${VALIDATED_ARGS[@]}"; then
+            rm -f "$wrapper"
+            return 1
+        fi
         local rc=0
-        "$real_sbatch" "${VALIDATED_ARGS[@]}" "$wrapper" || rc=$?
+        "$real_sbatch" "${VALIDATED_ARGS[@]}" -- "$wrapper" || rc=$?
         rm -f "$wrapper"
         return "$rc"
     else
         # No script: pass through flags (e.g., --help, --version, --test-only).
         # Only validate_sbatch_args could have populated captures here.
-        _materialise_staging_dirs
+        _materialise_staging_dirs || return 1
+        _assert_slurm_flag_argv sbatch "$_SBATCH_VALUE_FLAGS" "${VALIDATED_ARGS[@]}" || return 1
 
+        # stdin is /dev/null: without a script argument sbatch reads the
+        # batch script from stdin, which must never supply an unwrapped one.
         local rc=0
-        "$real_sbatch" "${VALIDATED_ARGS[@]}" || rc=$?
+        "$real_sbatch" "${VALIDATED_ARGS[@]}" </dev/null || rc=$?
         return "$rc"
     fi
 }

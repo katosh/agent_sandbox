@@ -169,7 +169,7 @@ backend_prepare() {
         # read/write: grant full HOME
         # NOTE: Landlock cannot hide subdirs (.ssh, .aws, .gnupg) when
         # the parent directory is already granted — rules are additive.
-        echo "sandbox: note: HOME_ACCESS=${HOME_ACCESS} with landlock cannot hide ~/.ssh, ~/.aws, ~/.gnupg (Landlock limitation)" >&2
+        echo "sandbox: note: HOME_ACCESS=${HOME_ACCESS} with landlock cannot hide credential paths (~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc, ~/.config/gh, …) (Landlock limitation)" >&2
         if [[ "${HOME_ACCESS}" == "read" ]]; then
             LANDLOCK_ARGS+=(--ro "$HOME")
             for subdir in "${HOME_WRITABLE[@]}"; do
@@ -187,10 +187,31 @@ backend_prepare() {
     # Project directory: writable
     LANDLOCK_ARGS+=(--rw "$project_dir")
 
-    # Additional writable directories
-    for _extra_rw in "${EXTRA_WRITABLE_PATHS[@]}"; do
+    # Additional writable directories. Entries equal to or above $HOME
+    # are dropped by _effective_extra_writable_paths (a writable $HOME
+    # ancestor would grant every credential file under it).
+    local _extra_rw
+    while IFS= read -r _extra_rw; do
         [[ -d "$_extra_rw" ]] && LANDLOCK_ARGS+=(--rw "$_extra_rw")
-    done
+    done < <(_effective_extra_writable_paths)
+
+    # Always-read-only $HOME paths (_HOME_ALWAYS_READONLY, e.g. the
+    # sandbox's own ~/.config/agent-sandbox). Landlock rules are
+    # additive: a read-only sub-path cannot be carved out of a writable
+    # grant. When a writable grant covers one, warn (not gated by
+    # SANDBOX_QUIET, like the credential note above) instead of
+    # silently leaving the sandbox's own config writable.
+    local _aro _aro_list=()
+    while IFS= read -r _aro; do
+        [[ -n "$_aro" ]] && _aro_list+=("$_aro")
+    done < <(_home_always_readonly_targets "$project_dir")
+    if [[ ${#_aro_list[@]} -gt 0 ]]; then
+        echo "sandbox: WARNING — landlock cannot make the sandbox's own config read-only under a writable grant (Landlock limitation); the sandboxed process can modify:" >&2
+        for _aro in "${_aro_list[@]}"; do
+            echo "  $_aro" >&2
+        done
+        echo "  Its settings apply on the NEXT launch. Use bwrap/firejail, or avoid HOME_ACCESS=write / writable ancestors of these paths." >&2
+    fi
 
     # --- Filter environment variables ---
     _warn_pattern_blocked_vars
@@ -236,16 +257,21 @@ backend_prepare() {
     # this gets a RO overlay to defend slurmstepd's open(--output)
     # against in-sandbox symlink-plant. Landlock cannot make a subtree
     # RO under a writable parent (additive-rules limitation), so the
-    # symlink-plant defense is unavailable here. The chaperon-side
+    # symlink-plant defense is unavailable here: an agent in THIS
+    # session can write anything under .sandbox-state/. The chaperon-side
     # handler detects $SANDBOX_BACKEND=landlock and disables the
     # path-transformation feature entirely (no transformation, no
-    # symlink, no chaperon log under .sandbox-state). One-time warning
-    # so operators on landlock know about the missing defense.
+    # symlink, no chaperon log under .sandbox-state), so this session's
+    # own jobs never write through it. sandbox-exec.sh purged planted
+    # links before this point (_prepare_sandbox_state_dir), so a later
+    # bwrap/firejail session starts clean; a bwrap/firejail session
+    # running CONCURRENTLY on the same project is not protected from
+    # links this session plants. One-time note so operators know.
     local _state_dir="$project_dir/.sandbox-state"
     if [[ -d "$_state_dir" ]] && ! _is_true "${SANDBOX_QUIET:-false}"; then
         echo "sandbox: NOTE — .sandbox-state/ exists at '$_state_dir' but landlock cannot RO-overlay it." >&2
         echo "  Slurm --output / --error path-transformation feature is disabled on landlock." >&2
-        echo "  Use bwrap or firejail backend for the symlink-plant defense against slurmstepd." >&2
+        echo "  Do not run bwrap/firejail sessions on this project concurrently with this one." >&2
     fi
 
 }
@@ -267,7 +293,18 @@ backend_exec() {
         unset "$_hv" 2>/dev/null || true
     done < <(_hide_from_sandbox_names)
 
-    python3 "$LANDLOCK_SANDBOX" "${LANDLOCK_ARGS[@]}" -- "$@"
+    # Start in the project dir, like bwrap's --chdir and firejail's
+    # --private-cwd (honoring an inherited $SLURM_SUBMIT_DIR under the
+    # project). Without this the command ran in whatever cwd the
+    # launcher was started from, and the chaperon (which validates the
+    # request cwd against the project) refused srun/sbatch.
+    cd -- "$(_resolve_inherited_cwd "$_LANDLOCK_PROJECT_DIR")" || exit 1
+
+    # exec (via _exec_or_run_sandbox) so the launcher PID becomes the
+    # sandboxed process: signals sent to the launcher (kill -TERM,
+    # Slurm's job-step teardown) reach the command instead of killing
+    # only this shell and orphaning the command.
+    _exec_or_run_sandbox python3 "$LANDLOCK_SANDBOX" "${LANDLOCK_ARGS[@]}" -- "$@"
     exit $?
 }
 

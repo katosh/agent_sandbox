@@ -37,13 +37,16 @@ _SRUN_VALUE_FLAGS=" \
   --mem --mem-per-cpu --mem-per-gpu --gres --constraint --export \
   --mpi --cpu-bind --gpu-bind --gpus-per-node --gpus-per-task \
   --ntasks-per-node --cpus-per-gpu --signal --switches \
-  --threads-per-core --network --begin --nice --priority --qos \
+  --threads-per-core --network --begin --priority --qos \
   --reservation --wckey --comment --mail-type --mail-user \
   --cpu-freq --deadline --delay-boot --epilog --prolog \
-  --task-epilog --task-prolog --input --kill-on-bad-exit \
-  --label --mcs-label --open-mode --profile --propagate \
-  --quit-on-interrupt --slurmd-debug --tmp --bcast \
+  --task-epilog --task-prolog --input \
+  --mcs-label --open-mode --profile \
+  --slurmd-debug --tmp \
 "
+# NOT listed (they never take the next word): optional-argument flags
+# (--nice, --kill-on-bad-exit, --propagate, --bcast, --exclusive; value
+# only with `=`) and no-argument flags (--label, --quit-on-interrupt).
 
 _is_value_flag() {
     [[ "$_SRUN_VALUE_FLAGS" == *" $1 "* ]]
@@ -89,5 +92,6 @@ if [[ ${#USER_CMD[@]} -eq 0 ]]; then
     exec "$REAL_SRUN" "${SRUN_FLAGS[@]}"
 fi
 
-exec "$REAL_SRUN" "${SRUN_FLAGS[@]}" \
+# `--` so that sandbox-exec.sh is always the command srun runs.
+exec "$REAL_SRUN" "${SRUN_FLAGS[@]}" -- \
     "$SCRIPT_DIR/sandbox-exec.sh" --project-dir "$PROJECT_DIR" -- "${USER_CMD[@]}"

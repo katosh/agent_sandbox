@@ -11,11 +11,15 @@
 # Since sandbox scripts live on NFS, they're available on every compute
 # node without extra setup.
 #
-# Flag parsing: this script does NOT maintain a list of sbatch flags.
-# It only looks for --wrap (which it must intercept) and the job script
-# (the first bare positional argument that exists as a file). Flag
-# values are consumed by peeking ahead, making this future-proof
-# against new Slurm versions adding flags.
+# Flag parsing: this script only looks for --wrap (which it must
+# intercept) and the job script (the first bare positional argument that
+# exists as a file). Flag values are consumed by peeking ahead; the only
+# list kept is of flags that NEVER take a separate-word value (value-less
+# flags and optional-argument long flags, which need `=`), so e.g.
+# `--exclusive job.sh` does not swallow the script name.
+#
+# DEPRECATED: inside the sandbox, plain `sbatch` goes through the
+# chaperon. This wrapper is kept for old setups only.
 
 set -euo pipefail
 
@@ -40,6 +44,18 @@ PROJECT_DIR="${SANDBOX_PROJECT_DIR:-$(pwd)}"
 
 ALL_ARGS=()
 WRAP_CMD=""
+
+# sbatch flags that never consume the following word as their value:
+# value-less flags, plus long flags whose argument is optional (Slurm
+# only accepts an optional argument attached with `=`).
+_NOVALUE_FLAGS=" -h --help --usage -V --version -v --verbose -Q --quiet
+  -H --hold -O --overcommit -s --oversubscribe -W --wait --parsable
+  --test-only --requeue --no-requeue --contiguous --reboot --spread-job
+  --use-min-nodes --ignore-pbs --exclusive --no-kill --get-user-env
+  --propagate --nice "
+_takes_no_value() {
+    [[ "$_NOVALUE_FLAGS" == *[[:space:]]"$1"[[:space:]]* ]]
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -87,13 +103,18 @@ else
                 # Long option with inline value (e.g., --mem=4G)
                 SBATCH_FLAGS+=("$arg")
                 ;;
+            -[!-]?*)
+                # Short option with its value attached (e.g. -pgpu, -N2).
+                SBATCH_FLAGS+=("$arg")
+                ;;
             -*)
                 # Flag that may consume the next argument as its value.
                 # If the next arg doesn't start with -, assume it's this
-                # flag's value. This safely skips values like "-o output.log"
-                # or "-p gpu" without needing a flag list.
+                # flag's value (skips values like "-o output.log" or
+                # "-p gpu") — unless the flag is known to take none.
                 SBATCH_FLAGS+=("$arg")
-                if [[ $((i+1)) -lt ${#ALL_ARGS[@]} && "${ALL_ARGS[$((i+1))]}" != -* ]]; then
+                if ! _takes_no_value "$arg" \
+                   && [[ $((i+1)) -lt ${#ALL_ARGS[@]} && "${ALL_ARGS[$((i+1))]}" != -* ]]; then
                     skip_next=true
                 fi
                 ;;
@@ -123,8 +144,34 @@ else
     # Extract #SBATCH directives from the original script
     SBATCH_DIRECTIVES=$(grep '^#SBATCH' "$SCRIPT_PATH" || true)
 
-    WRAPPER=$(mktemp /tmp/sbatch-sandbox-XXXXXX.sh)
-    trap "rm -f '$WRAPPER'" EXIT
+    # How to run the script on the compute node. sbatch does not require
+    # the script to be executable (it runs it via its #! line), so a
+    # non-executable script is started through its interpreter instead of
+    # failing with "Permission denied" inside the sandbox.
+    RUN_CMD=("$SCRIPT_PATH")
+    if [[ ! -x "$SCRIPT_PATH" ]]; then
+        _shebang=""
+        IFS= read -r _shebang < "$SCRIPT_PATH" || true
+        if [[ "$_shebang" == '#!'* ]]; then
+            _shebang="${_shebang#\#!}"
+            _shebang="${_shebang#"${_shebang%%[![:space:]]*}"}"   # ltrim
+            _shebang="${_shebang%"${_shebang##*[![:space:]]}"}"   # rtrim
+            _interp="${_shebang%%[[:space:]]*}"
+            _iarg="${_shebang#"$_interp"}"
+            _iarg="${_iarg#"${_iarg%%[![:space:]]*}"}"
+            RUN_CMD=("$_interp")
+            # Linux passes everything after the interpreter as ONE argument.
+            [[ -n "$_iarg" ]] && RUN_CMD+=("$_iarg")
+            RUN_CMD+=("$SCRIPT_PATH")
+        else
+            RUN_CMD=(/bin/bash "$SCRIPT_PATH")
+        fi
+    fi
+
+    WRAPPER=$(mktemp "${TMPDIR:-/tmp}/sbatch-sandbox-XXXXXX.sh")
+    # Not exec'ing sbatch below, so this trap actually runs. sbatch copies
+    # the script at submission; removing it afterwards is safe.
+    trap 'rm -f -- "$WRAPPER"' EXIT
 
     # Use a quoted heredoc to prevent expansion of SBATCH directive
     # contents (defense against $(cmd) in #SBATCH --comment="$(cmd)").
@@ -133,8 +180,10 @@ else
         printf '#!/bin/bash --\n'
         printf '%s\n' "$SBATCH_DIRECTIVES"
         printf '\n# --- Sandbox wrapper (auto-generated) ---\n'
-        printf 'exec %q --project-dir %q -- %q' \
-            "$SANDBOX_EXEC" "$PROJECT_DIR" "$SCRIPT_PATH"
+        printf 'exec %q --project-dir %q --' "$SANDBOX_EXEC" "$PROJECT_DIR"
+        for _sa in "${RUN_CMD[@]}"; do
+            printf ' %q' "$_sa"
+        done
         for _sa in "${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}"; do
             printf ' %q' "$_sa"
         done
@@ -142,5 +191,7 @@ else
     } > "$WRAPPER"
 
     chmod +x "$WRAPPER"
-    exec "$REAL_SBATCH" "${SBATCH_FLAGS[@]}" "$WRAPPER"
+    _rc=0
+    "$REAL_SBATCH" "${SBATCH_FLAGS[@]+"${SBATCH_FLAGS[@]}"}" "$WRAPPER" || _rc=$?
+    exit "$_rc"
 fi

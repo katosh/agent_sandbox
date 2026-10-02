@@ -141,9 +141,116 @@ ENABLED_AGENTS=("claude" "codex" "gemini")
 HOME_ACCESS="tmpwrite"
 
 # Credential dirs that are ALWAYS hidden regardless of HOME_ACCESS mode.
-# In restricted mode these are hidden implicitly (never listed in HOME_READONLY).
-# In read/write modes they are explicitly blocked (tmpfs/blacklist).
+# In restricted/tmpwrite mode these are hidden unless listed in
+# HOME_READONLY/HOME_WRITABLE (the tmpfs HOME only shows listed paths).
+# In read/write modes they are masked unconditionally (tmpfs/blacklist).
 _HOME_ALWAYS_BLOCKED=(".ssh" ".aws" ".gnupg")
+
+# Further credential stores (dirs or files) hidden in read/write modes.
+# In tmpwrite/restricted mode they are already invisible unless listed.
+# To keep that mode's opt-in semantics, an entry listed VERBATIM in
+# HOME_READONLY / HOME_WRITABLE / HOME_SEEDED_FILES (e.g. the shipped
+# `".config/gh"` example) stays visible in read/write mode as well;
+# everything else is masked (bwrap: tmpfs over dirs, /dev/null over
+# files; firejail: blacklist; landlock cannot hide — it warns).
+# Not a config variable: configs can opt entries in, never shrink it.
+_HOME_CREDENTIAL_PATHS=(
+    ".netrc"                   # curl/wget/git HTTP basic auth
+    ".git-credentials"         # git credential-store
+    ".config/gh"               # GitHub CLI OAuth token (hosts.yml)
+    ".config/hub"              # hub CLI token
+    ".docker/config.json"      # registry auth
+    ".kube"                    # kubeconfig + cached tokens
+    ".config/gcloud"           # Google Cloud credentials
+    ".azure"                   # Azure CLI tokens
+    ".config/op"               # 1Password CLI session
+    ".config/helm"             # Helm repository credentials
+    ".terraform.d"             # Terraform Cloud login token
+    ".vault-token"             # HashiCorp Vault token
+    ".pgpass"                  # PostgreSQL passwords
+    ".pypirc"                  # PyPI upload tokens
+    ".cargo/credentials.toml"  # crates.io token
+    ".cargo/credentials"       # crates.io token (older cargo)
+)
+
+# Emit the $HOME-relative paths to mask in HOME_ACCESS=read|write, one
+# per line: every _HOME_ALWAYS_BLOCKED entry, plus each
+# _HOME_CREDENTIAL_PATHS entry not explicitly opted in (see above).
+_home_blocked_paths() {
+    local _p _l _listed
+    for _p in "${_HOME_ALWAYS_BLOCKED[@]}"; do
+        printf '%s\n' "$_p"
+    done
+    for _p in "${_HOME_CREDENTIAL_PATHS[@]}"; do
+        _listed=false
+        for _l in "${HOME_READONLY[@]+"${HOME_READONLY[@]}"}" \
+                  "${HOME_WRITABLE[@]+"${HOME_WRITABLE[@]}"}" \
+                  "${HOME_SEEDED_FILES[@]+"${HOME_SEEDED_FILES[@]}"}"; do
+            [[ "${_l%/}" == "$_p" ]] && { _listed=true; break; }
+        done
+        $_listed || printf '%s\n' "$_p"
+    done
+    return 0
+}
+
+# $HOME-relative paths that are ALWAYS read-only inside the sandbox, in
+# every HOME_ACCESS mode. The sandbox's own config dir holds the user
+# config (sandbox.conf / user.conf), conf.d/ and agents/ templates (all
+# read on the next launch) and the per-launch filtered passwd/group
+# files (.passwd-filter/, bind-mounted into OTHER running sandboxes). A
+# sandbox that can write there can weaken its own next launch.
+# Not a config variable: nothing inside the sandbox legitimately writes
+# here (all writers run host-side, before the sandbox starts). Backends
+# apply it AFTER every writable bind/grant (HOME_WRITABLE, project dir,
+# EXTRA_WRITABLE_PATHS), so a writable ancestor cannot re-expose it.
+_HOME_ALWAYS_READONLY=(".config/agent-sandbox")
+
+# _home_always_readonly_targets PROJECT_DIR — emit the absolute host
+# paths the backend must make read-only, one per line. An entry is
+# emitted only when some writable grant overlaps it (HOME_ACCESS=write's
+# whole $HOME, a HOME_WRITABLE entry, the project dir or an
+# EXTRA_WRITABLE_PATHS entry, each compared literally and resolved);
+# otherwise it is already read-only or invisible, and re-binding it
+# would needlessly EXPOSE it in the tmpfs-HOME modes. For each such
+# entry both the literal path and, if different, its symlink-resolved
+# path are emitted (mirrors BLOCKED_FILES): the literal path covers a
+# symlinked ancestor inside a writable bind, the resolved path covers a
+# symlinked leaf. A leaf that is itself a symlink is not emitted
+# literally (bwrap cannot mount onto a symlink destination; the
+# resolved path covers access through it).
+_home_always_readonly_targets() {
+    local project_dir="$1" _rel _lit _res _w _wr _t _overlap
+    local -a _writable=()
+    [[ "${HOME_ACCESS:-}" == "write" ]] && _writable+=("$HOME")
+    for _w in "${HOME_WRITABLE[@]+"${HOME_WRITABLE[@]}"}"; do
+        [[ -n "$_w" ]] && _writable+=("$HOME/${_w%/}")
+    done
+    [[ -n "$project_dir" ]] && _writable+=("$project_dir")
+    while IFS= read -r _w; do
+        [[ -n "$_w" ]] && _writable+=("$_w")
+    done < <(_effective_extra_writable_paths 2>/dev/null)
+
+    for _rel in "${_HOME_ALWAYS_READONLY[@]}"; do
+        _lit="$HOME/$_rel"
+        [[ -e "$_lit" ]] || continue
+        _res="$(readlink -f -- "$_lit" 2>/dev/null)" || _res="$_lit"
+        [[ -n "$_res" ]] || _res="$_lit"
+        _overlap=false
+        for _w in "${_writable[@]+"${_writable[@]}"}"; do
+            _wr="$(readlink -f -- "$_w" 2>/dev/null)" || _wr="$_w"
+            for _t in "$_lit" "$_res"; do
+                if _path_under "$_t" "$_w" || _path_under "$_w" "$_t" \
+                   || { [[ -n "$_wr" ]] && { _path_under "$_t" "$_wr" || _path_under "$_wr" "$_t"; }; }; then
+                    _overlap=true; break 2
+                fi
+            done
+        done
+        $_overlap || continue
+        [[ -L "$_lit" ]] || printf '%s\n' "$_lit"
+        [[ "$_res" != "$_lit" ]] && printf '%s\n' "$_res"
+    done
+    return 0
+}
 
 BLOCKED_FILES=(
     # Per-agent instruction files (e.g. ~/.claude/CLAUDE.md,
@@ -157,9 +264,12 @@ EXTRA_BLOCKED_PATHS=()
 
 EXTRA_WRITABLE_PATHS=()
 
-# Per-project environment variables (KEY=VALUE strings).
-# Applied to the host environment before the backend runs, so backend
-# PATH prepends (chaperon stubs, sandbox bin) layer on top naturally.
+# Per-project environment variables (KEY=VALUE strings) for the
+# SANDBOXED COMMAND. Applied to the child only (never to the launcher
+# shell, so they cannot change sandbox settings); see
+# _prepare_sandbox_env for the rules. PATH is the one exception: it is
+# exported host-side before the backend runs, so backend PATH prepends
+# (chaperon stubs, sandbox bin) layer on top naturally.
 # Use ${PATH} in values to reference the current PATH, e.g.:
 #   SANDBOX_ENV+=("PATH=/my/bin:${PATH}")
 # Set these in conf.d/*.conf files, guarded by _PROJECT_DIR.
@@ -186,6 +296,8 @@ _FILTER_PASSWD_OVERRIDE="${FILTER_PASSWD:-}"
 _NETWORK_FILTER_MODE_OVERRIDE="${NETWORK_FILTER_MODE:-}"
 _NETWORK_FILTER_FALLBACK_OVERRIDE="${NETWORK_FILTER_FALLBACK:-}"
 _NETWORK_MAIL_BLOCK_OVERRIDE="${NETWORK_MAIL_BLOCK:-}"
+_MOUNT_GUARD_OVERRIDE="${MOUNT_GUARD:-}"
+_MOUNT_GUARD_INTERVAL_OVERRIDE="${MOUNT_GUARD_INTERVAL:-}"
 
 PRIVATE_TMP=true
 
@@ -215,7 +327,7 @@ FILTER_PASSWD=true
 #               behaviour. Use only when the workload explicitly needs
 #               host-equivalent network reach AND host-side mail policy
 #               already covers identity-hijack.
-#     filtered: new netns + helper (pasta or slirp4netns); applies the
+#     filtered: new netns + pasta helper; applies the
 #               default-deny floor below plus user/admin NETWORK_BLOCKLIST
 #               additions. The agent retains general outbound TCP/UDP/DNS
 #               but loses the threat-class ports.
@@ -359,6 +471,9 @@ DEVICES=(
     /dev/nvidia-modeset
     /dev/nvidiactl
 )
+# Snapshot of the built-in list: the non-bwrap warning below fires only
+# when a config actually changed DEVICES, not for the shipped defaults.
+_DEFAULT_DEVICES=("${DEVICES[@]}")
 
 # Devices that may NEVER be bind-mounted, even when listed in DEVICES.
 # Admin-enforceable: when an admin sandbox.conf is present, its
@@ -404,6 +519,30 @@ SANDBOX_BACKEND="${SANDBOX_BACKEND:-}"
 # Note: counts per-UID system-wide, not per-sandbox. Admin cgroups with
 # pids.max are the primary defense; this is a supplemental safeguard.
 SANDBOX_NPROC_LIMIT=""
+
+# Mount guard (bwrap/firejail). A bind mount can vanish from a RUNNING
+# sandbox: the kernel detaches every mount on a path that is renamed or
+# unlinked from another mount namespace, and an NFS client that finds a
+# cached directory stale detaches every mount at or below it
+# (d_invalidate). A lost read-only overlay or mask fails OPEN. A
+# host-side watcher compares the sandbox's /proc/<pid>/mountinfo with the
+# protective mounts the backend set up, every MOUNT_GUARD_INTERVAL
+# seconds, and reports any loss on the launching terminal (plus syslog
+# and tmux, when available):
+#   repair — (default) put a lost read-only overlay or mask back in the
+#          running sandbox (bwrap: same kind of mount, same path, source
+#          verified; see backends/mount-repair.py) and report it; when
+#          that is impossible or unsafe (firejail, an old kernel, a
+#          symlink at the path), report as warn does.
+#   kill — terminate the sandbox when a loss exposes a
+#          protected path (a masked file/dir becomes visible, or a
+#          read-only overlay inside a writable host mount becomes
+#          writable); other losses are reported only.
+#   warn — report every loss, never terminate or repair.
+#   off  — no watcher.
+# Harden-only under an admin pin (off < warn < repair < kill).
+MOUNT_GUARD="repair"
+MOUNT_GUARD_INTERVAL=5
 
 # Landlock ABI floor (landlock backend only). Empty means "use the
 # helper's defaults" — see backends/landlock-sandbox.py
@@ -469,6 +608,12 @@ HIDE_FROM_SANDBOX=(
     "SANDBOX_NPROC_LIMIT"
     "SANDBOX_CONF"
 )
+# Built-in floor, snapshotted before any config layer runs. Not a config
+# variable (configs cannot name it), so it survives `HIDE_FROM_SANDBOX=()`
+# in user config or conf.d even when no admin baseline exists:
+# _hide_from_sandbox_names always emits floor ∪ HIDE_FROM_SANDBOX.
+# Mirrors the _NETWORK_BLOCKLIST_DEFAULTS floor pattern.
+_HIDE_FROM_SANDBOX_DEFAULTS=("${HIDE_FROM_SANDBOX[@]}")
 
 # Credential-pattern globs: block env vars matching common credential naming
 # conventions. Configurable via sandbox.conf / user.conf (admin-enforced).
@@ -533,13 +678,21 @@ _is_allowed_env() {
 # outright — it is not a sandbox-setting var, and scrubbing it yields
 # a sandbox where nothing resolves; a listed PATH is always a
 # misconfiguration, so warn instead of obeying.
+#
+# The built-in defaults (_HIDE_FROM_SANDBOX_DEFAULTS) are always
+# emitted first, whatever the config layers did to HIDE_FROM_SANDBOX,
+# so the documented "users can add names but never remove default
+# entries" holds without an admin baseline too. Duplicates collapse.
 _hide_from_sandbox_names() {
-    local _hv
-    for _hv in "${HIDE_FROM_SANDBOX[@]+"${HIDE_FROM_SANDBOX[@]}"}"; do
+    local _hv _seen=" "
+    for _hv in "${_HIDE_FROM_SANDBOX_DEFAULTS[@]+"${_HIDE_FROM_SANDBOX_DEFAULTS[@]}"}" \
+               "${HIDE_FROM_SANDBOX[@]+"${HIDE_FROM_SANDBOX[@]}"}"; do
         if [[ "$_hv" == "PATH" ]]; then
             echo "WARNING: HIDE_FROM_SANDBOX entry 'PATH' would break every in-sandbox exec — ignored." >&2
             continue
         fi
+        [[ "$_seen" == *" $_hv "* ]] && continue
+        _seen+="$_hv "
         printf '%s\n' "$_hv"
     done
 }
@@ -648,6 +801,8 @@ _kernel_at_least() {
 # prevent an agent from redirecting it to a controlled directory.
 #
 # Without an admin config, $_USER_DATA_DIR/sandbox.conf is the only config.
+# SANDBOX_CONF (env) swaps which file is used as the user layer (3); it
+# never bypasses the admin layer (2).
 # See docs/admin/install.md for setup instructions.
 
 # Preserve any SANDBOX_BACKEND set via environment or --backend flag
@@ -662,25 +817,46 @@ _ADMIN_CONF=""
 _USER_CONF=""
 _ADMIN_DIR="/app/lib/agent-sandbox"
 
-if [[ "${SANDBOX_CONF:-}" != "" && "$SANDBOX_CONF" != "$_USER_DATA_DIR/sandbox.conf" ]]; then
-    # Explicit SANDBOX_CONF override — single config, backward compat
-    _USER_CONF="$SANDBOX_CONF"
-elif [[ -f "$_ADMIN_DIR/sandbox.conf" ]]; then
-    # Admin-installed: admin config is authoritative, user gets user.conf
-    _ADMIN_CONF="$_ADMIN_DIR/sandbox.conf"
-    if [[ -f "$_USER_DATA_DIR/user.conf" ]]; then
-        _USER_CONF="$_USER_DATA_DIR/user.conf"
-    elif [[ -f "$_USER_DATA_DIR/sandbox.conf" ]]; then
-        # Fallback: accept sandbox.conf as user config (common when users
-        # have customized sandbox.conf before admin install was deployed).
-        _USER_CONF="$_USER_DATA_DIR/sandbox.conf"
-    else
-        _USER_CONF="$_USER_DATA_DIR/user.conf"  # Expected path (will be missing)
+# The admin baseline ALWAYS applies when present. SANDBOX_CONF only
+# chooses which file is loaded as the (untrusted) USER layer; it can
+# never skip or replace the admin layer. Previously an explicit
+# SANDBOX_CONF short-circuited the admin branch entirely, so anyone who
+# could set one env var (a user, or an agent via a Slurm --export on
+# the compute-node re-entry) silently dropped every admin pin.
+#
+# Factored into a function so test-admin-narrowing.sh can exercise the
+# selection against a scratch admin dir. The production call below
+# passes the hardcoded $_ADMIN_DIR; there is no env hook.
+#
+# Sets: _ADMIN_CONF (empty when no admin baseline), _USER_CONF.
+_select_config_files() {
+    local _admin_dir="$1"
+    _ADMIN_CONF=""
+    _USER_CONF=""
+    if [[ -f "$_admin_dir/sandbox.conf" ]]; then
+        _ADMIN_CONF="$_admin_dir/sandbox.conf"
     fi
-else
-    # User-only install: single config
-    _USER_CONF="$_USER_DATA_DIR/sandbox.conf"
-fi
+
+    if [[ "${SANDBOX_CONF:-}" != "" && "$SANDBOX_CONF" != "$_USER_DATA_DIR/sandbox.conf" ]]; then
+        # Explicit SANDBOX_CONF override — replaces the user layer only.
+        _USER_CONF="$SANDBOX_CONF"
+    elif [[ -n "$_ADMIN_CONF" ]]; then
+        # Admin-installed: admin config is authoritative, user gets user.conf
+        if [[ -f "$_USER_DATA_DIR/user.conf" ]]; then
+            _USER_CONF="$_USER_DATA_DIR/user.conf"
+        elif [[ -f "$_USER_DATA_DIR/sandbox.conf" ]]; then
+            # Fallback: accept sandbox.conf as user config (common when users
+            # have customized sandbox.conf before admin install was deployed).
+            _USER_CONF="$_USER_DATA_DIR/sandbox.conf"
+        else
+            _USER_CONF="$_USER_DATA_DIR/user.conf"  # Expected path (will be missing)
+        fi
+    else
+        # User-only install: single config
+        _USER_CONF="$_USER_DATA_DIR/sandbox.conf"
+    fi
+}
+_select_config_files "$_ADMIN_DIR"
 
 # --- Auto-init: deploy user config ---
 # Always deploy the full sandbox.conf template to the user dir, even
@@ -745,8 +921,13 @@ _CONFIG_SCALARS=(
     SLURM_SCOPE HOME_ACCESS SANDBOX_QUIET SANDBOX_NPROC_LIMIT
     CHAPERON_LOG_LEVEL CHAPERON_LOG_RETAIN_DAYS
     LANDLOCK_REQUIRED_ABI LANDLOCK_HARD_REQUIREMENT
+    MOUNT_GUARD MOUNT_GUARD_INTERVAL
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
+# Consumed by _enforce_admin_policy (via _restore_enforced_array): every
+# name listed here is restored from its _ADMIN_<NAME> snapshot after each
+# untrusted layer. Adding a name here requires a matching snapshot line
+# in _snapshot_admin_config.
 _ENFORCED_ARRAYS=(BLOCKED_FILES BLOCKED_ENV_VARS BLOCKED_ENV_PATTERNS EXTRA_BLOCKED_PATHS DEVICES_BLACKLIST NETWORK_BLOCKLIST NETWORK_BLOCKLIST_EXCEPT HIDE_FROM_SANDBOX)
 
 # --- Load an untrusted config file in an isolated subprocess ---
@@ -991,6 +1172,135 @@ _resolve_path() {
 # `chaperon/handlers/_handler_lib.sh::_ensure_sandbox_state_dir`) does
 # not source `sandbox-lib.sh`. Keeping the path literal here avoids the
 # duplicate-function-definition smell at the cost of a string.
+#
+# Launcher-side lifecycle (_prepare_sandbox_state_dir below). The RO
+# overlay only protects a directory that EXISTS when the backend argv is
+# built. Before this was enforced, the chaperon created the dir lazily
+# (after backend_prepare), so the first session in a fresh project got
+# a WRITABLE .sandbox-state and could plant
+# `slurm-logs/<name> -> ~/.bashrc`; slurmstepd (host side, outside the
+# sandbox) then wrote attacker-chosen job output through the link.
+# Reproduced on real Slurm. The launcher therefore:
+#
+#   1. refuses/repairs a .sandbox-state (or slurm-logs/, chaperon/) that
+#      is a symlink or not a directory — a symlinked state dir would
+#      also make the RO bind follow the link and expose its target;
+#   2. creates .sandbox-state/{slurm-logs,chaperon} BEFORE
+#      backend_prepare on bwrap/firejail, so the RO overlay always
+#      applies, including in the first session;
+#   3. purges symlinks, multiply-linked regular files and special files
+#      anywhere under .sandbox-state. None of these are ever created by
+#      the chaperon or slurmstepd; any that exist were planted by an
+#      earlier session that had write access (a pre-fix session, or a
+#      landlock session, which can never RO-protect the dir).
+#
+# Step 3 runs on every backend, including landlock, so a later
+# bwrap/firejail session never inherits a link planted by an earlier
+# landlock session. What it cannot close: a landlock session running
+# CONCURRENTLY on the same project can plant a link at any time (the
+# project tree is writable to it and landlock has no mount overlay), so
+# a bwrap/firejail session's job can race it. Do not mix landlock with
+# other backends on the same project on shared-Slurm hosts.
+_prepare_sandbox_state_dir() {
+    local _proj="$1" _backend="$2"
+    local _state="$_proj/.sandbox-state"
+    local _create=false
+    case "$_backend" in
+        bwrap|firejail) _create=true ;;
+    esac
+
+    # (1) the entry itself, then each chaperon-owned subdir.
+    local _p
+    for _p in "$_state" "$_state/slurm-logs" "$_state/chaperon"; do
+        if [[ -L "$_p" ]]; then
+            echo "sandbox: WARNING — '$_p' is a symlink (-> $(readlink -- "$_p" 2>/dev/null)); planted by an earlier session? Removing it." >&2
+            if ! rm -f -- "$_p"; then
+                echo "Error: cannot remove symlink '$_p'. Remove it by hand and retry." >&2
+                return 1
+            fi
+        fi
+        if [[ -e "$_p" && ! -d "$_p" ]]; then
+            echo "Error: '$_p' exists but is not a directory." >&2
+            echo "  It is chaperon-owned state; move it aside and retry:  mv -- '$_p' '$_p.bak'" >&2
+            return 1
+        fi
+        if [[ ! -d "$_p" ]]; then
+            # Nothing to protect and nothing to create (landlock, no
+            # state yet): done. On landlock the chaperon keeps its logs
+            # outside the project and disables the output staging.
+            [[ -d "$_state" ]] || $_create || return 0
+            $_create || continue
+            # mkdir (not -p): the parent was just verified to be a real
+            # directory, and -p would follow a symlink raced in between.
+            if ! mkdir -m 700 -- "$_p" 2>/dev/null && [[ ! -d "$_p" || -L "$_p" ]]; then
+                echo "Error: cannot create '$_p' (needed so the sandbox can mount it read-only)." >&2
+                return 1
+            fi
+        fi
+    done
+    [[ -d "$_state" ]] || return 0
+    chmod 700 -- "$_state" 2>/dev/null || true
+
+    # (3) purge planted links / special files anywhere under the state
+    # dir. find -P never follows symlinks, and -delete on a symlink
+    # removes the link, not its target.
+    local _planted
+    _planted="$(find -P "$_state" -mindepth 1 \
+        \( -type l -o \( -type f -links +1 \) -o \( ! -type f ! -type d \) \) \
+        -print -delete 2>/dev/null)" || true
+    if [[ -n "$_planted" ]]; then
+        echo "sandbox: WARNING — removed entries under '$_state' that the chaperon never creates (symlinks / hard links / special files, planted by an earlier session):" >&2
+        printf '%s\n' "$_planted" | head -20 | sed 's/^/  /' >&2
+    fi
+
+    # Final invariant (fail closed): the physical path of the state dir
+    # is exactly where we expect it. $_proj is already physical
+    # (sandbox-exec.sh resolves it with pwd -P).
+    local _phys
+    _phys="$(cd -P -- "$_state" 2>/dev/null && pwd)" || _phys=""
+    if [[ -L "$_state" || "$_phys" != "$_state" ]]; then
+        echo "Error: '$_state' does not resolve to itself (got '${_phys:-?}'); refusing to start." >&2
+        return 1
+    fi
+    return 0
+}
+
+# _is_home_or_ancestor PATH: true if PATH (literal or canonical) equals
+# $HOME or is an ancestor of it (e.g. /home, /). A writable bind of such
+# a path covers the whole home directory — credential masks, the tmpfs
+# HOME blank slate and the protected agent config — so neither the
+# project dir (L3) nor an EXTRA_WRITABLE_PATHS entry (L2) may be one.
+_is_home_or_ancestor() {
+    local _d="$1" _dr _h _hr
+    [[ -n "$_d" ]] || return 1
+    _dr="$(_resolve_path "$_d")"
+    _h="${HOME%/}"
+    _hr="$(_resolve_path "$HOME")"
+    local _a _b
+    for _a in "$_d" "$_dr"; do
+        for _b in "$_h" "$_hr"; do
+            _path_under "$_b" "$_a" && return 0
+        done
+    done
+    return 1
+}
+
+# _effective_extra_writable_paths: print (one per line) the
+# EXTRA_WRITABLE_PATHS entries a backend may bind writable. Drops, with
+# a warning, entries that equal or contain $HOME: binding those
+# writable would undo the home isolation wholesale. Backends must use
+# this instead of iterating EXTRA_WRITABLE_PATHS directly.
+_effective_extra_writable_paths() {
+    local _e
+    for _e in "${EXTRA_WRITABLE_PATHS[@]}"; do
+        [[ -n "$_e" ]] || continue
+        if _is_home_or_ancestor "$_e"; then
+            echo "sandbox: WARNING — EXTRA_WRITABLE_PATHS entry '$_e' is \$HOME or an ancestor of it; ignored (it would re-expose ~/.ssh and every other masked path). List specific subdirectories instead." >&2
+            continue
+        fi
+        printf '%s\n' "$_e"
+    done
+}
 
 # _path_under: returns 0 if CHILD is identical to PARENT or is a proper
 # subdirectory of PARENT.  Trailing slashes are stripped.  The "/"
@@ -1129,75 +1439,95 @@ _narrow_allowed_project_parents() {
     ALLOWED_PROJECT_PARENTS=("${_effective[@]}")
 }
 
-# --- Enforce admin policy: compare extracted values against admin snapshot ---
+# --- Writable-vs-admin-read-only overlap (HOME_READONLY escalation) ---
 #
-# After loading untrusted config (user.conf or conf.d), this function:
-# 1. Warns about removed admin entries or overridden scalars
-# 2. Restores admin values as the base
-# 3. Merges user additions on top
-# 4. Strips DENIED_WRITABLE_PATHS violations (resolves symlinks to block
-#    indirection attacks — see the DENIED_WRITABLE_PATHS section below)
+# _path_forms: print the lexically normalized form (`.`/`..`/`//`
+# collapsed, symlinks NOT followed) and the symlink-resolved form of
+# each argument, as "<lexical>\t<resolved>" lines. realpath -m accepts
+# missing components; falls back to the literal / _resolve_path.
+_path_forms() {
+    local _p _lex _res
+    for _p in "$@"; do
+        _lex="$(realpath -m -s -- "$_p" 2>/dev/null)" || _lex="$_p"
+        _res="$(realpath -m -- "$_p" 2>/dev/null)" || _res="$(_resolve_path "$_p")"
+        printf '%s\t%s\n' "$_lex" "$_res"
+    done
+}
+
+# Precompute the admin HOME_READONLY forms once per enforcement pass.
+# Sets _ADMIN_RO_NAMES / _ADMIN_RO_LEX / _ADMIN_RO_RES (parallel arrays).
+_collect_admin_ro_forms() {
+    _ADMIN_RO_NAMES=() _ADMIN_RO_LEX=() _ADMIN_RO_RES=()
+    local _aro _lex _res
+    for _aro in "${_ADMIN_HOME_READONLY[@]+"${_ADMIN_HOME_READONLY[@]}"}"; do
+        [[ -n "$_aro" ]] || continue
+        IFS=$'\t' read -r _lex _res < <(_path_forms "$HOME/$_aro")
+        _ADMIN_RO_NAMES+=("$_aro")
+        _ADMIN_RO_LEX+=("$_lex")
+        _ADMIN_RO_RES+=("$_res")
+    done
+}
+
+# _writable_overlaps_admin_ro ABS_PATH: if ABS_PATH (either form) is
+# equal to, under, or above any admin HOME_READONLY entry (either
+# form), print that admin entry and return 0. Requires
+# _collect_admin_ro_forms to have run.
+_writable_overlaps_admin_ro() {
+    local _w_lex _w_res _i _wf _rf
+    IFS=$'\t' read -r _w_lex _w_res < <(_path_forms "$1")
+    for ((_i = 0; _i < ${#_ADMIN_RO_NAMES[@]}; _i++)); do
+        for _wf in "$_w_lex" "$_w_res"; do
+            for _rf in "${_ADMIN_RO_LEX[$_i]}" "${_ADMIN_RO_RES[$_i]}"; do
+                if _path_under "$_wf" "$_rf" || _path_under "$_rf" "$_wf"; then
+                    printf '%s' "${_ADMIN_RO_NAMES[$_i]}"
+                    return 0
+                fi
+            done
+        done
+    done
+    return 1
+}
+
+# --- Restore one admin-enforced array ---
 #
-# This is a pure comparison — no re-sourcing, no eval of untrusted code.
-_enforce_admin_policy() {
+# Generic worker for every name in _ENFORCED_ARRAYS: warn about each
+# admin entry the loaded layer removed, then rebuild the array as the
+# admin snapshot (_ADMIN_<NAME>) followed by the layer's own additions
+# (entries not already in the snapshot), preserving order.
+#   $1 — array name (must have a matching _ADMIN_<NAME> snapshot)
+#   $2 — label for warnings ("User config", "Project config", …)
+_restore_enforced_array() {
+    local -n _rea_cur="$1"
+    local -n _rea_adm="_ADMIN_$1"
+    local _rea_label="$2" _rea_a _rea_i _rea_found
+    local _rea_out=("${_rea_adm[@]+"${_rea_adm[@]}"}")
+    for _rea_a in "${_rea_adm[@]+"${_rea_adm[@]}"}"; do
+        _rea_found=false
+        for _rea_i in "${_rea_cur[@]+"${_rea_cur[@]}"}"; do
+            [[ "$_rea_i" == "$_rea_a" ]] && { _rea_found=true; break; }
+        done
+        $_rea_found || echo "WARNING: ${_rea_label} removed admin-enforced $1 entry '${_rea_a}' — restored." >&2
+    done
+    for _rea_i in "${_rea_cur[@]+"${_rea_cur[@]}"}"; do
+        _rea_found=false
+        for _rea_a in "${_rea_adm[@]+"${_rea_adm[@]}"}"; do
+            [[ "$_rea_i" == "$_rea_a" ]] && { _rea_found=true; break; }
+        done
+        $_rea_found || _rea_out+=("$_rea_i")
+    done
+    _rea_cur=("${_rea_out[@]+"${_rea_out[@]}"}")
+}
+
+# --- Enforce admin harden-only scalars ---
+#
+# Security-critical booleans (PRIVATE_TMP, PRIVATE_IPC, FILTER_PASSWD):
+# an admin `true` is sticky. Tri-valued network scalars: the effective
+# value may only be equal to or stricter than the admin pin. Shared by
+# _enforce_admin_policy (config layers) and _apply_launch_overrides
+# (env / CLI overrides), so every path that can change one of these
+# values re-checks it against the same admin snapshot.
+_enforce_admin_scalars() {
     local _label="${1:-Config}"
-
-    # --- Warn about violations ---
-    local _a _item _found _aro
-
-    # Enforced arrays: warn about removed admin entries
-    for _a in "${_ADMIN_BLOCKED_FILES[@]}"; do
-        _found=false
-        for _item in "${BLOCKED_FILES[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced BLOCKED_FILES entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_BLOCKED_ENV_VARS[@]}"; do
-        _found=false
-        for _item in "${BLOCKED_ENV_VARS[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced BLOCKED_ENV_VARS entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_BLOCKED_ENV_PATTERNS[@]}"; do
-        _found=false
-        for _item in "${BLOCKED_ENV_PATTERNS[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced BLOCKED_ENV_PATTERNS entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_HIDE_FROM_SANDBOX[@]}"; do
-        _found=false
-        for _item in "${HIDE_FROM_SANDBOX[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced HIDE_FROM_SANDBOX entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_EXTRA_BLOCKED_PATHS[@]}"; do
-        _found=false
-        for _item in "${EXTRA_BLOCKED_PATHS[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced EXTRA_BLOCKED_PATHS entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_DEVICES_BLACKLIST[@]}"; do
-        _found=false
-        for _item in "${DEVICES_BLACKLIST[@]}"; do [[ "$_item" == "$_a" ]] && { _found=true; break; }; done
-        $_found || echo "WARNING: ${_label} removed admin-enforced DEVICES_BLACKLIST entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_NETWORK_BLOCKLIST[@]+"${_ADMIN_NETWORK_BLOCKLIST[@]}"}"; do
-        _found=false
-        for _item in "${NETWORK_BLOCKLIST[@]+"${NETWORK_BLOCKLIST[@]}"}"; do
-            [[ "$_item" == "$_a" ]] && { _found=true; break; }
-        done
-        $_found || echo "WARNING: ${_label} removed admin-enforced NETWORK_BLOCKLIST entry '${_a}' — restored." >&2
-    done
-    for _a in "${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]+"${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
-        _found=false
-        for _item in "${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}"; do
-            [[ "$_item" == "$_a" ]] && { _found=true; break; }
-        done
-        $_found || echo "WARNING: ${_label} removed admin-enforced NETWORK_BLOCKLIST_EXCEPT entry '${_a}' — restored." >&2
-    done
-
-    # HOME_READONLY → HOME_WRITABLE escalation
-    for _aro in "${_ADMIN_HOME_READONLY[@]}"; do
-        for _item in "${HOME_WRITABLE[@]}"; do
-            [[ "$_item" == "$_aro" ]] && echo "WARNING: ${_label} moved admin HOME_READONLY entry '${_aro}' to HOME_WRITABLE — reverted." >&2
-        done
-    done
-
     # Security-critical booleans: user can harden (false→true) but not
     # weaken (true→false) an admin-set value.
     local _bool_name _admin_val _user_val
@@ -1246,31 +1576,56 @@ _enforce_admin_policy() {
         fi
     fi
 
+    # Mount guard: harden-only. Ordering: off < warn < repair < kill
+    # (repair keeps the policy enforced after a loss; kill additionally
+    # guarantees the agent does nothing more once a path was exposed).
+    if [[ -n "${_ADMIN_MOUNT_GUARD:-}" ]]; then
+        if [[ "$(_mount_guard_strictness_idx "${MOUNT_GUARD:-repair}")" -lt \
+              "$(_mount_guard_strictness_idx "$_ADMIN_MOUNT_GUARD")" ]]; then
+            echo "WARNING: ${_label} weakened admin-enforced MOUNT_GUARD='${_ADMIN_MOUNT_GUARD}' to '${MOUNT_GUARD}' — restored." >&2
+            MOUNT_GUARD="$_ADMIN_MOUNT_GUARD"
+        fi
+    fi
+}
+
+# --- Enforce admin policy: compare extracted values against admin snapshot ---
+#
+# After loading untrusted config (user.conf or conf.d), this function:
+# 1. Warns about removed admin entries or overridden scalars
+# 2. Restores admin values as the base
+# 3. Merges user additions on top
+# 4. Strips DENIED_WRITABLE_PATHS violations (resolves symlinks to block
+#    indirection attacks — see the DENIED_WRITABLE_PATHS section below)
+#
+# This is a pure comparison — no re-sourcing, no eval of untrusted code.
+_enforce_admin_policy() {
+    local _label="${1:-Config}"
+
+    # --- Warn about violations ---
+    local _a _item _found _aro
+
+    # Enforced arrays — _ENFORCED_ARRAYS is the single source of truth:
+    # admin entries are restored (with a warning when a layer dropped
+    # one), then the layer's own additions are appended.
+    local _enf
+    for _enf in "${_ENFORCED_ARRAYS[@]}"; do
+        _restore_enforced_array "$_enf" "$_label"
+    done
+
+    _enforce_admin_scalars "$_label"
+
     # --- Collect user-only additions (items not in admin snapshot) ---
     # Save the user's arrays before restoring admin values.
-    local _user_bf=("${BLOCKED_FILES[@]}")
-    local _user_bev=("${BLOCKED_ENV_VARS[@]}")
-    local _user_bep=("${BLOCKED_ENV_PATTERNS[@]}")
     local _user_aev=("${ALLOWED_ENV_VARS[@]}")
-    local _user_hfs=("${HIDE_FROM_SANDBOX[@]}")
-    local _user_ebp=("${EXTRA_BLOCKED_PATHS[@]}")
     local _user_hw=("${HOME_WRITABLE[@]}")
     local _user_ewp=("${EXTRA_WRITABLE_PATHS[@]}")
     local _user_rom=("${READONLY_MOUNTS[@]}")
     local _user_hro=("${HOME_READONLY[@]}")
     local _user_hsf=("${HOME_SEEDED_FILES[@]}")
     local _user_app=("${ALLOWED_PROJECT_PARENTS[@]}")
-    local _user_dbl=("${DEVICES_BLACKLIST[@]}")
-    local _user_nbl=("${NETWORK_BLOCKLIST[@]+"${NETWORK_BLOCKLIST[@]}"}")
-    local _user_nbx=("${NETWORK_BLOCKLIST_EXCEPT[@]+"${NETWORK_BLOCKLIST_EXCEPT[@]}"}")
 
     # --- Restore admin base values ---
-    BLOCKED_FILES=("${_ADMIN_BLOCKED_FILES[@]}")
-    BLOCKED_ENV_VARS=("${_ADMIN_BLOCKED_ENV_VARS[@]}")
-    BLOCKED_ENV_PATTERNS=("${_ADMIN_BLOCKED_ENV_PATTERNS[@]}")
     ALLOWED_ENV_VARS=("${_ADMIN_ALLOWED_ENV_VARS[@]}")
-    HIDE_FROM_SANDBOX=("${_ADMIN_HIDE_FROM_SANDBOX[@]}")
-    EXTRA_BLOCKED_PATHS=("${_ADMIN_EXTRA_BLOCKED_PATHS[@]}")
     HOME_READONLY=("${_ADMIN_HOME_READONLY[@]}")
     HOME_SEEDED_FILES=("${_ADMIN_HOME_SEEDED_FILES[@]}")
     EXTRA_WRITABLE_PATHS=("${_ADMIN_EXTRA_WRITABLE_PATHS[@]}")
@@ -1283,9 +1638,6 @@ _enforce_admin_policy() {
     # snapshot.
     HOME_WRITABLE=("${_ADMIN_HOME_WRITABLE[@]}")
     DENIED_WRITABLE_PATHS=("${_ADMIN_DENIED_WRITABLE_PATHS[@]}")
-    DEVICES_BLACKLIST=("${_ADMIN_DEVICES_BLACKLIST[@]}")
-    NETWORK_BLOCKLIST=("${_ADMIN_NETWORK_BLOCKLIST[@]+"${_ADMIN_NETWORK_BLOCKLIST[@]}"}")
-    NETWORK_BLOCKLIST_EXCEPT=("${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]+"${_ADMIN_NETWORK_BLOCKLIST_EXCEPT[@]}"}")
 
     # --- Merge: admin base + user-only additions ---
     local _in_admin
@@ -1301,41 +1653,63 @@ _enforce_admin_policy() {
             $_in_admin || _target_arr+=("$_item")
         done
     }
-    _merge_additions _user_bf   _ADMIN_BLOCKED_FILES          BLOCKED_FILES
-    _merge_additions _user_bev  _ADMIN_BLOCKED_ENV_VARS       BLOCKED_ENV_VARS
-    _merge_additions _user_bep  _ADMIN_BLOCKED_ENV_PATTERNS   BLOCKED_ENV_PATTERNS
     _merge_additions _user_aev  _ADMIN_ALLOWED_ENV_VARS       ALLOWED_ENV_VARS
-    _merge_additions _user_hfs  _ADMIN_HIDE_FROM_SANDBOX      HIDE_FROM_SANDBOX
-    _merge_additions _user_ebp  _ADMIN_EXTRA_BLOCKED_PATHS    EXTRA_BLOCKED_PATHS
     _merge_additions _user_ewp  _ADMIN_EXTRA_WRITABLE_PATHS   EXTRA_WRITABLE_PATHS
     _merge_additions _user_rom  _ADMIN_READONLY_MOUNTS        READONLY_MOUNTS
     _merge_additions _user_hro  _ADMIN_HOME_READONLY          HOME_READONLY
     _merge_additions _user_hsf  _ADMIN_HOME_SEEDED_FILES      HOME_SEEDED_FILES
     _narrow_allowed_project_parents _user_app "$_label"
-    _merge_additions _user_dbl  _ADMIN_DEVICES_BLACKLIST       DEVICES_BLACKLIST
-    _merge_additions _user_nbl  _ADMIN_NETWORK_BLOCKLIST       NETWORK_BLOCKLIST
-    # NETWORK_BLOCKLIST_EXCEPT merges similarly, but with an
-    # additional cover-check: user-exception entries that match (under
+    # NETWORK_BLOCKLIST_EXCEPT was merged above (it is in
+    # _ENFORCED_ARRAYS); it additionally gets a cover-check: user-exception entries that match (under
     # bash glob semantics) any admin-set NETWORK_BLOCKLIST entry are
     # stripped + warned. Admin entries cannot be carved out by users.
-    _merge_additions _user_nbx  _ADMIN_NETWORK_BLOCKLIST_EXCEPT  NETWORK_BLOCKLIST_EXCEPT
     _strip_user_exceptions_covered_by_admin "$_label"
 
-    # HOME_WRITABLE: merge user additions, but strip admin HOME_READONLY items
+    # HOME_WRITABLE / EXTRA_WRITABLE_PATHS vs admin HOME_READONLY.
+    #
+    # A user writable entry is dropped when, after canonicalization, it
+    # is EQUAL to, BELOW or ABOVE an admin read-only entry:
+    #   equal — `.ssh/`, `./.ssh`, `.ssh//` are all `.ssh`; the old
+    #           literal string compare let those through;
+    #   below — `.ssh/authorized_keys` writable defeats `.ssh` read-only;
+    #   above — `.config` writable covers `.config/git` (bind order on
+    #           bwrap, additive rules on landlock).
+    # Both the lexical form and the symlink-resolved form of each side
+    # are compared, so `mylink -> .ssh` is caught too. EXTRA_WRITABLE_PATHS
+    # (absolute) is held to the same rule: `$HOME/.ssh` there is the
+    # same escalation. Admin-listed writable entries are kept as-is.
+    _collect_admin_ro_forms
+    local _conflict
     for _item in "${_user_hw[@]}"; do
         _in_admin=false
         for _a in "${_ADMIN_HOME_WRITABLE[@]}"; do
             [[ "$_item" == "$_a" ]] && { _in_admin=true; break; }
         done
-        if ! $_in_admin; then
-            # Check it's not an admin HOME_READONLY escalation
-            local _is_admin_ro=false
-            for _aro in "${_ADMIN_HOME_READONLY[@]}"; do
-                [[ "$_item" == "$_aro" ]] && { _is_admin_ro=true; break; }
-            done
-            $_is_admin_ro || HOME_WRITABLE+=("$_item")
+        $_in_admin && continue
+        if _conflict="$(_writable_overlaps_admin_ro "$HOME/$_item")"; then
+            if [[ "$_item" == "$_conflict" ]]; then
+                echo "WARNING: ${_label} moved admin HOME_READONLY entry '${_conflict}' to HOME_WRITABLE — reverted." >&2
+            else
+                echo "WARNING: ${_label} HOME_WRITABLE entry '${_item}' overlaps admin HOME_READONLY entry '${_conflict}' (same path, parent or child) — reverted." >&2
+            fi
+            continue
         fi
+        HOME_WRITABLE+=("$_item")
     done
+    local _ewp_clean=("${_ADMIN_EXTRA_WRITABLE_PATHS[@]+"${_ADMIN_EXTRA_WRITABLE_PATHS[@]}"}")
+    for _item in "${EXTRA_WRITABLE_PATHS[@]+"${EXTRA_WRITABLE_PATHS[@]}"}"; do
+        _in_admin=false
+        for _a in "${_ADMIN_EXTRA_WRITABLE_PATHS[@]+"${_ADMIN_EXTRA_WRITABLE_PATHS[@]}"}"; do
+            [[ "$_item" == "$_a" ]] && { _in_admin=true; break; }
+        done
+        $_in_admin && continue
+        if _conflict="$(_writable_overlaps_admin_ro "$_item")"; then
+            echo "WARNING: ${_label} EXTRA_WRITABLE_PATHS entry '${_item}' overlaps admin HOME_READONLY entry '${_conflict}' (same path, parent or child) — removed." >&2
+            continue
+        fi
+        _ewp_clean+=("$_item")
+    done
+    EXTRA_WRITABLE_PATHS=("${_ewp_clean[@]+"${_ewp_clean[@]}"}")
 
     # --- Enforce DENIED_WRITABLE_PATHS ---
     #
@@ -1528,6 +1902,8 @@ _snapshot_admin_config() {
     _ADMIN_NETWORK_FILTER_MODE="${NETWORK_FILTER_MODE:-}"
     _ADMIN_NETWORK_FILTER_FALLBACK="${NETWORK_FILTER_FALLBACK:-}"
     _ADMIN_NETWORK_MAIL_BLOCK="${NETWORK_MAIL_BLOCK:-}"
+    # _ADMIN_MOUNT_GUARD is set by _load_config_layers: only an explicit
+    # admin value is a floor (the built-in default is not).
 }
 
 # ── Network filter — mode resolution + helper detection ──────────
@@ -1541,8 +1917,9 @@ _snapshot_admin_config() {
 # emitted on the fail path.
 #
 # Backend capability matrix:
-#   bwrap    — open ✓ ; filtered ✓ if helper present (pasta or
-#              slirp4netns on PATH, or the shipped tools/pasta/pasta) ;
+#   bwrap    — open ✓ ; filtered ✓ if pasta is present (on PATH, or
+#              the shipped tools/pasta/<arch>/pasta; slirp4netns does
+#              not count) ;
 #              isolated ✓ (native --unshare-net flag)
 #   firejail — open ✓ ; filtered ✓ (--netfilter, needs nft on PATH) ;
 #              isolated ✓ (--net=none)
@@ -1584,8 +1961,15 @@ _network_fallback_strictness_idx() {
 #      because it's typically newer than the in-tree pin.
 #   2. tools/pasta/<arch>/pasta — the shipped static binary (see
 #      tools/pasta/README.md for fetch + license details).
-#   3. `command -v slirp4netns` — older fallback (GPL-2.0 source-
-#      offer obligation; less preferred and currently degraded).
+#
+# slirp4netns is deliberately NOT a candidate. It has a different CLI
+# than pasta and no port-exclusion flags, so it cannot deliver
+# `filtered`. It used to be returned here, which made the probe run it
+# with pasta's argv, declare `filtered` supported, and then silently
+# exec the sandbox with --unshare-net (no network at all), bypassing
+# NETWORK_FILTER_FALLBACK=open. Now a slirp4netns-only host simply has
+# no filtered helper and the configured fallback policy applies
+# (_prepare_network_helper_probe names slirp4netns in the reason).
 _resolve_network_helper() {
     if command -v pasta &>/dev/null; then
         command -v pasta
@@ -1605,10 +1989,6 @@ _resolve_network_helper() {
     # v1.0's tools/pasta/fetch.sh still resolve.
     if [[ -x "$SANDBOX_DIR/tools/pasta/pasta" ]]; then
         echo "$SANDBOX_DIR/tools/pasta/pasta"
-        return 0
-    fi
-    if command -v slirp4netns &>/dev/null; then
-        command -v slirp4netns
         return 0
     fi
     return 1
@@ -1687,7 +2067,12 @@ _prepare_network_helper_probe() {
         *) return 0 ;;
     esac
     local _helper
-    _helper="$(_resolve_network_helper)" || return 0
+    if ! _helper="$(_resolve_network_helper)"; then
+        if command -v slirp4netns &>/dev/null; then
+            _NETWORK_HELPER_DEGRADED_REASON="filtered mode requires pasta; only slirp4netns was found ($(command -v slirp4netns)), which agent-sandbox does not support (no port-exclusion interface). Install pasta (passt) or run tools/pasta/fetch.sh."
+        fi
+        return 0
+    fi
     _NETWORK_HELPER_RESOLVED_PATH="$_helper"
     if _pasta_can_forward_outbound "$_helper"; then
         return 0
@@ -1818,8 +2203,7 @@ EOF
 #   _NETWORK_FILTER_RESOLVED  — one of open|filtered|isolated
 #   _NETWORK_FILTER_REASON    — human-readable rationale (for logging)
 #   _NETWORK_FILTER_HELPER    — for filtered mode, the resolved network
-#                               helper binary path (pasta / slirp4netns;
-#                               empty otherwise)
+#                               pasta binary path (empty otherwise)
 # Exits with diagnostic on irrecoverable mismatch.
 resolve_network_filter_mode() {
     local _backend="$1"
@@ -2322,6 +2706,851 @@ _classify_pasta_port_entry() {
     echo "sandbox: NOTE — hostname/CIDR entry '${_entry}' cannot be enforced at pasta's port-level layer (no port to exclude); use the v1.2 L7 proxy for SNI-aware filtering or isolated mode for hard deny-all. Skipping." >&2
 }
 
+# ── Passwd filtering (LDAP/AD user enumeration prevention) ────────
+#
+# Generates a minimal /etc/passwd and /etc/nsswitch.conf for use inside
+# the sandbox.  The filtered passwd contains only system accounts
+# (UID < 1000) and the current user.  The filtered nsswitch.conf
+# replaces "ldap", "sss", and "compat" with "files" for the passwd
+# and group databases, so getent only returns local entries.
+#
+# Sets _FILTERED_PASSWD, _FILTERED_GROUP and _FILTERED_NSSWITCH to the
+# generated paths.  Backends that support file overlays (bwrap) use these
+# directly.
+#
+# Concurrency (#79): every call builds into its OWN fresh directory
+# ($_USER_DATA_DIR/.passwd-filter/l.XXXXXX), never a shared fixed path.
+# A bind mount follows the inode, so rewriting a shared file in place
+# would mutate /etc/passwd inside already-running sandboxes, and
+# concurrent launches would interleave partial writes.  Per-launch dirs
+# make instances fully independent.  The result is validated before use
+# (7 fields per passwd line, current uid present); on any failure the
+# function returns 1 and the caller must abort, since FILTER_PASSWD is a
+# hardening setting and binding a broken passwd is never correct.
+#
+# Cleanup: an unlinked file stays valid for a mount that already holds
+# its inode, so pruning can never break a running sandbox.  Each launch
+# prunes per-launch dirs (and legacy shared files) older than a day; a
+# launch binds within milliseconds of generating, so that window is safe.
+
+# Test hooks: _PASSWD_SRC_FILE / _GROUP_SRC_FILE redirect the base
+# passwd/group source (test.sh #79 cases set them AFTER sourcing this
+# file with _SANDBOX_LIB_NO_INIT=1). They must never come from the
+# environment: an inherited value (e.g. via a Slurm --export on the
+# compute-node re-entry, or the launch env) would let the caller choose
+# the /etc/passwd and /etc/group the sandbox sees. Drop any inherited
+# copy at source time; only in-process assignment after sourcing works.
+unset _PASSWD_SRC_FILE _GROUP_SRC_FILE
+
+# Echo the start time (clock ticks since boot, /proc/PID/stat field 22)
+# of PID, or nothing if it is not running. Pid + start time identifies a
+# process across PID reuse.
+_proc_starttime() {
+    local _stat
+    _stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+    _stat="${_stat##*) }"
+    # shellcheck disable=SC2086  # intentional word split of stat fields
+    set -- $_stat
+    printf '%s' "${20:-}"
+}
+
+# Per-launch passwd dirs are the bind SOURCES of /etc/passwd, /etc/group
+# and /etc/nsswitch.conf in a running sandbox. Removing a source never
+# detaches the mount (it pins the inode) on a local filesystem, but the
+# base dir lives under ~/.config, which is NFS on most HPC systems: a
+# launch on ANOTHER host deleting it makes the running sandbox's reads of
+# /etc/passwd fail with ESTALE (getpwuid() fails; ssh/git break). The
+# old rule (anything older than 24 h) hit exactly the long-running
+# sessions this is used for. Each dir is therefore tagged with its
+# launcher ("<host> <pidns> <pid> <starttime>"; the pid survives the exec
+# into the backend) and removed only when that launcher is gone on this
+# host. Dirs from other hosts (liveness unknowable) and untagged
+# pre-upgrade dirs are removed only after 30 days.
+_passwd_owner_tag() {
+    local _st _ns
+    _st="$(_proc_starttime "$1")" || return 1
+    [[ -n "$_st" ]] || return 1
+    _ns="$(stat -L -c %i "/proc/$1/ns/pid" 2>/dev/null)" || _ns="?"
+    printf '%s %s %s %s\n' "${HOSTNAME:-$(hostname 2>/dev/null)}" "$_ns" "$1" "$_st"
+}
+
+_prune_passwd_launch_dirs() {
+    local _base="$1" _d _h _ns _pid _st _me _me_host _me_ns
+    _me="$(_passwd_owner_tag $$)" || _me=""
+    read -r _me_host _me_ns _ <<< "$_me"
+    for _d in "$_base"/l.*; do
+        [[ -d "$_d" && ! -L "$_d" && -O "$_d" ]] || continue
+        _h=""
+        if [[ -f "$_d/.owner" && ! -L "$_d/.owner" ]]; then
+            read -r _h _ns _pid _st < "$_d/.owner" 2>/dev/null || true
+        fi
+        if [[ -n "$_h" && -n "$_me_host" && "$_h" == "$_me_host" \
+              && "$_ns" == "$_me_ns" && "$_pid" =~ ^[0-9]+$ ]]; then
+            # Ours on this host: remove once the launcher is gone.
+            [[ "$(_passwd_owner_tag "$_pid" 2>/dev/null)" == "$_h $_ns $_pid $_st" ]] && continue
+            rm -rf -- "$_d" 2>/dev/null || true
+        elif [[ -n "$(find "$_d" -maxdepth 0 -mmin +43200 2>/dev/null)" ]]; then
+            rm -rf -- "$_d" 2>/dev/null || true
+        fi
+    done
+}
+
+generate_filtered_passwd() {
+    _is_true "${FILTER_PASSWD:-true}" || return 0
+
+    local base="$_USER_DATA_DIR/.passwd-filter"
+    mkdir -p "$base" || { echo "sandbox: cannot create $base" >&2; return 1; }
+
+    # Best-effort prune of stale per-launch dirs and pre-#79 shared files.
+    _prune_passwd_launch_dirs "$base"
+    find "$base" -mindepth 1 -maxdepth 1 -type f -mmin +1440 \
+        -delete 2>/dev/null || true
+
+    local tmpdir
+    tmpdir="$(mktemp -d "$base/l.XXXXXX")" || {
+        echo "sandbox: cannot create per-launch dir under $base" >&2
+        return 1
+    }
+    chmod 755 "$tmpdir" 2>/dev/null || true
+    _passwd_owner_tag $$ > "$tmpdir/.owner" 2>/dev/null || true
+
+    local my_uid my_name
+    my_uid="$(id -u)"
+    my_name="$(id -un)"
+
+    # Minimal passwd: system accounts (UID < 1000) from the local file.
+    # Does NOT use getent for the base set (that would pull all LDAP users).
+    # Strict: only well-formed records with a numeric uid.  A bare
+    # `$3 < 1000` also passes blank lines, `#` comments and NIS `+`/`-`
+    # lines (empty/non-numeric $3 compares as a string), which the
+    # validation below would then reject.  Source path is overridable
+    # for tests only.
+    awk -F: 'NF == 7 && $3 ~ /^[0-9]+$/ && $3 < 1000' "${_PASSWD_SRC_FILE:-/etc/passwd}" > "$tmpdir/passwd"
+
+    # Append specific users via getent (handles both local and LDAP).
+    # Current user + service users needed by tools inside the sandbox.
+    for _svc_user in "$my_name" slurm munge nobody; do
+        if ! grep -q "^${_svc_user}:" "$tmpdir/passwd"; then
+            getent passwd "$_svc_user" >> "$tmpdir/passwd" 2>/dev/null || true
+        fi
+    done
+    # Fallback: resolve the current user by uid if the name lookup missed.
+    if ! awk -F: -v u="$my_uid" '$3 == u { f = 1 } END { exit !f }' "$tmpdir/passwd"; then
+        getent passwd "$my_uid" >> "$tmpdir/passwd" 2>/dev/null || true
+    fi
+
+    # Validate before anything binds it: exactly 7 fields on every line,
+    # and the current uid must be present (getpwuid() must not fail).
+    if ! awk -F: 'NF != 7 { exit 1 }' "$tmpdir/passwd" \
+       || ! awk -F: -v u="$my_uid" '$3 == u { f = 1 } END { exit !f }' "$tmpdir/passwd"; then
+        echo "sandbox: generated filtered passwd is invalid (malformed line or uid $my_uid missing); refusing to launch with FILTER_PASSWD=true" >&2
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    # Minimal group: system groups (GID < 1000) from the local file.
+    awk -F: 'NF == 4 && $3 ~ /^[0-9]+$/ && $3 < 1000' "${_GROUP_SRC_FILE:-/etc/group}" > "$tmpdir/group"
+
+    # Append current user's groups, service groups, and well-known groups
+    # by name (nogroup/nfsnobody may appear via NFS even when not in id -G).
+    for _svc_group in nogroup nfsnobody; do
+        if ! grep -q "^${_svc_group}:" "$tmpdir/group"; then
+            getent group "$_svc_group" >> "$tmpdir/group" 2>/dev/null || true
+        fi
+    done
+    # Add all of the current user's groups (by GID and by name as fallback).
+    # This ensures `id` inside the sandbox shows the correct group names,
+    # even though supplementary groups are always preserved at the kernel level
+    # (bwrap does not use --unshare-user, so file permissions work regardless).
+    for _svc_gid in $(id -G) $(getent passwd slurm 2>/dev/null | cut -d: -f4) $(getent passwd munge 2>/dev/null | cut -d: -f4); do
+        if ! grep -q "^[^:]*:[^:]*:${_svc_gid}:" "$tmpdir/group"; then
+            getent group "$_svc_gid" >> "$tmpdir/group" 2>/dev/null || true
+        fi
+    done
+    # Fallback: also try by name (some LDAP setups resolve names but not GIDs)
+    for _svc_gname in $(id -Gn 2>/dev/null); do
+        if ! grep -q "^${_svc_gname}:" "$tmpdir/group"; then
+            getent group "$_svc_gname" >> "$tmpdir/group" 2>/dev/null || true
+        fi
+    done
+
+    # nsswitch.conf: replace ldap/sss/compat with files-only for passwd/group
+    if [[ -f /etc/nsswitch.conf ]]; then
+        sed -E \
+            -e 's/^(passwd|group):.*$/\1:         files/' \
+            /etc/nsswitch.conf > "$tmpdir/nsswitch.conf"
+    else
+        printf 'passwd:         files\ngroup:          files\nhosts:          files dns\n' \
+            > "$tmpdir/nsswitch.conf"
+    fi
+
+    # Group must be well-formed too (4 fields); a partial group file
+    # breaks id/getgrgid just like a partial passwd.
+    if ! awk -F: 'NF != 4 { exit 1 }' "$tmpdir/group"; then
+        echo "sandbox: generated filtered group is invalid (malformed line); refusing to launch with FILTER_PASSWD=true" >&2
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    _FILTERED_PASSWD="$tmpdir/passwd"
+    _FILTERED_GROUP="$tmpdir/group"
+    _FILTERED_NSSWITCH="$tmpdir/nsswitch.conf"
+}
+
+# ── Config layers (Phases 1–3) ───────────────────────────────────
+#
+# Defined as a function so test-admin-narrowing.sh can drive the real
+# production path against a scratch admin config (via
+# _select_config_files); production calls it once, below.
+_load_config_layers() {
+    # ── Phase 1: Source admin config (trusted — admin-owned, root-protected) ──
+    #
+    # Missing-vs-malformed boundary: a missing admin config file causes
+    # _ADMIN_CONF to be unset above, so this block is skipped entirely and
+    # the sandbox runs in user-only mode. A present-but-malformed admin
+    # config is caught here: parse errors abort via _source_trusted_config,
+    # and shape errors on ALLOWED_PROJECT_PARENTS abort via
+    # _validate_admin_allowed_project_parents. There is no fall-through to
+    # a permissive default once admin has spoken.
+    if [[ -n "$_ADMIN_CONF" && -f "$_ADMIN_CONF" ]]; then
+        # Unset before sourcing so we can detect whether admin explicitly
+        # sets ALLOWED_PROJECT_PARENTS. Lib defaults at line 68 mean the
+        # variable is always set before this point; unsetting lets the
+        # post-source declare -p check distinguish "admin silent" (apply
+        # narrowing default "/") from "admin set" (snapshot admin's value).
+        unset ALLOWED_PROJECT_PARENTS
+        # Same for MOUNT_GUARD: only an explicit admin value is enforced.
+        unset MOUNT_GUARD
+        _source_trusted_config "$_ADMIN_CONF"
+        if declare -p MOUNT_GUARD &>/dev/null; then
+            _ADMIN_MOUNT_GUARD="$MOUNT_GUARD"
+        else
+            _ADMIN_MOUNT_GUARD=""
+            MOUNT_GUARD="repair"
+        fi
+        if declare -p ALLOWED_PROJECT_PARENTS &>/dev/null; then
+            _admin_set_app=true
+            _validate_admin_allowed_project_parents
+        else
+            _admin_set_app=false
+            # Restore lib default so downstream code paths see a populated
+            # array. The narrowing merge uses _ADMIN_ALLOWED_PROJECT_PARENTS
+            # (set to ("/") by _snapshot_admin_config when admin is silent),
+            # not this value, so no permissive admin policy results.
+            ALLOWED_PROJECT_PARENTS=("/fh/fast" "/fh/scratch" "$HOME")
+        fi
+        _snapshot_admin_config
+    fi
+
+    # ── Phase 2: Load user config (untrusted — runs in isolated subprocess) ──
+    _load_untrusted_config "$_USER_CONF" "User config"
+
+    # ── Phase 3: Enforce admin policy ──
+    # Pure comparison + merge — no re-sourcing, no eval of untrusted code.
+    if [[ -n "$_ADMIN_CONF" ]]; then
+        _enforce_admin_policy "User config"
+    fi
+}
+
+# ── Launch overrides: env / CLI beat every config layer ──────────
+#
+# Explicit launch-time selections (`--backend`, SANDBOX_BACKEND, and
+# the PRIVATE_TMP / PRIVATE_IPC / FILTER_PASSWD / NETWORK_FILTER_MODE /
+# NETWORK_FILTER_FALLBACK / NETWORK_MAIL_BLOCK env vars, captured at
+# the top of this file before the defaults were assigned) win over
+# user config AND conf.d — but never over an admin pin, which is
+# re-checked afterwards.
+#
+# Called from load_project_config() AFTER conf.d, so a per-project
+# file can no longer override an explicit `--backend` or env value
+# (it used to: this ran at source time, before conf.d was loaded).
+# Idempotent: the saved override values are not consumed.
+_apply_launch_overrides() {
+    if [[ -n "${_SANDBOX_BACKEND_OVERRIDE:-}" ]]; then
+        SANDBOX_BACKEND="$_SANDBOX_BACKEND_OVERRIDE"
+    fi
+    [[ -n "${_PRIVATE_TMP_OVERRIDE:-}" ]]    && PRIVATE_TMP="$_PRIVATE_TMP_OVERRIDE"
+    [[ -n "${_PRIVATE_IPC_OVERRIDE:-}" ]]    && PRIVATE_IPC="$_PRIVATE_IPC_OVERRIDE"
+    [[ -n "${_FILTER_PASSWD_OVERRIDE:-}" ]]  && FILTER_PASSWD="$_FILTER_PASSWD_OVERRIDE"
+    [[ -n "${_NETWORK_FILTER_MODE_OVERRIDE:-}" ]]     && NETWORK_FILTER_MODE="$_NETWORK_FILTER_MODE_OVERRIDE"
+    [[ -n "${_NETWORK_FILTER_FALLBACK_OVERRIDE:-}" ]] && NETWORK_FILTER_FALLBACK="$_NETWORK_FILTER_FALLBACK_OVERRIDE"
+    [[ -n "${_NETWORK_MAIL_BLOCK_OVERRIDE:-}" ]]      && NETWORK_MAIL_BLOCK="$_NETWORK_MAIL_BLOCK_OVERRIDE"
+    [[ -n "${_MOUNT_GUARD_OVERRIDE:-}" ]]             && MOUNT_GUARD="$_MOUNT_GUARD_OVERRIDE"
+    [[ -n "${_MOUNT_GUARD_INTERVAL_OVERRIDE:-}" ]]    && MOUNT_GUARD_INTERVAL="$_MOUNT_GUARD_INTERVAL_OVERRIDE"
+    # env can loosen user config but cannot weaken admin-set values.
+    if [[ -n "${_ADMIN_CONF:-}" ]]; then
+        _enforce_admin_scalars "Launch override (env/CLI)"
+    fi
+    return 0
+}
+
+# ── SANDBOX_ENV: validate and split into host PATH + child env ──
+#
+# SANDBOX_ENV used to be `export`ed into the launcher shell after admin
+# enforcement, so an entry named like a config variable
+# (NETWORK_FILTER_MODE=open, PRIVATE_TMP=false, HOME_ACCESS=write, …)
+# silently replaced the resolved — admin-enforced — value, and entries
+# like TMPDIR or LD_PRELOAD changed how the launcher itself behaved.
+#
+# Now:
+#   * PATH  — still exported host-side (documented layering: the
+#             backend prepends chaperon/sandbox stubs on top). The
+#             launcher's PATH is the user's own anyway.
+#   * every other entry is applied ONLY to the sandboxed command (via
+#     `env NAME=VALUE… CMD` at exec time, see sandbox-exec.sh), and is
+#     rejected with a warning when the name
+#       - is not a valid identifier,
+#       - is a config variable (_CONFIG_ARRAYS / _CONFIG_SCALARS),
+#       - is launcher-internal (leading `_`) or a sandbox/launcher
+#         setting family (SANDBOX_*, CHAPERON_*, LANDLOCK_*, NETWORK_*,
+#         CLEANUP_MATERIALIZED_BLOCKED_FILES),
+#       - is hidden (HIDE_FROM_SANDBOX, incl. the built-in floor), or
+#       - is blocked (BLOCKED_ENV_VARS / BLOCKED_ENV_PATTERNS, unless in
+#         ALLOWED_ENV_VARS) — injecting a value for a blocked name would
+#         otherwise bypass the scrub that previously removed it.
+#
+# Sets: _SANDBOX_ENV_PATH (empty = no PATH entry), _SANDBOX_CHILD_ENV.
+_sandbox_env_reject_reason() {
+    local _n="$1" _c
+    if [[ ! "$_n" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        echo "not a valid variable name"; return 0
+    fi
+    for _c in "${_CONFIG_ARRAYS[@]}" "${_CONFIG_SCALARS[@]}"; do
+        if [[ "$_n" == "$_c" ]]; then
+            echo "is a sandbox config variable — set it as a config value, not via SANDBOX_ENV"; return 0
+        fi
+    done
+    case "$_n" in
+        _*)
+            echo "names starting with '_' are reserved for the launcher"; return 0 ;;
+        SANDBOX_*|CHAPERON_*|LANDLOCK_*|NETWORK_*|CLEANUP_MATERIALIZED_BLOCKED_FILES)
+            echo "is a sandbox/launcher setting"; return 0 ;;
+    esac
+    while IFS= read -r _c; do
+        if [[ "$_n" == "$_c" ]]; then
+            echo "is listed in HIDE_FROM_SANDBOX"; return 0
+        fi
+    done < <(_hide_from_sandbox_names 2>/dev/null)
+    if ! _is_allowed_env "$_n"; then
+        for _c in "${BLOCKED_ENV_VARS[@]+"${BLOCKED_ENV_VARS[@]}"}"; do
+            if [[ "$_n" == "$_c" ]]; then
+                echo "is in BLOCKED_ENV_VARS (add it to ALLOWED_ENV_VARS to pass it)"; return 0
+            fi
+        done
+        if _is_blocked_by_pattern "$_n"; then
+            echo "matches BLOCKED_ENV_PATTERNS (add it to ALLOWED_ENV_VARS to pass it)"; return 0
+        fi
+    fi
+    return 1
+}
+
+_prepare_sandbox_env() {
+    _SANDBOX_ENV_PATH=""
+    _SANDBOX_CHILD_ENV=()
+    local _entry _name _reason
+    for _entry in "${SANDBOX_ENV[@]+"${SANDBOX_ENV[@]}"}"; do
+        if [[ "$_entry" != *=* ]]; then
+            echo "WARNING: SANDBOX_ENV entry '${_entry}' is not NAME=VALUE — ignored." >&2
+            continue
+        fi
+        _name="${_entry%%=*}"
+        if [[ "$_name" == "PATH" ]]; then
+            _SANDBOX_ENV_PATH="${_entry#*=}"
+            continue
+        fi
+        if _reason="$(_sandbox_env_reject_reason "$_name")"; then
+            echo "WARNING: SANDBOX_ENV entry '${_name}' ignored: ${_reason}." >&2
+            continue
+        fi
+        _SANDBOX_CHILD_ENV+=("$_entry")
+    done
+    return 0
+}
+
+# ── Mount guard ─────────────────────────────────────────────────
+#
+# Why: a bind mount can disappear from a RUNNING sandbox without anything
+# inside it doing so.
+#   * rename()/unlink()/rmdir() of a path that is a mount point in
+#     another mount namespace succeeds and detaches the mount in every
+#     namespace (Linux >= 3.18). The launcher's own overlays no longer do
+#     this (agents/overlay-fs.py writes in place), but anything else on
+#     the host can: an editor or `claude` outside saving
+#     ~/.claude/settings.json via rename, a package upgrade replacing a
+#     masked binary, config management rewriting /etc/nsswitch.conf.
+#   * On NFS, a rename/unlink by ANOTHER client, or a directory the
+#     client decides is stale (ESTALE on revalidation), makes
+#     d_invalidate() detach every mount at or below that dentry, in every
+#     namespace (settylab/dotto-nexus#386: the project bind and its
+#     .sandbox-state child vanished mid-session).
+# The path then falls through to whatever is mounted underneath. For the
+# project bind that is usually a read-only parent (fails closed), but a
+# lost read-only overlay or /dev/null / tmpfs mask FAILS OPEN: the agent
+# can read a blocked file, or write a file it must not (its own
+# permission settings, host-executed agent config, .sandbox-state).
+#
+# How: after backend_prepare the backend lists the mounts it asked for
+# (backend_mount_expectations: "<kind> <path>", kind = rw | ro | mask).
+# A host-side watcher (started just before backend_exec, so it outlives
+# the exec as a child of the backend process) finds the sandbox's mount
+# namespace among the launcher's descendants, records which expected
+# mount points are present (the baseline; anything absent there is
+# never reported, so path-spelling differences cannot cause false
+# alarms), and re-reads /proc/<pid>/mountinfo every MOUNT_GUARD_INTERVAL
+# seconds. A lost mount is classified by what the path falls through to
+# (the deepest remaining mount above it):
+#   EXPOSED  — a mask, or a read-only overlay whose fall-through mount is
+#              writable, on a POLICY path (under $HOME, the project dir,
+#              an EXTRA_WRITABLE_PATHS entry or the install dir, or a
+#              BLOCKED_FILES / EXTRA_BLOCKED_PATHS entry), falling through
+#              to a host filesystem (not tmpfs); or a read-only mount that
+#              turned read-write. MOUNT_GUARD=kill terminates the sandbox.
+#   degraded — everything else (lost writable bind, loss that falls
+#              through to something read-only or to a tmpfs, loss of a
+#              system mask such as /usr/bin/sbatch). Reported only.
+# MOUNT_GUARD=repair (bwrap): a lost read-only overlay or mask is put
+# back by backends/mount-repair.py, which enters the sandbox's user and
+# mount namespaces (owned by the invoking user, so no privilege is
+# needed) and re-creates the same kind of mount: /dev/null or an empty
+# tmpfs for a mask, a read-only bind of the object now at the path for a
+# path bound onto itself. The backend marks which expectations can be
+# repaired ("<kind>:<how>"); only leaves (no other expected mount below)
+# qualify. A refused repair (symlink at the path, host object changed
+# type or owner, no kernel support) is reported like warn and retried
+# every interval, so a path that reappears is protected again; a repair
+# that ran but does not show up in the mount table is not retried.
+# Reports go to the launching terminal (the backend process's stderr,
+# /dev/tty as fallback) with a bell, to syslog (logger) and to tmux
+# (display-message) when available. Each loss is reported once.
+
+_mount_guard_strictness_idx() {
+    case "$1" in
+        off)    echo 0 ;;
+        warn)   echo 1 ;;
+        repair) echo 2 ;;
+        *)      echo 3 ;;
+    esac
+}
+
+# mountinfo escapes space, tab, newline and backslash as octal.
+_mg_esc() {
+    local _s="$1"
+    _s="${_s//\\/\\134}"
+    _s="${_s// /\\040}"
+    _s="${_s//$'\t'/\\011}"
+    _s="${_s//$'\n'/\\012}"
+    printf '%s' "$_s"
+}
+
+declare -A _MG_TOP_OPTS=() _MG_TOP_FS=()
+# _mg_read_mountinfo PID — index PID's mountinfo by mount point; for a
+# stacked mount point the last listed (topmost) entry wins.
+_mg_read_mountinfo() {
+    local _mi _line _mp _opts _fs _src="/proc/$1/mountinfo"
+    [[ "$1" == /* ]] && _src="$1"   # a mountinfo file (unit tests)
+    _MG_TOP_OPTS=(); _MG_TOP_FS=()
+    _mi="$(cat "$_src" 2>/dev/null)" || return 1
+    [[ -n "$_mi" ]] || return 1
+    while IFS= read -r _line; do
+        read -r _ _ _ _ _mp _opts _ <<< "$_line"
+        _fs="${_line#* - }"; _fs="${_fs%% *}"
+        _MG_TOP_OPTS[$_mp]="$_opts"
+        _MG_TOP_FS[$_mp]="$_fs"
+    done <<< "$_mi"
+}
+
+# _mg_covering ESCAPED_PATH — deepest present mount point strictly above.
+_mg_covering() {
+    local _p="$1"
+    while [[ "$_p" != "/" ]]; do
+        _p="${_p%/*}"; [[ -n "$_p" ]] || _p="/"
+        if [[ -n "${_MG_TOP_FS[$_p]+x}" ]]; then printf '%s' "$_p"; return 0; fi
+    done
+    return 1
+}
+
+_mg_is_ro() { [[ ",$1," == *,ro,* ]]; }
+
+# Filesystems whose content is not host data (a fall-through onto one of
+# these shows an empty/synthetic dir, not the protected host path).
+_mg_is_synthetic_fs() {
+    case "$1" in
+        tmpfs|ramfs|proc|sysfs|devpts|devtmpfs|mqueue|cgroup|cgroup2|"") return 0 ;;
+    esac
+    return 1
+}
+
+# _mg_children PID — direct children (all threads), no procps needed.
+_mg_children() {
+    local _c
+    if compgen -G "/proc/$1/task/*/children" >/dev/null; then
+        for _c in $(cat /proc/"$1"/task/*/children 2>/dev/null); do printf '%s\n' "$_c"; done
+    else
+        pgrep -P "$1" 2>/dev/null || true
+    fi
+}
+
+# _mount_guard_prepare PROJECT_DIR — fill the expectation arrays from the
+# backend's mount list. Returns 1 when there is nothing to guard.
+# _MG_HOW[i]: how MOUNT_GUARD=repair may re-create the mount (null |
+# tmpfs | ro; empty = not repairable); for ro, _MG_FTYPE/_MG_UID hold
+# the host object's type (f|d) and owner now, before the sandbox starts.
+_MG_KIND=(); _MG_PATH=(); _MG_ESC=(); _MG_POLICY=(); _MG_HOW=(); _MG_FTYPE=(); _MG_UID=()
+_mount_guard_prepare() {
+    local _proj="$1" _kind _path _e _r _how
+    _MG_KIND=(); _MG_PATH=(); _MG_ESC=(); _MG_POLICY=(); _MG_HOW=(); _MG_FTYPE=(); _MG_UID=()
+    declare -F backend_mount_expectations >/dev/null || return 1
+    local -a _roots=("$HOME" "$_proj" "${SANDBOX_DIR:-}")
+    local -A _exact=()
+    while IFS= read -r _e; do [[ -n "$_e" ]] && _roots+=("$_e"); done \
+        < <(_effective_extra_writable_paths 2>/dev/null)
+    for _e in "${BLOCKED_FILES[@]+"${BLOCKED_FILES[@]}"}" \
+              "${EXTRA_BLOCKED_PATHS[@]+"${EXTRA_BLOCKED_PATHS[@]}"}"; do
+        [[ -n "$_e" ]] || continue
+        _exact[$_e]=1
+        _r="$(readlink -f -- "$_e" 2>/dev/null)" && [[ -n "$_r" ]] && _exact[$_r]=1
+    done
+    local -A _seen=()
+    while read -r _kind _path; do
+        [[ -n "$_path" && "$_path" == /* ]] || continue
+        _how="${_kind#*:}"; [[ "$_how" == "$_kind" ]] && _how=""
+        _kind="${_kind%%:*}"
+        case "$_kind" in rw|ro|mask) ;; *) continue ;; esac
+        case "$_kind:$_how" in mask:null|mask:tmpfs|ro:same) ;; *) _how="" ;; esac
+        _path="${_path%/}"; [[ -n "$_path" ]] || _path="/"
+        [[ "$_path" == "/" ]] && continue
+        local _policy=0
+        if [[ -n "${_exact[$_path]:-}" ]]; then
+            _policy=1
+        else
+            for _r in "${_roots[@]}"; do
+                [[ -n "$_r" ]] || continue
+                if [[ "$_path" == "$_r" || "$_path" == "${_r%/}/"* ]]; then _policy=1; break; fi
+            done
+        fi
+        # HOME_ACCESS=write: all of $HOME is writable by design, so a
+        # read-only overlay there (e.g. ~/.claude.json, which `claude`
+        # outside rewrites via rename on every start) is defense in depth
+        # only; its loss is reported but does not terminate. Masks stay
+        # policy (a lost credential mask exposes ~/.ssh etc.).
+        if [[ "$_policy" == 1 && "$_kind" == ro && "${HOME_ACCESS:-}" == write \
+              && -z "${_exact[$_path]:-}" && "$_path" == "$HOME"/* ]] \
+           && [[ "$_path" != "$_proj" && "$_path" != "$_proj"/* ]]; then
+            _policy=0
+        fi
+        if [[ -n "${_seen[$_path]:-}" ]]; then
+            # Later op at the same point wins (bwrap/firejail argv order).
+            local _i="${_seen[$_path]}"
+            _MG_KIND[$_i]="$_kind"; _MG_POLICY[$_i]="$_policy"; _MG_HOW[$_i]="$_how"
+            continue
+        fi
+        _seen[$_path]="${#_MG_PATH[@]}"
+        _MG_KIND+=("$_kind"); _MG_PATH+=("$_path")
+        _MG_ESC+=("$(_mg_esc "$_path")"); _MG_POLICY+=("$_policy"); _MG_HOW+=("$_how")
+    done < <(backend_mount_expectations)
+    [[ ${#_MG_PATH[@]} -gt 0 ]] || return 1
+    # Repairable: leaves only. Re-creating a mount that had other
+    # expected mounts below it would hide them (they went with it).
+    local _i _j _p
+    for _i in "${!_MG_PATH[@]}"; do
+        _MG_FTYPE[$_i]=""; _MG_UID[$_i]=""
+        [[ -n "${_MG_HOW[_i]}" ]] || continue
+        _p="${_MG_PATH[_i]}"
+        for _j in "${!_MG_PATH[@]}"; do
+            if [[ "${_MG_PATH[_j]}" == "$_p"/* ]]; then _MG_HOW[$_i]=""; break; fi
+        done
+        [[ "${_MG_HOW[_i]}" == same ]] || continue
+        _MG_HOW[$_i]=ro
+        if [[ -L "$_p" ]]; then _MG_HOW[$_i]=""
+        elif [[ -d "$_p" ]]; then _MG_FTYPE[$_i]=d
+        elif [[ -f "$_p" ]]; then _MG_FTYPE[$_i]=f
+        else _MG_HOW[$_i]=""
+        fi
+        [[ -n "${_MG_HOW[_i]}" ]] || continue
+        _MG_UID[$_i]="$(stat -c %u -- "$_p" 2>/dev/null)"
+        [[ "${_MG_UID[_i]}" =~ ^[0-9]+$ ]] || _MG_HOW[$_i]=""
+    done
+    return 0
+}
+
+# _mg_repair INDEX PID NS_INODE BASE_RO — re-create lost mount INDEX
+# inside the sandbox (MOUNT_GUARD=repair); a tmpfs mask that was
+# read-only (BASE_RO=1, e.g. under --remount-ro) comes back read-only.
+# Returns 0 when the helper reports
+# success; otherwise _MG_REPAIR_ERR holds the reason and the return
+# status is 1 (refused) or 2 (not possible here).
+_MG_REPAIR_ERR=""
+_mg_repair() {
+    local _i="$1" _helper="${SANDBOX_DIR:-}/backends/mount-repair.py" _rc
+    _MG_REPAIR_ERR=""
+    if [[ -z "${_MG_HOW[_i]:-}" ]]; then
+        _MG_REPAIR_ERR="not repairable (only leaf masks and read-only binds of a path onto itself are)"; return 2
+    fi
+    if [[ ! -f "$_helper" ]] || ! command -v python3 >/dev/null 2>&1; then
+        _MG_REPAIR_ERR="python3 or backends/mount-repair.py not available"; return 2
+    fi
+    local _how="${_MG_HOW[_i]}"
+    [[ "$_how" == tmpfs && "${4:-0}" == 1 ]] && _how=tmpfs-ro
+    local -a _args=("$2" "$3" "$_how" "${_MG_PATH[_i]}")
+    [[ "${_MG_HOW[_i]}" == ro ]] && _args+=("${_MG_FTYPE[_i]}" "${_MG_UID[_i]}")
+    # -I: the helper enters the sandbox's mount namespace, where user
+    # site-packages may be agent-writable; nothing may be imported there.
+    _MG_REPAIR_ERR="$(timeout 10 python3 -I "$_helper" "${_args[@]}" 2>&1 >/dev/null)"; _rc=$?
+    _MG_REPAIR_ERR="${_MG_REPAIR_ERR//$'\n'/; }"
+    [[ $_rc -eq 0 ]] && return 0
+    [[ -n "$_MG_REPAIR_ERR" ]] || _MG_REPAIR_ERR="helper failed (status $_rc)"
+    [[ $_rc -eq 1 ]] && return 1
+    return 2
+}
+
+# _mg_evaluate INDEX BASE_RO — classify expectation INDEX against the
+# mount table last read by _mg_read_mountinfo. Sets _MG_VERDICT (empty =
+# intact, "degraded", "EXPOSED") and _MG_WHAT (human-readable detail).
+_MG_VERDICT=""; _MG_WHAT=""
+_mg_evaluate() {
+    local _i="$1" _base_ro="${2:-0}" _mp _cov _covfs _covopts _kind
+    _mp="${_MG_ESC[_i]}"; _kind="${_MG_KIND[_i]}"
+    _MG_VERDICT=""; _MG_WHAT=""
+    if [[ -n "${_MG_TOP_FS[$_mp]+x}" ]]; then
+        if [[ "$_base_ro" == 1 ]] && ! _mg_is_ro "${_MG_TOP_OPTS[$_mp]}"; then
+            _MG_VERDICT=EXPOSED; _MG_WHAT="read-only mount became read-write"
+        fi
+        return 0
+    fi
+    _cov="$(_mg_covering "$_mp")" || _cov="/"
+    _covfs="${_MG_TOP_FS[$_cov]:-}"; _covopts="${_MG_TOP_OPTS[$_cov]:-}"
+    case "$_kind" in
+        rw)   _MG_WHAT="writable bind lost" ;;
+        ro)   _MG_WHAT="read-only overlay lost" ;;
+        *)    _MG_WHAT="mask lost" ;;
+    esac
+    _MG_WHAT="$_MG_WHAT; path now falls through to the $(_mg_is_ro "$_covopts" && echo read-only || echo WRITABLE) ${_covfs:-?} mount at $(printf '%b' "${_cov//\\/\\0}")"
+    # Exposed: a protective mount (mask, or read-only overlay now under a
+    # writable mount) on a policy path, falling through to host data.
+    if [[ "${_MG_POLICY[_i]}" == 1 && "$_kind" != rw ]] \
+       && ! _mg_is_synthetic_fs "$_covfs" \
+       && { [[ "$_kind" == mask ]] || ! _mg_is_ro "$_covopts"; }; then
+        _MG_VERDICT=EXPOSED
+    else
+        _MG_VERDICT=degraded
+    fi
+}
+
+# _mount_guard_find_target LAUNCHER_PID — echo the pid (in a different
+# mount namespace than ours, readable mountinfo) with the most expected
+# mount points present, plus that count: "<pid> <count>".
+_mount_guard_find_target() {
+    local _own _q _i=0 _p _c _n _best="" _bestn=0 _k _cns
+    _own="$(readlink /proc/self/ns/mnt 2>/dev/null)" || return 1
+    local -a _queue=("$1")
+    while (( _i < ${#_queue[@]} && _i < 256 )); do
+        _p="${_queue[_i]}"; _i=$((_i + 1))
+        for _c in $(_mg_children "$_p"); do
+            _queue+=("$_c")
+            # Skip our own namespace and processes whose namespace we
+            # cannot identify (firejail's root-owned helper): the guard
+            # must be able to re-find the namespace later.
+            _cns="$(readlink "/proc/$_c/ns/mnt" 2>/dev/null)" || continue
+            [[ -n "$_cns" && "$_cns" != "$_own" ]] || continue
+            _mg_read_mountinfo "$_c" || continue
+            _n=0
+            for _k in "${_MG_ESC[@]}"; do [[ -n "${_MG_TOP_FS[$_k]+x}" ]] && _n=$((_n + 1)); done
+            if (( _n > _bestn )); then _best="$_c"; _bestn="$_n"; fi
+        done
+    done
+    [[ -n "$_best" ]] || return 1
+    printf '%s %s\n' "$_best" "$_bestn"
+}
+
+# _mg_find_in_ns LAUNCHER_PID NS — a descendant living in mount ns NS.
+_mg_find_in_ns() {
+    local _i=0 _p _c
+    local -a _queue=("$1")
+    while (( _i < ${#_queue[@]} && _i < 256 )); do
+        _p="${_queue[_i]}"; _i=$((_i + 1))
+        for _c in $(_mg_children "$_p"); do
+            if [[ "$(readlink "/proc/$_c/ns/mnt" 2>/dev/null)" == "$2" ]]; then
+                printf '%s\n' "$_c"; return 0
+            fi
+            _queue+=("$_c")
+        done
+    done
+    return 1
+}
+
+_mount_guard_notify() {
+    local _lpid="$1" _msg="$2"
+    # The backend process's stderr (the launching terminal or log). Not
+    # reachable for setuid firejail; then our own stderr, which the
+    # watcher only keeps when it is a terminal or a file; then /dev/tty.
+    { printf '\a\n%s\n' "$_msg" >> "/proc/$_lpid/fd/2"; } 2>/dev/null \
+        || { [[ -t 2 || -f /dev/stderr ]] && printf '\a\n%s\n' "$_msg" >&2; } \
+        || { printf '\a\n%s\n' "$_msg" > /dev/tty; } 2>/dev/null || true
+    if command -v logger >/dev/null 2>&1; then
+        logger -t agent-sandbox -- "$_msg" 2>/dev/null || true
+    fi
+    if [[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1; then
+        tmux display-message -- "$_msg" 2>/dev/null || true
+    fi
+}
+
+# _mount_guard_run LAUNCHER_PID — the watcher loop (run in background).
+_mount_guard_run() {
+    local _lpid="$1" _lstart _target="" _tstart _ns _tries=0 _prev="" _cur
+    local _mode="${MOUNT_GUARD:-repair}" _interval="${MOUNT_GUARD_INTERVAL:-5}"
+    _lstart="$(_proc_starttime "$_lpid")" || return 0
+    _alive() { [[ "$(_proc_starttime "$1" 2>/dev/null)" == "$2" ]]; }
+
+    # Baseline: poll until the sandbox's mount table stops growing. Every
+    # expected mount point seen at least once is guarded from then on,
+    # so a loss that happens while the table is still settling is caught
+    # too (it was present in an earlier poll).
+    local -a _guarded=() _base_ro=()
+    local -A _ever=()
+    local _i _stable=0 _nseen=0
+    while (( _tries < 240 && _stable < 2 )); do
+        _tries=$((_tries + 1))
+        _alive "$_lpid" "$_lstart" || return 0
+        _cur="$(_mount_guard_find_target "$_lpid")" || _cur=""
+        if [[ -z "$_cur" ]]; then sleep 0.25; continue; fi
+        if [[ "${_cur%% *}" != "$_target" ]]; then
+            _target="${_cur%% *}"; _ever=(); _guarded=(); _base_ro=(); _nseen=0; _stable=0
+        fi
+        _mg_read_mountinfo "$_target" || { sleep 0.25; continue; }
+        for _i in "${!_MG_ESC[@]}"; do
+            [[ -z "${_ever[$_i]:-}" && -n "${_MG_TOP_FS[${_MG_ESC[_i]}]+x}" ]] || continue
+            _ever[$_i]=1
+            _guarded+=("$_i")
+            if _mg_is_ro "${_MG_TOP_OPTS[${_MG_ESC[_i]}]}"; then _base_ro[_i]=1; else _base_ro[_i]=0; fi
+        done
+        if (( ${#_guarded[@]} > _nseen )); then
+            _nseen=${#_guarded[@]}; _stable=0
+        else
+            _stable=$((_stable + 1))
+        fi
+        sleep 0.25
+    done
+    [[ -n "$_target" ]] && (( ${#_guarded[@]} )) || return 0
+    _tstart="$(_proc_starttime "$_target")" || return 0
+    _ns="$(readlink "/proc/$_target/ns/mnt" 2>/dev/null)" || return 0
+    # Armed. Leave a marker in this launch's chaperon FIFO dir (visible
+    # inside as $_CHAPERON_FIFO_DIR) so tests and curious users can tell
+    # the guard is active. mkdir never follows a planted symlink.
+    if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -d "$_CHAPERON_FIFO_DIR" && ! -L "$_CHAPERON_FIFO_DIR" ]]; then
+        mkdir -- "$_CHAPERON_FIFO_DIR/.mount-guard-armed" 2>/dev/null || true
+    fi
+    local -A _reported=() _repfail=()
+    local _mp _verdict _what _p _k _nsino="${_ns//[^0-9]/}" _rrc _gone
+    # repair is a bwrap feature (firejail's namespaces are root-owned and
+    # cannot be entered unprivileged): elsewhere it behaves as warn.
+    local _mg_note=""
+    if [[ "$_mode" == repair && "${SANDBOX_BACKEND:-}" != bwrap ]]; then
+        _mode=warn; _mg_note="; repair needs bwrap"
+    fi
+    while :; do
+        sleep "$_interval"
+        _alive "$_lpid" "$_lstart" || return 0
+        if ! _alive "$_target" "$_tstart"; then
+            # Sandbox init gone: find another process in the same namespace
+            # (none left = the sandbox has ended).
+            _target="$(_mg_find_in_ns "$_lpid" "$_ns")" || return 0
+            _tstart="$(_proc_starttime "$_target")" || return 0
+        fi
+        _mg_read_mountinfo "$_target" || continue
+        for _i in "${_guarded[@]}"; do
+            _mp="${_MG_ESC[_i]}"
+            [[ -z "${_reported[$_i]:-}" ]] || continue
+            _mg_evaluate "$_i" "${_base_ro[_i]}"
+            _verdict="$_MG_VERDICT"; _what="$_MG_WHAT"
+            [[ -n "$_verdict" ]] || continue
+            if [[ "$_mode" == repair ]]; then
+                # Only a mount that is gone can be re-created (a read-only
+                # mount turned writable cannot happen from outside).
+                _gone=""; [[ -z "${_MG_TOP_FS[$_mp]+x}" ]] && _gone=1
+                _rrc=2; _MG_REPAIR_ERR="the mount is still there but no longer read-only"
+                if [[ -n "$_gone" ]]; then
+                    _mg_repair "$_i" "$_target" "$_nsino" "${_base_ro[_i]}"; _rrc=$?
+                fi
+                if (( _rrc == 0 )); then
+                    # Trust the kernel's table, not the helper: the path
+                    # must be a mount point again, read-only unless tmpfs.
+                    if _mg_read_mountinfo "$_target" && [[ -n "${_MG_TOP_FS[$_mp]+x}" ]] \
+                       && { [[ "${_base_ro[_i]}" != 1 ]] || _mg_is_ro "${_MG_TOP_OPTS[$_mp]}"; }; then
+                        unset "_repfail[$_i]"
+                        if [[ "$_verdict" == EXPOSED ]]; then
+                            _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: protection LOST at ${_MG_PATH[_i]} (${_what}) and RESTORED (MOUNT_GUARD=repair). The path was unprotected for up to ${_interval}s before the repair; whatever the agent read or wrote there in that window is not undone."
+                        else
+                            _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: mount lost at ${_MG_PATH[_i]} (${_what}) and RESTORED (MOUNT_GUARD=repair)."
+                        fi
+                        continue
+                    fi
+                    _rrc=3; _MG_REPAIR_ERR="the repaired mount does not show in the sandbox's mount table"
+                fi
+                # A refusal (the path is missing, a symlink, changed) may
+                # clear up: retry every interval, report once. A repair
+                # that ran but is not visible is never retried (no
+                # stacking of mounts).
+                if [[ -n "${_repfail[$_i]:-}" ]]; then
+                    (( _rrc == 1 )) && continue
+                    _reported[$_i]=1; continue
+                fi
+                _repfail[$_i]=1
+                (( _rrc == 1 )) || _reported[$_i]=1
+                if [[ "$_verdict" == EXPOSED ]]; then
+                    _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: protection LOST at ${_MG_PATH[_i]} (${_what}). Could not restore it: ${_MG_REPAIR_ERR}. The sandbox no longer enforces its policy there; restart it (MOUNT_GUARD=repair, not terminating)."
+                else
+                    _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: mount lost at ${_MG_PATH[_i]} (${_what}). Could not restore it: ${_MG_REPAIR_ERR}. No protected path is exposed, but the sandbox is degraded; restart it."
+                fi
+                continue
+            fi
+            _reported[$_i]=1
+            if [[ "$_verdict" == EXPOSED ]]; then
+                if [[ "$_mode" == kill ]]; then
+                    _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: protection LOST at ${_MG_PATH[_i]} (${_what}). The sandbox no longer enforces its policy there. Terminating the sandbox (MOUNT_GUARD=kill)."
+                    kill -KILL "$_target" 2>/dev/null || true
+                    kill -TERM "$_lpid" 2>/dev/null || true
+                    sleep 2
+                    _alive "$_lpid" "$_lstart" && kill -KILL "$_lpid" 2>/dev/null
+                    return 0
+                fi
+                _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: protection LOST at ${_MG_PATH[_i]} (${_what}). The sandbox no longer enforces its policy there; restart it (MOUNT_GUARD=${MOUNT_GUARD:-warn}, not terminating${_mg_note})."
+            else
+                _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: mount lost at ${_MG_PATH[_i]} (${_what}). No protected path is exposed, but the sandbox is degraded; restart it."
+            fi
+        done
+    done
+}
+
+# _mount_guard_main PROJECT_DIR LAUNCHER_PID — body of the watcher
+# process. Everything, including parsing the backend's mount list, runs
+# in this background subshell with errexit/nounset off, so no guard
+# failure can ever abort or alter the launch itself.
+_mount_guard_main() {
+    ( set +euo pipefail; trap - EXIT TERM INT HUP ERR
+      _mount_guard_prepare "$1" || exit 0
+      _mount_guard_run "$2" )
+}
+
+# _start_mount_guard PROJECT_DIR — fork the watcher (bwrap/firejail).
+_MOUNT_GUARD_PID=""
+_start_mount_guard() {
+    [[ "${MOUNT_GUARD:-repair}" != off ]] || return 0
+    case "${SANDBOX_BACKEND:-}" in bwrap|firejail) ;; *) return 0 ;; esac
+    [[ -r /proc/self/mountinfo ]] || return 0
+    declare -F backend_mount_expectations >/dev/null || return 0
+    # The watcher must never hold the caller's stdout/stderr PIPE open (a
+    # `$(sandbox-exec.sh …)` would wait for it until the next poll); it
+    # writes to the backend's stderr through /proc/<pid>/fd/2 when it has
+    # something to say. A terminal or a regular file is kept (setuid
+    # firejail's /proc/<pid>/fd is not accessible to us).
+    if [[ -t 2 || -f /dev/stderr ]]; then
+        _mount_guard_main "$1" "$$" </dev/null >/dev/null &
+    else
+        _mount_guard_main "$1" "$$" </dev/null >/dev/null 2>&1 &
+    fi
+    _MOUNT_GUARD_PID=$!
+}
+
 # ── Test-harness early-return ────────────────────────────────────
 #
 # Tests can source this file as a function library by setting
@@ -2336,119 +3565,7 @@ _classify_pasta_port_entry() {
 # should set it; only the in-tree unit-test harness does.
 [[ "${_SANDBOX_LIB_NO_INIT:-}" == "1" ]] && return 0
 
-# ── Phase 1: Source admin config (trusted — admin-owned, root-protected) ──
-#
-# Missing-vs-malformed boundary: a missing admin config file causes
-# _ADMIN_CONF to be unset above, so this block is skipped entirely and
-# the sandbox runs in user-only mode. A present-but-malformed admin
-# config is caught here: parse errors abort via _source_trusted_config,
-# and shape errors on ALLOWED_PROJECT_PARENTS abort via
-# _validate_admin_allowed_project_parents. There is no fall-through to
-# a permissive default once admin has spoken.
-if [[ -n "$_ADMIN_CONF" && -f "$_ADMIN_CONF" ]]; then
-    # Unset before sourcing so we can detect whether admin explicitly
-    # sets ALLOWED_PROJECT_PARENTS. Lib defaults at line 68 mean the
-    # variable is always set before this point; unsetting lets the
-    # post-source declare -p check distinguish "admin silent" (apply
-    # narrowing default "/") from "admin set" (snapshot admin's value).
-    unset ALLOWED_PROJECT_PARENTS
-    _source_trusted_config "$_ADMIN_CONF"
-    if declare -p ALLOWED_PROJECT_PARENTS &>/dev/null; then
-        _admin_set_app=true
-        _validate_admin_allowed_project_parents
-    else
-        _admin_set_app=false
-        # Restore lib default so downstream code paths see a populated
-        # array. The narrowing merge uses _ADMIN_ALLOWED_PROJECT_PARENTS
-        # (set to ("/") by _snapshot_admin_config when admin is silent),
-        # not this value, so no permissive admin policy results.
-        ALLOWED_PROJECT_PARENTS=("/fh/fast" "/fh/scratch" "$HOME")
-    fi
-    _snapshot_admin_config
-fi
-
-# ── Phase 2: Load user config (untrusted — runs in isolated subprocess) ──
-_load_untrusted_config "$_USER_CONF" "User config"
-
-# ── Phase 3: Enforce admin policy ──
-# Pure comparison + merge — no re-sourcing, no eval of untrusted code.
-if [[ -n "$_ADMIN_CONF" ]]; then
-    _enforce_admin_policy "User config"
-fi
-
-# Restore explicit backend override (env/CLI takes precedence over config)
-if [[ -n "$_SANDBOX_BACKEND_OVERRIDE" ]]; then
-    SANDBOX_BACKEND="$_SANDBOX_BACKEND_OVERRIDE"
-fi
-unset _SANDBOX_BACKEND_OVERRIDE
-
-# Restore env overrides for security booleans (env takes precedence over
-# config, but admin enforcement still wins — checked below).
-for _bvar in PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD; do
-    _override_var="_${_bvar}_OVERRIDE"
-    if [[ -n "${!_override_var}" ]]; then
-        eval "${_bvar}=\"${!_override_var}\""
-    fi
-    unset "$_override_var"
-done
-unset _bvar _override_var
-# Re-enforce admin policy on the env-overridden values: env can loosen
-# user config but cannot weaken admin-set security booleans.
-if [[ -n "$_ADMIN_CONF" ]]; then
-    for _bvar in PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD; do
-        eval "_admin_val=\"\${_ADMIN_${_bvar}:-}\""
-        if _is_true "$_admin_val" && ! _is_true "${!_bvar}"; then
-            echo "WARNING: env override ${_bvar}=false blocked by admin policy — restored to true." >&2
-            eval "${_bvar}=true"
-        fi
-    done
-    unset _bvar _admin_val
-fi
-
-# Restore env overrides for network-filter scalars (env wins over config;
-# admin enforcement re-applied below).
-if [[ -n "${_NETWORK_FILTER_MODE_OVERRIDE:-}" ]]; then
-    NETWORK_FILTER_MODE="$_NETWORK_FILTER_MODE_OVERRIDE"
-fi
-if [[ -n "${_NETWORK_FILTER_FALLBACK_OVERRIDE:-}" ]]; then
-    NETWORK_FILTER_FALLBACK="$_NETWORK_FILTER_FALLBACK_OVERRIDE"
-fi
-if [[ -n "${_NETWORK_MAIL_BLOCK_OVERRIDE:-}" ]]; then
-    NETWORK_MAIL_BLOCK="$_NETWORK_MAIL_BLOCK_OVERRIDE"
-fi
-unset _NETWORK_FILTER_MODE_OVERRIDE _NETWORK_FILTER_FALLBACK_OVERRIDE _NETWORK_MAIL_BLOCK_OVERRIDE
-
-# Re-apply admin enforcement on network-filter scalars: env can loosen
-# user config but cannot weaken admin-set values.
-if [[ -n "$_ADMIN_CONF" ]]; then
-    if [[ -n "${_ADMIN_NETWORK_FILTER_MODE:-}" ]]; then
-        _admin_idx="$(_network_mode_strictness_idx "$_ADMIN_NETWORK_FILTER_MODE")"
-        _user_idx="$(_network_mode_strictness_idx "${NETWORK_FILTER_MODE:-filtered}")"
-        if [[ "$_user_idx" -lt "$_admin_idx" ]]; then
-            echo "WARNING: env override NETWORK_FILTER_MODE='${NETWORK_FILTER_MODE}' weaker than admin '${_ADMIN_NETWORK_FILTER_MODE}' — restored." >&2
-            NETWORK_FILTER_MODE="$_ADMIN_NETWORK_FILTER_MODE"
-        fi
-        unset _admin_idx _user_idx
-    fi
-    if [[ -n "${_ADMIN_NETWORK_FILTER_FALLBACK:-}" ]]; then
-        _admin_pidx="$(_network_fallback_strictness_idx "$_ADMIN_NETWORK_FILTER_FALLBACK")"
-        _user_pidx="$(_network_fallback_strictness_idx "${NETWORK_FILTER_FALLBACK:-open}")"
-        if [[ "$_user_pidx" -lt "$_admin_pidx" ]]; then
-            echo "WARNING: env override NETWORK_FILTER_FALLBACK='${NETWORK_FILTER_FALLBACK}' weaker than admin '${_ADMIN_NETWORK_FILTER_FALLBACK}' — restored." >&2
-            NETWORK_FILTER_FALLBACK="$_ADMIN_NETWORK_FILTER_FALLBACK"
-        fi
-        unset _admin_pidx _user_pidx
-    fi
-    if [[ -n "${_ADMIN_NETWORK_MAIL_BLOCK:-}" ]]; then
-        _admin_midx="$(_mail_block_strictness_idx "$_ADMIN_NETWORK_MAIL_BLOCK")"
-        _user_midx="$(_mail_block_strictness_idx "${NETWORK_MAIL_BLOCK:-auto}")"
-        if [[ "$_user_midx" -lt "$_admin_midx" ]]; then
-            echo "WARNING: env override NETWORK_MAIL_BLOCK='${NETWORK_MAIL_BLOCK}' weaker than admin '${_ADMIN_NETWORK_MAIL_BLOCK}' — restored." >&2
-            NETWORK_MAIL_BLOCK="$_ADMIN_NETWORK_MAIL_BLOCK"
-        fi
-        unset _admin_midx _user_midx
-    fi
-fi
+_load_config_layers
 
 # ── Validate config ──────────────────────────────────────────────
 
@@ -2572,7 +3689,10 @@ _exec_or_run_sandbox() {
     if [[ "${_CLEANUP_MATERIALIZED:-0}" != "1" ]]; then
         exec "$@"
     fi
-    "$@" &
+    # `<&0` is load-bearing: without job control bash points a
+    # background command's stdin at /dev/null, which would leave an
+    # interactive agent with no input in --cleanup-materialized mode.
+    "$@" <&0 &
     _SANDBOX_CHILD_PID=$!
     trap '_sandbox_forward_signal TERM' TERM
     trap '_sandbox_forward_signal INT'  INT
@@ -2582,6 +3702,84 @@ _exec_or_run_sandbox() {
     trap - TERM INT HUP
     _SANDBOX_CHILD_PID=""
     return "$_rc"
+}
+
+# ── Live-launch registry (guards --cleanup-materialized) ─────────
+#
+# A BLOCKED_FILES placeholder materialized by launch A may be the
+# /dev/null mount target of launch B running concurrently on the same
+# host. Unlinking a file that is a mount point in another mount
+# namespace succeeds on Linux >= 3.18 and DETACHES that mount in every
+# namespace, so A's post-exit cleanup would silently unmask the file in
+# B (and B's agent could then create it with its own content on the
+# host). Every launch therefore registers itself (pid + start time) in
+# a per-user, per-host registry before materializing anything, and the
+# cleanup keeps all placeholders while any other registered launch is
+# still alive. Registration and the cleanup's check-then-delete take
+# the same flock, so a launch that registers after the check simply
+# re-materializes what was removed.
+_live_registry_dir() {
+    local _base="${XDG_RUNTIME_DIR:-}"
+    if [[ -z "$_base" || ! -d "$_base" || ! -O "$_base" ]]; then
+        _base="${TMPDIR:-/tmp}"
+    fi
+    printf '%s/agent-sandbox-live-%s' "${_base%/}" "$(id -u)"
+}
+
+
+# Open + lock the registry dir; sets _LIVE_REG_DIR and _LIVE_REG_LOCKFD.
+# Best effort: returns 1 (caller proceeds unguarded) if the dir cannot
+# be created safely.
+_live_registry_lock() {
+    _LIVE_REG_DIR="$(_live_registry_dir)"
+    _LIVE_REG_LOCKFD=""
+    mkdir -m 700 -- "$_LIVE_REG_DIR" 2>/dev/null || true
+    if [[ -L "$_LIVE_REG_DIR" || ! -d "$_LIVE_REG_DIR" || ! -O "$_LIVE_REG_DIR" ]]; then
+        return 1
+    fi
+    if command -v flock >/dev/null 2>&1; then
+        exec {_LIVE_REG_LOCKFD}>>"$_LIVE_REG_DIR/.lock" || { _LIVE_REG_LOCKFD=""; return 0; }
+        flock -x "$_LIVE_REG_LOCKFD" 2>/dev/null || true
+    fi
+    return 0
+}
+
+_live_registry_unlock() {
+    if [[ -n "${_LIVE_REG_LOCKFD:-}" ]]; then
+        exec {_LIVE_REG_LOCKFD}>&-
+        _LIVE_REG_LOCKFD=""
+    fi
+}
+
+# Register this launcher ($$ survives the exec into the backend, so it
+# stays alive exactly as long as the sandbox does).
+_register_live_launch() {
+    _live_registry_lock || return 0
+    local _st
+    _st="$(_proc_starttime $$)" || _st=""
+    printf '%s\n' "$_st" > "$_LIVE_REG_DIR/$$" 2>/dev/null || true
+    # Opportunistic prune: exec'd launches never deregister themselves.
+    _other_live_launches >/dev/null
+    _live_registry_unlock
+}
+
+# Print the PIDs of OTHER live registered launches; prune dead entries.
+# Caller must hold the registry lock.
+_other_live_launches() {
+    local _f _pid _want _have
+    for _f in "$_LIVE_REG_DIR"/*; do
+        [[ -f "$_f" ]] || continue
+        _pid="${_f##*/}"
+        [[ "$_pid" =~ ^[0-9]+$ ]] || continue
+        [[ "$_pid" == "$$" ]] && continue
+        _want="$(cat "$_f" 2>/dev/null)" || _want=""
+        _have="$(_proc_starttime "$_pid")" || _have=""
+        if [[ -n "$_have" && "$_have" == "$_want" ]]; then
+            printf '%s\n' "$_pid"
+        else
+            rm -f -- "$_f" 2>/dev/null || true
+        fi
+    done
 }
 
 # Remove placeholders + parent dirs created during the just-finished
@@ -2598,11 +3796,41 @@ _exec_or_run_sandbox() {
 # Both retentions are reported on stderr with a 'kept' note so the user
 # can see why.
 _cleanup_materialized_blocked_files() {
-    [[ ${#_MATERIALIZED_FILES[@]} -eq 0 && ${#_MATERIALIZED_DIRS[@]} -eq 0 ]] && return 0
+    local _have_lock=false
+    if _live_registry_lock; then
+        _have_lock=true
+        rm -f -- "$_LIVE_REG_DIR/$$" 2>/dev/null || true
+    fi
+    if [[ ${#_MATERIALIZED_FILES[@]} -eq 0 && ${#_MATERIALIZED_DIRS[@]} -eq 0 ]]; then
+        $_have_lock && _live_registry_unlock
+        return 0
+    fi
 
-    local _f _d _size _i
+    # Other sandboxes on this host may have these placeholders mounted
+    # over (see the live-launch registry above): keep everything.
+    if $_have_lock; then
+        local _others
+        _others="$(_other_live_launches | tr '\n' ' ')"
+        if [[ -n "${_others// /}" ]]; then
+            echo "WARNING: kept ${#_MATERIALIZED_FILES[@]} materialized BLOCKED_FILES placeholder(s): other agent-sandbox sessions are running on this host (pids: ${_others% }) and may have them mounted. Deleting them would unmask the files inside those sessions." >&2
+            _live_registry_unlock
+            return 0
+        fi
+    fi
+
+    local _f _d _size _i _netfs_kept=0
     for _f in "${_MATERIALIZED_FILES[@]}"; do
         if [[ ! -e "$_f" ]]; then
+            continue
+        fi
+        # The registry only sees launches on THIS host. On a network
+        # filesystem a sandbox on another client (e.g. a sandbox-wrapped
+        # Slurm job on a compute node) may have this placeholder mounted
+        # over, and unlinking it here makes that client drop the mount
+        # (its dentry fails revalidation). Liveness on other hosts is
+        # unknowable, so keep network-filesystem placeholders.
+        if _path_on_network_fs "$_f"; then
+            _netfs_kept=$((_netfs_kept + 1))
             continue
         fi
         _size=$(stat -c %s "$_f" 2>/dev/null || echo unknown)
@@ -2620,11 +3848,32 @@ _cleanup_materialized_blocked_files() {
         for ((_i = ${#_MATERIALIZED_DIRS[@]} - 1; _i >= 0; _i--)); do
             _d="${_MATERIALIZED_DIRS[$_i]}"
             [[ -d "$_d" ]] || continue
+            _path_on_network_fs "$_d" && continue
             if ! rmdir "$_d" 2>/dev/null; then
                 echo "WARNING: kept '$_d': directory not empty." >&2
             fi
         done
     fi
+    if (( _netfs_kept > 0 )); then
+        echo "WARNING: kept $_netfs_kept materialized BLOCKED_FILES placeholder(s) on a network filesystem: sandboxes on other hosts may have them mounted, and deleting them would unmask the files there." >&2
+    fi
+    $_have_lock && _live_registry_unlock
+    return 0
+}
+
+# _path_on_network_fs PATH — true if PATH (or its nearest existing
+# ancestor) is on a filesystem shared with other hosts, where removing
+# or renaming an entry can detach mounts in sandboxes on OTHER clients
+# that no local check can see. Unknown filesystem types count as
+# network (fail safe: the caller keeps the file).
+_path_on_network_fs() {
+    local _p="$1" _t
+    while [[ -n "$_p" && ! -e "$_p" && "$_p" != "/" ]]; do _p="$(dirname -- "$_p")"; done
+    _t="$(stat -f -c %T -- "${_p:-/}" 2>/dev/null)" || return 0
+    case "$_t" in
+        nfs*|lustre|gpfs|cifs|smb*|ceph*|afs|fuse*|9p|gfs*|ocfs2|beegfs|panfs|glusterfs|wekafs|UNKNOWN*|unknown*|"") return 0 ;;
+    esac
+    return 1
 }
 
 # Reject command substitution or backticks in path arrays (defense in depth).
@@ -2666,6 +3915,11 @@ load_project_config() {
         _enforce_admin_policy "Project config"
     fi
 
+    # Launch overrides (--backend, env) beat every config layer, then
+    # validate the final result. Both must follow conf.d.
+    _apply_launch_overrides
+    _validate_loaded_config
+
     # Validate all path arrays
     _validate_path_array ALLOWED_PROJECT_PARENTS "${ALLOWED_PROJECT_PARENTS[@]}"
     _validate_path_array READONLY_MOUNTS "${READONLY_MOUNTS[@]}"
@@ -2677,124 +3931,164 @@ load_project_config() {
     _validate_path_array EXTRA_WRITABLE_PATHS "${EXTRA_WRITABLE_PATHS[@]}"
 }
 
+# _warn_backend_feature_gaps — warn about configured features the
+# RESOLVED backend cannot enforce. Called by sandbox-exec.sh right after
+# detect_backend (and before any backend_prepare), so SANDBOX_BACKEND is
+# bwrap / firejail / landlock here, never "auto". firejail's own DEVICES
+# handling (--private-dev classes) warns from backends/firejail.sh.
+_warn_backend_feature_gaps() {
+    case "${SANDBOX_BACKEND:-}" in
+        landlock)
+            if _is_true "${FILTER_PASSWD:-true}"; then
+                echo "WARNING: FILTER_PASSWD=true has no effect with the Landlock backend (no mount namespace)." >&2
+                echo "  User enumeration prevention requires bwrap or firejail." >&2
+            fi
+            if [[ ${#BLOCKED_FILES[@]} -gt 0 ]]; then
+                echo "WARNING: BLOCKED_FILES has no effect with the Landlock backend." >&2
+                echo "  Individual file blocking requires bwrap or firejail." >&2
+            fi
+            if [[ -e /run/munge/munge.socket.2 ]]; then
+                echo "WARNING: Landlock cannot block AF_UNIX connect() — the munge socket is reachable." >&2
+                echo "  Agents can bypass the chaperon and submit arbitrary Slurm jobs." >&2
+                echo "  Use bwrap/firejail, or deploy the SPANK plugin (docs/admin/hardening.md §1)." >&2
+            fi
+            if _is_true "${BIND_DEV_PTS:-false}"; then
+                echo "WARNING: BIND_DEV_PTS has no effect with the Landlock backend (the whole host /dev stays visible)." >&2
+            fi
+            if [[ ${#DEVICES[@]} -gt 0 && "${DEVICES[*]}" != "${_DEFAULT_DEVICES[*]}" ]]; then
+                echo "WARNING: DEVICES has no effect with the Landlock backend (no mount namespace)." >&2
+                echo "  The whole host /dev stays visible; a per-node allow-list requires bwrap." >&2
+            fi
+            ;;
+        firejail)
+            if _is_true "${BIND_DEV_PTS:-false}"; then
+                echo "WARNING: BIND_DEV_PTS has no effect with the firejail backend (--private-dev mounts its own devpts)." >&2
+            fi
+            ;;
+    esac
+}
+
 # Fail early if HOME is unset (many paths depend on it).
 if [[ -z "${HOME:-}" ]]; then
     echo "Error: \$HOME is not set." >&2
     exit 1
 fi
 
-# Warn about critical READONLY_MOUNTS that are missing from config.
-# Without these, the sandbox starts but almost nothing works inside it.
-for _critical_mount in /usr /lib /bin /sbin /etc; do
-    _found=false
-    for _m in "${READONLY_MOUNTS[@]}"; do
-        if [[ "$_m" == "$_critical_mount" ]]; then _found=true; break; fi
-    done
-    if ! $_found && [[ -d "$_critical_mount" ]]; then
-        echo "WARNING: $_critical_mount is not in READONLY_MOUNTS. The sandbox may not function correctly." >&2
-    fi
-done
-
-# Agent-specific HOME_WRITABLE entries are added automatically by
-# _apply_agent_profiles(). No hardcoded critical-path warnings needed.
-
-# Detect paths that appear in both HOME_READONLY and HOME_WRITABLE.
-# The writable mount wins (later bwrap arg overrides), which may
-# silently escalate permissions beyond what the user intended.
-for _ro in "${HOME_READONLY[@]}"; do
-    for _rw in "${HOME_WRITABLE[@]}"; do
-        if [[ "$_ro" == "$_rw" ]]; then
-            echo "WARNING: $HOME/$_ro is in both HOME_READONLY and HOME_WRITABLE (writable wins)." >&2
+# ── Validate the FINAL config ────────────────────────────────────
+#
+# Consistency warnings and the BIND_DEV_PTS shim. Runs from
+# load_project_config() once every layer (admin, user, conf.d) and the
+# launch overrides are applied, so it sees the configuration that is
+# actually launched. (It used to run at source time, before conf.d,
+# so conf.d-set values and backend overrides were never validated.)
+_validate_loaded_config() {
+    local _critical_mount _found _m _ro _rw _seed _dev_entry
+    # Warn about critical READONLY_MOUNTS that are missing from config.
+    # Without these, the sandbox starts but almost nothing works inside it.
+    for _critical_mount in /usr /lib /bin /sbin /etc; do
+        _found=false
+        for _m in "${READONLY_MOUNTS[@]}"; do
+            if [[ "$_m" == "$_critical_mount" ]]; then _found=true; break; fi
+        done
+        if ! $_found && [[ -d "$_critical_mount" ]]; then
+            echo "WARNING: $_critical_mount is not in READONLY_MOUNTS. The sandbox may not function correctly." >&2
         fi
     done
-done
 
-# HOME_SEEDED_FILES wins over HOME_READONLY: a file seeded into the
-# tmpfs cannot also be a read-only bind to the host file. Backends
-# skip the read-only mount when an entry is seeded; warn so the
-# overlap is visible.
-for _seed in "${HOME_SEEDED_FILES[@]}"; do
+    # Agent-specific HOME_WRITABLE entries are added automatically by
+    # _apply_agent_profiles(). No hardcoded critical-path warnings needed.
+
+    # Detect paths that appear in both HOME_READONLY and HOME_WRITABLE.
+    # The writable mount wins (later bwrap arg overrides), which may
+    # silently escalate permissions beyond what the user intended.
     for _ro in "${HOME_READONLY[@]}"; do
-        if [[ "$_seed" == "$_ro" ]]; then
-            echo "WARNING: $HOME/$_seed is in both HOME_SEEDED_FILES and HOME_READONLY (seeded wins, read-only ignored)." >&2
-        fi
+        for _rw in "${HOME_WRITABLE[@]}"; do
+            if [[ "$_ro" == "$_rw" ]]; then
+                echo "WARNING: $HOME/$_ro is in both HOME_READONLY and HOME_WRITABLE (writable wins)." >&2
+            fi
+        done
     done
-done
 
-# Warn when backend-specific features are used with an incompatible backend.
-if [[ "${SANDBOX_BACKEND:-auto}" == "landlock" ]]; then
-    if _is_true "${FILTER_PASSWD:-true}"; then
-        echo "WARNING: FILTER_PASSWD=true has no effect with the Landlock backend (no mount namespace)." >&2
-        echo "  User enumeration prevention requires bwrap or firejail." >&2
-    fi
-    if [[ ${#BLOCKED_FILES[@]} -gt 0 ]]; then
-        echo "WARNING: BLOCKED_FILES has no effect with the Landlock backend." >&2
-        echo "  Individual file blocking requires bwrap or firejail." >&2
-    fi
-    if [[ -e /run/munge/munge.socket.2 ]]; then
-        echo "WARNING: Landlock cannot block AF_UNIX connect() — the munge socket is reachable." >&2
-        echo "  Agents can bypass the chaperon and submit arbitrary Slurm jobs." >&2
-        echo "  Use bwrap/firejail, or deploy the SPANK plugin (docs/admin/hardening.md §1)." >&2
-    fi
-fi
-if [[ "${SANDBOX_BACKEND:-auto}" != "bwrap" && "${SANDBOX_BACKEND:-auto}" != "auto" ]]; then
+    # HOME_SEEDED_FILES wins over HOME_READONLY: a file seeded into the
+    # tmpfs cannot also be a read-only bind to the host file. Backends
+    # skip the read-only mount when an entry is seeded; warn so the
+    # overlap is visible.
+    for _seed in "${HOME_SEEDED_FILES[@]}"; do
+        for _ro in "${HOME_READONLY[@]}"; do
+            if [[ "$_seed" == "$_ro" ]]; then
+                echo "WARNING: $HOME/$_seed is in both HOME_SEEDED_FILES and HOME_READONLY (seeded wins, read-only ignored)." >&2
+            fi
+        done
+    done
+
+    # Backend-specific capability warnings (Landlock FILTER_PASSWD,
+    # BLOCKED_FILES, munge, DEVICES) run from _warn_backend_feature_gaps
+    # once detect_backend has resolved SANDBOX_BACKEND=auto: here the
+    # backend is still "auto" whenever it is auto-detected, and the
+    # warnings used to be skipped exactly on the hosts that land on
+    # Landlock by auto-detection.
+
+    # BIND_DEV_PTS deprecation shim. Old configs that say `BIND_DEV_PTS=true`
+    # used to bind the host /dev into the sandbox to give tmux a working pty.
+    # On kernel < 5.4 that was the only way: bwrap's user-namespace devpts
+    # was broken (ptmxmode=000) so tmux/script/expect could not allocate a
+    # pty inside the sandbox without binding the host /dev/pts on top.
+    #
+    # On kernel >= 5.4 bwrap auto-mounts a working user-ns devpts. Binding
+    # the host /dev/pts on top of that shadows the working mount with one
+    # whose ptmxmode=000 (the host devpts is configured for the privileged
+    # default) and silently breaks pty allocation — tmux exits with
+    # "create session failed", script(1) with "failed to create
+    # pseudo-terminal: Permission denied". The default DEVICES_BLACKLIST
+    # masks this for fresh installs (it lists /dev/pts), but a user who
+    # overrides DEVICES_BLACKLIST without copying the upstream defaults
+    # re-exposes the trap.
+    #
+    # So gate the shim on the kernel: on >= 5.4 the legacy toggle becomes
+    # a logged no-op (with a clear "drop the line" message); on < 5.4 we
+    # preserve the historical behaviour. The blacklist still applies on
+    # < 5.4 so an admin can refuse pty exposure cluster-wide.
     if _is_true "${BIND_DEV_PTS:-false}"; then
-        echo "WARNING: BIND_DEV_PTS only applies to the bwrap backend." >&2
-    fi
-    if [[ ${#DEVICES[@]} -gt 0 ]]; then
-        echo "WARNING: DEVICES only applies to the bwrap backend." >&2
-        echo "  /dev passthrough requires a mount namespace; firejail's --private-dev is coarser, landlock has no FS isolation." >&2
-    fi
-fi
-
-# BIND_DEV_PTS deprecation shim. Old configs that say `BIND_DEV_PTS=true`
-# used to bind the host /dev into the sandbox to give tmux a working pty.
-# On kernel < 5.4 that was the only way: bwrap's user-namespace devpts
-# was broken (ptmxmode=000) so tmux/script/expect could not allocate a
-# pty inside the sandbox without binding the host /dev/pts on top.
-#
-# On kernel >= 5.4 bwrap auto-mounts a working user-ns devpts. Binding
-# the host /dev/pts on top of that shadows the working mount with one
-# whose ptmxmode=000 (the host devpts is configured for the privileged
-# default) and silently breaks pty allocation — tmux exits with
-# "create session failed", script(1) with "failed to create
-# pseudo-terminal: Permission denied". The default DEVICES_BLACKLIST
-# masks this for fresh installs (it lists /dev/pts), but a user who
-# overrides DEVICES_BLACKLIST without copying the upstream defaults
-# re-exposes the trap.
-#
-# So gate the shim on the kernel: on >= 5.4 the legacy toggle becomes
-# a logged no-op (with a clear "drop the line" message); on < 5.4 we
-# preserve the historical behaviour. The blacklist still applies on
-# < 5.4 so an admin can refuse pty exposure cluster-wide.
-if _is_true "${BIND_DEV_PTS:-false}"; then
-    if _kernel_at_least 5 4; then
-        echo "agent-sandbox: BIND_DEV_PTS=true is a no-op on kernel >= 5.4 (bwrap auto-mounts a working devpts; binding host /dev/pts would shadow it with ptmxmode=000 and break pty allocation). Drop the line from your sandbox.conf." >&2
-    else
-        echo "agent-sandbox: BIND_DEV_PTS is deprecated; use DEVICES+=(/dev/pts) instead. See docs/reference/device-passthrough.md." >&2
-        DEVICES+=(/dev/pts)
-    fi
-fi
-
-# Belt-and-suspenders for explicit /dev/pts in DEVICES on kernel >= 5.4.
-# Users who wrote `DEVICES+=(/dev/pts)` directly (because the v0.6.0
-# migration comment told them that was the path on < 5.4) hit the same
-# devpts-shadow trap on >= 5.4. We do not silently drop the entry
-# (that overrides explicit user intent), but we surface the warning at
-# every spawn so the trap is at most "your tmux is broken AND you have
-# a stderr line telling you why" instead of "your tmux is broken with
-# no log explaining it". The DEVICES_BLACKLIST default already lists
-# /dev/pts, so this branch only fires when the user has overridden the
-# blacklist as well.
-if _kernel_at_least 5 4 && [[ ${#DEVICES[@]} -gt 0 ]]; then
-    for _dev_entry in "${DEVICES[@]}"; do
-        if [[ "$_dev_entry" == "/dev/pts" ]]; then
-            echo "agent-sandbox: DEVICES contains /dev/pts on kernel >= 5.4 — bwrap's auto-mounted user-ns devpts will be shadowed with ptmxmode=000 and pty allocation (tmux/script/expect) will fail with 'Permission denied'. Drop /dev/pts from DEVICES; the bind was only needed on kernel < 5.4." >&2
-            break
+        if _kernel_at_least 5 4; then
+            echo "agent-sandbox: BIND_DEV_PTS=true is a no-op on kernel >= 5.4 (bwrap auto-mounts a working devpts; binding host /dev/pts would shadow it with ptmxmode=000 and break pty allocation). Drop the line from your sandbox.conf." >&2
+        else
+            echo "agent-sandbox: BIND_DEV_PTS is deprecated; use DEVICES+=(/dev/pts) instead. See docs/reference/device-passthrough.md." >&2
+            DEVICES+=(/dev/pts)
         fi
-    done
-    unset _dev_entry
-fi
+    fi
+
+    # Belt-and-suspenders for explicit /dev/pts in DEVICES on kernel >= 5.4.
+    # Users who wrote `DEVICES+=(/dev/pts)` directly (because the v0.6.0
+    # migration comment told them that was the path on < 5.4) hit the same
+    # devpts-shadow trap on >= 5.4. We do not silently drop the entry
+    # (that overrides explicit user intent), but we surface the warning at
+    # every spawn so the trap is at most "your tmux is broken AND you have
+    # a stderr line telling you why" instead of "your tmux is broken with
+    # no log explaining it". The DEVICES_BLACKLIST default already lists
+    # /dev/pts, so this branch only fires when the user has overridden the
+    # blacklist as well.
+    if _kernel_at_least 5 4 && [[ ${#DEVICES[@]} -gt 0 ]]; then
+        for _dev_entry in "${DEVICES[@]}"; do
+            if [[ "$_dev_entry" == "/dev/pts" ]]; then
+                echo "agent-sandbox: DEVICES contains /dev/pts on kernel >= 5.4 — bwrap's auto-mounted user-ns devpts will be shadowed with ptmxmode=000 and pty allocation (tmux/script/expect) will fail with 'Permission denied'. Drop /dev/pts from DEVICES; the bind was only needed on kernel < 5.4." >&2
+                break
+            fi
+        done
+        unset _dev_entry
+    fi
+
+    case "${MOUNT_GUARD:-repair}" in
+        off|warn|repair|kill) ;;
+        *)
+            echo "WARNING: MOUNT_GUARD='${MOUNT_GUARD}' invalid (off|warn|repair|kill); using 'repair'." >&2
+            MOUNT_GUARD=repair ;;
+    esac
+    if [[ ! "${MOUNT_GUARD_INTERVAL:-5}" =~ ^[1-9][0-9]{0,3}$ ]]; then
+        echo "WARNING: MOUNT_GUARD_INTERVAL='${MOUNT_GUARD_INTERVAL}' invalid (whole seconds, 1-9999); using 5." >&2
+        MOUNT_GUARD_INTERVAL=5
+    fi
+    return 0
+}
 
 # ── Helpers ─────────────────────────────────────────────────────
 
@@ -2839,11 +4133,11 @@ validate_project_dir() {
     #     a full read+write credential bypass, confirmed in the default
     #     (tmpwrite) mode when launched from the home directory.  Require a
     #     subdirectory instead.
-    local _home_resolved
-    _home_resolved="$(_resolve_path "$HOME")"
-    if [[ "$dir" == "$HOME" || "$dir_resolved" == "$HOME" \
-          || "$dir" == "$_home_resolved" || "$dir_resolved" == "$_home_resolved" ]]; then
-        echo "Error: The project directory cannot be your home directory ($HOME)." >&2
+    #
+    #     Ancestors of $HOME (/home, /) are rejected for the same reason:
+    #     binding /home writable covers $HOME and everything under it.
+    if _is_home_or_ancestor "$dir"; then
+        echo "Error: The project directory cannot be your home directory ($HOME) or one of its parent directories." >&2
         echo "  Running an agent with all of \$HOME writable would re-expose ~/.ssh," >&2
         echo "  ~/.aws, ~/.gnupg, and shell startup files the sandbox is meant to hide." >&2
         echo "  Use a subdirectory instead, e.g.:" >&2
@@ -2881,79 +4175,6 @@ validate_project_dir() {
     echo "  Allowed prefixes: ${ALLOWED_PROJECT_PARENTS[*]}" >&2
     echo "  Edit ALLOWED_PROJECT_PARENTS in $SANDBOX_CONF to allow more." >&2
     return 1
-}
-
-# ── Passwd filtering (LDAP/AD user enumeration prevention) ────────
-#
-# Generates a minimal /etc/passwd and /etc/nsswitch.conf for use inside
-# the sandbox.  The filtered passwd contains only system accounts
-# (UID < 1000) and the current user.  The filtered nsswitch.conf
-# replaces "ldap", "sss", and "compat" with "files" for the passwd
-# and group databases, so getent only returns local entries.
-#
-# Sets _FILTERED_PASSWD and _FILTERED_NSSWITCH to the generated paths.
-# Backends that support file overlays (bwrap) use these directly.
-
-generate_filtered_passwd() {
-    _is_true "${FILTER_PASSWD:-true}" || return 0
-
-    local tmpdir="$_USER_DATA_DIR/.passwd-filter"
-    mkdir -p "$tmpdir"
-
-    local my_uid
-    my_uid="$(id -u)"
-
-    # Minimal passwd: system accounts (UID < 1000) from the local file.
-    # Does NOT use getent for the base set (that would pull all LDAP users).
-    awk -F: '($3 < 1000)' /etc/passwd > "$tmpdir/passwd"
-
-    # Append specific users via getent (handles both local and LDAP).
-    # Current user + service users needed by tools inside the sandbox.
-    for _svc_user in "$(id -un)" slurm munge nobody; do
-        if ! grep -q "^${_svc_user}:" "$tmpdir/passwd"; then
-            getent passwd "$_svc_user" >> "$tmpdir/passwd" 2>/dev/null || true
-        fi
-    done
-
-    # Minimal group: system groups (GID < 1000) from the local file.
-    awk -F: '($3 < 1000)' /etc/group > "$tmpdir/group"
-
-    # Append current user's groups, service groups, and well-known groups
-    # by name (nogroup/nfsnobody may appear via NFS even when not in id -G).
-    for _svc_group in nogroup nfsnobody; do
-        if ! grep -q "^${_svc_group}:" "$tmpdir/group"; then
-            getent group "$_svc_group" >> "$tmpdir/group" 2>/dev/null || true
-        fi
-    done
-    # Add all of the current user's groups (by GID and by name as fallback).
-    # This ensures `id` inside the sandbox shows the correct group names,
-    # even though supplementary groups are always preserved at the kernel level
-    # (bwrap does not use --unshare-user, so file permissions work regardless).
-    for _svc_gid in $(id -G) $(getent passwd slurm 2>/dev/null | cut -d: -f4) $(getent passwd munge 2>/dev/null | cut -d: -f4); do
-        if ! grep -q "^[^:]*:[^:]*:${_svc_gid}:" "$tmpdir/group"; then
-            getent group "$_svc_gid" >> "$tmpdir/group" 2>/dev/null || true
-        fi
-    done
-    # Fallback: also try by name (some LDAP setups resolve names but not GIDs)
-    for _svc_gname in $(id -Gn 2>/dev/null); do
-        if ! grep -q "^${_svc_gname}:" "$tmpdir/group"; then
-            getent group "$_svc_gname" >> "$tmpdir/group" 2>/dev/null || true
-        fi
-    done
-
-    # nsswitch.conf: replace ldap/sss/compat with files-only for passwd/group
-    if [[ -f /etc/nsswitch.conf ]]; then
-        sed -E \
-            -e 's/^(passwd|group):.*$/\1:         files/' \
-            /etc/nsswitch.conf > "$tmpdir/nsswitch.conf"
-    else
-        printf 'passwd:         files\ngroup:          files\nhosts:          files dns\n' \
-            > "$tmpdir/nsswitch.conf"
-    fi
-
-    _FILTERED_PASSWD="$tmpdir/passwd"
-    _FILTERED_GROUP="$tmpdir/group"
-    _FILTERED_NSSWITCH="$tmpdir/nsswitch.conf"
 }
 
 # ── Device passthrough resolution ──────────────────────────────────
@@ -3503,6 +4724,11 @@ prepare_agent_configs() {
             _AGENT_ENV_EXPORTS=()
             _AGENT_SANDBOX_CONFIG_DIRS=()
             _AGENT_PROTECTED_FILES=()
+            # Shared symlink-safe helpers (agents/overlay-lib.sh): every
+            # overlay file operation must go through them, since the
+            # overlays write into sandbox-writable directories.
+            # shellcheck disable=SC1091
+            [[ -f "$agents_dir/overlay-lib.sh" ]] && source "$agents_dir/overlay-lib.sh"
             # shellcheck disable=SC1090
             source "$overlay"
             agent_prepare_config "$project_dir"

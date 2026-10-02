@@ -109,7 +109,7 @@ Two `ioctl()` requests are denied via argument inspection in the BPF program —
 | `TIOCSTI` (`0x5412`) — "terminal ioctl simulate input" | Pushes a byte into the input queue of any tty the caller controls. Inside the sandbox the controlling tty is typically the user's outer shell, so a sandboxed agent can type commands that the outer shell will execute at host privilege as soon as the agent exits or the user touches the terminal. CVE-2017-5226 (bwrap) and CVE-2023-1523 (Snap) both pivot on this. The kernel disables it under `CONFIG_LEGACY_TIOCSTI=n` (default in 6.2+) or `dev.tty.legacy_tiocsti=0`, but HPC sites commonly run older LTS kernels (5.4, 5.15) where it is unconditionally allowed. |
 | `TIOCLINUX` (`0x541C`) — Linux text-console multiplexer | Subcommand 12 ("paste selection") writes attacker-controlled bytes into the console's input queue, the same primitive as TIOCSTI but reachable through a different ioctl number. Seccomp cannot inspect the user-pointer subcommand argument, so the entire ioctl is denied. Cost: zero legitimate sandbox workload uses console-paste. |
 
-The bwrap backend's BPF filter compares the low 32 bits of `args[1]` (the ioctl `cmd`) against the two request constants and returns `EPERM`. Other ioctl requests (e.g. `TIOCGWINSZ`, `FIONBIO`, GPU ioctls) are unaffected. The landlock and firejail backends rely on their respective vendor seccomp profiles, which on recent versions also deny TIOCSTI; this filter ensures the bwrap backend matches that posture regardless of host kernel config.
+The bwrap backend's BPF filter compares the low 32 bits of `args[1]` (the ioctl `cmd`) against the two request constants and returns `EPERM`. Other ioctl requests (e.g. `TIOCGWINSZ`, `FIONBIO`, GPU ioctls) are unaffected. The firejail backend passes only `--seccomp.drop` (no vendor profile, no ioctl filter), and the Landlock helper has no ioctl filter either; both rely on the kernel (≥ 6.2 disables TIOCSTI by default). firejail's private `/dev` at least hides other terminals' `/dev/pts` nodes.
 
 ### Landlock-only denials
 
@@ -149,20 +149,23 @@ The following are intentionally not blocked and will not be:
 | Agent reads SSH keys | Hidden (bwrap/firejail: ENOENT) or blocked (Landlock: EACCES) | **Hard** — kernel-enforced |
 | Agent reads API tokens from env | `BLOCKED_ENV_VARS` + `BLOCKED_ENV_PATTERNS` removed from environment | **Hard** — all backends |
 | Agent reads `~/.aws` credentials | Hidden or blocked (same as SSH keys) | **Hard** |
-| Agent writes to other projects | Only project dir is writable | **Hard** |
-| Agent reads other users' data | Only explicitly allowed paths are accessible | **Hard** |
-| User enumeration & profile extraction | LDAP/AD directories (`/etc/passwd`, `finger`) are hidden or restricted (bwrap/firejail/landlock) | **Hard** — prevents agent from mapping organizational structure or extracting real names and login history |
-| Extraction of other users' data | Shared filesystems (NFS, Lustre) are restricted; only the project directory and specified paths are accessible | **Hard** — prevents credential-based access to other lab members' data |
-| Agent escapes via Unix sockets | Bwrap/firejail: filesystem-based sockets (e.g. `/run/dbus`) hidden by mount namespace, but abstract sockets (`@/org/...`) remain accessible (shared network namespace). **Landlock: full escape** — `systemd-run --user` executes outside sandbox (reads `~/.ssh`, `~/.aws`, submits Slurm jobs). See [Admin Hardening §0](../admin/hardening.md) | **Partial** (bwrap/firejail) / **None** (Landlock) |
+| Agent writes to other projects | Only the project dir and listed writable paths are writable. firejail: every host path outside `$HOME` and the grants is remounted read-only entry by entry (separate mounts such as NFS/Lustre project trees included; `/run` is a tmpfs, `/dev` private). When a writable path is owned by another user (group-writable, common on shared lab storage), firejail cannot re-open it under a read-only parent, so its parent directories are left unremounted: their existing entries are read-only, but new files can be created directly in them (listed in a warning at launch). Landlock additionally leaves `/tmp`, `/dev/shm` and `/dev/mqueue` writable | **Hard** (bwrap) / **Hard** with the caveats listed (firejail, Landlock) |
+| Agent reads other users' data | bwrap/Landlock: only explicitly allowed paths are accessible. firejail: paths outside `$HOME` stay readable as far as Unix permissions allow | **Hard** (bwrap/Landlock) / **Partial** (firejail) |
+| User enumeration & profile extraction | bwrap: filtered `/etc/passwd`/`group`, NSS limited to `files`. firejail: the LDAP/AD daemon sockets (nscd, nslcd, sssd, slapd `ldapi`) are unreachable (`/run` is a tmpfs), but the local `/etc/passwd` stays complete (`--allusers`). Landlock: no filtering (`getent passwd` shows every directory user) | **Hard** (bwrap) / **Partial** (firejail) / **None** (Landlock) — prevents agent from mapping organizational structure or extracting real names and login history |
+| Extraction of other users' data | Shared filesystems (NFS, Lustre) are restricted; only the project directory and specified paths are accessible (firejail: readable outside `$HOME` per Unix permissions, see above) | **Hard** (bwrap/Landlock) / **Partial** (firejail) — prevents credential-based access to other lab members' data |
+| Agent escapes via Unix sockets | Bwrap/firejail: `/run` is replaced by a tmpfs that holds only the DNS resolver directory (and, with `FILTER_PASSWD=false`, nscd), so filesystem-based sockets under `/run` (D-Bus, systemd, munge, journald, `screen`, databases, LDAP) are hidden; sockets elsewhere (e.g. in a visible data or home directory) and abstract sockets (`@/org/...`) remain reachable (shared network namespace). **Landlock: full escape** — `systemd-run --user` executes outside sandbox (reads `~/.ssh`, `~/.aws`, submits Slurm jobs). See [Admin Hardening §0](../admin/hardening.md) | **Partial** (bwrap/firejail) / **None** (Landlock) |
 | Agent escapes via PID namespace | Bwrap/firejail: isolated PID namespace. Landlock: host PIDs visible | **Hard** (bwrap/firejail) / **None** (Landlock) |
-| Agent uses dangerous syscalls | All backends block `io_uring`, `userfaultfd`, `kexec`, plus a defense-in-depth set (`bpf`, `mount`, `umount2`, `pivot_root`, `reboot`, `swapon`/`swapoff`, `personality`, `acct`, `quotactl`, `kcmp`) via seccomp-bpf. Bwrap also denies `ioctl(TIOCSTI)` and `ioctl(TIOCLINUX)` via argument inspection — closes CVE-2017-5226 / CVE-2023-1523 keystroke-injection on the user's outer terminal. See the [Seccomp Filter](#seccomp-filter) section above. | **Hard** — all backends |
-| Slurm job bypasses sandbox | Chaperon proxy: munge socket blocked (bwrap/firejail), Slurm binaries blocked (bwrap/firejail), argument whitelisting, all jobs wrapped in sandbox-exec.sh. **Landlock: chaperon fully bypassable** — munge socket reachable and Slurm binaries callable | **Hard** (bwrap/firejail) / **None** (Landlock — use bwrap or firejail) |
+| Agent uses dangerous syscalls | bwrap and Landlock block `io_uring`, `userfaultfd`, `kexec`, plus a defense-in-depth set (`bpf`, `mount`, `umount2`, `pivot_root`, `reboot`, `swapon`/`swapoff`, `personality`, `acct`, `quotactl`, `kcmp`) via seccomp-bpf. firejail drops only `io_uring_*`, `userfaultfd` and `kexec_*` (`--seccomp.drop`; `mount` and friends need capabilities, which are all dropped), and with firejail 0.9.72 on aarch64 that filter loads but blocks nothing. Bwrap also denies `ioctl(TIOCSTI)` and `ioctl(TIOCLINUX)` via argument inspection — closes CVE-2017-5226 / CVE-2023-1523 keystroke-injection on the user's outer terminal. See the [Seccomp Filter](#seccomp-filter) section above. | **Hard** (bwrap/Landlock) / **Partial** (firejail) |
+| Slurm job bypasses sandbox | Chaperon proxy: munge socket blocked (bwrap/firejail), Slurm binaries blocked (bwrap/firejail), argument whitelisting, every batch job and every `srun` (allocation **and** job-step mode) wrapped in `sandbox-exec.sh`. The generated job wrapper itself runs **outside** the sandbox on the compute node for a few lines before it enters it, so the chaperon also constrains what can reach that host code: `--export` / `#SBATCH --export` reach Slurm only as `ALL`, `NONE`, `NIL` or bare variable names outside a denylist (`BASH_ENV`, `ENV`, `LD_*`, `PATH`, `SANDBOX_*` and every other launcher setting); `NAME=VALUE` pairs are applied inside the sandbox, never in the host-side wrapper's environment. The wrapper runs as `bash -p`, uses only builtins, calls binaries by absolute path and strips launcher settings before `exec`ing `sandbox-exec.sh`. `.sandbox-state/` (where slurmstepd writes job logs) is created and read-only-bound before the agent starts, and a symlinked `.sandbox-state/` or subdir is refused. **Landlock: chaperon fully bypassable** — munge socket reachable and Slurm binaries callable | **Hard** (bwrap/firejail) / **None** (Landlock — use bwrap or firejail) |
 | Agent tampers with sandbox scripts | Read-only mount (bwrap/firejail) / not protected (Landlock) | **Hard** (bwrap/firejail) / **None** (Landlock) — see [Admin Hardening §2](../admin/hardening.md) |
+| Agent plants config that runs **unsandboxed** the next time the user starts the agent outside the sandbox (hooks, MCP servers, `notify` commands, a replacement agent binary) | The real host-executed config files are read-only inside: `~/.claude/settings.json`, `~/.claude.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.pi/agent/settings.json`; the agent gets private copies in `sandbox-config/` instead. `~/.local/share/claude` (native-installer binaries) is read-only. Plugins, skills, extensions and other agent config directories stay writable — see [Agent config left behind](#agent-config-left-behind-for-your-next-unsandboxed-session) | **Partial** (bwrap/firejail) / **Weak** (Landlock: only `~/.claude.json` and `~/.local/share/claude`) / **None** (`HOME_ACCESS=write`) |
+| Host-side agent overlay tricked into writing through an agent-planted symlink | Overlays run outside the sandbox but write into sandbox-writable dirs (`~/.claude/sandbox-config`, …). All their file operations use directory file descriptors with `O_NOFOLLOW`, `O_EXCL` temp files and inode-verified renames (`agents/overlay-fs.py`); a symlinked source file is only followed to a target the sandbox can already read | **Hard** — all backends |
+| A protective mount disappears from a **running** sandbox (read-only overlay or `BLOCKED_FILES` mask detached by a rename/unlink from another mount namespace, or by an NFS client dropping a stale directory) | The launcher never renames over or deletes a path another sandbox may have mounted: the merged agent config is rewritten in place (unchanged content not at all), `--cleanup-materialized` keeps placeholders while other sandboxes run on the host and always on network filesystems. Losses caused by anything else on the host are detected by the [mount guard](../configure.md#mount_guard), which puts the lost mask or read-only overlay back (`MOUNT_GUARD=repair`, default; bwrap only, falls back to a warning elsewhere or when the path is now a symlink), warns (`warn`) or terminates the sandbox (`kill`) when a protected path is exposed | **Detect + repair** within `MOUNT_GUARD_INTERVAL` (bwrap; exposed until then) / **Detect** (firejail; terminate with `kill`) / N/A (Landlock) — see [Mounts that vanish](#mounts-that-vanish-from-a-running-sandbox) |
 | Agent bypasses `BLOCKED_FILES` via symlinked ancestor | bwrap binds `/dev/null` at both the literal and resolved leaf paths. The literal-path bind catches the case where a writable parent is a symlink on the host: mount overlays are path-keyed, so a /dev/null mount on the resolved path is missed when the agent opens the file via the symlinked path | **Hard** (bwrap) / Path-based (firejail) / N/A (Landlock — `BLOCKED_FILES` has no effect) |
 | `BLOCKED_FILES` entry doesn't exist on host (silent no-op) | At config-load, `sandbox-exec.sh` materializes a zero-byte placeholder for every missing entry under writable parents (with a per-path `WARNING:` on stderr) and refuses to start (with the full list of failing entries) when materialization fails. Closes a pre-v0.12.0 gap where the bwrap/firejail backends skipped the bind for missing entries, leaving the path unenforced; also pre-empts bwrap's own `ensure_file → creat()` ([utils.c, v0.11.0](https://github.com/containers/bubblewrap/blob/v0.11.0/utils.c#L480-L498)) from creating a host stub during mount setup. Opt-in `--cleanup-materialized` removes empty placeholders on sandbox exit. See [#73](https://github.com/katosh/agent_sandbox/issues/73) | **Hard** (bwrap/firejail; materialize-warn or fail-loud) / N/A (Landlock) |
 | SSH escape (if `~/.ssh` exposed) | Not protected — sandbox does not restrict network | **None** — agent can SSH to localhost or other nodes to get an unsandboxed shell. **Do not expose `~/.ssh`** unless you understand this risk. |
 
-**Bottom line:** Filesystem isolation is kernel-enforced with all three backends. Bwrap/firejail add mount + PID namespace isolation. Landlock works without admin privileges but provides filesystem-only isolation. Slurm job submission is enforced by the chaperon proxy on bwrap/firejail — munge auth is blocked inside the sandbox, so there is no way to submit jobs without going through the validated, wrapped path. **On Landlock, the chaperon is fully bypassable** — Landlock cannot block `AF_UNIX connect()`, so the munge socket is reachable and `/usr/bin/sbatch` is directly callable. Use bwrap or firejail for any deployment that needs a hard Slurm boundary. For comparison with Apptainer, see [Sandbox vs. Apptainer](apptainer-comparison.md).
+**Bottom line:** Filesystem isolation is kernel-enforced with all three backends. Bwrap/firejail add mount + PID namespace isolation. Landlock works without admin privileges but provides filesystem-only isolation. Slurm job submission is enforced by the chaperon proxy on bwrap/firejail — munge auth is blocked inside the sandbox, so there is no way to submit jobs without going through the validated, wrapped path. Note that the job wrapper is host code on the compute node until it `exec`s `sandbox-exec.sh`; its safety rests on the chaperon rejecting environment injection (`--export`) and on the wrapper sanitizing its own environment. **On Landlock, the chaperon is fully bypassable** — Landlock cannot block `AF_UNIX connect()`, so the munge socket is reachable and `/usr/bin/sbatch` is directly callable. Use bwrap or firejail for any deployment that needs a hard Slurm boundary. For comparison with Apptainer, see [Sandbox vs. Apptainer](apptainer-comparison.md).
 
 **Accepted risks (all backends):** Fileless execution via `memfd_create` (needed by CUDA/PyTorch/JAX). `/proc/net` information disclosure (needed for network stack). Abstract Unix sockets accessible (shared network namespace required for DNS/NSS). See `pentest/` in the repository for detailed pentest findings.
 
@@ -192,6 +195,14 @@ This is not a configuration choice; it falls out of the architecture:
   Landlock LSM only narrows.
 - **No `dangerouslyDisableSandbox` flag.** The chaperon proxies
   Slurm syscalls but does not honour any "skip sandbox" request.
+- **The sandbox's own config is read-only inside.**
+  `~/.config/agent-sandbox` (user config, `conf.d/`, agent templates,
+  the per-launch filtered passwd/group files) is read-only in every
+  `HOME_ACCESS` mode, applied after all writable binds so no
+  `HOME_WRITABLE` ancestor, project dir or `EXTRA_WRITABLE_PATHS`
+  entry re-exposes it. The agent therefore cannot weaken the *next*
+  launch's settings either. **Landlock** cannot enforce this under a
+  writable grant (e.g. `HOME_ACCESS=write`) and warns at startup.
 
 Practical consequence: when the agent inside the sandbox encounters
 a permission denial, the only recourse is to fail or surface the
@@ -206,6 +217,9 @@ speed-bump. agent-sandbox has no analogous knob.
 
 What this does **not** cover:
 
+- Configuration the agent leaves behind for a later, **unsandboxed**
+  run of the same agent — see
+  [below](#agent-config-left-behind-for-your-next-unsandboxed-session).
 - Tampering with the wrapper scripts themselves between sessions.
   An admin-mode install (`/app/lib/agent-sandbox/`) read-only-binds
   the script tree so even a compromised user account cannot mutate
@@ -213,6 +227,171 @@ What this does **not** cover:
   install directory. See [Admin Hardening §2](../admin/hardening.md).
 - Bypasses outside the sandbox (e.g. an SSH escape via an exposed
   `~/.ssh`). The sandbox does not restrict the network.
+
+### Agent config left behind for your next unsandboxed session
+
+The sandbox contains the agent *while it runs*. But agents keep their
+state in `~/.claude`, `~/.codex`, `~/.gemini`, `~/.pi`, … and those
+directories must be writable inside the sandbox (tokens, sessions,
+caches). Anything in them that the agent **executes or loads as code**
+also runs the next time *you* start that agent **outside** the sandbox —
+with your full privileges. That is an escape that needs no kernel bug,
+only patience.
+
+What is protected (bwrap and firejail; the file is bind-mounted
+read-only, the agent works on a private copy in `sandbox-config/`):
+
+| Agent | Read-only inside | How the agent still works |
+|---|---|---|
+| Claude Code | `~/.claude/settings.json` (hooks, `statusLine`, `apiKeyHelper`, `env`), `~/.claude.json` (`mcpServers`), `~/.local/share/claude` (native-installer version store) | Inside, Claude reads only `$CLAUDE_CONFIG_DIR` (`~/.claude/sandbox-config`), incl. its own `.claude.json`. `DISABLE_AUTOUPDATER=1` is exported — update from outside with `claude update` |
+| Codex | `~/.codex/config.toml` (`notify`, `mcp_servers`) | Copy-on-launch: `sandbox-config/config.toml` is a private, writable copy (project trust decisions persist there); a newer host file replaces it on the next launch |
+| Gemini CLI | `~/.gemini/settings.json` (`mcpServers`, hooks) | Copy-on-launch, as for Codex |
+| pi | `~/.pi/agent/settings.json` (packages/extensions) | Copy-on-launch, as for Codex |
+
+`~/.claude.json` and `~/.local/share/claude` are `HOME_READONLY` entries
+(`agents/claude/config.conf`), so they are read-only on **Landlock**
+too. The per-file protections inside a writable directory are not:
+Landlock rules are additive, so it cannot carve a read-only file out of
+`~/.claude`. With `HOME_ACCESS=write` all of `$HOME` is writable and
+none of this applies.
+
+**Residual risk — still writable inside, still loaded outside:**
+
+- Claude Code: `~/.claude/plugins/` (plugin hooks, MCP servers, code),
+  `~/.claude/skills/`, `~/.claude/agents/`, `~/.claude/commands/`,
+  any hook *script* your `settings.json` points at inside `~/.claude`,
+  and per-project memory under `~/.claude/projects/`. Making these
+  read-only would break installing/updating plugins and marketplaces
+  and creating skills from inside the sandbox.
+- Codex: `~/.codex/skills/`, `~/.codex/prompts/`, `~/.codex/rules/`
+  (exec-policy rules that change what runs without approval).
+- Gemini CLI: `~/.gemini/extensions/`, `~/.gemini/commands/`.
+- pi: `~/.pi/agent/extensions/` (TypeScript loaded at startup),
+  `~/.pi/agent/skills/`, `~/.pi/agent/prompts/`.
+- OpenCode: nothing is protected. OpenCode reads and rewrites
+  `~/.config/opencode/opencode.json` directly (`OPENCODE_CONFIG_DIR`
+  is an *additional* config dir), and `plugin/` holds executable JS.
+- Landlock: everything above plus the per-file list in the table.
+
+Mitigations: run the agent only through the sandbox; keep agent config
+under version control (e.g. a dotfiles repo) and review diffs before an
+unsandboxed run; do not grant `HOME_ACCESS=write`. To opt out of a
+protection (e.g. to let Claude self-update inside), add the path to
+`HOME_WRITABLE` in `sandbox.conf`.
+
+### Host-side config preparation (overlays)
+
+Before each launch, `agents/<name>/overlay.sh` runs **on the host,
+outside the sandbox**, and writes into directories the agent can write
+(`~/.claude/sandbox-config/`, …). Earlier versions used `cp -r`, `>`
+redirections to fixed `*.tmp.$$` names, `mv` and `ln -sf` there, all of
+which follow symlinks: an agent could plant a symlink and have the host
+write attacker-controlled data anywhere in `$HOME` (`~/.ssh`,
+`~/.local/bin`, `~/.bashrc`), or copy a secret into a file it reads.
+
+All overlay file operations now go through `agents/overlay-fs.py`:
+directories are opened with `O_NOFOLLOW` below the agent's config root,
+files are created with `O_EXCL` under random names and renamed into
+place with the result verified by inode, the stale-directory merge
+never follows or copies a link, and a planted symlink at
+`sandbox-config` is replaced by a real directory. A source file that is
+a symlink (e.g. a `CLAUDE.md` kept in a dotfiles repo) is followed only
+when its target is something the sandbox can already read; otherwise
+the overlay warns and skips it. Without `python3` the overlays are
+skipped with a warning rather than falling back to shell.
+
+An existing merged file is never renamed over: unchanged content is not
+written at all, changed content is written in place through an
+`O_NOFOLLOW` descriptor (a planted hard link or symlink at that name is
+replaced instead of written through). The reason is the next section.
+
+### Mounts that vanish from a running sandbox
+
+A bind mount inside a sandbox sits on a directory entry the host shares.
+Linux lets another mount namespace `rename()` over, `unlink()` or
+`rmdir()` such an entry, and then **detaches every mount on it in every
+namespace** (since 3.18). On NFS the same happens when another client
+renames or deletes the entry, or when the client finds a cached
+directory stale: `d_invalidate()` detaches all mounts at or below it.
+The sandbox then sees whatever lies underneath: the host file behind a
+read-only overlay (now writable, if its directory is), the real content
+behind a `/dev/null` or tmpfs mask.
+
+Up to 0.13.1 every launch, including every sandbox-wrapped Slurm job
+re-entering on a compute node, rebuilt `sandbox-config/CLAUDE.md` and
+`settings.json` with a temp file and a rename. That silently stripped the
+read-only overlay from every sandbox of the user that was already
+running, and their agents could rewrite their own permission rules and
+hooks ([settylab/dotto-nexus#386](https://github.com/settylab/dotto-nexus/issues/386)).
+Fixed: the overlays write in place.
+
+What the launcher cannot prevent, because the actor is not
+agent-sandbox:
+
+- you (or `claude` running outside) saving `~/.claude/settings.json`,
+  an agent's instruction file or a `BLOCKED_FILES` entry with an editor
+  or tool that writes a temp file and renames it;
+- a package upgrade replacing a masked binary (`/usr/bin/sbatch`),
+  configuration management rewriting `/etc/nsswitch.conf`;
+- an NFS server or network problem making the client treat the project
+  or home directory as stale (#386, second mechanism);
+- a process outside any mount namespace (a Landlock sandbox, an
+  unsandboxed shell) renaming a masked path on the same project.
+
+The **mount guard** covers these: a watcher outside the sandbox compares
+the sandbox's mount table with what the backend set up every
+`MOUNT_GUARD_INTERVAL` seconds and reports every loss loudly, flagging
+the ones that expose a protected path. On bwrap the default
+`MOUNT_GUARD=repair` then puts the lost mask or read-only overlay back.
+With `MOUNT_GUARD=kill` (opt-in) it terminates the sandbox on such an
+exposure instead; a loss that fails closed (for example the project bind
+falling through to a read-only parent) is never fatal. Between the loss
+and the next check (5 s by default) the path is exposed; a repair does
+not undo what the agent read or wrote there in that window. See
+[`MOUNT_GUARD`](../configure.md#mount_guard).
+
+How the repair works, and why it cannot widen access:
+
+- **No privilege needed.** bwrap's mount namespace belongs to a user
+  namespace the invoking user created, so a host process of that user
+  has every capability in it. The helper (`backends/mount-repair.py`)
+  enters that user namespace (the owner of the mount namespace, found
+  with `NS_GET_USERNS`, which is not the agent's own nested one) and the
+  mount namespace. The agent itself holds no capability there and cannot
+  undo the repaired mount; in a user namespace of its own the mount is
+  locked like the originals.
+- **Same kind of mount, same path.** `/dev/null` (checked to be the null
+  device) over a masked file, an empty tmpfs over a masked directory,
+  and, for a path bwrap bound read-only onto itself, a read-only bind of
+  the object that is at that path now. None of these reveals anything
+  the sandbox could not already see or grants write access. Read-only
+  binds from a different source (`/etc/passwd` from the filtered copy)
+  are not repaired: a bind must come from the sandbox's own mount table,
+  where that source is not visible.
+- **No symlinks, verified objects.** Every component of the path is
+  opened with `O_NOFOLLOW`, on the host and inside the sandbox, and the
+  mount is attached through the verified file descriptor (fd-based
+  mount API: `open_tree`, `fsmount`, `mount_setattr`, `move_mount`). A
+  symlink anywhere in the path (for example one the agent planted while
+  the path was exposed) or a missing target is refused. For a read-only
+  bind the object the sandbox sees must be the host's object (device
+  and inode), and the host object must have kept its type and owner.
+  The guard then checks the kernel's mount table itself.
+- **Leaves only.** A mount that had other expected mounts below it (the
+  tmpfs `$HOME`, a read-only `$HOME` with writable children) is not
+  re-created, because it would hide what was below. Writable binds are
+  never re-created.
+- **Content is not restored.** For a read-only overlay the repair binds
+  what is at the path now. If the agent rewrote it while it was exposed,
+  that content is now read-only. The report says the path was exposed;
+  if that matters, restart the sandbox and check the file, or use
+  `MOUNT_GUARD=kill`.
+
+Layout also limits the blast radius. A mount point that is itself in a
+tmpfs (everything bound into the blank `$HOME` of `restricted` and
+`tmpwrite` mode) cannot be detached from the host. Paths below a
+writable host bind (the project dir, `~/.claude`) and everything under a
+bind of the real `$HOME` (`HOME_ACCESS=read|write`) can.
 
 ## Cooperative reinforcement: agent-side awareness
 
@@ -320,7 +499,7 @@ sandbox-circumvention attempt.
 | Tool | Available? | Pros | Cons |
 |---|---|---|---|
 | **[Bubblewrap](https://github.com/containers/bubblewrap)** | `apt`/`dnf`/`brew` | Mount namespace isolation, paths hidden entirely (ENOENT), file overlays, Slurm binary relocation, sandbox self-protection, seccomp via generated BPF filter (io_uring/userfaultfd/kexec + defense-in-depth set) | Requires unprivileged user namespaces; blocked by AppArmor on Ubuntu 24.04+ without admin help |
-| **[Firejail](https://firejail.wordpress.com/)** | yes (`apt install`) | Mount namespace (ENOENT), PID namespace, built-in seccomp + io_uring + userfaultfd + defense-in-depth set blocked, caps dropping, works when AppArmor blocks user namespaces | Requires setuid root binary |
+| **[Firejail](https://firejail.wordpress.com/)** | yes (`apt install`) | Mount namespace (ENOENT), PID namespace, private `/dev` and `/run`, caps dropping, works when AppArmor blocks user namespaces | Requires setuid root binary. Only `io_uring`, `userfaultfd` and `kexec` are dropped via `--seccomp.drop` (no defense-in-depth set), and with firejail 0.9.72 on aarch64 that filter loads but does not block. Host paths outside `$HOME` stay readable per Unix permissions. `DEVICES` limited to firejail's device classes (see Known Limitations) |
 | **[Landlock](https://docs.kernel.org/userspace-api/landlock.html)** | yes (kernel ≥ 5.13) | No root or admin needed, works on Ubuntu 24.04 despite AppArmor, pure kernel LSM, no external dependencies (Python 3 only) | No mount namespace — blocked paths return EACCES not ENOENT, no file overlays, no PID isolation, no Slurm binary relocation, no sandbox self-protection, cannot block Unix socket connect (**chaperon fully bypassable** — see [Admin Hardening](../admin/hardening.md)) |
 | **[Apptainer/Singularity](https://apptainer.org/)** | yes (lmod) | Full container, HPC-native | Heavy — requires container images, path mapping |
 | **Docker** | no | Industry standard | Requires root daemon; not available on shared HPC |
@@ -343,8 +522,13 @@ Sorted by perceived severity (security impact first, then operational issues).
 | **All** | `memfd_create` not blocked by any backend (HPC compatibility). `process_vm_readv/writev` blocked only on Landlock (no PID namespace to mitigate). Docker's default seccomp profile makes similar trade-offs | Accepted trade-off. `memfd_create` needed by CUDA, PyTorch, JAX. `process_vm_readv/writev` needed by MPI (mitigated by PID namespace in bwrap/firejail, blocked by seccomp on Landlock). See [Admin Hardening](../admin/hardening.md) |
 | **bwrap** (`DEVICES+=(/dev/pts)`) | `/dev/pts` exposure — required for tmux on kernels < 5.4. On kernels < 6.2, `TIOCSTI` ioctl allows keystroke injection into same-user terminals outside the sandbox. Admin enforces with `DEVICES_BLACKLIST+=(/dev/pts)` to refuse the opt-in cluster-wide | Defaults expose only NVIDIA driver nodes — pty is opt-in. Upgrade to kernel ≥ 5.4 to avoid the need, or ≥ 6.2 to disable TIOCSTI entirely. The legacy `BIND_DEV_PTS=true` knob is rewritten to this form for compatibility — see [Device Passthrough](device-passthrough.md) |
 | **Landlock** | Host `/dev/pts/*` always visible (no mount namespace). On kernels < 6.2, `TIOCSTI` ioctl allows keystroke injection into same-user terminals — unlike bwrap, this is not opt-in | Kernel ≥ 6.2 disables TIOCSTI system-wide. Use bwrap or firejail for private `/dev` |
-| **All** | Agent config directories (e.g., `~/.claude/`, `~/.codex/`) are writable (required for agents to function). An agent in one project can read session data from other projects | Inherent requirement — agents need write access to their config directories. Cross-project data access could be mitigated by per-project config copies |
-| **Landlock** | `/dev/shm` is writable and shared (no IPC namespace) — could be used for covert cross-sandbox communication or to read/corrupt shared memory of same-UID processes | Use bwrap or firejail (both isolate IPC via `PRIVATE_IPC=true`, the default) |
+| **Firejail** | `/dev` is firejail's `--private-dev`: it can carry only firejail's own device classes (`/dev/nvidia0`–`9`, `nvidiactl`, `nvidia-modeset`, `nvidia-uvm`, `/dev/dri`, sound, video, hidraw/USB, input, `/dev/sr0`). `DEVICES` selects among them; `/dev/nvidia-uvm-tools` is dropped with a note. Any other resolved `DEVICES` node (e.g. `/dev/infiniband`, `/dev/fuse`, `/dev/nvidia-caps`, `/dev/nvidia10`+) makes the launcher fall back to the **host** `/dev` (all nodes, other terminals' `/dev/pts`) with a warning. Inside the private `/dev`, `tty` reports "not a tty" (the inherited terminal has no name there); ptys, tmux and `script` work | Use bwrap for a per-node `DEVICES` allow-list |
+| **Firejail** | The read-only remounts are taken at launch. A filesystem that is mounted later (an autofs/automount key first accessed during the session, e.g. another lab's directory) appears inside with its host permissions, i.e. writable wherever Unix permissions allow | Mount the relevant trees before launch, or use bwrap (only listed paths are visible) |
+| **Firejail** | A writable path (project or `EXTRA_WRITABLE_PATHS`) owned by another user can only be made writable by leaving its parent directories unremounted: new files can be created directly in those parents (existing entries stay read-only). The launcher lists the affected directories; a foreign-owned grant below `$HOME` read-only rules or below `/etc`, `/usr`, `/bin`, `/sbin`, `/lib*` is refused at launch | Use bwrap, or own the project directory |
+| **All** | Agent config directories (e.g., `~/.claude/`, `~/.codex/`) are writable (required for agents to function). An agent in one project can read session data from other projects, and can leave plugins/skills/extensions that are loaded **unsandboxed** the next time you run the agent outside the sandbox (the main host-executed config files are read-only — see [Agent config left behind](#agent-config-left-behind-for-your-next-unsandboxed-session)) | Run agents only through the sandbox; version-control agent config and review diffs. Cross-project data access could be mitigated by per-project config copies |
+| **Landlock** | Per-file protection of host-executed agent config (`~/.claude/settings.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`, `~/.pi/agent/settings.json`) is impossible — Landlock cannot make a file read-only inside a writable directory | Use bwrap or firejail |
+| **All** | A Slurm job wrapper runs as host code on the compute node until it `exec`s `sandbox-exec.sh`. The chaperon restricts `--export` and the wrapper sanitizes its environment, but any future Slurm feature that lets a submission influence that prologue (new env-propagation flags, spank options) is a potential escape | Keep the chaperon's flag whitelist conservative (new flags are rejected by default); prefer the admin SPANK plugin ([Admin Hardening §1](../admin/hardening.md)) where available |
+| **Landlock** | `/dev/shm` is writable and shared (no IPC namespace) — could be used for covert cross-sandbox communication or to read/corrupt shared memory of same-UID processes | Use bwrap or firejail (both isolate IPC via `PRIVATE_IPC=true`, the default; firejail's private `/dev/shm` exists only with its private `/dev`, otherwise `/dev/shm` is blocked) |
 | **Landlock** | User enumeration via LDAP/AD — `getent passwd` reveals all directory users | No mount namespace to overlay files or block sockets; set `FILTER_PASSWD=false` if LDAP lookups are needed |
 | **Landlock** | `BLOCKED_FILES` has no effect — file overlays require a mount namespace, which Landlock doesn't have. Files listed in `BLOCKED_FILES` remain readable | Use bwrap or firejail for file-level hiding |
 | **Landlock** | `PRIVATE_TMP` has no effect — `/tmp` isolation requires a mount namespace. Sandboxed processes share the host `/tmp` | Use bwrap or firejail if `/tmp` isolation is needed |
@@ -355,4 +539,4 @@ Sorted by perceived severity (security impact first, then operational issues).
 | **All** | Chaperon logs record requests with full arguments and handler denials. Logs are per-session files in `~/.local/state/agent-sandbox/chaperon/`, auto-pruned by age (`CHAPERON_LOG_RETAIN_DAYS`, default 7) and total size (50 MiB cap). Configure `CHAPERON_LOG_LEVEL` in `sandbox.conf` (`debug` for script content, `info` for requests and denials, `warn`/`error` for less). Filenames include hostname for NFS-safe uniqueness across machines | Review logs for denied access patterns. For system-level audit (file access, execve, network), see [Admin Hardening §5](../admin/hardening.md) which requires dedicated agent accounts |
 | **All** | `srun --pty` (interactive PTY) is not supported through the chaperon protocol. Some advanced srun flags may be blocked — check the denied list in [Chaperon](chaperon.md) if a launch fails | Use `sbatch` for interactive-like workflows, or `srun` without `--pty` for non-interactive execution |
 | **All** | Chaperon temp files (wrapper scripts, original scripts) in `$TMPDIR` persist after SIGKILL since the cleanup trap cannot fire | Stale files are named `chaperon-*` in `$TMPDIR`; periodic cleanup recommended on NFS-backed tmp |
-| **Firejail** | `FILTER_PASSWD=true` blocks NSS daemon sockets (nscd, nslcd, sssd) on LDAP/AD clusters where the current user is not in local `/etc/passwd`, breaking user/group resolution and Slurm | Set `FILTER_PASSWD=false` in `sandbox.conf` on LDAP clusters, or prefer bwrap which overlays a pre-generated `/etc/passwd` |
+| **Firejail** | `FILTER_PASSWD=true` blocks NSS daemon sockets (nscd, nslcd, sssd; with any setting, everything else under `/run` is hidden too) on LDAP/AD clusters where the current user is not in local `/etc/passwd`, breaking user/group resolution and Slurm | Set `FILTER_PASSWD=false` in `sandbox.conf` on LDAP clusters, or prefer bwrap which overlays a pre-generated `/etc/passwd` |

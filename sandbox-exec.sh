@@ -98,6 +98,11 @@ done
 # (which is kernel-level: namespaces, Landlock rules, seccomp).
 unset SANDBOX_ACTIVE SANDBOX_BACKEND SANDBOX_PROJECT_DIR
 
+# Test-only switch of sandbox-lib.sh (function-library mode, skips all
+# config loading). Never honour it from the environment of a real
+# launch.
+unset _SANDBOX_LIB_NO_INIT
+
 # Apply backend override before sourcing sandbox-lib.sh
 if [[ -n "$BACKEND_OVERRIDE" ]]; then
     export SANDBOX_BACKEND="$BACKEND_OVERRIDE"
@@ -125,13 +130,19 @@ PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
 # Load per-project config overrides (conf.d/*.conf)
 load_project_config "$PROJECT_DIR"
 
-# Apply per-project environment overrides (SANDBOX_ENV from conf.d/*.conf).
-# Done here so backends inherit the modified environment naturally —
-# e.g. PATH modifications are picked up when bwrap/landlock/firejail
-# prepend chaperon stubs.
-for _env_entry in "${SANDBOX_ENV[@]}"; do
-    export "$_env_entry"
-done
+# Per-project environment (SANDBOX_ENV from any config layer). Only
+# PATH touches the launcher: it is exported here so the backends'
+# chaperon/sandbox stub prepends layer on top of it. Every other entry
+# is validated (config / launcher-internal / hidden / blocked names are
+# rejected) and applied to the sandboxed command only — see the `env`
+# wrap just before backend_prepare and _prepare_sandbox_env in
+# sandbox-lib.sh. Exporting them here (the old behaviour) let
+# SANDBOX_ENV rewrite admin-enforced settings such as
+# NETWORK_FILTER_MODE or PRIVATE_TMP after enforcement had run.
+_prepare_sandbox_env
+if [[ -n "$_SANDBOX_ENV_PATH" ]]; then
+    export PATH="$_SANDBOX_ENV_PATH"
+fi
 
 # Validate
 if [[ ! -d "$PROJECT_DIR" ]]; then
@@ -187,11 +198,22 @@ export SANDBOX_BACKEND
 # requirement check / overlay execution which both iterate the list.
 _apply_agent_profiles
 
+# Capability warnings for the RESOLVED backend. Config validation runs
+# before detect_backend, while an auto-detected backend is still "auto";
+# after the agent profiles so their BLOCKED_FILES entries count.
+_warn_backend_feature_gaps
+
 # Prepare agent profiles (backend-independent). Only agents listed in
 # ENABLED_AGENTS are prepared. The requirement check emits warnings
 # if declared credentials/paths look unreachable.
 _check_agent_requirements
 prepare_agent_configs "$PROJECT_DIR"
+
+# Register this launch in the per-host live-launch registry BEFORE
+# materializing anything, so a concurrent launch's
+# --cleanup-materialized never deletes a placeholder this sandbox is
+# about to mount over (see sandbox-lib.sh §Live-launch registry).
+_register_live_launch
 
 # Materialize BLOCKED_FILES placeholders, warn on each one we created,
 # and track them so the EXIT trap can optionally clean up post-exit.
@@ -209,6 +231,14 @@ if [[ "$CLEANUP_MATERIALIZED_FLAG" == "1" ]] \
    || _is_true "${CLEANUP_MATERIALIZED_BLOCKED_FILES:-false}"; then
     _CLEANUP_MATERIALIZED=1
 fi
+
+# .sandbox-state/: create (bwrap/firejail) and sanitize (all backends)
+# BEFORE backend_prepare, so the read-only overlay covers it from the
+# very first session and no symlink planted by an earlier session
+# survives into this one. Fail closed. Runs before the per-launch /tmp
+# dirs below are created, so a refusal leaves nothing behind. See
+# sandbox-lib.sh §.sandbox-state/ for the threat model.
+_prepare_sandbox_state_dir "$PROJECT_DIR" "$SANDBOX_BACKEND" || exit 1
 
 # ── Chaperon: create FIFO directory ───────────────────────────────
 # Create the FIFO directory BEFORE backend_prepare so backends can
@@ -236,9 +266,70 @@ _NETWORK_PROXY_PID=""
 # trap below.
 _MAIL_BLOCK_STUBS_DIR=""
 
+# ── Per-launch dir ownership + stale pruning ──────────────────────
+# chaperon-*, agent-sandbox-proxy-* and agent-sandbox-mailblock-* dirs
+# under $TMPDIR outlive a normal run (the trap below only fires if exec
+# fails; the chaperon removes them when it notices parent death, but not
+# if it is SIGKILLed). Each dir gets a `.owner` tag
+# "<host> <pidns-inode> <pid> <starttime>" naming this launch's PID
+# (which survives the exec into the backend). At launch, dirs of ours
+# whose tagged owner is gone on this host / PID namespace are removed;
+# untagged (pre-upgrade) dirs only once older than 7 days.
+_launch_owner_tag() {
+    local _pid="$1" _stat _ns
+    IFS= read -r _stat < "/proc/$_pid/stat" 2>/dev/null || return 1
+    local -a _f
+    read -r -a _f <<< "${_stat##*) }"
+    _ns="$(stat -L -c %i "/proc/$_pid/ns/pid" 2>/dev/null)" || return 1
+    printf '%s %s %s %s' "${HOSTNAME:-$(hostname 2>/dev/null)}" "$_ns" "$_pid" "${_f[19]:-?}"
+}
+# _launch_owner_alive PID NS STARTTIME — the tagged launcher still runs.
+# On firejail the launcher PID exec's into the setuid firejail binary,
+# whose /proc/PID/ns/ is not readable by the user (ptrace access check
+# against euid 0). A matching start time on this host is then enough:
+# treating the owner as dead deleted a LIVE session's chaperon FIFO dir
+# whenever the same user started another sandbox (including the nested
+# launch of every srun job step), which broke Slurm in that session.
+_launch_owner_alive() {
+    local _pid="$1" _ns="$2" _st="$3" _stat _cur
+    { IFS= read -r _stat < "/proc/$_pid/stat"; } 2>/dev/null || return 1
+    local -a _f
+    read -r -a _f <<< "${_stat##*) }"
+    [[ "${_f[19]:-?}" == "$_st" ]] || return 1
+    _cur="$(stat -L -c %i "/proc/$_pid/ns/pid" 2>/dev/null)" || return 0
+    [[ "$_cur" == "$_ns" ]]
+}
+_tag_launch_dir() {
+    [[ -n "${1:-}" && -d "$1" && ! -L "$1" ]] || return 0
+    { _launch_owner_tag "$$" && echo; } > "$1/.owner" 2>/dev/null || true
+}
+_prune_stale_launch_dirs() {
+    local _base="${TMPDIR:-/tmp}" _d _h _ns _pid _st _me
+    _me="$(_launch_owner_tag "$$")" || return 0
+    local _me_host="${_me%% *}" _me_ns="${_me#* }"; _me_ns="${_me_ns%% *}"
+    local -a _untagged=()
+    for _d in "$_base"/chaperon-* "$_base"/agent-sandbox-proxy-* "$_base"/agent-sandbox-mailblock-*; do
+        [[ -d "$_d" && ! -L "$_d" && -O "$_d" ]] || continue
+        if [[ -f "$_d/.owner" && ! -L "$_d/.owner" ]]; then
+            _h=""; read -r _h _ns _pid _st < "$_d/.owner" 2>/dev/null || [[ -n "$_h" ]] || continue
+            [[ "$_h" == "$_me_host" && "$_ns" == "$_me_ns" && "$_pid" =~ ^[0-9]+$ ]] || continue
+            _launch_owner_alive "$_pid" "$_ns" "$_st" && continue
+            rm -rf -- "$_d" 2>/dev/null || true
+        else
+            _untagged+=("$_d")
+        fi
+    done
+    (( ${#_untagged[@]} )) || return 0
+    while IFS= read -r -d '' _d; do
+        rm -rf -- "$_d" 2>/dev/null || true
+    done < <(find "${_untagged[@]}" -maxdepth 0 -type d -user "$(id -u)" -mtime +7 -print0 2>/dev/null)
+}
+_prune_stale_launch_dirs
+
 if [[ -x "$SCRIPT_DIR/chaperon/chaperon.sh" ]]; then
     _CHAPERON_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chaperon-XXXXXX")"
     chmod 700 "$_CHAPERON_DIR"
+    _tag_launch_dir "$_CHAPERON_DIR"
 
     # request pipe: sandbox writes → chaperon reads
     mkfifo "$_CHAPERON_DIR/req"
@@ -248,8 +339,51 @@ if [[ -x "$SCRIPT_DIR/chaperon/chaperon.sh" ]]; then
     export _CHAPERON_FIFO_DIR="$_CHAPERON_DIR"
 fi
 
+# Apply the validated SANDBOX_ENV entries to the sandboxed command only:
+# `env NAME=VALUE… CMD` runs inside the sandbox, after the backend has
+# set up and scrubbed the child environment, so these values never
+# reach the launcher, the chaperon or the backend binary. Agent profile
+# exports (e.g. CLAUDE_CONFIG_DIR) keep precedence, as before.
+if [[ ${#_SANDBOX_CHILD_ENV[@]} -gt 0 ]]; then
+    _child_env=()
+    for _env_entry in "${_SANDBOX_CHILD_ENV[@]}"; do
+        _env_name="${_env_entry%%=*}"
+        _env_is_agent=false
+        for _agent_export in "${_AGENT_ENV_EXPORTS[@]+"${_AGENT_ENV_EXPORTS[@]}"}"; do
+            [[ "${_agent_export%%=*}" == "$_env_name" ]] && { _env_is_agent=true; break; }
+        done
+        if $_env_is_agent; then
+            echo "WARNING: SANDBOX_ENV entry '${_env_name}' ignored: set by an enabled agent profile." >&2
+            continue
+        fi
+        _child_env+=("$_env_entry")
+    done
+    if [[ ${#_child_env[@]} -gt 0 ]]; then
+        _env_bin=/usr/bin/env
+        [[ -x "$_env_bin" ]] || _env_bin=/bin/env
+        set -- "$_env_bin" -- "${_child_env[@]}" "$@"
+    fi
+    unset _child_env _env_entry _env_name _env_is_agent _agent_export _env_bin
+fi
+
 # Prepare sandbox (reads _CHAPERON_FIFO_DIR for bind-mounts)
 backend_prepare "$PROJECT_DIR"
+_tag_launch_dir "${_NETWORK_PROXY_DIR:-}"
+_tag_launch_dir "${_MAIL_BLOCK_STUBS_DIR:-}"
+
+# PRIVATE_TMP=false binds the host /tmp into the sandbox, and the
+# chaperon FIFO / proxy socket / mail-block dirs live there too: any
+# other sandbox of the same user sharing /tmp can open this launch's
+# chaperon FIFO (submitting Slurm jobs as this project) or proxy
+# sockets. Nothing else distinguishes them (same uid), so say so.
+if [[ -n "$_CHAPERON_DIR" ]] && ! _is_true "${PRIVATE_TMP:-true}" \
+   && ! _is_true "${SANDBOX_QUIET:-false}"; then
+    case "${SANDBOX_BACKEND:-}" in
+        bwrap|firejail)
+            echo "sandbox: WARNING — PRIVATE_TMP=false: this session's chaperon FIFO ($_CHAPERON_DIR) and helper sockets are in the shared host /tmp; other sandboxes run by the same user can reach them and submit Slurm jobs through this session's chaperon. Keep PRIVATE_TMP=true unless you need a shared /tmp." >&2
+            ;;
+    esac
+fi
 
 if [[ "$DRY_RUN" == true ]]; then
     backend_dry_run "$@"
@@ -367,6 +501,8 @@ if [[ -n "$_CHAPERON_DIR" ]]; then
     SANDBOX_QUIET="$SANDBOX_QUIET" \
         "$SCRIPT_DIR/chaperon/chaperon.sh" \
         "$_CHAPERON_DIR" "$PROJECT_DIR" "$SCRIPT_DIR/sandbox-exec.sh" \
+        ${_NETWORK_PROXY_DIR:+"$_NETWORK_PROXY_DIR"} \
+        ${_MAIL_BLOCK_STUBS_DIR:+"$_MAIL_BLOCK_STUBS_DIR"} \
         >/dev/null 2>"$_CHAPERON_DIR/chaperon.err" &
     _CHAPERON_PID=$!
 fi
@@ -401,6 +537,9 @@ _sandbox_cleanup() {
     if [[ "${_CLEANUP_MATERIALIZED:-0}" == "1" ]]; then
         _cleanup_materialized_blocked_files
     fi
+    if [[ -n "${_MOUNT_GUARD_PID:-}" ]]; then
+        kill "$_MOUNT_GUARD_PID" 2>/dev/null || true
+    fi
 }
 trap _sandbox_cleanup EXIT
 
@@ -429,5 +568,10 @@ if ! _is_true "${SANDBOX_QUIET:-false}"; then
     esac
     echo "sandbox: $SANDBOX_BACKEND | project: $PROJECT_DIR | home: $_home_label" >&2
 fi
+
+# Mount guard: host-side watcher that notices protective mounts
+# disappearing from the running sandbox (sandbox-lib.sh §Mount guard).
+# Started last, after the FD cleanup, so it holds nothing but /dev/null.
+_start_mount_guard "$PROJECT_DIR"
 
 backend_exec "$@"

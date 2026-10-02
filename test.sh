@@ -666,6 +666,30 @@ else
     skip "ALLOWED_PROJECT_PARENTS test: could not create a temp dir under /var/tmp or /dev/shm"
 fi
 
+# ── Project dir must not be $HOME or an ANCESTOR of $HOME ────────
+# A project dir of /home (or /) is bound writable over the whole home
+# directory, re-exposing ~/.ssh & co. and making every host dotfile
+# writable. validate_project_dir used to reject only == $HOME. Allow
+# $HOME's parent in a throwaway config so the allow-list check can't
+# be what rejects it; the ancestor check must.
+_l3_conf=$(mktemp "${TMPDIR:-/tmp}/sandbox-l3-XXXXXX")
+_TEST_TEMP_FILES+=("$_l3_conf")
+_l3_dir="$(dirname "$HOME")"
+{ cat "$SANDBOX_CONF"; echo "ALLOWED_PROJECT_PARENTS+=(\"$_l3_dir\")"; } > "$_l3_conf"
+if [[ "$_l3_dir" != "/" ]]; then
+    _raw=$(SANDBOX_CONF="$_l3_conf" timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$_l3_dir" -- bash -c 'echo L3_GUEST_REACHED' 2>&1)
+    _rc=$?
+    if [[ "$_raw" == *L3_GUEST_REACHED* ]]; then
+        fail "Project dir '$_l3_dir' (ancestor of \$HOME) was accepted" "rc=$_rc"
+    elif [[ $_rc -ne 0 ]] && grep -q "one of its parent directories" <<<"$_raw"; then
+        pass "Project dir '$_l3_dir' (ancestor of \$HOME) rejected"
+    else
+        skip "Project dir '$_l3_dir' rejected for another reason (admin config?): $(grep -m1 Error <<<"$_raw")"
+    fi
+fi
+
+
 echo ""
 
 # ── 1.5 Landlock ABI hard-requirement probe ──────────────────────
@@ -755,8 +779,9 @@ test_credential_dir ".aws"
 test_credential_dir ".gnupg"
 
 # ── Extra credential paths beyond the canonical .ssh/.aws/.gnupg ─
-# sandbox-lib.sh's _HOME_ALWAYS_BLOCKED currently lists only those
-# three, but README/SECURITY.md tacitly promise "credential hiding".
+# In the default tmpwrite mode these are hidden because the tmpfs HOME
+# only shows listed paths. (HOME_ACCESS=read|write masking of the wider
+# set — sandbox-lib.sh _HOME_CREDENTIAL_PATHS — is covered in 3.9.6.)
 # Modern cloud CLIs store tokens elsewhere; test whether those paths
 # are hidden too. Skip when the path is absent on the host.
 #
@@ -764,14 +789,11 @@ test_credential_dir ".gnupg"
 # only exercise mount-namespace backends here (same pattern as the
 # history-file tests below).
 if has_mount_ns; then
-    # .netrc is universally recognised as a credential file; we treat
-    # it as a hard requirement. The others are aspirational — warn
-    # (not fail) so the assertion flips to pass automatically when
-    # _HOME_ALWAYS_BLOCKED is later expanded.
+    # All of these are in sandbox-lib.sh's _HOME_CREDENTIAL_PATHS (masked
+    # in read/write mode too), so they are hard requirements now. The
+    # soft list is kept for future aspirational entries.
     _extra_creds_strict=(
         ".netrc"                # curl/wget HTTP basic auth (FILE)
-    )
-    _extra_creds_soft=(
         ".kube/config"          # kubectl (FILE)
         ".docker/config.json"   # Docker Hub tokens (FILE)
         ".config/gcloud"        # Google Cloud (DIR)
@@ -780,6 +802,7 @@ if has_mount_ns; then
         ".config/helm"          # Helm (DIR)
         ".terraform.d"          # Terraform login (DIR)
     )
+    _extra_creds_soft=()
 
     _cred_present() {
         # Present if it's a non-empty dir or an existing file.
@@ -970,6 +993,323 @@ if [[ -n "$_project_parent" && "$_project_parent" != "/" && "$_project_parent" !
             fi
         fi
     fi
+fi
+
+# ── EXTRA_WRITABLE_PATHS must not undo protective overlays ──
+# EXTRA_WRITABLE_PATHS used to be bound AFTER the BLOCKED_FILES /
+# EXTRA_BLOCKED_PATHS / .sandbox-state read-only overlays (bwrap; the
+# firejail --read-write came after --read-only too), so an entry that
+# contained a masked path re-exposed it, and an entry of $HOME (or a
+# parent) re-exposed the whole real home. Now: writable binds first,
+# overlays last, and $HOME-or-ancestor entries are dropped with a warning.
+_l2_fix="$PROJECT_DIR/.test-l2-extra-$$"
+_l2_conf="$HOME/.config/agent-sandbox/conf.d/test-l2-extra-$$.conf"
+_l2_marker="$HOME/.sandbox-test-l2-home-marker-$$"
+_TEST_TEMP_FILES+=("$_l2_conf" "$_l2_marker")
+_TEST_TEMP_DIRS+=("$_l2_fix")
+mkdir -p "$_l2_fix/hidden" "$HOME/.config/agent-sandbox/conf.d" "$PROJECT_DIR/.sandbox-state"
+echo "L2_BLOCKED_SECRET" > "$_l2_fix/secret.txt"
+echo "L2_HIDDEN_SECRET" > "$_l2_fix/hidden/h.txt"
+rm -f "$_l2_marker" "$PROJECT_DIR/.sandbox-state/.l2-probe-$$"
+cat > "$_l2_conf" <<L2CONF
+BLOCKED_FILES+=("$_l2_fix/secret.txt")
+EXTRA_BLOCKED_PATHS+=("$_l2_fix/hidden")
+EXTRA_WRITABLE_PATHS+=("$_l2_fix" "$PROJECT_DIR" "\$HOME")
+L2CONF
+sandbox bash -c "cat '$_l2_fix/secret.txt' 2>/dev/null; cat '$_l2_fix/hidden/h.txt' 2>/dev/null; \
+    touch '$PROJECT_DIR/.sandbox-state/.l2-probe-$$' 2>/dev/null && echo L2_STATE_WRITABLE; \
+    touch '$_l2_marker' 2>/dev/null; echo L2_DONE"
+if [[ "$OUTPUT" != *L2_DONE* ]]; then
+    fail "EXTRA_WRITABLE_PATHS overlay-order test: sandbox did not run" "$OUTPUT_ERR"
+else
+    if [[ -e "$_l2_marker" ]]; then
+        fail "EXTRA_WRITABLE_PATHS=(\$HOME) made the real \$HOME writable"
+    elif ! grep -q "EXTRA_WRITABLE_PATHS entry '$HOME' is \\\$HOME or an ancestor" <<<"$OUTPUT_ERR"; then
+        fail "EXTRA_WRITABLE_PATHS=(\$HOME) not rejected with a warning" "$OUTPUT_ERR"
+    else
+        pass "EXTRA_WRITABLE_PATHS=(\$HOME) ignored with a warning; real \$HOME not writable"
+    fi
+    if has_mount_ns; then
+        if [[ "$OUTPUT" == *L2_BLOCKED_SECRET* || "$OUTPUT" == *L2_HIDDEN_SECRET* ]]; then
+            fail "EXTRA_WRITABLE_PATHS re-exposed BLOCKED_FILES / EXTRA_BLOCKED_PATHS" "$OUTPUT"
+        else
+            pass "BLOCKED_FILES / EXTRA_BLOCKED_PATHS stay masked under an EXTRA_WRITABLE_PATHS entry"
+        fi
+        if [[ "$OUTPUT" == *L2_STATE_WRITABLE* || -e "$PROJECT_DIR/.sandbox-state/.l2-probe-$$" ]]; then
+            fail "EXTRA_WRITABLE_PATHS containing the project re-opened .sandbox-state for writing"
+        else
+            pass ".sandbox-state stays read-only under an EXTRA_WRITABLE_PATHS entry"
+        fi
+    fi
+fi
+rm -rf "$_l2_conf" "$_l2_fix" "$_l2_marker" "$PROJECT_DIR/.sandbox-state/.l2-probe-$$"
+
+# ── Firejail: host filesystem outside $HOME is read-only (L9) ──
+# Firejail starts from the host mount tree, so directories outside
+# $HOME that the user can write (shared lab / scratch filesystems)
+# used to stay writable inside the sandbox. Structural check on the
+# dry-run argv everywhere; behavioural check when the host provides a
+# user-writable dir outside $HOME and /tmp via
+# SANDBOX_TEST_HOST_WRITABLE_DIR (e.g. a group-writable /fh/fast path).
+if is_firejail; then
+    # The read-only cover remounts every top-level entry (here /usr)
+    # itself: `--read-only=/` is not recursive in firejail (only the
+    # root filesystem, not /boot, NFS project trees, ...) and would
+    # stop firejail from re-opening a project the user does not own.
+    _l9_args=$("$SANDBOX_EXEC" --backend firejail --dry-run --project-dir "$PROJECT_DIR" -- true 2>/dev/null)
+    _l9_ro=$(grep -n -- '--read-only=/usr ' <<<"$_l9_args" | head -1 | cut -d: -f1)
+    _l9_rw=$(grep -n -- "--read-write=$PROJECT_DIR " <<<"$_l9_args" | head -1 | cut -d: -f1)
+    _l9_st=$(grep -n -- "--read-only=$PROJECT_DIR/.sandbox-state " <<<"$_l9_args" | tail -1 | cut -d: -f1)
+    if grep -q -- '--read-only=/ ' <<<"$_l9_args"; then
+        fail "firejail argv still uses the non-recursive --read-only=/"
+    elif [[ -n "$_l9_ro" && -n "$_l9_rw" && -n "$_l9_st" && $_l9_ro -lt $_l9_rw && $_l9_rw -lt $_l9_st ]]; then
+        pass "firejail argv: read-only cover (/usr) first, project --read-write, .sandbox-state --read-only last"
+    else
+        fail "firejail argv ordering wrong (ro /usr line $_l9_ro, rw project $_l9_rw, ro state $_l9_st)"
+    fi
+    if [[ -n "${SANDBOX_TEST_HOST_WRITABLE_DIR:-}" && -d "$SANDBOX_TEST_HOST_WRITABLE_DIR" && -w "$SANDBOX_TEST_HOST_WRITABLE_DIR" ]]; then
+        _l9_m="$SANDBOX_TEST_HOST_WRITABLE_DIR/.sandbox-l9-marker-$$"
+        _TEST_TEMP_FILES+=("$_l9_m")
+        sandbox bash -c "touch '$_l9_m' 2>/dev/null; echo L9_DONE"
+        if [[ -e "$_l9_m" ]]; then
+            fail "firejail: sandbox wrote to host dir outside \$HOME ($SANDBOX_TEST_HOST_WRITABLE_DIR)"
+        elif [[ "$OUTPUT" == *L9_DONE* ]]; then
+            pass "firejail: host dir outside \$HOME/project is read-only inside the sandbox"
+        else
+            fail "firejail: L9 behavioural check did not run" "$OUTPUT_ERR"
+        fi
+        rm -f "$_l9_m"
+    else
+        skip "firejail host-FS write check: set SANDBOX_TEST_HOST_WRITABLE_DIR to a writable dir outside \$HOME and /tmp"
+    fi
+fi
+
+
+# ── Firejail: writable paths owned by someone else (F1) ──
+# firejail refuses `--read-write` for a read-only directory the user
+# does not own ("not allowed to change X to read-write", hidden by
+# --quiet). A project / EXTRA_WRITABLE_PATHS entry on shared storage
+# owned by root or the PI and group-writable for the user (the normal
+# HPC layout) therefore came out read-only on firejail only. Needs such
+# a directory; creating one needs root, so it is taken from
+# SANDBOX_TEST_FOREIGN_WRITABLE_DIR (e.g. `sudo install -d -o root
+# -g "$(id -gn)" -m 2775 /srv/sbx-foreign`).
+if is_firejail; then
+    _f1_dir="${SANDBOX_TEST_FOREIGN_WRITABLE_DIR:-}"
+    if [[ -n "$_f1_dir" && -d "$_f1_dir" && -w "$_f1_dir" \
+          && "$(stat -c %u "$_f1_dir" 2>/dev/null)" != "$(id -u)" ]]; then
+        _f1_dir="$(cd "$_f1_dir" && pwd -P)"
+        _f1_conf=$(mktemp); trap_rm_path "$_f1_conf"
+        cat "$SANDBOX_CONF" > "$_f1_conf"
+        printf 'ALLOWED_PROJECT_PARENTS+=(%q)\nEXTRA_WRITABLE_PATHS+=(%q)\n' \
+            "$(dirname "$_f1_dir")" "$_f1_dir" >> "$_f1_conf"
+        _f1_m="$_f1_dir/.sandbox-f1-marker-$$"
+        _TEST_TEMP_FILES+=("$_f1_m" "$_f1_dir/.sandbox-f1-proj-$$")
+        # (a) as EXTRA_WRITABLE_PATHS entry, project elsewhere
+        _f1_out=$(SANDBOX_CONF="$_f1_conf" timeout 60 "$SANDBOX_EXEC" --backend firejail \
+            --project-dir "$PROJECT_DIR" -- bash -c "echo x > '$_f1_m' && echo F1_EXTRA_OK" 2>&1)
+        if [[ "$_f1_out" == *F1_EXTRA_OK* && -f "$_f1_m" ]]; then
+            pass "firejail: EXTRA_WRITABLE_PATHS entry owned by another user (group-writable) is writable"
+        else
+            fail "firejail: foreign group-writable EXTRA_WRITABLE_PATHS entry not writable" "$_f1_out"
+        fi
+        rm -f "$_f1_m"
+        # (b) as the project dir
+        _f1_out=$(SANDBOX_CONF="$_f1_conf" timeout 60 "$SANDBOX_EXEC" --backend firejail \
+            --project-dir "$_f1_dir" -- bash -c "echo x > '$_f1_dir/.sandbox-f1-proj-$$' && echo F1_PROJ_OK" 2>&1)
+        if [[ "$_f1_out" == *F1_PROJ_OK* && -f "$_f1_dir/.sandbox-f1-proj-$$" ]]; then
+            pass "firejail: project dir owned by another user (group-writable) is writable"
+        else
+            fail "firejail: foreign group-writable project dir not writable" "$_f1_out"
+        fi
+        rm -f "$_f1_dir/.sandbox-f1-proj-$$"
+        rm -rf "$_f1_dir/.sandbox-state" 2>/dev/null
+    else
+        skip "firejail foreign-owned writable dir: set SANDBOX_TEST_FOREIGN_WRITABLE_DIR to a dir owned by another user (e.g. root) that is group-writable for you; creating one needs sudo"
+    fi
+
+    # Separate mounts outside the grants must be read-only as well:
+    # `--read-only=/` stopped at the root filesystem. Pick a host mount
+    # point outside the special trees (firejail masks /boot itself) that
+    # is read-write on the host, and check that the top-most mount at
+    # that path inside is read-only.
+    _f1_mnt=$(awk '$6 ~ /^rw/ {print $5}' /proc/self/mountinfo | grep -v -E '^/$|^/(proc|sys|dev|run|tmp|boot|var/lib/docker|snap)(/|$)' \
+              | while IFS= read -r _m; do [[ "$_m" == *'\'* || "$HOME" == "$_m"* || "$_m" == "$HOME"* || "$PROJECT_DIR" == "$_m"* ]] || { echo "$_m"; break; }; done)
+    if [[ -n "$_f1_mnt" ]]; then
+        sandbox bash -c "awk -v m='$_f1_mnt' '\$5 == m {o=\$6} END {print o}' /proc/self/mountinfo"
+        if [[ "$OUTPUT" == ro* ]]; then
+            pass "firejail: separate host mount $_f1_mnt is read-only inside"
+        else
+            fail "firejail: separate host mount $_f1_mnt not read-only inside" "$OUTPUT $OUTPUT_ERR"
+        fi
+    else
+        skip "firejail separate-mount read-only check: no read-write mount outside /, \$HOME and the special trees on this host"
+    fi
+fi
+
+# ── Firejail: /run and /dev (F2, F14) ──
+# /run is a tmpfs with only the resolver dir (like bwrap's --tmpfs
+# /run): nothing under the host /run is writable (/run/lock is 1777 on
+# the host) or connectable. /dev is a private --private-dev /dev: no
+# /dev/mqueue, no other terminals' ptys, but ptys can be allocated.
+if is_firejail; then
+    _f2_sockdir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    _f2_sock=""
+    if [[ -d "$_f2_sockdir" && -w "$_f2_sockdir" ]] && command -v python3 >/dev/null; then
+        _f2_sock="$_f2_sockdir/sbx-f2-$$.sock"
+        python3 -c 'import socket,sys,time
+s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1); time.sleep(40)' "$_f2_sock" &
+        _f2_pid=$!
+        for _i in 1 2 3 4 5 6 7 8 9 10; do [[ -S "$_f2_sock" ]] && break; sleep 0.2; done
+    fi
+    sandbox bash -c '
+        for d in /run /run/lock /run/user /dev /dev/mqueue /dev/shm; do
+            if ( : > "$d/.sbx-f2-$$" ) 2>/dev/null; then echo "WRITABLE:$d"; rm -f "$d/.sbx-f2-$$"; fi
+        done
+        [ -e /run/lock ] && echo HAS_RUN_LOCK
+        [ -e /dev/mqueue ] && echo HAS_MQUEUE
+        [ -e /run/munge ] && echo HAS_MUNGE
+        echo RUN=$(ls /run | tr "\n" " ")
+        if [ -n "'"$_f2_sock"'" ]; then
+            python3 -c "import socket,sys
+s=socket.socket(socket.AF_UNIX)
+try:
+    s.connect(sys.argv[1]); print(\"SOCK_CONNECTED\")
+except OSError as e: print(\"SOCK_REFUSED\", e.strerror)" "'"$_f2_sock"'"
+        fi
+        python3 -c "import os,pty; m,s=pty.openpty(); print(\"PTY_OK\")" 2>&1
+        ls /dev/pts | tr "\n" " "; echo
+        echo DONE'
+    if [[ "$OUTPUT" != *DONE* ]]; then
+        fail "firejail /run//dev probe did not run" "$OUTPUT_ERR"
+    else
+        if [[ "$OUTPUT" == *WRITABLE:/run* ]]; then
+            fail "firejail: something under /run is writable" "$OUTPUT"
+        else
+            pass "firejail: /run (incl. /run/lock, /run/user) not writable"
+        fi
+        if [[ "$OUTPUT" == *HAS_RUN_LOCK* || "$OUTPUT" == *HAS_MUNGE* ]]; then
+            fail "firejail: host /run entries visible (expected a tmpfs with the resolver only)" "$OUTPUT"
+        else
+            pass "firejail: host /run hidden (tmpfs, resolver only)"
+        fi
+        if [[ -n "$_f2_sock" ]]; then
+            if [[ "$OUTPUT" == *SOCK_REFUSED* ]]; then
+                pass "firejail: host socket under /run/user not connectable"
+            else
+                fail "firejail: host socket under /run/user connectable or probe failed" "$OUTPUT"
+            fi
+        else
+            skip "firejail /run socket check: no writable XDG_RUNTIME_DIR or python3"
+        fi
+        if [[ "$OUTPUT" == *HAS_MQUEUE* || "$OUTPUT" == *WRITABLE:/dev/mqueue* ]] \
+           || grep -qx 'WRITABLE:/dev' <<<"$OUTPUT"; then
+            fail "firejail: /dev/mqueue present or /dev writable (expected --private-dev)" "$OUTPUT"
+        else
+            pass "firejail: private /dev (no /dev/mqueue)"
+        fi
+        if [[ "$OUTPUT" == *PTY_OK* ]]; then
+            pass "firejail: pty allocation works under --private-dev"
+        else
+            fail "firejail: pty allocation failed under --private-dev" "$OUTPUT"
+        fi
+    fi
+    [[ -n "${_f2_pid:-}" ]] && kill "$_f2_pid" 2>/dev/null; wait "${_f2_pid:-}" 2>/dev/null
+    rm -f "${_f2_sock:-}"
+    unset _f2_pid
+fi
+
+# ── PRIVATE_TMP=false shares the host /tmp; true isolates it (F6) ──
+# Firejail used to get a fresh /tmp even with PRIVATE_TMP=false: the
+# --whitelist of the chaperon FIFO dir (under /tmp) makes firejail
+# mount a tmpfs on /tmp. Now the whitelist is only used where the parent
+# is replaced anyway.
+if has_mount_ns; then
+    _f6_conf=$(mktemp); trap_rm_path "$_f6_conf"
+    cat "$SANDBOX_CONF" > "$_f6_conf"
+    echo 'PRIVATE_TMP=false' >> "$_f6_conf"
+    _f6_host="/tmp/.sbx-f6-host-$$"; _f6_in="/tmp/.sbx-f6-in-$$"
+    _TEST_TEMP_FILES+=("$_f6_host" "$_f6_in")
+    echo host > "$_f6_host"
+    _f6_out=$(SANDBOX_CONF="$_f6_conf" SANDBOX_QUIET=true timeout 60 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- bash -c "cat '$_f6_host' 2>/dev/null && echo F6_SEEN; echo in > '$_f6_in'; echo F6_DONE" 2>&1)
+    if [[ "$_f6_out" == *F6_SEEN* && -f "$_f6_in" ]]; then
+        pass "PRIVATE_TMP=false: host /tmp shared both ways ($CURRENT_BACKEND)"
+    else
+        fail "PRIVATE_TMP=false: /tmp not shared ($CURRENT_BACKEND)" "$_f6_out"
+    fi
+    rm -f "$_f6_in"
+    sandbox bash -c "cat '$_f6_host' 2>/dev/null && echo F6_SEEN; echo in > '$_f6_in'; echo F6_DONE"
+    if [[ "$OUTPUT" == *F6_DONE* && "$OUTPUT" != *F6_SEEN* && ! -e "$_f6_in" ]]; then
+        pass "PRIVATE_TMP=true: /tmp private ($CURRENT_BACKEND)"
+    else
+        fail "PRIVATE_TMP=true: /tmp not private ($CURRENT_BACKEND)" "$OUTPUT $OUTPUT_ERR"
+    fi
+    rm -f "$_f6_host" "$_f6_in"
+fi
+
+# ── Firejail: a new launch must not prune a live session's FIFO dir ──
+# firejail sessions exec into the setuid firejail binary, whose
+# /proc/<pid>/ns is unreadable for the user; every later launch (any
+# other sandbox, and the nested launch of each srun job step) took the
+# session for dead and deleted its chaperon FIFO dir, breaking Slurm.
+if is_firejail; then
+    _fp_file="$PROJECT_DIR/.sbx-fifo-path-$$"
+    _TEST_TEMP_FILES+=("$_fp_file")
+    rm -f "$_fp_file"
+    SANDBOX_QUIET=true timeout 40 "$SANDBOX_EXEC" --backend firejail --project-dir "$PROJECT_DIR" -- \
+        bash -c "echo \"\$_CHAPERON_FIFO_DIR\" > '$_fp_file'; sleep 12" >/dev/null 2>&1 &
+    _fp_pid=$!
+    for _i in $(seq 1 40); do [[ -s "$_fp_file" ]] && break; sleep 0.25; done
+    _fp_dir="$(cat "$_fp_file" 2>/dev/null)"
+    if [[ -n "$_fp_dir" && -d "$_fp_dir" ]]; then
+        "$SANDBOX_EXEC" --backend firejail --dry-run --project-dir "$PROJECT_DIR" -- true >/dev/null 2>&1
+        if [[ -p "$_fp_dir/req" ]]; then
+            pass "firejail: a new launch keeps a running session's chaperon FIFO dir"
+        else
+            fail "firejail: a new launch pruned a running session's chaperon FIFO dir ($_fp_dir)"
+        fi
+    else
+        fail "firejail: FIFO-prune probe session did not start"
+    fi
+    kill "$_fp_pid" 2>/dev/null; wait "$_fp_pid" 2>/dev/null
+    rm -f "$_fp_file"
+fi
+
+# ── Landlock picked by auto-detection still prints its warnings (F3) ──
+# The landlock capability warnings (FILTER_PASSWD, BLOCKED_FILES, munge,
+# DEVICES) ran during config validation, before detect_backend, where
+# SANDBOX_BACKEND is still "auto": exactly the hosts that land on
+# landlock by auto-detection got no warning. Hide bwrap (BWRAP override)
+# and firejail (PATH without it) so auto resolves to landlock.
+if is_landlock; then
+    _f3_bin=$(mktemp -d); trap_rm_path "$_f3_bin"
+    _f3_path="$_f3_bin"
+    IFS=: read -r -a _f3_dirs <<<"$PATH"
+    for _f3_d in "${_f3_dirs[@]}"; do
+        [[ -d "$_f3_d" ]] || continue
+        for _f3_e in "$_f3_d"/*; do
+            _f3_b="${_f3_e##*/}"
+            [[ "$_f3_b" == firejail || "$_f3_b" == bwrap ]] && continue
+            [[ -e "$_f3_bin/$_f3_b" ]] || ln -s "$_f3_e" "$_f3_bin/$_f3_b" 2>/dev/null
+        done
+    done
+    _f3_conf=$(mktemp); trap_rm_path "$_f3_conf"
+    cat "$SANDBOX_CONF" > "$_f3_conf"
+    printf 'SANDBOX_BACKEND=auto\nFILTER_PASSWD=true\nBLOCKED_FILES+=(%q)\n' "$PROJECT_DIR/.sbx-f3-blocked-$$" >> "$_f3_conf"
+    _TEST_TEMP_FILES+=("$PROJECT_DIR/.sbx-f3-blocked-$$")
+    _f3_out=$(env -u SANDBOX_BACKEND BWRAP=/nonexistent/bwrap PATH="$_f3_path" SANDBOX_CONF="$_f3_conf" \
+        timeout 60 "$SANDBOX_EXEC" --project-dir "$PROJECT_DIR" -- bash -c 'echo "F3_BACKEND=$SANDBOX_BACKEND"' 2>&1)
+    rm -f "$PROJECT_DIR/.sbx-f3-blocked-$$"
+    if [[ "$_f3_out" != *F3_BACKEND=landlock* ]]; then
+        skip "landlock auto-detect warnings: auto did not resolve to landlock here"
+    elif [[ "$_f3_out" == *"BLOCKED_FILES has no effect with the Landlock backend"* \
+            && "$_f3_out" == *"FILTER_PASSWD=true has no effect with the Landlock backend"* ]]; then
+        pass "landlock chosen by auto-detection prints the BLOCKED_FILES / FILTER_PASSWD warnings"
+    else
+        fail "landlock chosen by auto-detection printed no capability warnings" "$_f3_out"
+    fi
+    rm -rf "$_f3_bin"
 fi
 
 # ── HOME_ACCESS modes ──
@@ -1510,16 +1850,27 @@ rm -f "$_sandbox_env_conf"
 # shipping.
 
 # 3.8.1 — Registered config array + admin-enforced (add-only for users).
+# Membership in _ENFORCED_ARRAYS is load-bearing (_enforce_admin_policy
+# iterates it), so check the behaviour too: an admin entry removed by a
+# user layer is restored, and the user's own addition survives.
 if (
     set -uo pipefail
     export _SANDBOX_LIB_NO_INIT=1
     source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
     printf ' %s ' "${_CONFIG_ARRAYS[@]}" | grep -q ' HIDE_FROM_SANDBOX ' || exit 1
-    printf ' %s ' "${_ENFORCED_ARRAYS[@]}" | grep -q ' HIDE_FROM_SANDBOX '
+    printf ' %s ' "${_ENFORCED_ARRAYS[@]}" | grep -q ' HIDE_FROM_SANDBOX ' || exit 1
+    HIDE_FROM_SANDBOX+=("ADMIN_ONLY_HIDE")
+    _snapshot_admin_config
+    HIDE_FROM_SANDBOX=("USER_HIDE")          # user layer drops everything
+    _ADMIN_CONF=/dev/null
+    _enforce_admin_policy "Test" 2>/dev/null
+    printf ' %s ' "${HIDE_FROM_SANDBOX[@]}" | grep -q ' ADMIN_ONLY_HIDE ' || exit 1
+    printf ' %s ' "${HIDE_FROM_SANDBOX[@]}" | grep -q ' SLURM_SCOPE ' || exit 1
+    printf ' %s ' "${HIDE_FROM_SANDBOX[@]}" | grep -q ' USER_HIDE '
 ); then
-    pass "HIDE_FROM_SANDBOX is a registered, admin-enforced config array"
+    pass "HIDE_FROM_SANDBOX is a registered, admin-enforced config array (removal restored)"
 else
-    fail "HIDE_FROM_SANDBOX missing from _CONFIG_ARRAYS / _ENFORCED_ARRAYS"
+    fail "HIDE_FROM_SANDBOX not registered or not enforced via _ENFORCED_ARRAYS"
 fi
 
 # 3.8.2 — Helper emits the defaults; PATH is refused with a warning.
@@ -1542,6 +1893,110 @@ else
     fail "_hide_from_sandbox_names default emission / PATH refusal broken"
 fi
 rm -f "$_hfs_err"
+
+# ── generate_filtered_passwd: per-launch isolation (#79) ─────────
+# Unit-style (no backend needed). A slow `getent` shim widens the race
+# window; N concurrent generations must each yield a well-formed file
+# containing the current uid, and an earlier file (what a running
+# sandbox is bound to) must never be mutated by later launches.
+_gfp_home="$(mktemp -d)"
+_gfp_shim="$(mktemp -d)"
+cat > "$_gfp_shim/getent" <<'SHIM'
+#!/bin/bash
+sleep 0.05
+exec "$_GFP_REAL_GETENT" "$@"
+SHIM
+chmod +x "$_gfp_shim/getent"
+export _GFP_REAL_GETENT="$(command -v getent)"
+_gfp_out="$(
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1 HOME="$_gfp_home"
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _USER_DATA_DIR="$_gfp_home/.config/agent-sandbox"
+    FILTER_PASSWD=true
+    PATH="$_gfp_shim:$PATH"
+    uid="$(id -u)"
+    generate_filtered_passwd || { echo "first generation failed"; exit 1; }
+    first="$_FILTERED_PASSWD"; first_sum="$(cksum < "$first")"
+    first_inode="$(stat -c %i "$first")"
+    for i in $(seq 1 12); do
+        ( generate_filtered_passwd && echo "$_FILTERED_PASSWD $_FILTERED_GROUP" \
+            > "$_gfp_home/res.$i" ) &
+    done
+    wait
+    [[ "$(ls "$_gfp_home"/res.* | wc -l)" -eq 12 ]] || { echo "missing results"; exit 1; }
+    for f in "$_gfp_home"/res.*; do
+        read -r pw gr < "$f"
+        [[ "$pw" != "$first" ]] || { echo "path reused: $pw"; exit 1; }
+        awk -F: 'NF != 7 { exit 1 }' "$pw" || { echo "malformed passwd $pw"; exit 1; }
+        awk -F: -v u="$uid" '$3 == u { f = 1 } END { exit !f }' "$pw" \
+            || { echo "uid missing in $pw"; exit 1; }
+        awk -F: 'NF != 4 { exit 1 }' "$gr" || { echo "malformed group $gr"; exit 1; }
+    done
+    [[ "$(cksum < "$first")" == "$first_sum" && "$(stat -c %i "$first")" == "$first_inode" ]] \
+        || { echo "earlier file mutated by later launch"; exit 1; }
+    [[ "$(sort -u "$_gfp_home"/res.* | wc -l)" -eq 12 ]] || { echo "launches shared paths"; exit 1; }
+    echo ok
+)"
+if [[ "$_gfp_out" == "ok" ]]; then
+    pass "generate_filtered_passwd: concurrent launches get independent, well-formed files (#79)"
+else
+    fail "generate_filtered_passwd: concurrency/isolation broken (#79)" "$_gfp_out"
+fi
+
+# Validation fails closed when the current uid cannot be resolved: shim
+# `id` to report a uid/name that exists nowhere.
+_gfp_out="$(
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1 HOME="$_gfp_home"
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _USER_DATA_DIR="$_gfp_home/.config/agent-sandbox"
+    FILTER_PASSWD=true
+    export _GFP_REAL_ID="$(command -v id)"
+    cat > "$_gfp_shim/id" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in
+    -u)  echo 61999 ;;
+    -un) echo nosuchuser_gfp ;;
+    *)   exec "$_GFP_REAL_ID" "$@" ;;
+esac
+SHIM
+    chmod +x "$_gfp_shim/id"
+    PATH="$_gfp_shim:$PATH"
+    if generate_filtered_passwd 2>/dev/null; then echo "accepted passwd without current uid"; exit 1; fi
+    echo ok
+)"
+if [[ "$_gfp_out" == "ok" ]]; then
+    pass "generate_filtered_passwd: refuses passwd lacking the current uid (#79)"
+else
+    fail "generate_filtered_passwd: accepted invalid passwd (#79)" "$_gfp_out"
+fi
+
+# Blank lines, comments and NIS +/- lines in the host passwd/group must be
+# dropped from the base set, not cause a refusal to launch (#79 review).
+printf 'root:x:0:0:root:/root:/bin/bash\n\n# comment\n+::::::\n+@netgroup\n-baduser\ndaemon:x:1:1:d:/:/usr/sbin/nologin\nbig:x:5000:5000:b:/:/bin/sh\n\n' > "$_gfp_home/src.passwd"
+printf 'root:x:0:\n\n# comment\n+:::\n+@ng\n-bad\nbiggrp:x:5000:\n' > "$_gfp_home/src.group"
+_gfp_out="$(
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1 HOME="$_gfp_home"
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _USER_DATA_DIR="$_gfp_home/.config/agent-sandbox"
+    FILTER_PASSWD=true
+    _PASSWD_SRC_FILE="$_gfp_home/src.passwd"
+    _GROUP_SRC_FILE="$_gfp_home/src.group"
+    generate_filtered_passwd || { echo "refused to launch"; exit 1; }
+    grep -qE '^(root|daemon):' "$_FILTERED_PASSWD" || { echo "system accounts lost"; exit 1; }
+    grep -qE '^(#|\+|-|big:|$)' "$_FILTERED_PASSWD" && { echo "junk/high-uid line leaked"; exit 1; }
+    grep -q '^root:' "$_FILTERED_GROUP" || { echo "root group lost"; exit 1; }
+    grep -qE '^(#|\+|-|biggrp:|$)' "$_FILTERED_GROUP" && { echo "junk line leaked into group"; exit 1; }
+    echo ok
+)"
+if [[ "$_gfp_out" == "ok" ]]; then
+    pass "generate_filtered_passwd: blank/comment/NIS lines in host files are dropped, not fatal (#79)"
+else
+    fail "generate_filtered_passwd: malformed host passwd/group lines broke generation (#79)" "$_gfp_out"
+fi
+rm -rf "$_gfp_home" "$_gfp_shim"
 
 # 3.8.3 — Keep-set invariant: inside the sandbox, the ONLY sandbox/
 # chaperon vars are the intentional orientation markers. Everything
@@ -1580,6 +2035,244 @@ if sandbox bash -c 'echo "${SANDBOX_BACKEND:-HIDDEN}"'; then
     fi
 fi
 rm -f "$_hfs_conf"
+
+# 3.8.5 — Built-in HIDE_FROM_SANDBOX defaults are a floor: a user/project
+# `HIDE_FROM_SANDBOX=()` must not re-expose them, admin config or not.
+_hfs_conf="$HOME/.config/agent-sandbox/conf.d/test-hide-floor-$$.conf"
+_TEST_TEMP_FILES+=("$_hfs_conf")
+printf '[[ "$_PROJECT_DIR" == "%s" ]] || return 0\nHIDE_FROM_SANDBOX=()\n' \
+    "$(cd "$PROJECT_DIR" && pwd -P)" > "$_hfs_conf"
+if SLURM_SCOPE=project HOME_ACCESS="${HOME_ACCESS:-tmpwrite}" \
+   sandbox bash -c 'env | grep -E "^(SLURM_SCOPE|HOME_ACCESS|SANDBOX_QUIET)=" ; true'; then
+    if [[ -z "$OUTPUT" ]]; then
+        pass "HIDE_FROM_SANDBOX=() in conf.d does not remove the built-in defaults"
+    else
+        fail "HIDE_FROM_SANDBOX=() re-exposed built-in hidden vars" "$OUTPUT"
+    fi
+fi
+rm -f "$_hfs_conf"
+
+# ── 3.9 Config precedence + SANDBOX_ENV hardening ────────────────
+# conf.d files below are guarded on this run's project dir so they
+# cannot leak into other sandboxes launched concurrently by the user.
+_cfg_proj="$(cd "$PROJECT_DIR" && pwd -P)"
+_cfg_conf="$HOME/.config/agent-sandbox/conf.d/zz-test-config-hardening-$$.conf"
+_TEST_TEMP_FILES+=("$_cfg_conf")
+_cfg_marker="/tmp/.sbx-cfg-hostmarker-$$"
+: > "$_cfg_marker"
+_TEST_TEMP_FILES+=("$_cfg_marker")
+_cfg_write() {
+    printf '[[ "$_PROJECT_DIR" == "%s" ]] || return 0\n' "$_cfg_proj" > "$_cfg_conf"
+    printf '%s\n' "$@" >> "$_cfg_conf"
+}
+
+# 3.9.1 — SANDBOX_ENV reaches only the sandboxed command. A config name
+# (PRIVATE_TMP) is rejected with a warning instead of overriding the
+# resolved setting, and a launcher-affecting var (TMPDIR) no longer
+# breaks the launcher's own mktemp calls.
+_cfg_write 'SANDBOX_ENV+=("PRIVATE_TMP=false" "TMPDIR=/nonexistent-sbx-tmpdir" "SBX_CFG_CHILD=child-only")'
+if sandbox bash -c 'echo "${SBX_CFG_CHILD:-unset}|${TMPDIR:-unset}|$([[ -e '"$_cfg_marker"' ]] && echo shared || echo private)"'; then
+    _want="child-only|/nonexistent-sbx-tmpdir|"
+    if [[ "$OUTPUT" == "$_want"* ]] \
+       && [[ "$OUTPUT_ERR" == *"SANDBOX_ENV entry 'PRIVATE_TMP' ignored"* ]] \
+       && { ! is_bwrap || [[ "$OUTPUT" == *"|private" ]]; }; then
+        pass "SANDBOX_ENV: child-only; config names rejected; launcher unaffected"
+    else
+        fail "SANDBOX_ENV applied to the launcher or accepted a config name" "out=$OUTPUT err=$OUTPUT_ERR"
+    fi
+else
+    fail "SANDBOX_ENV with TMPDIR broke the launcher" "out=$OUTPUT err=$OUTPUT_ERR"
+fi
+
+# 3.9.2 — An explicit --backend beats SANDBOX_BACKEND set in conf.d.
+if is_landlock; then _cfg_other=bwrap; else _cfg_other=landlock; fi
+_cfg_write "SANDBOX_BACKEND=$_cfg_other"
+if sandbox bash -c 'echo "$SANDBOX_BACKEND"'; then
+    if [[ "$OUTPUT" == "$CURRENT_BACKEND" ]]; then
+        pass "--backend $CURRENT_BACKEND wins over conf.d SANDBOX_BACKEND=$_cfg_other"
+    else
+        fail "conf.d SANDBOX_BACKEND overrode --backend" "got '$OUTPUT'"
+    fi
+fi
+
+# 3.9.3 — An env override beats a conf.d value (bwrap: the only backend
+# where PRIVATE_TMP=false observably shares the host /tmp).
+if is_bwrap; then
+    _cfg_write 'PRIVATE_TMP=true'
+    if PRIVATE_TMP=false sandbox bash -c '[[ -e '"$_cfg_marker"' ]] && echo shared || echo private'; then
+        if [[ "$OUTPUT" == "shared" ]]; then
+            pass "env PRIVATE_TMP=false wins over conf.d PRIVATE_TMP=true"
+        else
+            fail "conf.d PRIVATE_TMP overrode the env override" "$OUTPUT"
+        fi
+    fi
+fi
+
+# 3.9.4 — Config validation runs on the final config (after conf.d).
+_cfg_write 'BIND_DEV_PTS=true'
+if sandbox true; then
+    if [[ "$OUTPUT_ERR" == *"BIND_DEV_PTS"* ]]; then
+        pass "Config validation sees conf.d values (BIND_DEV_PTS notice emitted)"
+    else
+        fail "Config validation ran before conf.d (no BIND_DEV_PTS notice)" "$OUTPUT_ERR"
+    fi
+fi
+rm -f "$_cfg_conf"
+
+# 3.9.5 — _PASSWD_SRC_FILE is a test hook, never honoured from the env.
+if is_bwrap; then
+    _cfg_pw="$(mktemp)"
+    _TEST_TEMP_FILES+=("$_cfg_pw")
+    echo 'sbxplanted:x:0:0:planted:/root:/bin/bash' > "$_cfg_pw"
+    if _PASSWD_SRC_FILE="$_cfg_pw" _GROUP_SRC_FILE="$_cfg_pw" \
+       sandbox bash -c 'cat /etc/passwd /etc/group | grep -c sbxplanted; true'; then
+        if [[ "$OUTPUT" == "0" ]]; then
+            pass "_PASSWD_SRC_FILE/_GROUP_SRC_FILE from env are ignored"
+        else
+            fail "env-supplied passwd/group source reached the sandbox" "$OUTPUT"
+        fi
+    fi
+fi
+
+# 3.9.6 — HOME_ACCESS=read|write masks credential stores beyond
+# .ssh/.aws/.gnupg. Uses a throwaway HOME (sandbox-lib resolves HOME via
+# getent, so an exported `getent` function fakes it) so no real
+# credential file is created or read. Landlock cannot hide sub-paths.
+# The fake HOME lives under the real HOME (firejail derives HOME from
+# passwd itself and needs the project under it) but outside the install
+# dir (SANDBOX_DIR is re-bound read-only after the HOME masks).
+if has_mount_ns; then
+    mkdir -p "$HOME/.cache"
+    _fh="$(mktemp -d "$HOME/.cache/agent-sandbox-test-fakehome.XXXXXX")"
+    _TEST_TEMP_DIRS+=("$_fh")
+    mkdir -p "$_fh/proj" "$_fh/.config/gh" "$_fh/.docker" "$_fh/.kube"
+    for _f in .netrc .git-credentials .config/gh/hosts.yml .docker/config.json .kube/config; do
+        echo "sbx-fake-secret" > "$_fh/$_f"
+    done
+    # Opt-in: an entry listed verbatim in HOME_READONLY stays visible.
+    _fh_conf="$(mktemp)"; _TEST_TEMP_FILES+=("$_fh_conf")
+    { cat "$SANDBOX_CONF"; echo 'HOME_READONLY+=(".config/gh")'; } > "$_fh_conf"
+    _fh_getent() {
+        if [[ "$1" == passwd && "$2" == "$(id -un)" ]]; then
+            echo "$(id -un):x:$(id -u):$(id -g)::$_SBX_FAKEHOME:/bin/bash"
+        else command getent "$@"; fi
+    }
+    for _mode in read write; do
+        _fh_out="$(
+            getent() { _fh_getent "$@"; }
+            export -f getent _fh_getent
+            _SBX_FAKEHOME="$_fh" HOME="$_fh" HOME_ACCESS="$_mode" SANDBOX_CONF="$_fh_conf" \
+            timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$_fh/proj" -- \
+                bash -c 'for f in .netrc .git-credentials .docker/config.json .kube/config .config/gh/hosts.yml; do
+                             grep -q sbx-fake-secret "$HOME/$f" 2>/dev/null && echo "VISIBLE:$f" || echo "HIDDEN:$f"
+                         done' 2>/dev/null
+        )"
+        if [[ "$(echo "$_fh_out" | grep -c '^HIDDEN:')" -eq 4 ]] \
+           && echo "$_fh_out" | grep -qx 'VISIBLE:.config/gh/hosts.yml'; then
+            pass "HOME_ACCESS=$_mode masks .netrc/.git-credentials/.docker/.kube; explicit opt-in kept"
+        else
+            fail "HOME_ACCESS=$_mode credential masking" "$_fh_out"
+        fi
+    done
+    unset -f _fh_getent
+fi
+
+# 3.9.7 — The sandbox's own config dir (~/.config/agent-sandbox,
+# sandbox-lib.sh _HOME_ALWAYS_READONLY) stays read-only in every
+# HOME_ACCESS mode, even under a writable ancestor: otherwise the agent
+# could edit user.conf / conf.d / .passwd-filter and weaken the NEXT
+# launch. Same throwaway-HOME technique as 3.9.6, so the real
+# ~/.config/agent-sandbox is never touched. Each case also writes a
+# sibling path under the same writable grant as a control, so a
+# generally read-only HOME cannot make the assertion pass vacuously.
+# Landlock cannot carve out a read-only sub-path: it must warn instead.
+mkdir -p "$HOME/.cache"
+_ah="$(mktemp -d "$HOME/.cache/agent-sandbox-test-cfgro.XXXXXX")"
+_TEST_TEMP_DIRS+=("$_ah")
+_ah_getent() {
+    if [[ "$1" == passwd && "$2" == "$(id -un)" ]]; then
+        echo "$(id -un):x:$(id -u):$(id -g)::$_SBX_FAKEHOME:/bin/bash"
+    else command getent "$@"; fi
+}
+# _ah_run HOME_ACCESS CONF CMD — run CMD in a sandbox with the fake
+# HOME; stdout -> _ah_out, stderr -> _ah_err.
+_ah_run() {
+    local _errf; _errf="$(mktemp)"
+    _ah_out="$(
+        getent() { _ah_getent "$@"; }
+        export -f getent _ah_getent
+        _SBX_FAKEHOME="$_ah" HOME="$_ah" HOME_ACCESS="$1" SANDBOX_CONF="$2" \
+        timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$_ah/proj" -- \
+            bash -c "$3" 2>"$_errf"
+    )"
+    _ah_err="$(cat "$_errf")"; rm -f "$_errf"
+}
+# _ah_reset [symlink] — fresh fake config dir (optionally a symlink to
+# a dotfiles-style target) with a sentinel user.conf.
+_ah_reset() {
+    rm -rf "$_ah/.config" "$_ah/dotfiles"
+    mkdir -p "$_ah/proj" "$_ah/.config"
+    if [[ "${1:-}" == symlink ]]; then
+        mkdir -p "$_ah/dotfiles/agent-sandbox"
+        ln -s "$_ah/dotfiles/agent-sandbox" "$_ah/.config/agent-sandbox"
+    else
+        mkdir -p "$_ah/.config/agent-sandbox"
+    fi
+    echo "# sbx-cfgro-sentinel" > "$_ah/.config/agent-sandbox/user.conf"
+}
+_ah_probe='cfg="$HOME/.config/agent-sandbox"
+touch "$cfg/sbx-cfgro-probe" 2>/dev/null && echo CFG_WROTE || echo CFG_BLOCKED
+echo "HOME_ACCESS=write" >> "$cfg/user.conf" 2>/dev/null && echo CONF_WROTE || echo CONF_BLOCKED
+touch "$HOME/.config/sbx-cfgro-control" 2>/dev/null && echo CTRL_WROTE || echo CTRL_BLOCKED'
+# _ah_check LABEL — assert config dir unwritable (in-sandbox AND on the
+# host) while the sibling control write went through.
+_ah_check() {
+    if [[ "$_ah_out" == *CFG_BLOCKED* && "$_ah_out" == *CONF_BLOCKED* \
+          && "$_ah_out" == *CTRL_WROTE* \
+          && ! -e "$_ah/.config/agent-sandbox/sbx-cfgro-probe" \
+          && "$(cat "$_ah/.config/agent-sandbox/user.conf")" == "# sbx-cfgro-sentinel" ]]; then
+        pass "$1: ~/.config/agent-sandbox read-only (sibling still writable)"
+    else
+        fail "$1: sandbox could write its own config dir (or control failed)" \
+             "out=$(echo $_ah_out) err=$(echo "$_ah_err" | tail -3)"
+    fi
+}
+_ah_conf="$(mktemp)"; _TEST_TEMP_FILES+=("$_ah_conf")
+cat "$SANDBOX_CONF" > "$_ah_conf"
+_ah_conf_cfg="$(mktemp)"; _TEST_TEMP_FILES+=("$_ah_conf_cfg")
+{ cat "$SANDBOX_CONF"; echo 'HOME_WRITABLE+=(".config")'; } > "$_ah_conf_cfg"
+
+if has_mount_ns; then
+    _ah_reset
+    _ah_run write "$_ah_conf" "$_ah_probe"
+    _ah_check "HOME_ACCESS=write"
+
+    # A writable ancestor must not re-expose it (HOME_WRITABLE after the
+    # home bind, in both a tmpfs-HOME mode and write mode).
+    for _mode in tmpwrite write; do
+        _ah_reset
+        _ah_run "$_mode" "$_ah_conf_cfg" "$_ah_probe"
+        _ah_check "HOME_ACCESS=$_mode + HOME_WRITABLE+=(.config)"
+    done
+
+    # Symlinked config dir (dotfiles-style): literal and resolved path.
+    _ah_reset symlink
+    _ah_run write "$_ah_conf" "$_ah_probe"
+    _ah_check "HOME_ACCESS=write, symlinked config dir"
+    [[ -e "$_ah/dotfiles/agent-sandbox/sbx-cfgro-probe" ]] \
+        && fail "symlinked config dir: probe landed at the resolved target"
+else
+    _ah_reset
+    _ah_run write "$_ah_conf" 'true'
+    if [[ "$_ah_err" == *"cannot make the sandbox's own config read-only"* \
+          && "$_ah_err" == *"$_ah/.config/agent-sandbox"* ]]; then
+        pass "landlock HOME_ACCESS=write: warns that ~/.config/agent-sandbox stays writable"
+    else
+        fail "landlock HOME_ACCESS=write: no warning about the writable config dir" \
+             "$(echo "$_ah_err" | tail -5)"
+    fi
+fi
+unset -f _ah_getent _ah_run _ah_reset _ah_check
 
 echo ""
 
@@ -1656,6 +2349,49 @@ if [[ -d "$HOME/.claude" ]] || command -v claude &>/dev/null; then
             else
                 pass "sandbox-config CLAUDE.md cannot be deleted"
             fi
+        fi
+    fi
+
+    # Host-executed agent config is read-only inside (tamper resistance):
+    # an agent must not plant hooks / MCP servers / a binary that run
+    # UNSANDBOXED on the user's next outside launch. Probes are
+    # non-destructive: `: >>` opens for append without writing, and the
+    # directory probe removes what it created.
+    if "$_claude_config_reachable"; then
+        _ro_probe='r=""
+            for f in "$@"; do
+                [[ -f "$f" ]] || continue
+                ( : >> "$f" ) 2>/dev/null && r+="$f "
+            done
+            d="$HOME/.local/share/claude"
+            if [[ -d "$d" ]]; then
+                p="$d/.rw-probe-$$"
+                ( : > "$p" ) 2>/dev/null && { rm -f "$p"; r+="$d "; }
+            fi
+            echo "WRITABLE=[$r] AU=${DISABLE_AUTOUPDATER:-}"'
+        if has_mount_ns; then
+            _ro_files=("\$HOME/.claude/settings.json" "\$HOME/.claude.json" "\$HOME/.codex/config.toml" "\$HOME/.gemini/settings.json")
+        else
+            # Landlock cannot carve a read-only file out of a writable
+            # dir; only the top-level HOME_READONLY entries are enforced.
+            _ro_files=("\$HOME/.claude.json")
+        fi
+        if sandbox bash -c "set -- ${_ro_files[*]}; $_ro_probe"; then
+            if [[ "$OUTPUT" == *"WRITABLE=[]"* ]]; then
+                pass "Host-executed agent config (settings.json, .claude.json, config.toml, claude versions) is read-only inside"
+            else
+                fail "Host-executed agent config writable inside the sandbox" "$OUTPUT"
+            fi
+            if [[ "$OUTPUT" == *"AU=1"* ]]; then
+                pass "DISABLE_AUTOUPDATER=1 exported (claude version store is read-only)"
+            else
+                fail "DISABLE_AUTOUPDATER not exported into the sandbox" "$OUTPUT"
+            fi
+        else
+            fail "Host-executed agent config probe failed to run" "$OUTPUT $OUTPUT_ERR"
+        fi
+        if is_landlock; then
+            warn "Landlock: ~/.claude/settings.json, ~/.codex/config.toml, ~/.gemini/settings.json stay writable (no per-file carve-out)"
         fi
     fi
 else
@@ -1783,6 +2519,168 @@ else
 fi
 rm -rf "$_malicious_dir"
 rm -f "$_leak_conf"
+
+# ── Overlays never follow agent-planted symlinks (O1) ──
+# Unit-style, host-side, in a throwaway fake HOME (never the real one).
+# The overlays run OUTSIDE the sandbox but write into dirs the agent can
+# write (~/.claude, ~/.codex, ~/.gemini, ~/.pi). Plant every shape an
+# agent could leave behind and assert nothing escapes into ~/.ssh,
+# ~/.local/bin or ~/.bashrc, and no secret is copied into sandbox-config.
+_ovl_run() {  # _ovl_run AGENT FAKEHOME — mimic prepare_agent_configs
+    (
+        set -uo pipefail
+        export HOME="$2"
+        SANDBOX_DIR="$SCRIPT_DIR"
+        _agent_file() { echo "$SANDBOX_DIR/agents/$1/$2"; }
+        HOME_ACCESS=restricted
+        HOME_READONLY=(.bashrc); HOME_WRITABLE=(.claude .codex .gemini .pi)
+        READONLY_MOUNTS=(/usr); EXTRA_WRITABLE_PATHS=(); EXTRA_BLOCKED_PATHS=()
+        _HOME_ALWAYS_BLOCKED=(.ssh .aws .gnupg)
+        BLOCKED_FILES=("$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md")
+        _AGENT_ENV_EXPORTS=(); _AGENT_SANDBOX_CONFIG_DIRS=(); _AGENT_PROTECTED_FILES=()
+        source "$SCRIPT_DIR/agents/overlay-lib.sh"
+        source "$SCRIPT_DIR/agents/$1/overlay.sh"
+        agent_prepare_config "$HOME/proj"
+        printf 'ENV\t%s\n'  "${_AGENT_ENV_EXPORTS[@]:-}"
+        printf 'FILE\t%s\n' "${_AGENT_PROTECTED_FILES[@]:-}"
+    ) 2>&1
+}
+_ovl_fresh() {
+    local h="$1"
+    mkdir -p "$h/.ssh" "$h/.local/bin" "$h/.claude" "$h/.codex" "$h/.gemini" "$h/.pi/agent" "$h/proj"
+    echo "SECRET-KEY" > "$h/.ssh/id_rsa"
+    echo "# user bashrc" > "$h/.bashrc"
+}
+_ovl_plant_tmp() {  # pre-plant <name>.tmp.<pid> symlinks for the next PIDs
+    python3 -c 'import os,sys
+d,f,t,b=sys.argv[1],sys.argv[2],sys.argv[3],int(sys.argv[4])
+for p in range(b,b+3000):
+    try: os.symlink(t,"%s/%s.tmp.%d"%(d,f,p))
+    except OSError: pass' "$1" "$2" "$3" "$BASHPID"
+}
+_ovl_escaped() {  # anything besides id_rsa in ~/.ssh, anything in ~/.local/bin, bashrc changed
+    local h="$1"
+    [[ -n "$(find "$h/.ssh" "$h/.local/bin" -mindepth 1 ! -name id_rsa -print -quit)" ]] \
+        || ! grep -q '^# user bashrc$' "$h/.bashrc" || [[ ! -w "$h/.bashrc" ]]
+}
+if command -v python3 &>/dev/null; then
+    _ovl_base="$(mktemp -d)"
+    trap_rm_dir "$_ovl_base"
+    _ovl_bad=()
+    for _a in claude codex gemini pi; do
+        case "$_a" in
+            claude) _cfgrel=".claude/sandbox-config" _md=CLAUDE.md ;;
+            codex)  _cfgrel=".codex/sandbox-config"  _md=AGENTS.md ;;
+            gemini) _cfgrel=".gemini/sandbox-config" _md=GEMINI.md ;;
+            pi)     _cfgrel=".pi/agent/sandbox-config" _md=AGENTS.md ;;
+        esac
+        # (a) predictable temp name pre-planted as a symlink to ~/.bashrc
+        _h="$_ovl_base/tmp-$_a"; _ovl_fresh "$_h"; mkdir -p "$_h/$_cfgrel"
+        _ovl_plant_tmp "$_h/$_cfgrel" "$_md" "$_h/.bashrc"
+        _ovl_run "$_a" "$_h" >/dev/null
+        _ovl_escaped "$_h" && _ovl_bad+=("$_a: $_md.tmp.<pid> symlink followed")
+        # (b) sandbox-config itself replaced by a symlink to ~/.ssh
+        _h="$_ovl_base/cfglink-$_a"; _ovl_fresh "$_h"
+        ln -s "$_h/.ssh" "$_h/$_cfgrel"
+        _ovl_run "$_a" "$_h" >/dev/null
+        _ovl_escaped "$_h" && _ovl_bad+=("$_a: sandbox-config symlink followed")
+        [[ -d "$_h/$_cfgrel" && ! -L "$_h/$_cfgrel" ]] \
+            || _ovl_bad+=("$_a: planted sandbox-config symlink not replaced by a real dir")
+    done
+    # (c) claude stale-dir merge through a real entry that is a symlink
+    _h="$_ovl_base/merge"; _ovl_fresh "$_h"
+    ln -s "$_h/.ssh" "$_h/.claude/evil"
+    mkdir -p "$_h/.claude/sandbox-config/evil"
+    echo PAYLOAD > "$_h/.claude/sandbox-config/evil/authorized_keys"
+    ln -s "$_h/.local/bin" "$_h/.claude/sandbox-config/evil/bin"
+    _ovl_run claude "$_h" >/dev/null
+    _ovl_escaped "$_h" && _ovl_bad+=("claude: stale-dir merge followed ~/.claude/evil -> ~/.ssh")
+    # (d) dangling ~/.claude/settings.json symlink must not be created through
+    _h="$_ovl_base/dangling"; _ovl_fresh "$_h"
+    ln -s "$_h/.ssh/authorized_keys" "$_h/.claude/settings.json"
+    _ovl_run claude "$_h" >/dev/null
+    _ovl_escaped "$_h" && _ovl_bad+=("claude: dangling settings.json symlink followed")
+    # (e) ~/.pi/agent replaced by a symlink: overlay must refuse
+    _h="$_ovl_base/piagent"; _ovl_fresh "$_h"; rmdir "$_h/.pi/agent"
+    ln -s "$_h/.ssh" "$_h/.pi/agent"
+    _ovl_run pi "$_h" >/dev/null
+    _ovl_escaped "$_h" && _ovl_bad+=("pi: ~/.pi/agent symlink followed")
+    # (f) read-through: instruction/config source symlinked to a secret
+    for _a in claude codex; do
+        _h="$_ovl_base/leak-$_a"; _ovl_fresh "$_h"
+        case "$_a" in
+            claude) ln -s "$_h/.ssh/id_rsa" "$_h/.claude/CLAUDE.md"; _f="$_h/.claude/sandbox-config/CLAUDE.md" ;;
+            codex)  ln -s "$_h/.ssh/id_rsa" "$_h/.codex/config.toml"; _f="$_h/.codex/sandbox-config/config.toml" ;;
+        esac
+        _ovl_run "$_a" "$_h" >/dev/null
+        grep -qs SECRET-KEY "$_f" && _ovl_bad+=("$_a: secret copied through a planted symlink into $(basename "$_f")")
+    done
+    if [[ ${#_ovl_bad[@]} -eq 0 ]]; then
+        pass "Agent overlays never follow agent-planted symlinks (claude/codex/gemini/pi)"
+    else
+        fail "Agent overlay followed a planted symlink" "$(printf '%s; ' "${_ovl_bad[@]}")"
+    fi
+
+    # Normal operation still works: merge, stale-dir recovery, fresher
+    # in-sandbox token kept, copy-on-launch, protected host files.
+    _h="$_ovl_base/legit"; _ovl_fresh "$_h"
+    echo "# my rules" > "$_h/.claude/CLAUDE.md"
+    echo '{"model":"opus"}' > "$_h/.claude/settings.json"
+    echo old > "$_h/.claude/.credentials.json"; echo '{}' > "$_h/.claude.json"
+    mkdir -p "$_h/.claude/projects/p1" "$_h/.claude/sandbox-config/projects/p1" "$_h/.claude/sandbox-config/projects/p2"
+    echo host > "$_h/.claude/projects/p1/a"; echo stale > "$_h/.claude/sandbox-config/projects/p1/a"
+    echo new > "$_h/.claude/sandbox-config/projects/p2/b"
+    touch -d '1 hour ago' "$_h/.claude/.credentials.json"
+    echo refreshed > "$_h/.claude/sandbox-config/.credentials.json"
+    echo 'model = "x"' > "$_h/.codex/config.toml"
+    _out_c="$(_ovl_run claude "$_h")"; _out_x="$(_ovl_run codex "$_h")"
+    _ovl_bad=()
+    grep -q '^# my rules' "$_h/.claude/sandbox-config/CLAUDE.md" && grep -q 'Sandbox Integrity' "$_h/.claude/sandbox-config/CLAUDE.md" \
+        || _ovl_bad+=("CLAUDE.md merge")
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["model"]=="opus" and "Bash" in d["permissions"]["allow"]' \
+        "$_h/.claude/sandbox-config/settings.json" 2>/dev/null || _ovl_bad+=("settings.json merge")
+    [[ "$(cat "$_h/.claude/projects/p1/a")" == host && "$(cat "$_h/.claude/projects/p2/b" 2>/dev/null)" == new ]] \
+        || _ovl_bad+=("stale-dir merge (no-clobber)")
+    [[ -L "$_h/.claude/sandbox-config/projects" ]] || _ovl_bad+=("stale dir not relinked")
+    [[ "$(cat "$_h/.claude/sandbox-config/.credentials.json")" == refreshed ]] || _ovl_bad+=("fresher token not kept")
+    [[ -f "$_h/.codex/sandbox-config/config.toml" && ! -L "$_h/.codex/sandbox-config/config.toml" ]] \
+        && grep -q 'model = "x"' "$_h/.codex/sandbox-config/config.toml" || _ovl_bad+=("codex config.toml copy-on-launch")
+    [[ "$_out_c" == *$'FILE\t'"$_h/.claude/settings.json"* && "$_out_c" == *$'FILE\t'"$_h/.claude.json"* ]] \
+        || _ovl_bad+=("claude host config not registered as protected")
+    [[ "$_out_x" == *$'FILE\t'"$_h/.codex/config.toml"* ]] || _ovl_bad+=("codex config.toml not protected")
+    [[ "$_out_c" == *$'ENV\tDISABLE_AUTOUPDATER=1'* ]] || _ovl_bad+=("DISABLE_AUTOUPDATER not exported")
+    if [[ ${#_ovl_bad[@]} -eq 0 ]]; then
+        pass "Agent overlays: merge, stale-dir recovery, token refresh, copy-on-launch still work"
+    else
+        fail "Agent overlay regression" "$(printf '%s; ' "${_ovl_bad[@]}")"
+    fi
+    unset -f _ovl_run _ovl_fresh _ovl_plant_tmp _ovl_escaped
+else
+    skip "Agent overlay symlink tests: python3 not available"
+fi
+
+# ── sbatch-sandbox.sh (deprecated compat wrapper) ──
+# Unit-style with a fake sbatch that runs the generated wrapper inline and
+# a stub sandbox-exec.sh next to a copy of the script: (a) a value-less
+# flag before the script must not swallow the script name, (b) a script
+# without +x still runs (via its #! line, as real sbatch does), (c) the
+# generated wrapper is removed once sbatch returns.
+_sbs_dir="$(mktemp -d)"
+trap_rm_dir "$_sbs_dir"
+mkdir -p "$_sbs_dir/tmp"
+cp "$SCRIPT_DIR/sbatch-sandbox.sh" "$_sbs_dir/"
+printf '#!/bin/bash\nwhile [[ $1 != -- ]]; do shift; done; shift; exec "$@"\n' > "$_sbs_dir/sandbox-exec.sh"
+printf '#!/bin/bash\nlast="${@: -1}"; echo "ARGS:$*"; bash "$last"\n' > "$_sbs_dir/fake-sbatch"
+printf '#!/bin/bash\necho "JOB-RAN:$*"\n' > "$_sbs_dir/job.sh"   # deliberately not executable
+chmod +x "$_sbs_dir/sandbox-exec.sh" "$_sbs_dir/fake-sbatch"
+_sbs_out="$(cd "$_sbs_dir" && TMPDIR="$_sbs_dir/tmp" REAL_SBATCH="$_sbs_dir/fake-sbatch" \
+    bash "$_sbs_dir/sbatch-sandbox.sh" --exclusive -pdebug --hold job.sh a1 2>&1)"
+if [[ "$_sbs_out" == *"JOB-RAN:a1"* && "$_sbs_out" == *"ARGS:--exclusive -pdebug --hold "* ]] \
+   && [[ -z "$(ls -A "$_sbs_dir/tmp")" ]]; then
+    pass "sbatch-sandbox.sh: value-less flags, non-executable script, no leaked wrapper"
+else
+    fail "sbatch-sandbox.sh compat wrapper broken" "out=$_sbs_out tmp=$(ls -A "$_sbs_dir/tmp")"
+fi
 
 # ── AGENT_AUTH_MARKERS suppresses the warning when a marker file exists ──
 # Create a throwaway agent profile with a credential env var that IS set
@@ -2848,11 +3746,21 @@ if command -v pgrep &>/dev/null; then
         timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
             --project-dir "$PROJECT_DIR" -- sleep 20 &>/dev/null &
         local _parent_pid=$!
-        # Give chaperon time to spawn.
-        sleep 2
-        # Find the chaperon PID for this session.
-        local _chaperon_pid
-        _chaperon_pid=$(pgrep -f "chaperon/chaperon.sh" | head -1)
+        # Find THIS session's chaperon precisely: it is a direct child of
+        # sandbox-exec.sh, which is the only child of `timeout`. A bare
+        # `pgrep -f chaperon/chaperon.sh` also matches chaperons of other
+        # sandboxes on the host (a concurrent test run, the user's own
+        # agents), which made this test flaky and could kill a stranger's
+        # chaperon.
+        local _chaperon_pid="" _launcher_pid="" _w
+        for _w in $(seq 1 40); do
+            _launcher_pid=$(pgrep -P "$_parent_pid" | head -1)
+            if [[ -n "$_launcher_pid" ]]; then
+                _chaperon_pid=$(pgrep -P "$_launcher_pid" -f "chaperon/chaperon.sh" | head -1)
+            fi
+            [[ -n "$_chaperon_pid" ]] && break
+            sleep 0.25
+        done
         if [[ -z "$_chaperon_pid" ]]; then
             skip "Chaperon lifecycle test: could not locate chaperon process"
             kill "$_parent_pid" 2>/dev/null
@@ -2946,8 +3854,8 @@ else
     # These are rejected by chaperon/handlers/_handler_lib.sh
     # but were previously untested — the only way to know the deny list
     # is still wired up is to assert each one rejects.
-    # Note: --export is intentionally allowed — compute-node jobs run
-    # inside sandbox-exec.sh which filters env vars regardless.
+    # Note: --export is allowed but rewritten (names only reach Slurm,
+    # values are applied inside the sandbox) — see section 6.7.
     if sandbox sbatch --prolog=/tmp/foo.sh --wrap="echo pwned"; then
         fail "sbatch --prolog should be rejected by chaperon"
     else
@@ -2978,9 +3886,9 @@ else
         fi
     fi
 
-    # 6c-ter. #SBATCH --export=ALL directive in script body is allowed.
-    # --export is safe because compute-node jobs run inside sandbox-exec.sh
-    # which filters env vars regardless of what --export passes through.
+    # 6c-ter. #SBATCH --export=ALL directive in script body is allowed
+    # (rewritten by the chaperon; values never reach the host-side job
+    # environment — see section 6.7).
     # Create script in PROJECT_DIR so it's visible inside the sandbox
     # (mktemp creates in /tmp which is isolated by --private-tmp).
     _scriptfile="$PROJECT_DIR/.sbatch-export-test-$$.sh"
@@ -3520,11 +4428,99 @@ EOF
 _transform_table_test
 unset -f _transform_table_test
 
+# 6.5a2. .sandbox-state lifecycle is launcher-owned (L1). The RO overlay
+# only protects a dir that exists when the backend argv is built; the
+# chaperon used to create it lazily (after that), so the first session
+# in a fresh project had it writable and could plant
+# slurm-logs/<name> -> ~/file for slurmstepd to write through. Links
+# planted by an earlier (pre-fix or landlock) session must not survive
+# into a later one either.
+#
+# The throwaway project lives under $HOME (a default allowed parent),
+# NOT under $PROJECT_DIR: the harness's project is the install dir, and
+# a project nested in the install dir is a different mount layout.
+_l1_base=$(mktemp -d "$HOME/.sandbox-test-l1-XXXXXX")
+_l1_proj="$_l1_base/proj"
+_l1_victim="$_l1_base/victim"
+_TEST_TEMP_DIRS+=("$_l1_base")
+mkdir -p "$_l1_proj" "$_l1_victim"
+_l1_run() {
+    OUTPUT=$(timeout "${_l1_timeout:-30}" "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$_l1_proj" -- "$@" 2>&1)
+}
+# (i) fresh project, first session: the dir exists and is RO inside.
+_l1_run bash -c "mkdir -p .sandbox-state/slurm-logs 2>/dev/null; \
+    ln -s '$_l1_victim/pwn' .sandbox-state/slurm-logs/evil.out 2>/dev/null && echo L1_PLANTED; echo L1_DONE"
+if [[ "$OUTPUT" != *L1_DONE* ]]; then
+    fail "L1 fresh-project session did not run" "$OUTPUT"
+elif is_landlock; then
+    # Documented gap: landlock cannot RO-protect the dir; (ii) checks
+    # that what it plants is purged before the next session.
+    pass "Landlock: .sandbox-state writable in-session (documented; purged at next launch)"
+elif [[ "$OUTPUT" == *L1_PLANTED* || -L "$_l1_proj/.sandbox-state/slurm-logs/evil.out" ]]; then
+    fail "First session in a fresh project could plant a symlink in .sandbox-state/slurm-logs"
+elif [[ -d "$_l1_proj/.sandbox-state/slurm-logs" && -d "$_l1_proj/.sandbox-state/chaperon" ]]; then
+    pass "First session: launcher pre-created .sandbox-state/{slurm-logs,chaperon}; RO inside"
+else
+    fail "Launcher did not create .sandbox-state/{slurm-logs,chaperon} before the sandbox started"
+fi
+# (ii) links planted by an earlier session are purged at launch.
+rm -rf "$_l1_proj/.sandbox-state"
+mkdir -p "$_l1_proj/.sandbox-state/slurm-logs/sub" "$_l1_victim/chap"
+ln -s "$_l1_victim/pwn" "$_l1_proj/.sandbox-state/slurm-logs/evil.out"
+ln -s "$_l1_victim" "$_l1_proj/.sandbox-state/slurm-logs/sub/dirlink"
+ln -s "$_l1_victim/chap" "$_l1_proj/.sandbox-state/chaperon"
+echo keep > "$_l1_proj/.sandbox-state/slurm-logs/real.out"
+_l1_run true
+if [[ -L "$_l1_proj/.sandbox-state/slurm-logs/evil.out" || -L "$_l1_proj/.sandbox-state/slurm-logs/sub/dirlink" \
+      || -L "$_l1_proj/.sandbox-state/chaperon" ]]; then
+    fail "Planted symlinks under .sandbox-state survived a new launch" "$OUTPUT"
+elif [[ ! -f "$_l1_proj/.sandbox-state/slurm-logs/real.out" ]]; then
+    fail "Sanitizing .sandbox-state removed a regular log file"
+elif ! grep -q "planted by an earlier session" <<<"$OUTPUT"; then
+    fail "Planted symlinks removed without a warning" "$OUTPUT"
+else
+    pass "Symlinks planted under .sandbox-state by an earlier session are purged at launch (regular logs kept)"
+fi
+# (iii) .sandbox-state itself replaced by a symlink to a host dir.
+rm -rf "$_l1_proj/.sandbox-state" "$_l1_victim"/*
+ln -s "$_l1_victim" "$_l1_proj/.sandbox-state"
+_l1_run true
+if [[ -L "$_l1_proj/.sandbox-state" ]]; then
+    fail ".sandbox-state symlink planted by an earlier session survived a new launch" "$OUTPUT"
+elif [[ -n "$(ls -A "$_l1_victim" 2>/dev/null)" ]]; then
+    fail "Launcher/chaperon wrote through a planted .sandbox-state symlink into $_l1_victim"
+else
+    pass "Planted .sandbox-state symlink is removed before the sandbox starts (target untouched)"
+fi
+# (iv) real Slurm: first-session plant + sbatch must not write through.
+if ! command -v sbatch &>/dev/null; then
+    skip "L1 real-Slurm first-session plant: sbatch not found"
+elif is_landlock; then
+    skip "L1 real-Slurm first-session plant: output staging disabled on landlock"
+else
+    rm -rf "$_l1_proj" "$_l1_victim"; mkdir -p "$_l1_proj" "$_l1_victim"
+    _l1_timeout=120 _l1_run bash -c "mkdir -p .sandbox-state/slurm-logs 2>/dev/null; \
+        ln -s '$_l1_victim/pwn' .sandbox-state/slurm-logs/evil.out 2>/dev/null; \
+        sbatch --wait -o evil.out --wrap='echo L1_ATTACKER_$$' 2>&1; echo L1_DONE"
+    if [[ -e "$_l1_victim/pwn" ]]; then
+        fail "slurmstepd wrote job output through a symlink planted in the first session" "$OUTPUT"
+    elif grep -rqs "L1_ATTACKER_$$" "$_l1_proj/.sandbox-state/slurm-logs/"; then
+        pass "Real Slurm: first-session symlink plant blocked; output landed in staging"
+    elif [[ "$OUTPUT" != *"Submitted batch job"* ]]; then
+        skip "L1 real-Slurm first-session plant: sbatch did not submit ($(tail -2 <<<"$OUTPUT" | tr '\n' ' '))"
+    else
+        skip "L1 real-Slurm first-session plant: job output not found (host slurm config?)"
+    fi
+fi
+rm -rf "$_l1_base"
+unset -f _l1_run
+
 # 6.5b. Backend-side RO overlay: from inside the sandbox, writing
 # under .sandbox-state/ must fail on bwrap/firejail; landlock
-# silently allows (documented feature gap). The chaperon mkdir's
-# .sandbox-state on first sbatch — pre-seed it here so the bind
-# overlay actually applies.
+# silently allows (documented feature gap). sandbox-exec.sh creates
+# .sandbox-state before the backend is prepared (6.5a2); the mkdir
+# below only keeps this check independent of that.
 mkdir -p "$PROJECT_DIR/.sandbox-state/slurm-logs"
 if is_landlock; then
     # Sanity: write succeeds (no RO defense on landlock).
@@ -3931,6 +4927,686 @@ _smuggle_unit_run \
     "Chaperon accepts clean #SBATCH --output= directive (rebuild path)" \
     "$_clean_output" 0 ""
 
+echo ""
+
+# ── 6.7 Chaperon hardening: --export, job wrapper, srun steps, state dir ──
+#
+# Regression tests for the chaperon hardening pass (FINDINGS C1-C8).
+# Unit tests source the chaperon handler libraries directly and assert
+# on the argv / wrapper text they produce; nothing generated here is
+# executed on the host. The end-to-end --export test submits through a
+# sandbox and needs real Slurm.
+
+echo "6.7 Chaperon hardening (--export, wrapper, srun steps, .sandbox-state)"
+
+_H67_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sbx-test-67-XXXXXX")"
+trap_rm_dir "$_H67_DIR"
+
+# Recording stub for REAL_SBATCH / REAL_SRUN: writes its argv (one per
+# line) to $_REC_OUT and, if the last arg is a file, copies it to
+# $_REC_OUT.script. Only ever run with chaperon-built argv.
+cat > "$_H67_DIR/recorder" <<'REC'
+#!/bin/bash
+printf '%s\n' "$@" > "$_REC_OUT"
+_last="${!#}"
+[[ -f "$_last" ]] && cp "$_last" "$_REC_OUT.script"
+exit 0
+REC
+chmod +x "$_H67_DIR/recorder"
+
+# 6.7a. Denied / malformed --export names are rejected (CLI).
+if (
+    set -u
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    PROJECT_DIR=/proj
+    _bad=0
+    for _v in BASH_ENV=/p/x.sh ENV=/p/x LD_PRELOAD=/p/x.so LD_AUDIT=/p/a.so \
+              BASH_FUNC_cd%%=x PATH=/p/bin SHELLOPTS=xtrace BASHOPTS=x PS4=x \
+              GCONV_PATH=/p SANDBOX_CONF=/p/c _SANDBOX_LIB_NO_INIT=1 \
+              _CHAPERON_FIFO_DIR=/p CHAPERON_LOG_LEVEL=debug REAL_SBATCH=/p/s \
+              SLURM_CONF=/p/s _PASSWD_SRC_FILE=/p/pw _GROUP_SRC_FILE=/p/g \
+              HOME_ACCESS=write BWRAP=/p/b NETWORK_FILTER_MODE=open \
+              PRIVATE_TMP=false FILTER_PASSWD=false 1BAD=x A-B=x; do
+        REQ_ARGS=("--export=ALL,$_v")
+        _err="$(validate_sbatch_args 2>&1)" && { echo "accepted: $_v"; _bad=1; continue; }
+        [[ "$_err" == *"may not set"* || "$_err" == *"not a valid"* ]] \
+            || { echo "unclear message for $_v: $_err"; _bad=1; }
+    done
+    # Bare denied names and the space-separated form are rejected too.
+    REQ_ARGS=(--export LD_PRELOAD)
+    validate_sbatch_args 2>/dev/null && { echo "accepted bare LD_PRELOAD"; _bad=1; }
+    exit $_bad
+); then
+    pass "sbatch --export rejects shell/loader/Slurm/sandbox-control names (BASH_ENV, LD_*, PATH, SANDBOX_*, config vars, ...)"
+else
+    fail "sbatch --export accepted a denied name or gave an unclear message"
+fi
+
+# 6.7b. Accepted --export values are rewritten so only ALL/NONE/NIL or
+# bare NAMES reach Slurm; NAME=VALUE pairs are captured for in-sandbox use.
+if (
+    set -u
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    PROJECT_DIR=/proj
+    _bad=0
+    _chk() {  # <expected --export value> <expected assignments (| sep)> <args...>
+        local _exp="$1" _asg="$2"; shift 2
+        REQ_ARGS=("$@")
+        validate_sbatch_args 2>/dev/null || { echo "rejected: $*"; _bad=1; return; }
+        local _got="" _a
+        for _a in "${VALIDATED_ARGS[@]}"; do [[ "$_a" == --export=* ]] && _got="${_a#--export=}"; done
+        local IFS='|'
+        local _gasg="${_EXPORT_ENV_ASSIGNMENTS[*]}"
+        [[ "$_got" == "$_exp" && "$_gasg" == "$_asg" ]] \
+            || { echo "$* -> export='$_got' assign='$_gasg' (want '$_exp' / '$_asg')"; _bad=1; }
+        [[ "$_got" != *=* ]] || { echo "value reached Slurm: $_got"; _bad=1; }
+    }
+    _chk ALL ""               --export=ALL
+    _chk NONE ""              --export=NONE
+    _chk NIL ""               --export=nil
+    _chk FOO ""               --export=FOO
+    _chk ALL "FOO=bar"        --export=ALL,FOO=bar
+    _chk ALL "FOO=a b|X=1"    "--export=ALL,FOO=a b,X=1"
+    _chk FOO,BAZ "FOO=bar"    --export=FOO=bar,BAZ
+    _chk FOO "FOO=x=y"        --export FOO=x=y
+    _chk ALL "B=2"            --export=A=1 --export=ALL,B=2
+    REQ_ARGS=(--export=NONE,FOO=bar)
+    validate_sbatch_args 2>/dev/null && { echo "NONE,FOO=bar accepted"; _bad=1; }
+    exit $_bad
+); then
+    pass "sbatch --export rewritten to names only (ALL/NONE/NIL/NAME list); NAME=VALUE kept for in-sandbox env"
+else
+    fail "sbatch --export rewrite wrong (see verbose output)"
+fi
+
+# 6.7c. Generated job wrapper: `#!/bin/bash -p`, only builtins before
+# the absolute-path sandbox-exec.sh exec, launcher config scrubbed, and
+# NAME=VALUE applied via /usr/bin/env inside the sandbox. Checked for
+# all three wrapper shapes (shell, shell + staging prelude, non-shell).
+_h67_wrapper_check() {
+    # <wrapper file> <sandbox_exec> → prints problems, returns 1 on any
+    local _w="$1" _se="$2" _bad=0 _line _in_heredoc="" _first _l1
+    IFS= read -r _l1 < "$_w"
+    [[ "$_l1" == "#!/bin/bash -p" ]] || { echo "shebang: $_l1"; _bad=1; }
+    bash -n "$_w" || { echo "wrapper is not valid bash"; _bad=1; }
+    local _reached_exec=false
+    while IFS= read -r _line; do
+        if [[ -n "$_in_heredoc" ]]; then
+            [[ "$_line" == "$_in_heredoc" ]] && _in_heredoc=""
+            continue
+        fi
+        [[ -z "$_line" || "$_line" == \#* ]] && continue
+        if [[ "$_line" =~ \<\<\'([A-Za-z0-9_]+)\' ]]; then
+            _in_heredoc="${BASH_REMATCH[1]}"
+        fi
+        [[ "$_line" == *'$('* || "$_line" == *'`'* ]] && { echo "command substitution before exec: $_line"; _bad=1; }
+        _first="${_line%% *}"
+        [[ "$_first" == *=* && "$_first" != *'('* ]] && _first="${_line#* }" && _first="${_first%% *}"
+        case "$(type -t "$_first")" in
+            builtin|keyword) ;;
+            *) [[ "$_line" == _SCRIPT=* ]] || { echo "non-builtin '$_first': $_line"; _bad=1; } ;;
+        esac
+        if [[ "$_line" == *"exec "* ]]; then
+            local _after="${_line#*exec }"
+            [[ "${_after%% *}" == "$_se" ]] || { echo "exec target not absolute sandbox-exec: $_after"; _bad=1; }
+            _reached_exec=true
+            break
+        fi
+    done < "$_w"
+    $_reached_exec || { echo "no exec of sandbox-exec.sh found"; _bad=1; }
+    local _n
+    for _n in BASH_ENV ENV HOME_ACCESS NETWORK_FILTER_MODE PRIVATE_TMP FILTER_PASSWD \
+              _PASSWD_SRC_FILE _GROUP_SRC_FILE BWRAP; do
+        grep -qE "^unset -v (.* )?$_n( |\$)" "$_w" || { echo "not unset: $_n"; _bad=1; }
+    done
+    grep -qF '"${!SANDBOX_@}"' "$_w" && grep -qF '"${!REAL_@}"' "$_w" \
+        || { echo "SANDBOX_*/REAL_* prefix scrub missing"; _bad=1; }
+    grep -q 'cat' <(sed -n '/Chaperon wrapper/,/<<'"'"'/p' "$_w") && { echo "cat still used"; _bad=1; }
+    return $_bad
+}
+for _h67_case in "shell|landlock|#!/bin/bash" "prelude|bwrap|#!/bin/bash" "python|landlock|#!/usr/bin/env python3"; do
+    IFS='|' read -r _h67_name _h67_be _h67_sb <<< "$_h67_case"
+    if (
+        set -u
+        export SANDBOX_BACKEND="$_h67_be" SANDBOX_QUIET=true
+        source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+        PROJECT_DIR=/proj
+        REQ_ARGS=("--export=ALL,FOO=bar baz")
+        validate_sbatch_args 2>/dev/null || exit 1
+        _w="$_H67_DIR/wrapper-$_h67_name"
+        create_wrapped_script /opt/sbx/sandbox-exec.sh /proj "$_h67_sb"$'\n#SBATCH --time=5\necho "$FOO" \\\\ $1' "$_w" arg1 2>/dev/null || exit 1
+        _h67_wrapper_check "$_w" /opt/sbx/sandbox-exec.sh || exit 1
+        grep -qF -- "-- /usr/bin/env FOO=bar\\ baz " "$_w" || { echo "env prefix missing"; exit 1; }
+        grep -qE '^#SBATCH --export' "$_w" && { echo "CLI --export leaked into directives"; exit 1; }
+        grep -qE '^export SANDBOX_QUIET=true$' "$_w" || exit 1
+        exit 0
+    ); then
+        pass "job wrapper ($_h67_name): '#!/bin/bash -p', builtins only before absolute sandbox-exec.sh, config scrubbed, FOO via /usr/bin/env"
+    else
+        fail "job wrapper ($_h67_name) hardening check failed" "$(cat "$_H67_DIR/wrapper-$_h67_name" 2>/dev/null | head -20)"
+    fi
+done
+unset _h67_case _h67_name _h67_be _h67_sb
+
+# 6.7d. #SBATCH --export directives: rewritten (last one wins), denied
+# names fail the submission, and a CLI --export overrides them.
+if (
+    set -u
+    export SANDBOX_BACKEND=landlock
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    PROJECT_DIR=/proj; _bad=0
+    REQ_ARGS=(); validate_sbatch_args || exit 1
+    _w="$_H67_DIR/dir-wrapper"
+    create_wrapped_script /opt/sbx/sandbox-exec.sh /proj $'#!/bin/bash\n#SBATCH --export=NONE\n#SBATCH --export=ALL,FOO=bar\necho hi' "$_w" 2>/dev/null || { echo "valid directive rejected"; exit 1; }
+    [[ "$(grep -c '^#SBATCH --export' "$_w")" == 1 ]] && grep -qx '#SBATCH --export=ALL' "$_w" || { echo "directive not rewritten"; _bad=1; }
+    grep -qF -- '-- /usr/bin/env FOO=bar ' "$_w" || { echo "directive FOO=bar not applied in-sandbox"; _bad=1; }
+    create_wrapped_script /opt/sbx/sandbox-exec.sh /proj $'#!/bin/bash\n#SBATCH --export=ALL,BASH_ENV=/proj/x.sh\necho hi' "$_w" 2>/dev/null \
+        && { echo "#SBATCH --export=ALL,BASH_ENV accepted"; _bad=1; }
+    create_wrapped_script /opt/sbx/sandbox-exec.sh /proj $'#!/bin/bash\n#SBATCH --export=ALL,SANDBOX_CONF=/proj/c\necho hi' "$_w" 2>/dev/null \
+        && { echo "#SBATCH --export=ALL,SANDBOX_CONF accepted"; _bad=1; }
+    REQ_ARGS=(--export=NONE); validate_sbatch_args || exit 1
+    create_wrapped_script /opt/sbx/sandbox-exec.sh /proj $'#!/bin/bash\n#SBATCH --export=ALL,LD_PRELOAD=/x\necho hi' "$_w" 2>/dev/null \
+        || { echo "CLI --export did not override directive"; _bad=1; }
+    grep -q '^#SBATCH --export' "$_w" && { echo "overridden directive still emitted"; _bad=1; }
+    exit $_bad
+); then
+    pass "#SBATCH --export directives rewritten (last wins), denied names fail the submission, CLI --export overrides"
+else
+    fail "#SBATCH --export directive handling wrong"
+fi
+
+# 6.7e. The chaperon's config-variable mirror covers sandbox-lib.sh's
+# _CONFIG_SCALARS + _CONFIG_ARRAYS (every one is --export-denied and
+# scrubbed by the wrapper).
+if (
+    set -u
+    _decl="$(sed -n '/^_CONFIG_ARRAYS=(/,/^)/p; /^_CONFIG_SCALARS=(/,/^)/p' "$SCRIPT_DIR/sandbox-lib.sh")"
+    eval "$_decl"
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    (( ${#_CONFIG_SCALARS[@]} > 5 && ${#_CONFIG_ARRAYS[@]} > 5 )) || { echo "could not parse lists"; exit 1; }
+    for _n in "${_CONFIG_SCALARS[@]}" "${_CONFIG_ARRAYS[@]}"; do
+        _is_denied_export_name "$_n" || { echo "not denied: $_n"; exit 1; }
+        _found=false
+        for _m in "${_CHAPERON_LAUNCHER_CONFIG_VARS[@]}"; do [[ "$_m" == "$_n" ]] && _found=true; done
+        $_found || { echo "missing from _CHAPERON_LAUNCHER_CONFIG_VARS: $_n"; exit 1; }
+    done
+); then
+    pass "chaperon config-var mirror covers sandbox-lib.sh _CONFIG_SCALARS/_CONFIG_ARRAYS"
+else
+    fail "chaperon _CHAPERON_LAUNCHER_CONFIG_VARS out of sync with sandbox-lib.sh"
+fi
+
+# 6.7f. srun step mode (SLURM_JOB_ID set) wraps the command in
+# sandbox-exec.sh like allocation mode; argv inspected via a stub srun.
+if (
+    set -u
+    export _REC_OUT="$_H67_DIR/srun.argv" REAL_SRUN="$_H67_DIR/recorder" SLURM_JOB_ID=4242 SANDBOX_QUIET=false
+    source "$SCRIPT_DIR/chaperon/handlers/srun.sh"
+    REQ_ARGS=(-n 2 -- hostname -s); REQ_CWD=""
+    handle_srun /proj /opt/sbx/sandbox-exec.sh >/dev/null 2>&1 || exit 1
+    mapfile -t _argv < "$_REC_OUT"
+    _want=(--ntasks=2 -- /opt/sbx/sandbox-exec.sh --project-dir /proj -- hostname -s)
+    [[ "${_argv[*]}" == "${_want[*]}" ]] || { echo "got: ${_argv[*]}"; exit 1; }
+    # quiet sessions keep the absolute-path env prefix in step mode too
+    SANDBOX_QUIET=true
+    REQ_ARGS=(-- true)
+    handle_srun /proj /opt/sbx/sandbox-exec.sh >/dev/null 2>&1 || exit 1
+    mapfile -t _argv < "$_REC_OUT"
+    _want=(-- /usr/bin/env SANDBOX_QUIET=true /opt/sbx/sandbox-exec.sh --project-dir /proj -- true)
+    [[ "${_argv[*]}" == "${_want[*]}" ]] || { echo "got (quiet): ${_argv[*]}"; exit 1; }
+); then
+    pass "srun step mode wraps the command in sandbox-exec.sh --project-dir (stub srun argv)"
+else
+    fail "srun step mode does not wrap the command in sandbox-exec.sh"
+fi
+
+# 6.7g. handle_sbatch end to end with a stub sbatch: rewritten
+# --export reaches the real sbatch argv, the value only the wrapper.
+if (
+    set -u
+    export _REC_OUT="$_H67_DIR/sbatch.argv" REAL_SBATCH="$_H67_DIR/recorder" SANDBOX_BACKEND=landlock
+    _proj="$_H67_DIR/proj-g"; mkdir -p "$_proj"
+    source "$SCRIPT_DIR/chaperon/handlers/sbatch.sh"
+    REQ_ARGS=(--export=ALL,FOO=bar); REQ_CWD="$_proj"; REQ_SCRIPT=$'#!/bin/bash\necho "$FOO"'; REQ_SCRIPT_ARGS=()
+    handle_sbatch "$_proj" /opt/sbx/sandbox-exec.sh >/dev/null 2>&1 || exit 1
+    grep -qx -- '--export=ALL' "$_REC_OUT" || { echo "no --export=ALL in argv"; exit 1; }
+    grep -q 'FOO' "$_REC_OUT" && { echo "FOO reached sbatch argv"; exit 1; }
+    grep -qF -- '-- /usr/bin/env FOO=bar ' "$_REC_OUT.script" || { echo "wrapper lacks env FOO=bar"; exit 1; }
+    : > "$_REC_OUT"
+    REQ_ARGS=(--export=ALL,BASH_ENV=/x)
+    handle_sbatch "$_proj" /opt/sbx/sandbox-exec.sh >/dev/null 2>&1 && exit 1
+    [[ ! -s "$_REC_OUT" ]] || { echo "sbatch invoked despite denied --export"; exit 1; }
+); then
+    pass "handle_sbatch: real sbatch sees --export=ALL only; FOO=bar only in the wrapper; denied name never submitted"
+else
+    fail "handle_sbatch --export rewrite / rejection not applied end to end"
+fi
+
+# 6.7h. .sandbox-state symlink refusal (C6): the chaperon must not
+# create or use .sandbox-state / slurm-logs / chaperon through a
+# symlink, nor stage onto an existing symlink.
+if (
+    set -u
+    export SANDBOX_BACKEND=bwrap
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    _bad=0
+    _p="$_H67_DIR/proj-h1"; _t="$_H67_DIR/elsewhere-h1"; mkdir -p "$_p" "$_t"
+    ln -s "$_t" "$_p/.sandbox-state"
+    _ensure_sandbox_state_dir "$_p" 2>/dev/null && { echo "symlinked .sandbox-state accepted"; _bad=1; }
+    [[ -z "$(ls -A "$_t")" ]] || { echo "wrote through .sandbox-state symlink"; _bad=1; }
+    _p="$_H67_DIR/proj-h2"; mkdir -p "$_p/.sandbox-state"
+    ln -s "$_t" "$_p/.sandbox-state/slurm-logs"
+    _ensure_sandbox_state_dir "$_p" 2>/dev/null && { echo "symlinked slurm-logs accepted"; _bad=1; }
+    _p="$_H67_DIR/proj-h3"; mkdir -p "$_p/.sandbox-state/chaperon"
+    ln -s "$_t" "$_p/.sandbox-state/slurm-logs"
+    _prepare_staging_output_path "$_p" "$_p/.sandbox-state/slurm-logs/out.log" 2>/dev/null && { echo "staging via symlinked slurm-logs accepted"; _bad=1; }
+    _p="$_H67_DIR/proj-h4"; mkdir -p "$_p"
+    _ensure_sandbox_state_dir "$_p" 2>/dev/null || { echo "clean project refused"; _bad=1; }
+    ln -s "$_t/target" "$_p/.sandbox-state/slurm-logs/out.log"
+    _prepare_staging_output_path "$_p" "$_p/.sandbox-state/slurm-logs/out.log" 2>/dev/null && { echo "symlinked staging file accepted"; _bad=1; }
+    _prepare_staging_output_path "$_p" "$_p/.sandbox-state/slurm-logs/sub/ok-%j.log" 2>/dev/null || { echo "clean staging refused"; _bad=1; }
+    # Chaperon log dir falls back to XDG when .sandbox-state is a symlink.
+    source "$SCRIPT_DIR/chaperon/logging.sh"
+    XDG_STATE_HOME="$_H67_DIR/xdg" chaperon_log_init "$_H67_DIR/proj-h1" "" 2>/dev/null
+    [[ "$_CHAPERON_LOG_DIR" == "$_H67_DIR/xdg/"* ]] || { echo "log dir: $_CHAPERON_LOG_DIR"; _bad=1; }
+    [[ -z "$(ls -A "$_t")" ]] || { echo "log written through symlink"; _bad=1; }
+    exit $_bad
+); then
+    pass "chaperon refuses symlinked .sandbox-state components and pre-existing staging symlinks (log falls back to XDG)"
+else
+    fail "chaperon followed a symlinked .sandbox-state component"
+fi
+
+# 6.7m. Without the staging transform (landlock) sbatch --output/--error
+# go to slurmstepd verbatim, so the chaperon validates them (C9): project
+# directory, no `..`, no symlink component or target, safe % patterns.
+if (
+    set -u
+    export SANDBOX_BACKEND=landlock
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    _p="$_H67_DIR/proj-m"; _o="$_H67_DIR/outside-m"
+    mkdir -p "$_p/sub" "$_p/real" "$_o"
+    ln -s "$_o" "$_p/link"
+    ln -s "$HOME/.bashrc" "$_p/lnk.out"
+    ln -s "$_o/x" "$_p/o-1234.log"
+    PROJECT_DIR="$_p"; REQ_CWD="$_p"; _bad=0
+    for _v in "$HOME/.bashrc" /etc/cron.d/x ../x sub/../../x "$_p/../outside-m/x" \
+              link/x lnk.out "$_p/lnk.out" 'out-%x.log' 'out-%q.log' 'a\b' \
+              'logs-%j/out' 'o-%j.log' sub/; do
+        for _form in eq sp short; do
+            case $_form in
+                eq)    REQ_ARGS=("--output=$_v") ;;
+                sp)    REQ_ARGS=(--error "$_v") ;;
+                short) REQ_ARGS=(-o "$_v") ;;
+            esac
+            _err="$(validate_sbatch_args 2>&1)" && { echo "accepted ($_form): $_v"; _bad=1; continue; }
+            [[ "$_err" == *"refused:"* ]] || { echo "unclear ($_form) $_v: $_err"; _bad=1; }
+        done
+    done
+    for _v in out.log 'sub/out-%j_%4t.log' "$_p/real/o.log" /dev/null 'o%%x.log' 'new/o.log' 'slurm-%A_%a.out'; do
+        REQ_ARGS=("--output=$_v")
+        validate_sbatch_args 2>/dev/null || { echo "rejected: $_v"; _bad=1; continue; }
+        [[ " ${VALIDATED_ARGS[*]} " == *" --output=$_v "* ]] || { echo "value changed: ${VALIDATED_ARGS[*]}"; _bad=1; }
+    done
+    exit $_bad
+); then
+    pass "landlock: sbatch --output/--error outside the project, via '..'/symlinks, onto a symlink or with %x refused; project paths accepted"
+else
+    fail "landlock: sbatch --output/--error path validation wrong"
+fi
+
+# 6.7n. Same for #SBATCH -o/--output/--error directives (landlock): a bad
+# path fails the submission; a good one is re-emitted canonically.
+if (
+    set -u
+    export SANDBOX_BACKEND=landlock
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    _p="$_H67_DIR/proj-n"; mkdir -p "$_p"
+    ln -s "$HOME/.bashrc" "$_p/evil.out"
+    PROJECT_DIR="$_p"; REQ_CWD="$_p"; REQ_ARGS=(); validate_sbatch_args || exit 1
+    _w="$_H67_DIR/n-wrapper"; _bad=0
+    for _d in "--output=$HOME/.bashrc" "-e $HOME/.profile" "--error=evil.out" \
+              '--output="a b.log"' '--output=../x.log'; do
+        create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH '"$_d"$'\necho hi' "$_w" 2>/dev/null \
+            && { echo "directive accepted: $_d"; _bad=1; }
+    done
+    create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH -o  out-%j.log\n#SBATCH --error=err.log\necho hi' "$_w" 2>/dev/null \
+        || { echo "good directives rejected"; _bad=1; }
+    grep -qx '#SBATCH -o out-%j.log' "$_w" && grep -qx '#SBATCH --error=err.log' "$_w" \
+        || { echo "not re-emitted canonically"; _bad=1; }
+    exit $_bad
+); then
+    pass "landlock: #SBATCH --output/--error directives validated (bad path fails the job, good path re-emitted)"
+else
+    fail "landlock: #SBATCH --output/--error directive validation wrong"
+fi
+
+# 6.7o. srun -o/-e/-i (validated on every backend; srun has no staging):
+# symlink components / targets and %x refused, project paths accepted.
+if (
+    set -u
+    export _REC_OUT="$_H67_DIR/srun-o.argv" REAL_SRUN="$_H67_DIR/recorder" SLURM_JOB_ID=4242 SANDBOX_QUIET=false
+    source "$SCRIPT_DIR/chaperon/handlers/srun.sh"
+    _p="$_H67_DIR/proj-o"; _o="$_H67_DIR/outside-o"; mkdir -p "$_p" "$_o"
+    ln -s "$_o" "$_p/link"; ln -s "$HOME/.aws/credentials" "$_p/in.txt"
+    REQ_CWD="$_p"; _bad=0
+    for _a in "-o|$HOME/.bashrc" "-o|link/x.log" "--error=link/x.log" "-i|in.txt" \
+              "--input=in.txt" "-o|out-%x.log" "-e|../x"; do
+        IFS='|' read -r -a REQ_ARGS <<< "$_a"; REQ_ARGS+=(-- true)
+        : > "$_REC_OUT"
+        handle_srun "$_p" /opt/sbx/sandbox-exec.sh >/dev/null 2>&1 && { echo "accepted: $_a"; _bad=1; }
+        [[ -s "$_REC_OUT" ]] && { echo "srun invoked for: $_a"; _bad=1; }
+    done
+    REQ_ARGS=(-o 'out-%j-%t.log' -- true)
+    handle_srun "$_p" /opt/sbx/sandbox-exec.sh >/dev/null 2>&1 || { echo "good -o rejected"; _bad=1; }
+    exit $_bad
+); then
+    pass "srun -o/-e/-i: symlinked dirs/targets, '..', %x and out-of-project paths refused; project path accepted"
+else
+    fail "srun -o/-e/-i path validation wrong"
+fi
+
+# 6.7p. Optional-argument flags (srun -K/--kill-on-bad-exit[=0|1],
+# --nice[=adj], --exclusive[=user]) bind a value only with `=`. The
+# chaperon used to consume the next word as their value, while Slurm ran
+# that word as the command / batch script, outside sandbox-exec.sh. The
+# real binary's argv must be `<flag tokens> -- <sandbox-exec.sh>
+# --project-dir <dir> -- <user cmd>` (srun) / `<flag tokens> -- <wrapper>`
+# (sbatch), every flag token self-contained (`--long=value` or bare).
+_h67p_argv_ok() {  # <argv file> <tail...>: flags only before the first --, then exactly <tail>
+    local _f="$1"; shift
+    local -a _a; mapfile -t _a < "$_f"
+    local _k=0 _n=${#_a[@]}
+    while (( _k < _n )) && [[ "${_a[$_k]}" != "--" ]]; do
+        case "${_a[$_k]}" in
+            --*=*) ;;
+            -[!-]|--[!-]*) [[ "${_a[$_k]}" == *=* ]] && return 1 ;;
+            *) echo "user token before --: ${_a[$_k]}"; return 1 ;;
+        esac
+        _k=$((_k + 1))
+    done
+    (( _k < _n )) || { echo "no -- in argv"; return 1; }
+    local -a _tail=("${_a[@]:_k+1}")
+    [[ "${_tail[*]}" == "$*" && ${#_tail[@]} -eq $# ]] || { echo "after --: ${_tail[*]} (want $*)"; return 1; }
+}
+if (
+    set -u
+    export _REC_OUT="$_H67_DIR/srun-p.argv" REAL_SRUN="$_H67_DIR/recorder" SANDBOX_QUIET=false
+    unset SLURM_JOB_ID
+    source "$SCRIPT_DIR/chaperon/handlers/srun.sh"
+    _p="$_H67_DIR/proj-p"; mkdir -p "$_p"; REQ_CWD=""; _bad=0
+    _se=/opt/sbx/sandbox-exec.sh
+    _run() { : > "$_REC_OUT"; REQ_ARGS=("$@"); handle_srun "$_p" "$_se" >/dev/null 2>&1; }
+    _run --kill-on-bad-exit ./evil true || { echo "rejected -K form"; _bad=1; }
+    _h67p_argv_ok "$_REC_OUT" "$_se" --project-dir "$_p" -- ./evil true || _bad=1
+    _run --nice ./evil arg || { echo "rejected --nice"; _bad=1; }
+    _h67p_argv_ok "$_REC_OUT" "$_se" --project-dir "$_p" -- ./evil arg || _bad=1
+    _run --exclusive --overlap ./evil || { echo "rejected --exclusive"; _bad=1; }
+    _h67p_argv_ok "$_REC_OUT" "$_se" --project-dir "$_p" -- ./evil || _bad=1
+    _run --kill-on-bad-exit=1 --nice=5 -n 2 -J myjob true || { echo "rejected =forms"; _bad=1; }
+    _h67p_argv_ok "$_REC_OUT" "$_se" --project-dir "$_p" -- true || _bad=1
+    for _t in --kill-on-bad-exit=1 --nice=5 --ntasks=2 --job-name=myjob; do
+        grep -qx -- "$_t" "$_REC_OUT" || { echo "missing $_t"; _bad=1; }
+    done
+    # Step mode: same argv shape.
+    SLURM_JOB_ID=4242 _run --kill-on-bad-exit ./evil true || { echo "step: rejected"; _bad=1; }
+    _h67p_argv_ok "$_REC_OUT" "$_se" --project-dir "$_p" -- ./evil true || _bad=1
+    # A value on a no-argument flag, a short flag with `=`, a trailing
+    # required-argument flag: refused, srun never invoked.
+    for _a in "--label=./evil|true" "-n=2|true" "-l|-n"; do
+        IFS='|' read -r -a _aa <<< "$_a"
+        _run "${_aa[@]}" && { echo "accepted: $_a"; _bad=1; }
+        [[ -s "$_REC_OUT" ]] && { echo "srun invoked for: $_a"; _bad=1; }
+    done
+    # The final assertion refuses non-flag tokens outright.
+    _assert_slurm_flag_argv srun "$_SRUN_VALUE_FLAGS" --ntasks=2 ./evil 2>/dev/null && { echo "assert passed bare word"; _bad=1; }
+    _assert_slurm_flag_argv srun "$_SRUN_VALUE_FLAGS" -n 2>/dev/null && { echo "assert passed bare -n"; _bad=1; }
+    _assert_slurm_flag_argv srun "$_SRUN_VALUE_FLAGS" -- 2>/dev/null && { echo "assert passed --"; _bad=1; }
+    _assert_slurm_flag_argv srun "$_SRUN_VALUE_FLAGS" --ntasks=2 -l --nice 2>/dev/null || { echo "assert refused good argv"; _bad=1; }
+    exit $_bad
+); then
+    pass "srun optional-argument flags (--kill-on-bad-exit, --nice, --exclusive) never consume the command; argv is '<flags> -- sandbox-exec.sh --project-dir <dir> -- <cmd>'"
+else
+    fail "srun optional-argument flag moved a user token into Slurm's command slot (or argv shape wrong)"
+fi
+
+if (
+    set -u
+    export _REC_OUT="$_H67_DIR/sbatch-p.argv" REAL_SBATCH="$_H67_DIR/recorder"
+    _bad=0
+    for _be in bwrap landlock; do
+        export SANDBOX_BACKEND=$_be
+        (
+            source "$SCRIPT_DIR/chaperon/handlers/sbatch.sh"
+            _p="$_H67_DIR/proj-p-$_be"; mkdir -p "$_p"; _bad=0
+            REQ_CWD="$_p"; REQ_SCRIPT=$'#!/bin/bash\necho hi'; REQ_SCRIPT_ARGS=()
+            _run() { : > "$_REC_OUT"; REQ_ARGS=("$@"); handle_sbatch "$_p" /opt/sbx/sandbox-exec.sh >/dev/null 2>&1; }
+            _wrapper_last() {
+                local -a _a; mapfile -t _a < "$_REC_OUT"
+                local _w="${_a[${#_a[@]}-1]}"
+                [[ "${_a[${#_a[@]}-2]}" == "--" && "$_w" == */chaperon-wrapper-*.sh ]] \
+                    || { echo "$_be: last args not '-- <wrapper>': ${_a[*]}"; return 1; }
+                _h67p_argv_ok "$_REC_OUT" "$_w"
+            }
+            # The handler receives what the stub forwards: `--nice` then
+            # (formerly) a stray word. It must not be forwarded as a value.
+            _run --nice || { echo "$_be: --nice rejected"; _bad=1; }
+            _wrapper_last || _bad=1
+            _run --nice ./evil && { echo "$_be: stray word after --nice accepted"; _bad=1; }
+            _run --nice=5 --exclusive -J myjob --output=slurm-%j.out -n 2 || { echo "$_be: good flags rejected"; _bad=1; }
+            _wrapper_last || _bad=1
+            for _t in --nice=5 --exclusive --job-name=myjob --ntasks=2; do
+                grep -qx -- "$_t" "$_REC_OUT" || { echo "$_be: missing $_t"; _bad=1; }
+            done
+            grep -qE -- '^--output=.*slurm-%j\.out$' "$_REC_OUT" || { echo "$_be: --output missing"; _bad=1; }
+            # Script-less (--help/--version) path: flags only, no stray word.
+            REQ_SCRIPT=""
+            _run --version || { echo "$_be: --version rejected"; _bad=1; }
+            grep -qx -- --version "$_REC_OUT" && ! grep -qv -- '^-' "$_REC_OUT" \
+                || { echo "$_be: --version argv: $(cat "$_REC_OUT")"; _bad=1; }
+            exit $_bad
+        ) || _bad=1
+    done
+    # The in-sandbox stub classifies --nice the same way: the word after
+    # it is the batch script (read and sent as SCRIPT), not a value.
+    _sd="$_H67_DIR/stub-p"; mkdir -p "$_sd"
+    cp "$SCRIPT_DIR/chaperon/stubs/sbatch" "$_sd/sbatch"
+    printf '%s\n' 'chaperon_call() { printf "%s\n" "$@" > "$_REC_OUT"; printf "%s" "$_CHAPERON_SCRIPT" > "$_REC_OUT.script"; }' > "$_sd/_stub_lib.sh"
+    printf '#!/bin/bash\necho job\n' > "$_sd/job.sh"
+    (cd "$_sd" && bash ./sbatch --nice job.sh) || { echo "stub failed"; _bad=1; }
+    [[ "$(tr '\n' ' ' < "$_REC_OUT")" == "sbatch --nice " ]] || { echo "stub args: $(cat "$_REC_OUT")"; _bad=1; }
+    grep -qx 'echo job' "$_REC_OUT.script" || { echo "stub did not send job.sh as the script"; _bad=1; }
+    (cd "$_sd" && bash ./sbatch --mem 4G job.sh) || { echo "stub failed (--mem)"; _bad=1; }
+    [[ "$(tr '\n' ' ' < "$_REC_OUT")" == "sbatch --mem 4G " ]] || { echo "stub --mem args: $(cat "$_REC_OUT")"; _bad=1; }
+    exit $_bad
+); then
+    pass "sbatch --nice/--exclusive never consume the next word (handler + stub); argv is '<flags> -- <wrapper>'; --nice=5, -J myjob, --output=slurm-%j.out kept"
+else
+    fail "sbatch optional-argument flag handling / argv shape wrong"
+fi
+
+# 6.7q. %x (agent-controlled job name) in --output/--error is refused on
+# the staging path too (bwrap/firejail; slurmstepd expands it outside
+# the sandbox, `-J ../../x` escaped the staging dir), as are unknown
+# % patterns and backslashes (`.\.` → `..` at open time). Job names with
+# `/` or equal to `.`/`..` are refused on every backend, CLI and #SBATCH.
+if (
+    set -u
+    _bad=0
+    for _be in bwrap firejail landlock; do
+        (
+            export SANDBOX_BACKEND=$_be
+            source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+            _p="$_H67_DIR/proj-q"; mkdir -p "$_p"
+            PROJECT_DIR="$_p"; REQ_CWD="$_p"; _bad=0
+            for _a in "--output=%x" "--output=logs/%x.out" "-o|%x" "--error|%5x.err" \
+                      "-o|out-%q.log" '--output=.\./.\./x' \
+                      "-J|../x" "--job-name=a/b" "--job-name=.." "-J|." '--job-name=a\b'; do
+                IFS='|' read -r -a REQ_ARGS <<< "$_a"
+                _err="$(validate_sbatch_args 2>&1)" && { echo "$_be: accepted $_a"; _bad=1; continue; }
+                [[ "$_err" == *"refused"* ]] || { echo "$_be: unclear message for $_a: $_err"; _bad=1; }
+            done
+            REQ_ARGS=(-J myjob --output=slurm-%j.out --error=err-%A_%4a.log)
+            validate_sbatch_args 2>/dev/null || { echo "$_be: ordinary -J/--output rejected"; _bad=1; }
+            [[ " ${VALIDATED_ARGS[*]} " == *" --job-name=myjob "* ]] || { echo "$_be: job name lost: ${VALIDATED_ARGS[*]}"; _bad=1; }
+            # #SBATCH directives: %x in --output/-o, and bad job names.
+            REQ_ARGS=(); validate_sbatch_args || exit 1
+            _w="$_H67_DIR/q-wrapper-$_be"
+            for _d in "--output=%x" "-o %x.log" "--error=x-%x" "-J ../../x" "--job-name=a/b" \
+                      "--job-name ../x" "-J.." '--output=a\b'; do
+                create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH '"$_d"$'\necho hi' "$_w" 2>/dev/null \
+                    && { echo "$_be: directive accepted: $_d"; _bad=1; }
+            done
+            create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH -J myjob\n#SBATCH --output=slurm-%j.out\necho hi' "$_w" 2>/dev/null \
+                || { echo "$_be: ordinary directives rejected"; _bad=1; }
+            grep -qx '#SBATCH -J myjob' "$_w" || { echo "$_be: -J directive dropped"; _bad=1; }
+            grep -q '%x' "$_w" && { echo "$_be: %x in wrapper"; _bad=1; }
+            exit $_bad
+        ) || _bad=1
+    done
+    exit $_bad
+); then
+    pass "%x / unknown % / backslash in --output/--error refused on every backend (CLI + #SBATCH); job names with '/' or '.'/'..' refused; -J myjob --output=slurm-%j.out works"
+else
+    fail "%x or unsafe job name reaches slurmstepd's --output/--error path"
+fi
+
+# 6.7r. #SBATCH option clusters and single-dash smuggling: Slurm reads
+# `#SBATCH -He/path` as `-H -e /path` and `#SBATCH --hold -e/path` as two
+# options, which set --error behind the directive filter's back.
+if (
+    set -u
+    export SANDBOX_BACKEND=bwrap
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    _p="$_H67_DIR/proj-r"; mkdir -p "$_p"
+    PROJECT_DIR="$_p"; REQ_CWD="$_p"; REQ_ARGS=(); validate_sbatch_args || exit 1
+    _w="$_H67_DIR/r-wrapper"; _bad=0
+    for _d in "-He$HOME/.bashrc" "-Ho/tmp/x" "--hold -e$HOME/.bashrc" "--mem=4G -o/tmp/x"; do
+        create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH '"$_d"$'\necho hi' "$_w" 2>/dev/null || continue
+        grep -qF -- "$_d" "$_w" && { echo "smuggled directive emitted: $_d"; _bad=1; }
+    done
+    create_wrapped_script /opt/sbx/sandbox-exec.sh "$_p" $'#!/bin/bash\n#SBATCH -H\n#SBATCH -Jmy-job\n#SBATCH --time=1-00:00:00\necho hi' "$_w" 2>/dev/null \
+        || { echo "ordinary directives rejected"; _bad=1; }
+    grep -qx '#SBATCH -H' "$_w" && grep -qx '#SBATCH -Jmy-job' "$_w" || { echo "ordinary directives dropped"; _bad=1; }
+    exit $_bad
+); then
+    pass "#SBATCH short-option clusters (-He/path) and single-dash multi-option lines are not forwarded"
+else
+    fail "#SBATCH option cluster / single-dash smuggling reaches Slurm"
+fi
+
+# 6.7i. Running chaperon: handlers are loaded once at startup (C4) and
+# the logged cwd is escaped (C5). Uses a private copy of chaperon/ so
+# a handler file can be modified after startup; REAL_SINFO echoes argv.
+_h67_chap_test() {
+    local _root="$_H67_DIR/chap" _fifo _proj _pid _i _log _out
+    mkdir -p "$_root/fifo" "$_root/proj" "$_root/xdg"
+    cp -r "$SCRIPT_DIR/chaperon" "$_root/chaperon"
+    _fifo="$_root/fifo"; _proj="$_root/proj"
+    chmod 700 "$_fifo"; mkfifo -m 600 "$_fifo/req"
+    printf '#!/bin/bash\necho "ARGS:$*"\n' > "$_root/echo-args"; chmod +x "$_root/echo-args"
+    XDG_STATE_HOME="$_root/xdg" SANDBOX_BACKEND=landlock REAL_SINFO="$_root/echo-args" \
+        bash "$_root/chaperon/chaperon.sh" "$_fifo" "$_proj" /opt/sbx/sandbox-exec.sh \
+        >/dev/null 2>"$_root/chaperon.err" &
+    _pid=$!
+    for _i in $(seq 1 50); do
+        _log="$(ls "$_root/xdg/agent-sandbox/chaperon/"*.log 2>/dev/null | head -1)"
+        [[ -n "$_log" ]] && break
+        sleep 0.1
+    done
+    if [[ -z "$_log" ]]; then
+        kill "$_pid" 2>/dev/null; wait "$_pid" 2>/dev/null
+        fail "test chaperon did not start" "$(cat "$_root/chaperon.err")"
+        return
+    fi
+    # C4: replace the handler on disk AFTER startup.
+    printf 'handle_sinfo() { echo HANDLER_RELOADED; }\n' > "$_root/chaperon/handlers/sinfo.sh"
+    # C5: request from a cwd whose name carries a newline + forged entry.
+    local _evil="$_proj/d"$'\n'"1999-01-01T00:00:00Z [ERROR] forged-entry"
+    mkdir -p "$_evil"
+    _out="$(cd "$_evil" && _CHAPERON_FIFO_DIR="$_fifo" timeout 20 bash "$_root/chaperon/stubs/sinfo" --version 2>&1)"
+    sleep 0.2
+    kill "$_pid" 2>/dev/null; wait "$_pid" 2>/dev/null
+    if [[ "$_out" == *"ARGS:--version"* && "$_out" != *HANDLER_RELOADED* ]]; then
+        pass "chaperon keeps handlers loaded at startup (modified handler file ignored)"
+    else
+        fail "chaperon re-read a handler file after startup" "output: $_out"
+    fi
+    if grep -q '^1999-01-01T00:00:00Z \[ERROR\] forged-entry' "$_log"; then
+        fail "newline in request cwd forged a chaperon log line" "$(tail -5 "$_log")"
+    elif grep -qF 'cwd='"$_proj"'/d\n1999-01-01T00:00:00Z [ERROR] forged-entry' "$_log"; then
+        pass "chaperon log escapes newlines in the request cwd"
+    else
+        fail "chaperon request log line for escaped cwd not found" "$(tail -5 "$_log")"
+    fi
+}
+_h67_chap_test
+unset -f _h67_chap_test
+
+# 6.7j. Stale per-launch dirs (C8): a tagged dir whose owner process is
+# gone is pruned at launch; one whose owner is alive is kept.
+_h67_tmp="${TMPDIR:-/tmp}"
+_h67_dead="$(mktemp -d "$_h67_tmp/agent-sandbox-mailblock-XXXXXX")"
+_h67_live="$(mktemp -d "$_h67_tmp/agent-sandbox-mailblock-XXXXXX")"
+trap_rm_dir "$_h67_dead"; trap_rm_dir "$_h67_live"
+_h67_ns="$(stat -L -c %i /proc/self/ns/pid)"
+read -r _h67_stat < "/proc/$$/stat"; read -r -a _h67_f <<< "${_h67_stat##*) }"
+printf '%s %s %s %s' "$HOSTNAME" "$_h67_ns" "$$" "${_h67_f[19]}" > "$_h67_live/.owner"
+printf '%s %s %s %s' "$HOSTNAME" "$_h67_ns" "999999999" "1" > "$_h67_dead/.owner"
+sandbox true || true
+if [[ ! -e "$_h67_dead" && -d "$_h67_live" ]]; then
+    pass "launch prunes per-launch dirs whose tagged owner is gone, keeps live ones"
+else
+    fail "stale per-launch dir pruning wrong" "dead exists: $([[ -e $_h67_dead ]] && echo yes), live exists: $([[ -d $_h67_live ]] && echo yes)"
+fi
+unset _h67_tmp _h67_dead _h67_live _h67_ns _h67_stat _h67_f
+
+# 6.7k. PRIVATE_TMP=false warns that chaperon/helper dirs are shared (C7).
+if has_mount_ns; then
+    _h67_err="$(PRIVATE_TMP=false SANDBOX_QUIET=false timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- true 2>&1 >/dev/null)"
+    if [[ "$_h67_err" == *"PRIVATE_TMP=false"*"chaperon"* ]]; then
+        pass "PRIVATE_TMP=false emits the shared-/tmp chaperon warning"
+    else
+        fail "PRIVATE_TMP=false did not warn about shared chaperon dirs" "$_h67_err"
+    fi
+    unset _h67_err
+else
+    skip "PRIVATE_TMP warning applies to bwrap/firejail only"
+fi
+
+# 6.7l. End to end (real Slurm): --export=ALL,FOO=bar still delivers
+# FOO=bar to the job script inside the sandbox; a denied name is
+# refused before submission.
+if ! command -v sbatch &>/dev/null; then
+    skip "sbatch --export end-to-end: sbatch not found"
+else
+    _h67_out=$(mktemp -p "$PROJECT_DIR" .test-export-XXXXXX)
+    _TEST_TEMP_FILES+=("$_h67_out")
+    # Explicit cd: the submission cwd must be inside the project (this
+    # test is about --export, not about the backend's initial cwd).
+    timeout 90 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --project-dir "$PROJECT_DIR" -- \
+        bash -c 'cd "$1" && sbatch --wait --export=ALL,FOO=bar --output="$2" \
+            --wrap='"'"'echo "FOO=${FOO:-unset} ACTIVE=${SANDBOX_ACTIVE:-0}"'"'"'' \
+        _ "$PROJECT_DIR" "$_h67_out" >/dev/null 2>&1
+    if grep -q '^FOO=bar ACTIVE=1$' "$_h67_out" 2>/dev/null; then
+        pass "sbatch --export=ALL,FOO=bar delivers FOO=bar inside the sandboxed job"
+    else
+        fail "sbatch --export=ALL,FOO=bar did not deliver FOO=bar in-sandbox" "$(cat "$_h67_out" 2>/dev/null)"
+    fi
+    if sandbox_must_run bash -c 'cd "$1" && sbatch --export=ALL,BASH_ENV=/tmp/x.sh --wrap=true' _ "$PROJECT_DIR"; then
+        fail "sbatch --export=ALL,BASH_ENV=... should be rejected"
+    elif [[ $? -ne 125 ]]; then
+        if [[ "$OUTPUT $OUTPUT_ERR" == *"may not set 'BASH_ENV'"* ]]; then
+            pass "sbatch --export=ALL,BASH_ENV=... rejected through the sandbox"
+        else
+            fail "sbatch --export BASH_ENV rejection message unclear" "$OUTPUT $OUTPUT_ERR"
+        fi
+    fi
+    unset _h67_out
+fi
+
+unset -f _h67_wrapper_check
 echo ""
 
 # ── 7. Sandbox self-protection ───────────────────────────────────
@@ -4408,7 +6084,10 @@ if has_mount_ns; then
     # Use the lower-level sandbox-exec.sh directly so we can pass the
     # new --cleanup-materialized flag (the `sandbox` test helper wraps
     # for the default flag set).
-    OUTPUT="$("$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --cleanup-materialized --project-dir "$PROJECT_DIR" -- bash -c "true" 2>&1)"
+    # Private XDG_RUNTIME_DIR: isolate the live-launch registry so other
+    # sandboxes running on the host do not (correctly) veto the cleanup.
+    local _s09_rt; _s09_rt="$(mktemp -d)"; _TEST_TEMP_DIRS+=("$_s09_rt")
+    OUTPUT="$(XDG_RUNTIME_DIR="$_s09_rt" "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --cleanup-materialized --project-dir "$PROJECT_DIR" -- bash -c "true" 2>&1)"
     if [[ ! -e "$_s09_target" ]]; then
         pass "S09: --cleanup-materialized removed 0-byte placeholder on exit"
     else
@@ -4447,7 +6126,8 @@ if has_mount_ns; then
         printf 'user-edit\n' > "$_s10_target"
     ) &
     local _s10_writer_pid=$!
-    OUTPUT_ERR="$("$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --cleanup-materialized --project-dir "$PROJECT_DIR" -- bash -c "sleep 1.2; true" 2>&1 1>/dev/null)"
+    local _s10_rt; _s10_rt="$(mktemp -d)"; _TEST_TEMP_DIRS+=("$_s10_rt")
+    OUTPUT_ERR="$(XDG_RUNTIME_DIR="$_s10_rt" "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --cleanup-materialized --project-dir "$PROJECT_DIR" -- bash -c "sleep 1.2; true" 2>&1 1>/dev/null)"
     wait "$_s10_writer_pid" 2>/dev/null || true
     if [[ -e "$_s10_target" ]] \
        && [[ "$(stat -c %s "$_s10_target" 2>/dev/null)" != "0" ]] \
@@ -4461,6 +6141,438 @@ else
     skip "S10: BLOCKED_FILES has no effect on Landlock (no mount namespace)"
 fi
 
+# ── S11: --cleanup-materialized keeps placeholders other sandboxes use ──
+# Unlinking a file that is a mount point in another mount namespace
+# detaches that mount everywhere (Linux >= 3.18). If launch A
+# materialized a BLOCKED_FILES placeholder and launch B (concurrent)
+# mounted /dev/null over it, A's post-exit cleanup used to delete the
+# placeholder and silently unmask it inside B, whose agent could then
+# create the file on the host with its own content. A private
+# XDG_RUNTIME_DIR keeps the live-launch registry isolated from other
+# sandboxes on this host.
+if has_mount_ns; then
+    _s11_target="$PROJECT_DIR/.test-blockfiles-s11-$$"
+    _s11_conf="$HOME/.config/agent-sandbox/conf.d/test-blockfiles-s11-$$.conf"
+    _s11_rt=$(mktemp -d)
+    _TEST_TEMP_FILES+=("$_s11_conf" "$_s11_target")
+    _TEST_TEMP_DIRS+=("$_s11_rt")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    rm -f "$_s11_target"
+    echo "BLOCKED_FILES+=( \"$_s11_target\" )" > "$_s11_conf"
+    XDG_RUNTIME_DIR="$_s11_rt" "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" --cleanup-materialized \
+        --project-dir "$PROJECT_DIR" -- sleep 2 >/dev/null 2>"$_s11_rt/a.err" &
+    _s11_a=$!
+    for _i in $(seq 1 100); do [[ -e "$_s11_target" ]] && break; sleep 0.05; done
+    XDG_RUNTIME_DIR="$_s11_rt" timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- bash -c "sleep 4; echo S11_AGENT > '$_s11_target' 2>/dev/null; true" \
+        >/dev/null 2>&1 &
+    _s11_b=$!
+    wait "$_s11_a" 2>/dev/null; wait "$_s11_b" 2>/dev/null
+    if grep -q S11_AGENT "$_s11_target" 2>/dev/null || [[ ! -e "$_s11_target" ]]; then
+        fail "S11: cleanup of launch A unmasked a BLOCKED_FILES placeholder inside concurrent launch B" \
+             "exists=$([[ -e $_s11_target ]] && echo yes || echo no) content=$(head -c 40 "$_s11_target" 2>/dev/null) A: $(cat "$_s11_rt/a.err")"
+    elif ! grep -q "other agent-sandbox sessions are running" "$_s11_rt/a.err"; then
+        fail "S11: placeholder kept but no 'other sessions running' note" "$(cat "$_s11_rt/a.err")"
+    else
+        pass "S11: --cleanup-materialized keeps placeholders while another sandbox has them mounted"
+    fi
+    rm -f "$_s11_conf" "$_s11_target"; rm -rf "$_s11_rt"
+else
+    skip "S11: BLOCKED_FILES has no effect on Landlock (no mount namespace)"
+fi
+
+
+# ── ML: bind mounts vanishing from RUNNING sandboxes (settylab/dotto-nexus#386) ──
+# rename()/unlink() of a path that is a mount point in another mount
+# namespace detaches that mount in every namespace. The overlays used to
+# rebuild sandbox-config/{CLAUDE.md,settings.json} with temp + rename on
+# every launch, silently stripping the read-only policy overlays from
+# every sandbox already running. These tests launch sandbox A, act from
+# outside while it runs, and inspect A's /proc/<pid>/mountinfo.
+
+# _ml_ns_pid LAUNCHER — a descendant in another mount ns that has the
+# project dir mounted (the sandbox), or nothing.
+_ml_ns_pid() {
+    local _own _i=0 _p _c _ns
+    _own="$(readlink /proc/self/ns/mnt)"
+    local -a _q=("$1")
+    while (( _i < ${#_q[@]} && _i < 200 )); do
+        _p="${_q[_i]}"; _i=$((_i + 1))
+        for _c in $(cat /proc/"$_p"/task/*/children 2>/dev/null); do
+            _q+=("$_c")
+            _ns="$(readlink "/proc/$_c/ns/mnt" 2>/dev/null)" || continue
+            [[ -n "$_ns" && "$_ns" != "$_own" ]] || continue
+            grep -qF " $_ml_proj " "/proc/$_c/mountinfo" 2>/dev/null && { echo "$_c"; return 0; }
+        done
+    done
+    return 1
+}
+# _ml_protective PID — "mountpoint opts" of the read-only mounts that
+# protect agent config and .sandbox-state inside that sandbox.
+_ml_protective() {
+    awk -v s="$_ml_proj/.sandbox-state" '($5 ~ /\/sandbox-config\/[^\/]+$/ || $5 == s) {
+        split($6, o, ","); ro = "rw"; for (k in o) if (o[k] == "ro") ro = "ro"; print $5, ro }' \
+        "/proc/$1/mountinfo" 2>/dev/null | sort -u
+}
+_ml_proj="$(cd "$PROJECT_DIR" && pwd -P)"
+_ml_tmp="$(mktemp -d)"; trap_rm_dir "$_ml_tmp"
+
+# ML01. A second launch (overlays rebuilt, .sandbox-state sanitized with
+# a planted link purged) leaves the first sandbox's read-only overlays in
+# place and does not trip its mount guard.
+if has_mount_ns; then
+    MOUNT_GUARD=kill MOUNT_GUARD_INTERVAL=1 timeout 60 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- sleep 10 >/dev/null 2>"$_ml_tmp/a.err" &
+    _ml_a=$!
+    _ml_pid=""; _ml_before=""
+    for _i in $(seq 1 100); do
+        _ml_pid="$(_ml_ns_pid "$_ml_a")" && _ml_before="$(_ml_protective "$_ml_pid")"
+        [[ "$_ml_before" == *"/.sandbox-state ro"* && "$_ml_before" == *sandbox-config* ]] && break
+        sleep 0.2
+    done
+    if [[ "$_ml_before" != *sandbox-config*" ro"* ]]; then
+        skip "ML01: no read-only agent overlay in sandbox A (no agent config dir on this host?)"
+        kill "$_ml_a" 2>/dev/null; wait "$_ml_a" 2>/dev/null
+    else
+        ln -sfn "$HOME/.bashrc" "$_ml_proj/.sandbox-state/slurm-logs/ml01-planted" 2>/dev/null || true
+        sandbox true || true
+        _ml_after="$(_ml_protective "$_ml_pid")"
+        wait "$_ml_a"; _ml_rc=$?
+        if [[ "$_ml_after" != "$_ml_before" ]]; then
+            fail "ML01: launching a second sandbox detached read-only overlays in the first" \
+                 "before: $(echo $_ml_before) | after: $(echo $_ml_after)"
+        elif [[ -L "$_ml_proj/.sandbox-state/slurm-logs/ml01-planted" ]]; then
+            fail "ML01: second launch did not purge the planted .sandbox-state link"
+        elif [[ $_ml_rc -ne 0 ]] || grep -q "MOUNT GUARD" "$_ml_tmp/a.err"; then
+            fail "ML01: first sandbox disturbed by the second launch (rc=$_ml_rc)" "$(cat "$_ml_tmp/a.err")"
+        else
+            pass "ML01: a second launch keeps the first sandbox's read-only overlays ($(echo "$_ml_before" | wc -l) mounts) and .sandbox-state bind"
+        fi
+    fi
+    rm -f "$_ml_proj/.sandbox-state/slurm-logs/ml01-planted" 2>/dev/null
+else
+    skip "ML01: Landlock has no mount overlays"
+fi
+
+# ML02. overlay-fs.py write keeps the inode (unchanged content: not
+# rewritten at all; changed: rewritten in place, mode restored) and
+# never writes through a planted hard link or symlink.
+_ml_r="$_ml_tmp/root"; mkdir -p "$_ml_r/cfg"; echo "user rc" > "$_ml_tmp/victim"
+_ml_ofs() { python3 "$SCRIPT_DIR/agents/overlay-fs.py" write "$_ml_r" cfg "$@"; }
+if command -v python3 >/dev/null 2>&1; then
+    echo v1 | _ml_ofs F.md 0444; _ml_i1="$(stat -c %i "$_ml_r/cfg/F.md")"; _ml_m1="$(stat -c %Y "$_ml_r/cfg/F.md")"
+    sleep 1.1; echo v1 | _ml_ofs F.md 0444
+    _ml_ok=true; _ml_why=""
+    [[ "$(stat -c %i "$_ml_r/cfg/F.md")" == "$_ml_i1" && "$(stat -c %Y "$_ml_r/cfg/F.md")" == "$_ml_m1" ]] || { _ml_ok=false; _ml_why+="unchanged content rewritten; "; }
+    printf 'v2 longer\n' | _ml_ofs F.md 0444; echo v3 | _ml_ofs F.md 0444
+    [[ "$(stat -c %i "$_ml_r/cfg/F.md")" == "$_ml_i1" && "$(cat "$_ml_r/cfg/F.md")" == v3 && "$(stat -c %a "$_ml_r/cfg/F.md")" == 444 ]] \
+        || { _ml_ok=false; _ml_why+="changed content not updated in place ($(stat -c '%i %a' "$_ml_r/cfg/F.md") $(cat "$_ml_r/cfg/F.md")); "; }
+    ln "$_ml_tmp/victim" "$_ml_r/cfg/H.md"; echo evil | _ml_ofs H.md 0444 2>/dev/null
+    [[ "$(cat "$_ml_tmp/victim")" == "user rc" && "$(cat "$_ml_r/cfg/H.md")" == evil ]] || { _ml_ok=false; _ml_why+="wrote through a planted hard link; "; }
+    ln -s "$_ml_tmp/victim" "$_ml_r/cfg/S.md"; echo evil | _ml_ofs S.md 0444 2>/dev/null
+    [[ "$(cat "$_ml_tmp/victim")" == "user rc" && ! -L "$_ml_r/cfg/S.md" ]] || { _ml_ok=false; _ml_why+="wrote through a planted symlink; "; }
+    if $_ml_ok; then
+        pass "ML02: overlay-fs write keeps the inode, skips unchanged content, never writes through planted links"
+    else
+        fail "ML02: overlay-fs write" "$_ml_why"
+    fi
+else
+    skip "ML02: python3 not available"
+fi
+
+# ML03. Mount guard classification (synthetic mountinfo). Mechanism 2 of
+# #386: the project bind and its .sandbox-state child vanish and fall
+# through to a read-only parent: reported, not fatal. A BLOCKED_FILES
+# mask in the project falling through to the same read-only parent
+# exposes the file: fatal. So is a read-only overlay under a writable
+# mount, and a read-only mount turned read-write.
+_ml_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _p=/fs/lab/proj
+    _MG_KIND=(rw ro mask ro mask ro); _MG_POLICY=(1 1 1 1 0 1)
+    _MG_PATH=("$_p" "$_p/.sandbox-state" "$_p/.env" /h/u/.claude/settings.json /usr/bin/sbatch /h/u/.bashrc)
+    _MG_ESC=("${_MG_PATH[@]}")
+    _mi() { printf '%s\n' "1 0 0:1 / / rw - tmpfs t rw" "2 1 8:1 /fs /fs ro - nfs s:/x rw" \
+        "3 1 8:2 /usr /usr ro - ext4 d rw" "4 1 0:9 / /h/u rw - tmpfs t rw" \
+        "5 4 8:3 /u/.claude /h/u/.claude rw - nfs s:/h rw" "6 4 8:3 /u/.bashrc /h/u/.bashrc ro - nfs s:/h rw" "$@" > "$_T/mi"; }
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    _v() { local b=1; [[ "${_MG_KIND[$1]}" == rw ]] && b=0
+           _mg_read_mountinfo "$_T/mi"; _mg_evaluate "$1" "$b"; printf '%s:%s ' "$1" "${_MG_VERDICT:-ok}"; }
+    _full=("7 2 8:1 /lab/proj $_p rw - nfs s:/x rw" "8 7 8:1 /lab/proj/.sandbox-state $_p/.sandbox-state ro - nfs s:/x rw"
+           "9 7 0:5 /null $_p/.env ro - devtmpfs u rw" "10 5 8:3 /u/.claude/settings.json /h/u/.claude/settings.json ro - nfs s:/h rw"
+           "11 3 0:5 /null /usr/bin/sbatch ro - devtmpfs u rw")
+    _mi "${_full[@]}"; echo -n "intact="; for i in 0 1 2 3 4 5; do _v $i; done; echo
+    _mi "${_full[@]:3}"; echo -n "mech2="; for i in 0 1 2; do _v $i; done; echo
+    _mi "${_full[@]:0:3}" "${_full[4]}"; echo -n "ovl="; _v 3; echo
+    _mi "${_full[@]:0:4}"; echo -n "sysmask="; _v 4; echo
+    _mi "${_full[@]}" "12 4 8:3 /u/.bashrc /h/u/.bashrc rw - nfs s:/h rw"; echo -n "remount="; _v 5; echo
+)"
+_ml_want=$'intact=0:ok 1:ok 2:ok 3:ok 4:ok 5:ok \nmech2=0:degraded 1:degraded 2:EXPOSED \novl=3:EXPOSED \nsysmask=4:degraded \nremount=5:EXPOSED '
+if [[ "$_ml_out" == "$_ml_want" ]]; then
+    pass "ML03: mount guard classifies lost mounts by what they fall through to"
+else
+    fail "ML03: mount guard classification" "got: $_ml_out"
+fi
+
+# ML04/ML05. Mount guard end to end: a host-side rename over a
+# BLOCKED_FILES path detaches its /dev/null mask inside the running
+# sandbox. kill: the sandbox is terminated before the agent reads the
+# file; warn: it keeps running and the loss is reported.
+if has_mount_ns; then
+    _ml_secret="$_ml_proj/.test-ml-secret-$$"; _ml_ready="$_ml_proj/.test-ml-ready-$$"
+    _ml_conf="$HOME/.config/agent-sandbox/conf.d/zz-test-mountloss-$$.conf"
+    _TEST_TEMP_FILES+=("$_ml_conf" "$_ml_secret" "$_ml_ready")
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    printf '[[ "$_PROJECT_DIR" == "%s" ]] || return 0\nBLOCKED_FILES+=("%s")\n' "$_ml_proj" "$_ml_secret" > "$_ml_conf"
+    for _ml_mode in kill warn; do
+        echo "ML-SECRET" > "$_ml_secret"; rm -f "$_ml_ready"
+        MOUNT_GUARD=$_ml_mode MOUNT_GUARD_INTERVAL=1 timeout 60 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+            --project-dir "$PROJECT_DIR" -- bash -c '
+                for i in $(seq 1 100); do [[ -d "$_CHAPERON_FIFO_DIR/.mount-guard-armed" ]] && break; sleep 0.2; done
+                cat "$1" 2>/dev/null | grep -q ML-SECRET && echo "READ-BEFORE"
+                echo ready > "$2"; sleep 6; cat "$1" 2>/dev/null' _ "$_ml_secret" "$_ml_ready" \
+            >"$_ml_tmp/g.out" 2>"$_ml_tmp/g.err" &
+        _ml_l=$!
+        for _i in $(seq 1 200); do [[ -e "$_ml_ready" ]] && break; sleep 0.2; done
+        echo "ML-SECRET" > "$_ml_secret.new"; mv -f "$_ml_secret.new" "$_ml_secret"
+        wait "$_ml_l"; _ml_rc=$?
+        _ml_msg="$(grep "MOUNT GUARD" "$_ml_tmp/g.err")"
+        if [[ ! -e "$_ml_ready" ]]; then
+            fail "ML0x ($_ml_mode): sandbox never became ready" "$(cat "$_ml_tmp/g.err")"
+        elif grep -q READ-BEFORE "$_ml_tmp/g.out"; then
+            fail "ML0x ($_ml_mode): BLOCKED_FILES mask was not in place at start"
+        elif [[ "$_ml_mode" == kill ]]; then
+            if [[ $_ml_rc -ne 0 && "$_ml_msg" == *"protection LOST at $_ml_secret"* ]] && ! grep -q ML-SECRET "$_ml_tmp/g.out"; then
+                pass "ML04: MOUNT_GUARD=kill terminates the sandbox when a BLOCKED_FILES mask is detached from outside"
+            else
+                fail "ML04: MOUNT_GUARD=kill did not stop the sandbox before it read the unmasked file" \
+                     "rc=$_ml_rc out=$(cat "$_ml_tmp/g.out") err=$(cat "$_ml_tmp/g.err")"
+            fi
+        else
+            if [[ $_ml_rc -eq 0 && "$_ml_msg" == *"protection LOST at $_ml_secret"*"not terminating"* ]]; then
+                pass "ML05: MOUNT_GUARD=warn reports the detached mask and keeps the sandbox running"
+            else
+                fail "ML05: MOUNT_GUARD=warn did not report the detached mask" "rc=$_ml_rc err=$(cat "$_ml_tmp/g.err")"
+            fi
+        fi
+    done
+    rm -f "$_ml_conf" "$_ml_secret" "$_ml_ready"
+else
+    skip "ML04: Landlock has no mount overlays (mount guard inactive)"
+    skip "ML05: Landlock has no mount overlays (mount guard inactive)"
+fi
+
+# ML06. --cleanup-materialized never deletes placeholders on a network
+# filesystem: sandboxes on other hosts may have them mounted, and the
+# live-launch registry cannot see them. (stat is shimmed to report nfs;
+# a private XDG_RUNTIME_DIR isolates the registry from other sandboxes.)
+if has_mount_ns; then
+    _ml_ph="$_ml_proj/.test-ml-placeholder-$$"; rm -f "$_ml_ph"
+    _ml_conf6="$HOME/.config/agent-sandbox/conf.d/zz-test-mountloss6-$$.conf"
+    _TEST_TEMP_FILES+=("$_ml_conf6" "$_ml_ph")
+    printf '[[ "$_PROJECT_DIR" == "%s" ]] || return 0\nBLOCKED_FILES+=("%s")\n' "$_ml_proj" "$_ml_ph" > "$_ml_conf6"
+    mkdir -p "$_ml_tmp/shim" "$_ml_tmp/rt"
+    printf '#!/bin/bash\n[[ "$1" == -f && "$2" == -c && "$3" == %%T ]] && { echo nfs; exit 0; }\nexec /usr/bin/stat "$@"\n' > "$_ml_tmp/shim/stat"
+    chmod +x "$_ml_tmp/shim/stat"
+    PATH="$_ml_tmp/shim:$PATH" XDG_RUNTIME_DIR="$_ml_tmp/rt" timeout 30 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --cleanup-materialized --project-dir "$PROJECT_DIR" -- true >/dev/null 2>"$_ml_tmp/c.err"
+    if [[ -e "$_ml_ph" ]] && grep -q "on a network filesystem" "$_ml_tmp/c.err"; then
+        pass "ML06: --cleanup-materialized keeps placeholders on a network filesystem"
+    else
+        fail "ML06: placeholder on a network filesystem was deleted or not reported" \
+             "exists=$([[ -e $_ml_ph ]] && echo yes || echo no) err=$(cat "$_ml_tmp/c.err")"
+    fi
+    rm -f "$_ml_conf6" "$_ml_ph"
+else
+    skip "ML06: BLOCKED_FILES has no effect on Landlock"
+fi
+
+# ML07. Per-launch passwd dirs (bind sources of /etc/passwd) are pruned
+# only when their launcher is gone on this host (they sit on NFS under
+# ~/.config on HPC hosts, where deleting a live source breaks a sandbox
+# on another host with ESTALE); foreign-host and untagged dirs only
+# after 30 days.
+_ml_out="$(
+    export _SANDBOX_LIB_NO_INIT=1 HOME="$_ml_tmp/h7"
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _USER_DATA_DIR="$HOME/.config/agent-sandbox"; FILTER_PASSWD=true
+    b="$_USER_DATA_DIR/.passwd-filter"; mkdir -p "$b"
+    me="$(_passwd_owner_tag $$)"; read -r h ns _ _ <<< "$me"
+    mk() { mkdir -p "$b/l.$1"; [[ -n "$2" ]] && echo "$2" > "$b/l.$1/.owner"; touch -d "$3" "$b/l.$1"; }
+    mk live   "$me"                        "3 days ago"
+    mk dead   "$h $ns 999999999 1"         "1 hour ago"
+    mk far    "otherhost 1 123 456"        "3 days ago"
+    mk farold "otherhost 1 123 456"        "31 days ago"
+    mk untag  ""                           "3 days ago"
+    mk untagold ""                         "31 days ago"
+    generate_filtered_passwd >/dev/null 2>&1 || { echo "generation failed"; exit 0; }
+    [[ -f "$_FILTERED_PASSWD" && -f "$(dirname "$_FILTERED_PASSWD")/.owner" ]] || echo "new dir untagged"
+    for d in live dead far farold untag untagold; do [[ -d "$b/l.$d" ]] && echo -n "$d " ; done
+)"
+if [[ "$_ml_out" == "live far untag " ]]; then
+    pass "ML07: per-launch passwd dirs pruned by launcher liveness, not age"
+else
+    fail "ML07: per-launch passwd pruning" "kept: $_ml_out (want: live far untag)"
+fi
+# ML08-ML11. MOUNT_GUARD=repair puts lost protective mounts back in the
+# running sandbox (bwrap). The host detaches, while the sandbox runs, a
+# BLOCKED_FILES /dev/null mask (rename over the file), an
+# EXTRA_BLOCKED_PATHS tmpfs mask (rename the dir aside, create a new one
+# with content) and the read-only .sandbox-state overlay (rename it
+# aside, copy it back). Within a few intervals each path must be masked
+# or read-only again inside, and each repair reported. ML11: when the
+# agent plants a symlink at the exposed path first, the repair refuses
+# (no mount is placed over or through the link) and warns instead.
+# firejail: repair is not possible (root-owned namespaces); it must
+# fall back to the warning.
+if has_mount_ns; then
+    _ml_secret="$_ml_proj/.test-mr-secret-$$"; _ml_hid="$_ml_proj/.test-mr-hidden-$$"
+    _ml_go="$_ml_proj/.test-mr-go-$$"; _ml_ready="$_ml_proj/.test-mr-ready-$$"
+    _ml_state="$_ml_proj/.sandbox-state"; _ml_stash="$_ml_proj/.test-mr-state-$$"
+    _ml_conf="$HOME/.config/agent-sandbox/conf.d/zz-test-mountrepair-$$.conf"
+    _TEST_TEMP_FILES+=("$_ml_conf" "$_ml_secret" "$_ml_go" "$_ml_ready"); trap_rm_path "$_ml_hid"; trap_rm_path "$_ml_hid.moved"
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d" "$_ml_hid"
+    printf '[[ "$_PROJECT_DIR" == "%s" ]] || return 0\nBLOCKED_FILES+=("%s")\nEXTRA_BLOCKED_PATHS+=("%s")\n' \
+        "$_ml_proj" "$_ml_secret" "$_ml_hid" > "$_ml_conf"
+    echo "ML-SECRET" > "$_ml_secret"; echo "ML-HIDDEN" > "$_ml_hid/h"; rm -f "$_ml_go" "$_ml_ready"
+    # Inside: wait for the guard, signal ready, wait for the host's
+    # detach, then poll until all three are protected again.
+    MOUNT_GUARD=repair MOUNT_GUARD_INTERVAL=1 timeout 90 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+        --project-dir "$PROJECT_DIR" -- bash -c '
+            for i in $(seq 1 100); do [[ -d "$_CHAPERON_FIFO_DIR/.mount-guard-armed" ]] && break; sleep 0.2; done
+            cat "$1" 2>/dev/null | grep -q ML-SECRET && echo "READ-BEFORE"
+            echo ready > "$4"
+            for i in $(seq 1 200); do [[ -e "$3" ]] && break; sleep 0.1; done
+            m1=""; m2=""; m3=""
+            for i in $(seq 1 60); do
+                [[ -z "$m1" ]] && ! cat "$1" >/dev/null 2>&1 && ! grep -q ML-SECRET "$1" 2>/dev/null \
+                    && grep -q " $1 ro," /proc/self/mountinfo && m1=1
+                [[ -z "$m2" && -z "$(ls -A "$2" 2>/dev/null)" ]] && grep -q " $2 .* - tmpfs " /proc/self/mountinfo && m2=1
+                [[ -z "$m3" ]] && ! touch "$5/.test-mr-probe" 2>/dev/null && grep -q " $5 ro," /proc/self/mountinfo && m3=1
+                [[ -n "$m1$m2$m3" && "$m1$m2$m3" == 111 ]] && break
+                sleep 0.25
+            done
+            [[ -n "$m1" ]] && { echo x > "$1" 2>/dev/null || echo "MASKED-FILE"; }
+            [[ -n "$m2" ]] && { touch "$2/new" 2>/dev/null; [[ -e "$2/h2" ]] || echo "MASKED-DIR"; }
+            [[ -n "$m3" ]] && echo "RO-STATE"
+            true' _ "$_ml_secret" "$_ml_hid" "$_ml_go" "$_ml_ready" "$_ml_state" \
+        >"$_ml_tmp/r.out" 2>"$_ml_tmp/r.err" &
+    _ml_l=$!
+    for _i in $(seq 1 300); do [[ -e "$_ml_ready" ]] && break; sleep 0.2; done
+    _ml_detached=""
+    if [[ -e "$_ml_ready" ]]; then
+        echo "ML-SECRET" > "$_ml_secret.new"; mv -f "$_ml_secret.new" "$_ml_secret"
+        mv "$_ml_hid" "$_ml_hid.moved"; mkdir "$_ml_hid"; echo "ML-HIDDEN2" > "$_ml_hid/h2"
+        if is_bwrap && mv "$_ml_state" "$_ml_stash" 2>/dev/null; then
+            cp -a "$_ml_stash" "$_ml_state"; _ml_detached=1
+        fi
+        touch "$_ml_go"
+    fi
+    wait "$_ml_l"; _ml_rc=$?
+    if [[ -n "$_ml_detached" ]]; then rm -rf "$_ml_state"; mv "$_ml_stash" "$_ml_state"; fi
+    _ml_err="$(cat "$_ml_tmp/r.err")"; _ml_out="$(cat "$_ml_tmp/r.out")"
+    if [[ ! -e "$_ml_ready" ]]; then
+        fail "ML08: repair sandbox never became ready" "$_ml_err"
+    elif [[ "$_ml_out" == *READ-BEFORE* ]]; then
+        fail "ML08: BLOCKED_FILES mask was not in place at start"
+    elif is_firejail; then
+        if [[ $_ml_rc -eq 0 && "$_ml_err" == *"protection LOST at $_ml_secret"*"repair needs bwrap"* ]]; then
+            pass "ML08: MOUNT_GUARD=repair on firejail falls back to the warning (namespaces not enterable)"
+        else
+            fail "ML08: MOUNT_GUARD=repair on firejail did not fall back to the warning" "rc=$_ml_rc err=$_ml_err"
+        fi
+        skip "ML09: mount repair is bwrap-only"; skip "ML10: mount repair is bwrap-only"
+    else
+        if [[ $_ml_rc -eq 0 && "$_ml_out" == *MASKED-FILE* && "$_ml_err" == *"protection LOST at $_ml_secret"*"RESTORED"* ]]; then
+            pass "ML08: MOUNT_GUARD=repair re-masks a BLOCKED_FILES file detached from outside, and reports it"
+        else
+            fail "ML08: detached /dev/null mask not restored" "rc=$_ml_rc out=$_ml_out err=$_ml_err"
+        fi
+        if [[ "$_ml_out" == *MASKED-DIR* && "$_ml_err" == *"at $_ml_hid ("*"RESTORED"* ]]; then
+            pass "ML09: MOUNT_GUARD=repair re-masks an EXTRA_BLOCKED_PATHS dir (empty tmpfs) after it was renamed away"
+        else
+            fail "ML09: detached tmpfs mask not restored" "out=$_ml_out err=$_ml_err"
+        fi
+        if [[ -z "$_ml_detached" ]]; then
+            skip "ML10: could not rename .sandbox-state aside"
+        elif [[ "$_ml_out" == *RO-STATE* && "$_ml_err" == *"at $_ml_state ("*"RESTORED"* ]]; then
+            pass "ML10: MOUNT_GUARD=repair makes a replaced .sandbox-state read-only again"
+        else
+            fail "ML10: detached read-only .sandbox-state overlay not restored" "out=$_ml_out err=$_ml_err"
+        fi
+    fi
+
+    # ML11. The agent races the repair: it watches for the mask to
+    # vanish and plants a symlink at the path. The repair must refuse
+    # and warn (never mount over or through a planted link).
+    if is_bwrap; then
+        rm -rf "$_ml_hid.moved"
+        echo "ML-SECRET" > "$_ml_secret"; rm -f "$_ml_go" "$_ml_ready"
+        MOUNT_GUARD=repair MOUNT_GUARD_INTERVAL=2 timeout 90 "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" \
+            --project-dir "$PROJECT_DIR" -- bash -c '
+                for i in $(seq 1 100); do [[ -d "$_CHAPERON_FIFO_DIR/.mount-guard-armed" ]] && break; sleep 0.2; done
+                echo ready > "$2"
+                for i in $(seq 1 3000); do grep -q " $1 " /proc/self/mountinfo || break; sleep 0.005; done
+                ln -sfn /etc/hostname "$1" && echo PLANTED
+                sleep 5
+                [[ -L "$1" ]] && echo STILL-LINK
+                grep -q " $1 " /proc/self/mountinfo && echo MOUNTED
+                grep -q "/null /etc/hostname " /proc/self/mountinfo && echo TARGET-MASKED
+                true' _ "$_ml_secret" "$_ml_ready" \
+            >"$_ml_tmp/s.out" 2>"$_ml_tmp/s.err" &
+        _ml_l=$!
+        for _i in $(seq 1 300); do [[ -e "$_ml_ready" ]] && break; sleep 0.2; done
+        echo "ML-SECRET" > "$_ml_secret.new"; mv -f "$_ml_secret.new" "$_ml_secret"
+        wait "$_ml_l"; _ml_rc=$?
+        _ml_err="$(cat "$_ml_tmp/s.err")"; _ml_out="$(cat "$_ml_tmp/s.out")"
+        if [[ "$_ml_out" != *PLANTED* ]]; then
+            fail "ML11: agent could not plant the symlink (test setup)" "out=$_ml_out err=$_ml_err"
+        elif [[ "$_ml_out" == *STILL-LINK* && "$_ml_out" != *MOUNTED* && "$_ml_out" != *TARGET-MASKED* \
+                && "$_ml_err" == *"protection LOST at $_ml_secret"*"Could not restore it"*"symlink"* \
+                && "$_ml_err" != *RESTORED* ]]; then
+            pass "ML11: MOUNT_GUARD=repair refuses an agent-planted symlink at the lost mount point and warns"
+        else
+            fail "ML11: planted symlink at a lost mask was not refused with a warning" "rc=$_ml_rc out=$_ml_out err=$_ml_err"
+        fi
+        rm -f "$_ml_secret"
+    else
+        skip "ML11: mount repair is bwrap-only"
+    fi
+    rm -rf "$_ml_hid" "$_ml_hid.moved"; rm -f "$_ml_conf" "$_ml_secret" "$_ml_go" "$_ml_ready"
+else
+    skip "ML08: Landlock has no mount overlays (mount guard inactive)"
+    skip "ML09: Landlock has no mount overlays (mount guard inactive)"
+    skip "ML10: Landlock has no mount overlays (mount guard inactive)"
+    skip "ML11: Landlock has no mount overlays (mount guard inactive)"
+fi
+# ML12. Repair eligibility and mode ordering (unit). Only leaves are
+# repairable (a tmpfs with expected mounts below it, e.g. a tmpfs
+# $HOME, is not); ro binds only when bound onto themselves and not a
+# symlink; firejail-style plain kinds never. Harden-only ordering:
+# off < warn < repair < kill.
+_ml_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    mkdir -p "$_T/h/d" "$_T/p/.sandbox-state"; touch "$_T/h/f" "$_T/p/sec"; ln -s "$_T/h/f" "$_T/h/lnk"
+    HOME="$_T/h"; BLOCKED_FILES=(); EXTRA_BLOCKED_PATHS=()
+    backend_mount_expectations() { printf '%s\n' "mask:tmpfs $_T/h" "ro:same $_T/h/f" "mask:tmpfs $_T/h/d" \
+        "rw $_T/p" "ro:same $_T/p/.sandbox-state" "mask:null $_T/p/sec" "ro $_T/p/other" "ro:same $_T/h/lnk" "mask $_T/p/fj"; }
+    _mount_guard_prepare "$_T/p" || { echo "prepare failed"; exit 0; }
+    for i in "${!_MG_PATH[@]}"; do printf '%s=%s%s ' "${_MG_PATH[i]#$_T/}" "${_MG_HOW[i]:--}" "${_MG_FTYPE[i]:+/${_MG_FTYPE[i]}}"; done
+    echo; for m in off warn repair kill bogus; do printf '%s ' "$(_mount_guard_strictness_idx $m)"; done
+)"
+_ml_want=$'h=- h/f=ro/f h/d=tmpfs p=- p/.sandbox-state=ro/d p/sec=null p/other=- h/lnk=- p/fj=- \n0 1 2 3 3 '
+if [[ "$_ml_out" == "$_ml_want" ]]; then
+    pass "ML12: repair eligibility (leaves, self-binds, no symlinks) and ordering off < warn < repair < kill"
+else
+    fail "ML12: repair eligibility / ordering" "got: $_ml_out"
+fi
+unset _ml_a _ml_pid _ml_before _ml_after _ml_rc _ml_r _ml_i1 _ml_m1 _ml_ok _ml_why _ml_out _ml_want \
+      _ml_secret _ml_ready _ml_conf _ml_conf6 _ml_mode _ml_l _ml_msg _ml_ph \
+      _ml_hid _ml_go _ml_state _ml_stash _ml_detached _ml_err
+unset -f _ml_ns_pid _ml_protective _ml_ofs
 # ── H01: Hardlink /etc/passwd into project dir ──
 local _hlink="$PROJECT_DIR/.test-passwd-hardlink-$$"
 if ln /etc/passwd "$_hlink" 2>/dev/null; then
@@ -4933,6 +7045,25 @@ if sandbox bash -c 'grep "^NoNewPrivs:" /proc/self/status | awk "{print \$2}"'; 
     fi
 fi
 
+# ── SEC-W: bwrap warns loudly when it runs without the seccomp filter ──
+# A missing/failing python3 used to skip the BPF filter silently.
+# Shadow python3 with a stub that fails, then check the dry-run stderr
+# (even with SANDBOX_QUIET=true, which the harness sets).
+if is_bwrap; then
+    _secw_bin=$(mktemp -d)
+    _TEST_TEMP_DIRS+=("$_secw_bin")
+    printf '#!/bin/sh\nexit 1\n' > "$_secw_bin/python3"; chmod +x "$_secw_bin/python3"
+    _secw_err=$(PATH="$_secw_bin:$PATH" "$SANDBOX_EXEC" --backend bwrap --dry-run \
+        --project-dir "$PROJECT_DIR" -- true 2>&1 >/dev/null)
+    if grep -q "WITHOUT the seccomp filter" <<<"$_secw_err"; then
+        pass "bwrap: running without the seccomp filter is announced loudly"
+    else
+        fail "bwrap: seccomp filter skipped without a warning" "$_secw_err"
+    fi
+    rm -rf "$_secw_bin"
+fi
+
+
 # ── N02: NoNewPrivs should neuter setuid binaries (behavioural, not flag-only) ──
 # sudo -n -u root id would only succeed if setuid worked. With NNP, the
 # setuid bit should be ignored and sudo should either fail to escalate
@@ -5368,8 +7499,9 @@ else
 fi
 
 # PRIVATE_IPC: /dev/shm isolation. bwrap mounts a private tmpfs; firejail
-# blacklists /dev/shm (firejail's --tmpfs is silently ignored on /dev paths);
-# landlock has no namespace support so /dev/shm is shared with the host.
+# gets an empty /dev/shm inside its --private-dev /dev (blacklisted only
+# when DEVICES forces the host /dev); landlock has no namespace support
+# so /dev/shm is shared with the host.
 _shm_marker="/dev/shm/sandbox-probe-$$"
 _TEST_TEMP_FILES+=("$_shm_marker")
 if sandbox bash -c "echo inside > '$_shm_marker'" 2>/dev/null; then
@@ -5390,7 +7522,7 @@ if sandbox bash -c "echo inside > '$_shm_marker'" 2>/dev/null; then
     fi
 else
     if has_mount_ns; then
-        # Write was blocked (e.g., firejail --blacklist=/dev/shm) — that's
+        # Write was blocked (firejail on the host /dev: --blacklist=/dev/shm) — that's
         # effective isolation, just via blocking rather than private tmpfs.
         pass "PRIVATE_IPC: /dev/shm blocked inside sandbox"
     else
@@ -5905,6 +8037,37 @@ if (
 else
     pass "Network filter: stricter policy on landlock fails (no stricter mode available)"
 fi
+
+# slirp4netns must not count as a filtered-mode helper (L8). It was
+# resolved as one, the probe "passed" with pasta's argv, and the exec
+# path then silently fell to --unshare-net (no network), ignoring
+# NETWORK_FILTER_FALLBACK=open. Now a slirp4netns-only host has no
+# helper and the normal fallback applies, naming slirp4netns.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1 SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    _fake=$(mktemp -d); trap 'rm -rf "$_fake"' EXIT
+    printf '#!/bin/sh\nexit 0\n' > "$_fake/slirp4netns"; chmod +x "$_fake/slirp4netns"
+    ln -s "$(command -v bash)" "$_fake/bash"
+    for _t in mktemp rm uname timeout readlink dirname basename cat; do
+        _p=$(command -v "$_t") && ln -sf "$_p" "$_fake/$_t"
+    done
+    _orig_path="$PATH"
+    PATH="$_fake"; SANDBOX_DIR="$_fake"   # no pasta on PATH, no shipped pasta
+    _resolve_network_helper >/dev/null && { echo "slirp4netns resolved as helper"; exit 1; }
+    NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=open
+    resolve_network_filter_mode bwrap 2>"$_fake/err"
+    PATH="$_orig_path"
+    [[ "$_NETWORK_FILTER_RESOLVED" == "open" ]] || { echo "resolved=$_NETWORK_FILTER_RESOLVED"; exit 1; }
+    grep -q "only slirp4netns was found" "$_fake/err" || { echo "no slirp4netns reason"; cat "$_fake/err"; exit 1; }
+    [[ -z "$_NETWORK_FILTER_HELPER" ]] || { echo "helper=$_NETWORK_FILTER_HELPER"; exit 1; }
+); then
+    pass "slirp4netns-only host: filtered falls back per NETWORK_FILTER_FALLBACK (not silently isolated)"
+else
+    fail "slirp4netns-only host: resolver still treats slirp4netns as a filtered helper"
+fi
+
 
 # ── 11.4.proxied: agent-sandbox-proxy.py unit tests ─────────────
 # v0.10.1 proxied-mode helper. Exercises the policy-check boundary:
@@ -7017,7 +9180,7 @@ _dev07_err=$(mktemp); trap_rm_path "$_dev07_err"
 SANDBOX_CONF="$_dev07_conf" "$SANDBOX_EXEC" --backend landlock --dry-run \
     --project-dir "$PROJECT_DIR" -- true >"$_dev07_err.out" 2>"$_dev07_err" || true
 _dev07_stderr=$(cat "$_dev07_err")
-if [[ "$_dev07_stderr" == *"DEVICES only applies to the bwrap backend"* ]]; then
+if [[ "$_dev07_stderr" == *"DEVICES has no effect with the Landlock backend"* ]]; then
     pass "DEV07: non-bwrap backend warns when DEVICES is configured"
 else
     # Some installs may not have landlock available — check if the
@@ -7237,6 +9400,36 @@ else
 fi
 
 echo ""
+
+# ── SIG01: SIGTERM to the launcher reaches the sandboxed command ──
+# firejail and landlock used to run the sandbox as a child of the
+# launcher shell (no exec, no forwarding), so `kill -TERM <launcher>`
+# killed only the shell and orphaned the sandboxed command. Checked in
+# the default (exec) mode and in --cleanup-materialized (child) mode.
+for _sig_mode in exec cleanup; do
+    _sig_tag="sbxsigtest$$x${_sig_mode}"
+    _sig_flags=()
+    [[ "$_sig_mode" == cleanup ]] && _sig_flags=(--cleanup-materialized)
+    "$SANDBOX_EXEC" --backend "$CURRENT_BACKEND" "${_sig_flags[@]}" --project-dir "$PROJECT_DIR" -- \
+        bash -c "exec -a $_sig_tag sleep 120" >/dev/null 2>&1 &
+    _sig_pid=$!
+    for _i in $(seq 1 100); do pgrep -f "$_sig_tag" >/dev/null && break; sleep 0.1; done
+    if ! pgrep -f "$_sig_tag" >/dev/null; then
+        skip "SIG01 ($_sig_mode): sandboxed command never started"
+        kill "$_sig_pid" 2>/dev/null; wait "$_sig_pid" 2>/dev/null
+        continue
+    fi
+    kill -TERM "$_sig_pid" 2>/dev/null
+    wait "$_sig_pid" 2>/dev/null
+    for _i in $(seq 1 30); do pgrep -f "$_sig_tag" >/dev/null || break; sleep 0.1; done
+    if pgrep -f "$_sig_tag" >/dev/null; then
+        fail "SIG01 ($_sig_mode): sandboxed command orphaned after SIGTERM to the launcher"
+        pkill -f "$_sig_tag" 2>/dev/null
+    else
+        pass "SIG01 ($_sig_mode): SIGTERM to the launcher terminates the sandboxed command"
+    fi
+done
+
 
 # ── 13. Lmod module loading ────────────────────────────────────────
 #
