@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -31,7 +31,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -1730,17 +1730,19 @@
 <h3 id="admin-enforcement-subprocess-isolation-policy-merge">Admin enforcement: subprocess isolation + policy merge<a class="headerlink" href="#admin-enforcement-subprocess-isolation-policy-merge" title="Permanent link">&para;</a></h3>
 <p>User configs (<code>user.conf</code>, <code>conf.d/*.conf</code>) are loaded in an <strong>isolated subprocess</strong> (<code>/bin/bash --norc --noprofile</code>). Only known config variables are extracted via <code>declare -p</code> and validated before being applied in the parent. After each untrusted config layer, <code>_enforce_admin_policy()</code> compares the resulting values against the admin snapshot, restores admin entries, and merges user additions on top.</p>
 <p>This eliminates entire attack classes: function overrides (<code>source</code>, <code>eval</code>, <code>builtin</code>), DEBUG/RETURN traps, <code>exit</code>/<code>return</code> escapes, IFS manipulation, and background processes — none can escape the subprocess boundary. The merge logic runs in the parent shell, unreachable from user config.</p>
-<p><strong>Enforced arrays</strong> (<code>BLOCKED_FILES</code>, <code>BLOCKED_ENV_VARS</code>, <code>BLOCKED_ENV_PATTERNS</code>, <code>EXTRA_BLOCKED_PATHS</code>): admin entries are always present. User additions are preserved, but user removals are undone with a warning:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>WARNING: User config removed admin-enforced BLOCKED_ENV_VARS entry &#39;GITHUB_TOKEN&#39; — restored.
+<p><strong>Enforced arrays</strong> (<code>BLOCKED_FILES</code>, <code>BLOCKED_ENV_VARS</code>, <code>BLOCKED_ENV_PATTERNS</code>, <code>EXTRA_BLOCKED_PATHS</code>, <code>DEVICES_BLACKLIST</code>, <code>HIDE_FROM_SANDBOX</code>, <code>NETWORK_BLOCKLIST</code>, <code>NETWORK_BLOCKLIST_EXCEPT</code> — the <code>_ENFORCED_ARRAYS</code> list): admin entries are always present. User additions are preserved, but user removals are undone with a warning:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>WARNING: User config removed admin-enforced BLOCKED_ENV_VARS entry 'GITHUB_TOKEN' — restored.
 </span></code></pre></div>
-<p><strong>HOME_READONLY → HOME_WRITABLE escalation</strong>: if a user config moves an admin read-only entry to writable, the escalation is reverted with a warning:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>WARNING: User config moved admin HOME_READONLY entry &#39;.gnupg&#39; to HOME_WRITABLE — reverted.
+<p><strong>HOME_READONLY → HOME_WRITABLE escalation</strong>: if a user config moves an admin read-only entry to writable, the escalation is reverted with a warning. Paths are compared after canonicalization (lexical and symlink-resolved), and a writable entry that is a parent or child of an admin read-only entry is reverted too; <code>EXTRA_WRITABLE_PATHS</code> is held to the same rule:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>WARNING: User config moved admin HOME_READONLY entry '.gnupg' to HOME_WRITABLE — reverted.
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>WARNING: User config HOME_WRITABLE entry './.ssh' overlaps admin HOME_READONLY entry '.ssh' (same path, parent or child) — reverted.
 </span></code></pre></div>
+<p><strong><code>SANDBOX_CONF</code> does not bypass the baseline</strong>: the env var only chooses the file used as the user layer; this admin config is always loaded and enforced when present.</p>
 <p><strong>DENIED_WRITABLE_PATHS</strong>: any <code>EXTRA_WRITABLE_PATHS</code> entry matching or under a denied path is stripped with a warning:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>WARNING: User config added EXTRA_WRITABLE_PATHS entry &#39;/etc/cron.d&#39; under denied path &#39;/etc&#39; — removed.
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>WARNING: User config added EXTRA_WRITABLE_PATHS entry '/etc/cron.d' under denied path '/etc' — removed.
 </span></code></pre></div>
 <p><strong>ALLOWED_PROJECT_PARENTS (narrowing-only)</strong>: the user can only restrict admin's allow-list, never expand it. A user-supplied entry is admissible iff its canonical path (via <code>realpath</code>, with all symlinks followed) is identical to or a path-component subdir of one of admin's entries. Inadmissible entries are stripped with a warning:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>WARNING: User config ALLOWED_PROJECT_PARENTS entry &#39;/tmp/foo&#39; is not under any admin-allowed parent — rejected.
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>WARNING: User config ALLOWED_PROJECT_PARENTS entry '/tmp/foo' is not under any admin-allowed parent — rejected.
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>  Admin-allowed: /home/dotto
 </span></code></pre></div>
 <p>If every user-requested entry is rejected (or the user's array is empty), the sandbox refuses to start rather than continuing with no admissible project locations.</p>
@@ -1756,18 +1758,18 @@
 </span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
 </span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Additional data I need</span>
 </span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="nv">READONLY_MOUNTS</span><span class="o">+=(</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">    </span><span class="s2">&quot;/shared/reference_genomes&quot;</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">    </span><span class="s2">"/shared/reference_genomes"</span>
 </span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="o">)</span>
 </span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>
 </span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="c1"># My editor config</span>
 </span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="nv">HOME_READONLY</span><span class="o">+=(</span>
-</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">    </span><span class="s2">&quot;.vimrc&quot;</span>
-</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">    </span><span class="s2">&quot;.vim&quot;</span>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">    </span><span class="s2">".vimrc"</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">    </span><span class="s2">".vim"</span>
 </span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="o">)</span>
 </span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>
 </span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a><span class="c1"># Extra scratch space</span>
 </span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a><span class="nv">EXTRA_WRITABLE_PATHS</span><span class="o">+=(</span>
-</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="w">    </span><span class="s2">&quot;/fh/scratch/delete30/mylab/pipeline-output&quot;</span>
+</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a><span class="w">    </span><span class="s2">"/fh/scratch/delete30/mylab/pipeline-output"</span>
 </span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a><span class="o">)</span>
 </span></code></pre></div>
 <p>Note the <code>+=</code> syntax — this appends to the admin's arrays. Using <code>=()</code> to replace an enforced array has no effect — the admin values are forcefully re-applied.</p>
@@ -1775,13 +1777,13 @@
 <p>Per-project configs in <code>~/.config/agent-sandbox/conf.d/*.conf</code> are user-controlled and subject to the same post-merge validation as <code>user.conf</code> (cannot remove admin-enforced entries).</p>
 <p>Example — a project-specific config that conditionally activates based on project path:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># conf.d/genomics.conf</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="o">[[</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$_PROJECT_DIR</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">==</span><span class="w"> </span>/fh/fast/mylab/genomics/*<span class="w"> </span><span class="o">]]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="m">0</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="o">[[</span><span class="w"> </span><span class="s2">"</span><span class="nv">$_PROJECT_DIR</span><span class="s2">"</span><span class="w"> </span><span class="o">==</span><span class="w"> </span>/fh/fast/mylab/genomics/*<span class="w"> </span><span class="o">]]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="m">0</span>
 </span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
 </span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="nv">READONLY_MOUNTS</span><span class="o">+=(</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="s2">&quot;/fh/fast/shared/reference_genomes&quot;</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="s2">"/fh/fast/shared/reference_genomes"</span>
 </span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="o">)</span>
 </span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="nv">EXTRA_WRITABLE_PATHS</span><span class="o">+=(</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">    </span><span class="s2">&quot;/fh/scratch/delete30/mylab/pipeline-output&quot;</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">    </span><span class="s2">"/fh/scratch/delete30/mylab/pipeline-output"</span>
 </span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="o">)</span>
 </span></code></pre></div>
 <p>These configs also run in isolated subprocesses and go through admin enforcement — they cannot remove admin-set entries.</p>
@@ -2229,7 +2231,7 @@
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.footer", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.action.edit", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

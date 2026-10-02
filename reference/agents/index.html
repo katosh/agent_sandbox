@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -31,7 +31,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -1072,7 +1072,7 @@
 <tr>
 <td><code>claude</code></td>
 <td>enabled</td>
-<td><code>~/.claude</code>, <code>~/.claude.json</code>, <code>~/.local/{state,share}/claude</code></td>
+<td><code>~/.claude</code>, <code>~/.local/state/claude</code> (read-only: <code>~/.claude.json</code>, <code>~/.local/share/claude</code>)</td>
 <td>OAuth or <code>ANTHROPIC_API_KEY</code></td>
 </tr>
 <tr>
@@ -1110,10 +1110,10 @@
 <p>The default set is conservative on purpose — every enabled agent expands the writable surface to whatever its <code>config.conf</code> declares, so dotdir names that could plausibly belong to unrelated user data (<code>~/.pi</code>, <code>~/.config/opencode</code>, etc.) stay invisible until you opt in.</p>
 <p><strong>Enabling and disabling agents:</strong> edit <code>ENABLED_AGENTS</code> in <code>sandbox.conf</code>. Adding a name folds that agent's declared writable/readable/blocked paths into the sandbox surface and runs its instruction-merging overlay; removing a name leaves the agent's paths invisible (no auth persistence, no AGENTS.md hide).</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Enable pi alongside the defaults:</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nv">ENABLED_AGENTS</span><span class="o">+=(</span><span class="s2">&quot;pi&quot;</span><span class="o">)</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nv">ENABLED_AGENTS</span><span class="o">+=(</span><span class="s2">"pi"</span><span class="o">)</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># Or replace the whole list (e.g. solo-claude profile):</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="nv">ENABLED_AGENTS</span><span class="o">=(</span><span class="s2">&quot;claude&quot;</span><span class="o">)</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="nv">ENABLED_AGENTS</span><span class="o">=(</span><span class="s2">"claude"</span><span class="o">)</span>
 </span></code></pre></div>
 <p><strong>How a profile is structured:</strong> each <code>agents/&lt;name&gt;/</code> directory contains:</p>
 <table>
@@ -1152,16 +1152,16 @@
 </li>
 <li>
 <p><strong>Write <code>agents/&lt;name&gt;/config.conf</code></strong> declaring what the agent needs:
-   <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nv">AGENT_CREDENTIAL_ENV_VARS</span><span class="o">=(</span><span class="s2">&quot;MYTOOL_API_KEY&quot;</span><span class="o">)</span><span class="w">     </span><span class="c1"># for warning when blocked</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nv">AGENT_AUTH_MARKERS</span><span class="o">=(</span><span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.mytool/auth.json&quot;</span><span class="o">)</span><span class="w">   </span><span class="c1"># exists ⇒ &quot;authenticated&quot;</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nv">AGENT_REQUIRED_WRITABLE_PATHS</span><span class="o">=(</span><span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.mytool&quot;</span><span class="o">)</span><span class="w">  </span><span class="c1"># auto-folded into HOME_WRITABLE</span>
+   <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nv">AGENT_CREDENTIAL_ENV_VARS</span><span class="o">=(</span><span class="s2">"MYTOOL_API_KEY"</span><span class="o">)</span><span class="w">     </span><span class="c1"># for warning when blocked</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nv">AGENT_AUTH_MARKERS</span><span class="o">=(</span><span class="s2">"</span><span class="nv">$HOME</span><span class="s2">/.mytool/auth.json"</span><span class="o">)</span><span class="w">   </span><span class="c1"># exists ⇒ "authenticated"</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nv">AGENT_REQUIRED_WRITABLE_PATHS</span><span class="o">=(</span><span class="s2">"</span><span class="nv">$HOME</span><span class="s2">/.mytool"</span><span class="o">)</span><span class="w">  </span><span class="c1"># auto-folded into HOME_WRITABLE</span>
 </span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="nv">AGENT_REQUIRED_READABLE_PATHS</span><span class="o">=()</span><span class="w">                 </span><span class="c1"># auto-folded into HOME_READONLY</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="nv">AGENT_BLOCKED_FILES</span><span class="o">=(</span><span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.mytool/AGENTS.md&quot;</span><span class="o">)</span><span class="w">  </span><span class="c1"># auto-folded into BLOCKED_FILES</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="nv">AGENT_LOGIN_HINT</span><span class="o">=</span><span class="s2">&quot;run &#39;mytool login&#39; inside the sandbox&quot;</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="nv">AGENT_BLOCKED_FILES</span><span class="o">=(</span><span class="s2">"</span><span class="nv">$HOME</span><span class="s2">/.mytool/AGENTS.md"</span><span class="o">)</span><span class="w">  </span><span class="c1"># auto-folded into BLOCKED_FILES</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="nv">AGENT_LOGIN_HINT</span><span class="o">=</span><span class="s2">"run 'mytool login' inside the sandbox"</span>
 </span></code></pre></div></p>
 </li>
 <li>
-<p><strong>Write <code>agents/&lt;name&gt;/overlay.sh</code></strong> modeled on an existing one (codex is the simplest example) — merge instructions into a <code>sandbox-config/</code> dir and export the agent's config-dir env var via <code>_AGENT_ENV_EXPORTS+=(...)</code>.</p>
+<p><strong>Write <code>agents/&lt;name&gt;/overlay.sh</code></strong> modeled on an existing one (codex is the simplest example) — merge instructions into a <code>sandbox-config/</code> dir and export the agent's config-dir env var via <code>_AGENT_ENV_EXPORTS+=(...)</code>. The overlay runs on the host but writes into a directory the agent can write, so do <strong>all</strong> file operations through the helpers in <code>agents/overlay-lib.sh</code> (<code>_overlay_fs mkdir|sync</code>, <code>_overlay_read</code>, <code>_overlay_write</code>) — never <code>cp</code>, <code>&gt;</code>, <code>mv</code>, <code>ln -sf</code> or <code>rm -rf</code> on paths in the agent's config dir, which follow agent-planted symlinks. Register any host-executed config the agent could tamper with (hooks, MCP servers) via <code>_overlay_protect_host_file</code> and give the agent a copy-on-launch copy (<code>sync --copy NAME</code>). See <a href="../security/#agent-config-left-behind-for-your-next-unsandboxed-session">Security → Agent config left behind</a>.</p>
 </li>
 <li>
 <p><strong>Copy <code>agents/&lt;name&gt;/agent.md</code></strong> from another agent (the wording is generic). Customize if you want different sandbox-integrity messaging for this tool.</p>
@@ -1292,7 +1292,7 @@
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.footer", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.action.edit", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

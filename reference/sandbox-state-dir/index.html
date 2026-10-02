@@ -19,7 +19,7 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -27,7 +27,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -918,6 +918,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#launcher-side-creation-and-sanitization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Launcher-side creation and sanitization
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#threat-model-framing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1008,16 +1019,16 @@
 <p><strong>Disclaimer:</strong> Like the rest of the chaperon, the protections described here are best-effort. Read the <a href="#threat-model-framing">threat-model framing</a> before relying on this dir for security purposes.</p>
 </blockquote>
 <h2 id="what-it-is">What it is<a class="headerlink" href="#what-it-is" title="Permanent link">&para;</a></h2>
-<p><code>.sandbox-state/</code> is a hidden directory the chaperon creates inside each project tree (<code>$project_dir/.sandbox-state/</code>) to hold chaperon-managed state that the sandboxed agent needs to read but must not be able to tamper with.</p>
+<p><code>.sandbox-state/</code> is a hidden directory the launcher (bwrap/firejail) and the chaperon create inside each project tree (<code>$project_dir/.sandbox-state/</code>) to hold chaperon-managed state that the sandboxed agent needs to read but must not be able to tamper with.</p>
 <p>Layout:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>$project_dir/.sandbox-state/
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>├── README.md                     # marker file explaining the convention
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>├── slurm-logs/&lt;transformed&gt;      # slurmstepd writes job logs here;
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>│                                 # the in-sandbox wrapper creates
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>│                                 # relative symlinks from the user&#39;s
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>│                                 # relative symlinks from the user's
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>│                                 # intended --output/--error paths
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>│                                 # to files here
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>└── chaperon/&lt;session-id&gt;.log     # chaperon&#39;s diagnostic log
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>└── chaperon/&lt;session-id&gt;.log     # chaperon's diagnostic log
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>                                  # (bwrap/firejail only; XDG fallback
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>                                  # on landlock)
 </span></code></pre></div>
@@ -1050,6 +1061,15 @@
 </table>
 <p>The bwrap and firejail backends emit a <code>--ro-bind</code> / <code>--read-only=</code> after the writable project-dir bind. Mount overlays are path-keyed and later-wins, so the RO subtree sits on top of the writable parent in the sandbox's mount namespace.</p>
 <p>Landlock cannot do this — its rules are additive at the kernel level, so once <code>$project_dir</code> is in the writable allowlist, every descendant is writable too. The chaperon-side feature detects <code>$SANDBOX_BACKEND=landlock</code> and disables the parts that depend on the RO overlay (the <code>--output</code>/<code>--error</code> transformation in <code>chaperon/handlers/_handler_lib.sh</code>).</p>
+<h2 id="launcher-side-creation-and-sanitization">Launcher-side creation and sanitization<a class="headerlink" href="#launcher-side-creation-and-sanitization" title="Permanent link">&para;</a></h2>
+<p>A read-only overlay only protects a directory that exists when the backend argv is built. Earlier releases let the chaperon create <code>.sandbox-state/</code> lazily, after the sandbox was already configured, so the <strong>first session in a fresh project had it writable</strong>: the agent could plant <code>slurm-logs/&lt;name&gt; -&gt; ~/some-file</code>, and slurmstepd (outside the sandbox) wrote job output through the link. That was reproduced on a real Slurm cluster. An agent could also replace <code>.sandbox-state</code> itself with a symlink, which later sessions would then RO-bind (exposing the link target) and the chaperon would write into.</p>
+<p><code>sandbox-exec.sh</code> now calls <code>_prepare_sandbox_state_dir</code> (sandbox-lib.sh) <strong>before</strong> <code>backend_prepare</code>, on every launch:</p>
+<ol>
+<li>If <code>.sandbox-state</code>, <code>slurm-logs/</code> or <code>chaperon/</code> is a symlink, it is removed (with a warning) and recreated as a real directory. Any other non-directory there is a hard error.</li>
+<li>On bwrap and firejail, <code>.sandbox-state/{slurm-logs,chaperon}</code> are created (mode 700) so the RO overlay applies from the very first session. The backends refuse to start rather than launch without the overlay.</li>
+<li>On every backend, symlinks, multiply-linked regular files and special files anywhere under <code>.sandbox-state/</code> are deleted (with a warning listing them). Neither the chaperon nor slurmstepd ever creates these, so anything found was planted by an earlier session that could write there.</li>
+</ol>
+<p><strong>What landlock can and cannot do.</strong> A landlock session can always write anything under <code>.sandbox-state/</code>; there is no way to make it read-only there. The launcher-side purge means a <em>later</em> bwrap/firejail session never inherits a link planted by an earlier landlock session. It cannot help against a landlock session that runs <em>concurrently</em> with a bwrap/firejail session on the same project: the landlock agent can plant a link between the purge and slurmstepd's <code>open()</code>. Do not run landlock sessions on a project at the same time as bwrap/firejail sessions on shared-Slurm hosts. (Landlock sessions can also reach munge and the real <code>sbatch</code> directly; see the SPANK hardening in <code>docs/admin/hardening.md</code>.)</p>
 <h2 id="threat-model-framing">Threat-model framing<a class="headerlink" href="#threat-model-framing" title="Permanent link">&para;</a></h2>
 <blockquote>
 <p>"Yes, it should be considered hostile, even the now non-directly-writable <code>.sandbox-state</code>. After all the submitted job determines what is written, and we just prevent symlink injection."</p>
@@ -1086,7 +1106,8 @@
 <li>Helper functions: <code>chaperon/handlers/_handler_lib.sh::_sandbox_state_dir</code>, <code>::_ensure_sandbox_state_dir</code>, <code>::_slurm_output_feature_enabled</code>.</li>
 <li>Bind-mount overlay: <code>backends/bwrap.sh</code>, <code>backends/firejail.sh</code> (search for <code>.sandbox-state</code>).</li>
 <li>Landlock warning: <code>backends/landlock.sh</code> (search for <code>.sandbox-state</code>).</li>
-<li>First mkdir trigger: <code>chaperon/handlers/sbatch.sh::handle_sbatch</code>.</li>
+<li>Creation + sanitization before the sandbox starts: <code>sandbox-lib.sh::_prepare_sandbox_state_dir</code>, called from <code>sandbox-exec.sh</code> before <code>backend_prepare</code>.</li>
+<li>Chaperon-side (idempotent) mkdir: <code>chaperon/handlers/sbatch.sh::handle_sbatch</code>.</li>
 <li>Backend identity propagation to chaperon: <code>sandbox-exec.sh</code> after <code>detect_backend</code> (<code>export SANDBOX_BACKEND</code>).</li>
 </ul>
 <p>For the slurm-output-specific use, see <code>docs/reference/chaperon-output-staging.md</code>.</p>
@@ -1163,7 +1184,7 @@
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.footer", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.action.edit", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

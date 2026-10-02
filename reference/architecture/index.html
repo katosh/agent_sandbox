@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -31,7 +31,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -1157,7 +1157,7 @@
 </table>
 <p><strong>Network</strong> is not isolated on any backend — Claude Code requires network access to communicate with the Anthropic API, and many HPC tools (Slurm, LDAP/NSS, NFS) depend on network connectivity. See <a href="../../admin/hardening/">Admin Hardening</a> for network restriction options.</p>
 <p><strong>Abstract Unix sockets</strong> (<code>@/org/...</code>) bypass filesystem isolation because they live in the network namespace, not on the filesystem. Isolating them requires a separate network namespace (<code>--unshare-net</code> / <code>--net=none</code>), which would break Claude Code's API access and Slurm connectivity. On systems with <code>systemd --user</code>, an abstract D-Bus socket could be used for sandbox escape — see <a href="../../admin/hardening/">Admin Hardening</a>.</p>
-<p><strong>IPC / <code>/dev/shm</code></strong> is isolated on bwrap (<code>--unshare-ipc</code> + private <code>/dev/shm</code> tmpfs) and firejail (<code>--ipc-namespace</code>). Each sandbox gets its own <code>/dev/shm</code> and SysV IPC namespace, preventing the agent from reading or corrupting shared memory of processes outside the sandbox. This is safe for HPC workloads: <code>sbatch</code> jobs run entirely within a single sandbox, so all MPI ranks, NCCL collectives, and CUDA IPC within a job share the same IPC namespace. Landlock cannot isolate IPC (no namespace support). Configurable via <code>PRIVATE_IPC</code> in <code>sandbox.conf</code> (default: <code>true</code>). When set by an admin config, users cannot weaken it to <code>false</code>.</p>
+<p><strong>IPC / <code>/dev/shm</code></strong> is isolated on bwrap (<code>--unshare-ipc</code> + private <code>/dev/shm</code> tmpfs) and firejail (<code>--ipc-namespace</code> + private <code>/dev/shm</code> inside its <code>--private-dev</code> <code>/dev</code>). Each sandbox gets its own <code>/dev/shm</code> and SysV IPC namespace, preventing the agent from reading or corrupting shared memory of processes outside the sandbox. This is safe for HPC workloads: <code>sbatch</code> jobs run entirely within a single sandbox, so all MPI ranks, NCCL collectives, and CUDA IPC within a job share the same IPC namespace. Landlock cannot isolate IPC (no namespace support). Configurable via <code>PRIVATE_IPC</code> in <code>sandbox.conf</code> (default: <code>true</code>). When set by an admin config, users cannot weaken it to <code>false</code>.</p>
 <p><strong>Environment variables:</strong> The sandbox inherits your shell environment, blocks specific names via <code>BLOCKED_ENV_VARS</code>, and blocks credential-pattern globs via <code>BLOCKED_ENV_PATTERNS</code> (<code>*_TOKEN</code>, <code>SSH_*</code>, <code>CI_*</code>, etc.). To grant access, add the variable to <code>ALLOWED_ENV_VARS</code>.</p>
 <h2 id="hpc-slurm-integration">HPC &amp; Slurm Integration<a class="headerlink" href="#hpc-slurm-integration" title="Permanent link">&para;</a></h2>
 <p>On shared HPC systems, the risks are amplified: LDAP/AD directories expose every user on the cluster (<code>getent passwd</code>, <code>finger</code>), other people's lab data is accessible via shared filesystems, and Slurm job submission can escape filesystem restrictions entirely — an agent just submits a job that reads <code>~/.ssh</code> on the compute node.</p>
@@ -1166,7 +1166,7 @@
 <p><strong>From the agent's perspective, Slurm looks unperturbed.</strong> Running <code>sbatch</code>, <code>srun</code>, <code>squeue</code>, <code>scancel</code>, <code>scontrol</code>, <code>sacct</code>, and friends from inside the sandbox behaves as if you were calling them from outside the sandbox — the stubs are invoked on PATH exactly like the real binaries, return the same exit codes, and print stdout/stderr that matches what the real tools would produce. Under the hood every call is funneled through the chaperon and heavily filtered (argument whitelisting, CWD validation, scope-filtered output, denied subcommands), but the surface presented to the agent is the unmodified Slurm CLI. The filtering is intentionally transparent: allowed commands pass through untouched, denied ones fail with an explanatory error, and scoped output is rewritten so chaperon internals never leak.</p>
 <ul>
 <li><strong>Stub sbatch:</strong> Parses <code>--wrap</code> and script arguments, sends them over the <code>CHAPERON/1</code> protocol to the chaperon, prints the response. The agent calls <code>sbatch</code> as normal.</li>
-<li><strong>Stub srun:</strong> Proxied through the chaperon like sbatch. Two modes: <strong>allocation mode</strong> (login node) — validates flags, wraps the command in <code>sandbox-exec.sh</code> so compute-node processes are sandboxed, then calls real srun. <strong>Step mode</strong> (inside an sbatch job, <code>SLURM_JOB_ID</code> set) — validates flags against a step-only whitelist and execs real srun directly for MPI/multi-process step launching. <code>--pty</code> is denied (no PTY passthrough). The chaperon runs outside the sandbox and has munge access — munge is never exposed inside the sandbox.</li>
+<li><strong>Stub srun:</strong> Proxied through the chaperon like sbatch. Two modes: <strong>allocation mode</strong> (login node) — validates flags, wraps the command in <code>sandbox-exec.sh</code> so compute-node processes are sandboxed, then calls real srun. <strong>Step mode</strong> (inside an sbatch job, <code>SLURM_JOB_ID</code> set) — validates flags against a step-only whitelist and, like allocation mode, wraps the command in <code>sandbox-exec.sh</code>: step tasks are spawned by slurmstepd outside any sandbox, so each task re-enters the sandbox itself (MPI/multi-process steps get one sandbox per task). <code>--pty</code> is denied (no PTY passthrough). The chaperon runs outside the sandbox and has munge access — munge is never exposed inside the sandbox.</li>
 <li><strong>Stub scancel:</strong> Sends cancel requests to the chaperon, which filters job IDs by scope (session, project, or user). By default, jobs submitted by any sandbox session with the same project directory can be cancelled. Configurable via <code>SLURM_SCOPE</code> in <code>sandbox.conf</code>, or as an environment variable override: <code>SLURM_SCOPE=session agent-sandbox claude</code>.</li>
 <li><strong>Stub squeue:</strong> Proxied through the chaperon. Output is filtered to only show jobs within scope. The agent sees only its own sandbox-submitted jobs, not other users' jobs or unrelated jobs.</li>
 <li><strong>Stub scontrol:</strong> Proxied through the chaperon. Read-only commands (<code>show node</code>, <code>show partition</code>, <code>show config</code>) pass through. Job operations (<code>show job</code>, <code>hold</code>, <code>release</code>, <code>requeue</code>, <code>update job</code>) are scoped to chaperon-submitted jobs. Dangerous subcommands (<code>shutdown</code>, <code>reconfigure</code>, etc.) and user-enumerating targets (<code>show assoc_mgr</code>) are denied.</li>
@@ -1287,7 +1287,7 @@
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.footer", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.action.edit", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

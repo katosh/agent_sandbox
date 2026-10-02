@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -31,7 +31,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -1270,21 +1270,21 @@
 <p>Add the path to <code>READONLY_MOUNTS</code> in sandbox.conf:
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nv">READONLY_MOUNTS</span><span class="o">=(</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span><span class="c1"># ... existing entries ...</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="s2">&quot;/fh/fast/mylab/shared_data&quot;</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="s2">"/fh/fast/mylab/shared_data"</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="o">)</span>
 </span></code></pre></div></p>
 <h2 id="grant-readwrite-access-to-an-extra-directory">Grant read+write access to an extra directory<a class="headerlink" href="#grant-readwrite-access-to-an-extra-directory" title="Permanent link">&para;</a></h2>
 <p>Add the path to <code>EXTRA_WRITABLE_PATHS</code>:
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nv">EXTRA_WRITABLE_PATHS</span><span class="o">=(</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">    </span><span class="s2">&quot;/fh/scratch/delete30/mylab/agent-output&quot;</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">    </span><span class="s2">"/fh/scratch/delete30/mylab/agent-output"</span>
 </span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="o">)</span>
 </span></code></pre></div></p>
 <h2 id="expose-credentials-ssh-aws-etc">Expose credentials (SSH, AWS, etc.)<a class="headerlink" href="#expose-credentials-ssh-aws-etc" title="Permanent link">&para;</a></h2>
 <p>Add the dotfile or directory to <code>HOME_READONLY</code> (read-only) or <code>HOME_WRITABLE</code> (read+write):
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nv">HOME_READONLY</span><span class="o">=(</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">    </span><span class="c1"># ... existing entries ...</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="s2">&quot;.ssh&quot;</span><span class="w">          </span><span class="c1"># SSH keys — needed for git push, remote access</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="s2">&quot;.aws&quot;</span><span class="w">          </span><span class="c1"># AWS credentials</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="s2">".ssh"</span><span class="w">          </span><span class="c1"># SSH keys — needed for git push, remote access</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="s2">".aws"</span><span class="w">          </span><span class="c1"># AWS credentials</span>
 </span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="o">)</span>
 </span></code></pre></div></p>
 <h2 id="home-directory-access-modes-home_access">Home directory access modes (HOME_ACCESS)<a class="headerlink" href="#home-directory-access-modes-home_access" title="Permanent link">&para;</a></h2>
@@ -1329,8 +1329,8 @@
 <h2 id="unblock-an-environment-variable">Unblock an environment variable<a class="headerlink" href="#unblock-an-environment-variable" title="Permanent link">&para;</a></h2>
 <p>Env vars matching secret patterns (<code>*_TOKEN</code>, <code>*_API_KEY</code>, <code>*_SECRET</code>, etc.) are blocked by default. To let a specific variable through, add it to <code>ALLOWED_ENV_VARS</code>:
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nv">ALLOWED_ENV_VARS</span><span class="o">=(</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">    </span><span class="s2">&quot;MY_APP_TOKEN&quot;</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="s2">&quot;CUSTOM_API_KEY&quot;</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">    </span><span class="s2">"MY_APP_TOKEN"</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="s2">"CUSTOM_API_KEY"</span>
 </span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="o">)</span>
 </span></code></pre></div>
 The user can check which vars are in their environment with: <code>env | grep -iE 'token|key|secret'</code></p>
@@ -1338,8 +1338,8 @@ The user can check which vars are in their environment with: <code>env | grep -i
 <p>Add it to <code>HOME_WRITABLE</code>:
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nv">HOME_WRITABLE</span><span class="o">=(</span>
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">    </span><span class="c1"># ... existing entries ...</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="s2">&quot;.cache&quot;</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="s2">&quot;.my_tool_state&quot;</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="s2">".cache"</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="s2">".my_tool_state"</span>
 </span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="o">)</span>
 </span></code></pre></div></p>
 <h2 id="per-project-overrides">Per-project overrides<a class="headerlink" href="#per-project-overrides" title="Permanent link">&para;</a></h2>
@@ -1544,7 +1544,7 @@ The user can check which vars are in their environment with: <code>env | grep -i
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.footer", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.action.edit", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -31,7 +31,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -1457,7 +1457,7 @@
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>sudo<span class="w"> </span>systemctl<span class="w"> </span>mask<span class="w"> </span>user@.service
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># Verify</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>systemctl<span class="w"> </span>status<span class="w"> </span>user@501.service<span class="w">   </span><span class="c1"># should show &quot;masked&quot;</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>systemctl<span class="w"> </span>status<span class="w"> </span>user@501.service<span class="w">   </span><span class="c1"># should show "masked"</span>
 </span></code></pre></div>
 <p><strong>What is affected by disabling:</strong> <code>gpg-agent</code> socket activation (users doing GPG signing would need to start <code>gpg-agent --daemon</code> manually), <code>systemctl --user</code> commands, and any user-level systemd services. On HPC login nodes this is rarely an issue — most user workflows don't depend on systemd user instances.</p>
 <p><strong>Note:</strong> bwrap and firejail are <strong>not affected</strong> — they replace <code>/run</code> with a tmpfs (bwrap) or blacklist the socket (firejail), so the D-Bus socket is unreachable regardless.</p>
@@ -1508,7 +1508,7 @@
 - The agent <strong>cannot</strong> read <code>alice</code>'s private files (SSH keys, credentials) because it's a different UID</p>
 <h3 id="slurm-association">Slurm Association<a class="headerlink" href="#slurm-association" title="Permanent link">&para;</a></h3>
 <p>A separate Slurm account and QOS could be created with resource limits:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sacctmgr<span class="w"> </span>add<span class="w"> </span>account<span class="w"> </span>ai_agents<span class="w"> </span><span class="nv">Description</span><span class="o">=</span><span class="s2">&quot;AI agent jobs&quot;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sacctmgr<span class="w"> </span>add<span class="w"> </span>account<span class="w"> </span>ai_agents<span class="w"> </span><span class="nv">Description</span><span class="o">=</span><span class="s2">"AI agent jobs"</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>sacctmgr<span class="w"> </span>add<span class="w"> </span>user<span class="w"> </span>alice_ai<span class="w"> </span><span class="nv">Account</span><span class="o">=</span>ai_agents
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
 </span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Optional: limit resources via QOS</span>
@@ -1591,11 +1591,11 @@
 </span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>
 </span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>        # Match only sandboxed processes via cgroup
 </span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>        # (cgroup path varies by distro — verify with: cat /proc/self/cgroup)
-</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>        socket cgroupv2 level 2 &quot;user.slice/user-1001.slice/user@1001.service/sandbox.slice&quot; \
+</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>        socket cgroupv2 level 2 "user.slice/user-1001.slice/user@1001.service/sandbox.slice" \
 </span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a>            ip daddr @blocked_nets drop
 </span><span id="__span-6-19"><a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a>
 </span><span id="__span-6-20"><a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>        # Block SSH out from sandbox (prevents escape to unsandboxed shell)
-</span><span id="__span-6-21"><a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>        socket cgroupv2 level 2 &quot;user.slice/user-1001.slice/user@1001.service/sandbox.slice&quot; \
+</span><span id="__span-6-21"><a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>        socket cgroupv2 level 2 "user.slice/user-1001.slice/user@1001.service/sandbox.slice" \
 </span><span id="__span-6-22"><a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a>            meta l4proto tcp th dport 22 drop
 </span><span id="__span-6-23"><a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a>
 </span><span id="__span-6-24"><a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a>        # Everything else from sandbox is allowed (research, API, packages)
@@ -1886,7 +1886,7 @@ for the full surface.</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.footer", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.action.edit", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

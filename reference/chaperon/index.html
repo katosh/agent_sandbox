@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -31,7 +31,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -2139,10 +2139,11 @@
 </span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>              - stub srun → writes to req FIFO → chaperon validates flags:
 </span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>                  alloc mode (login node): wraps command in sandbox-exec.sh,
 </span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>                    calls real srun → compute node runs sandboxed
-</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>                  step mode (compute node, SLURM_JOB_ID set): execs real
-</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>                    srun directly for job-step launching (MPI)
-</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>              - stub scancel → writes to req FIFO → chaperon validates
-</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>                job scope, calls real scancel
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>                  step mode (compute node, SLURM_JOB_ID set): also wraps
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>                    the command in sandbox-exec.sh (steps are started by
+</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>                    slurmstepd outside any sandbox), calls real srun
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>              - stub scancel → writes to req FIFO → chaperon validates
+</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>                job scope, calls real scancel
 </span></code></pre></div>
 <h3 id="component-roles">Component Roles<a class="headerlink" href="#component-roles" title="Permanent link">&para;</a></h3>
 <p><strong>Trusted side</strong> (runs outside the sandbox, has Slurm credentials):</p>
@@ -2168,7 +2169,7 @@
 </tr>
 <tr>
 <td><strong>handlers/srun.sh</strong></td>
-<td>Validates flags; allocation mode wraps in <code>sandbox-exec.sh</code>, step mode execs real srun</td>
+<td>Validates flags; wraps the command in <code>sandbox-exec.sh</code> in both allocation and step mode</td>
 </tr>
 <tr>
 <td><strong>handlers/scancel.sh</strong></td>
@@ -2253,7 +2254,7 @@
 </span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>│   ├── sshare.sh            # User-scoped fairshare data
 </span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>│   ├── sdiag.sh             # Read-only scheduler diagnostics
 </span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>│   ├── sreport.sh           # Blocked (user enumeration risk)
-</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>│   └── blocked.sh           # Generic &quot;command blocked&quot; response
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>│   └── blocked.sh           # Generic "command blocked" response
 </span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>└── stubs/                   # PATH-shadowing stubs (all talk to chaperon)
 </span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>    ├── _stub_lib.sh         # Stub→chaperon communication library
 </span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>    ├── sbatch, srun, scancel, squeue, scontrol
@@ -2275,7 +2276,7 @@
 <h3 id="response-chaperon-stub">Response (chaperon → stub)<a class="headerlink" href="#response-chaperon-stub" title="Permanent link">&para;</a></h3>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>CHAPERON/1 RESULT
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>EXIT &lt;number&gt;         # exit code from real sbatch
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>STDOUT &lt;base64&gt;       # stdout (e.g., &quot;Submitted batch job 12345&quot;)
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>STDOUT &lt;base64&gt;       # stdout (e.g., "Submitted batch job 12345")
 </span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>STDERR &lt;base64&gt;       # stderr (e.g., validation errors)
 </span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>END
 </span></code></pre></div>
@@ -2294,13 +2295,14 @@
 <li><strong>Per-request response pipes</strong>: Each stub creates an atomically-named directory (<code>mktemp -d</code>) containing a response FIFO (<code>fifo</code>), sends the path in the request, and reads the response from it. This eliminates the TOCTOU window that <code>mktemp -u</code> + <code>mkfifo</code> would have. The FIFO is created with <code>mkfifo -m 600</code> (permissions set atomically).</li>
 <li><strong>No FD inheritance needed</strong>: Unlike socketpairs, FIFOs are filesystem-backed and survive bwrap's FD closing (which closes all FDs &gt; 2). No exemptions needed.</li>
 <li><strong>Timeouts</strong>: The stub reads responses with a 30-second timeout (<code>chaperon_read_response</code> in <code>_stub_lib.sh</code>) to prevent infinite hangs if the chaperon dies. The chaperon uses a 30-second body read timeout and a 10-second response write timeout to prevent stalls from malicious or dead stubs. All internal squeue calls (for scope resolution) use <code>timeout 10</code>.</li>
-<li><strong>Cleanup on exit</strong>: The chaperon's EXIT trap removes the entire FIFO directory.</li>
+<li><strong>Cleanup on exit</strong>: The chaperon's EXIT trap (also run on SIGTERM/SIGINT/SIGHUP) removes the entire FIFO directory, plus the launch's proxy-socket and mail-block stub directories, which <code>sandbox-exec.sh</code> passes as extra arguments. Each per-launch directory also carries an <code>.owner</code> tag (<code>&lt;host&gt; &lt;pid-ns&gt; &lt;pid&gt; &lt;starttime&gt;</code>); every launch prunes directories whose tagged owner is gone (untagged, pre-upgrade directories after 7 days), covering a SIGKILLed chaperon.</li>
+<li><strong>Shared <code>/tmp</code></strong>: with <code>PRIVATE_TMP=false</code> these directories sit in the host <code>/tmp</code> that other sandboxes of the same user also see, so a sibling sandbox can reach this session's chaperon FIFO. <code>sandbox-exec.sh</code> prints a warning in that configuration (bwrap/firejail).</li>
 </ol>
 <h2 id="chaperon-lifecycle">Chaperon Lifecycle<a class="headerlink" href="#chaperon-lifecycle" title="Permanent link">&para;</a></h2>
 <ol>
 <li><strong>Creation</strong>: <code>sandbox-exec.sh</code> creates a FIFO directory via <code>mktemp -d</code> and a request pipe via <code>mkfifo</code>, launches <code>chaperon.sh</code> as a background process, and exports <code>_CHAPERON_FIFO_DIR</code> for the sandbox.</li>
-<li><strong>Logging</strong>: The chaperon initializes structured logging via <code>logging.sh</code> (see <a href="#logging">Logging</a> below). The log file is created before the main loop starts.</li>
-<li><strong>Orphan prevention</strong>: The chaperon sets <code>PR_SET_PDEATHSIG</code> via Python/ctypes so it receives SIGTERM if its parent (sandbox-exec.sh) dies. This prevents orphaned chaperon processes.</li>
+<li><strong>Logging</strong>: The chaperon loads all handlers, then initializes structured logging via <code>logging.sh</code> (see <a href="#logging">Logging</a> below). The log file is created before the main loop starts. Agent-controlled fields (command, args, cwd, shebang, handler stderr) are logged with control characters escaped (<code>\n</code>, <code>\r</code>, <code>\t</code>, <code>\xHH</code>, backslash doubled), so a request cannot forge additional log lines.</li>
+<li><strong>Orphan prevention</strong>: The chaperon polls its parent's liveness (<code>kill -0 $PPID</code>) every 5 seconds while idle and exits (running its cleanup trap) once the parent is gone. (The Python/ctypes <code>PR_SET_PDEATHSIG</code> call only affects the short-lived Python child and is kept as a best-effort no-op.)</li>
 <li><strong>Signal handling</strong>: SIGTERM and SIGINT are trapped for clean shutdown (FD cleanup, shutdown log entry).</li>
 <li><strong>Main loop</strong>: Reads requests inline with timeouts (30-second body timeout to prevent stalls from malformed requests), dispatches to the appropriate handler with FD 3 closed (<code>3&gt;&amp;-</code>) to prevent child processes from inheriting the request FIFO, captures stdout/stderr, and writes the response via the held response FD with a 10-second write timeout. Each request is logged with its full arguments, and handler stderr (including <code>_sandbox_deny</code> / <code>_sandbox_warn</code> messages) is captured in the log.</li>
 <li><strong>Exit</strong>: On read error, parent death (liveness polling), or signal, the chaperon logs shutdown, removes the FIFO directory, and exits 0.</li>
@@ -2320,7 +2322,7 @@
 </span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>2026-04-15T20:34:50Z [DEBUG] handler sbatch exited 0
 </span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>2026-04-15T20:34:52Z [INFO] request: salloc args=[--partition=campus] cwd=/fh/fast/lab/project
 </span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>2026-04-15T20:34:52Z [WARN] handler salloc exited 1
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>2026-04-15T20:34:52Z [WARN] handler salloc stderr: sandbox: &#39;salloc&#39; is not allowed inside the sandbox.
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>2026-04-15T20:34:52Z [WARN] handler salloc stderr: sandbox: 'salloc' is not allowed inside the sandbox.
 </span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>2026-04-15T20:34:52Z [WARN] handler salloc stderr:   ⚠ This action was blocked for security. [...]
 </span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>2026-04-15T20:35:00Z [INFO] shutting down (pid=12345)
 </span></code></pre></div>
@@ -2356,7 +2358,7 @@
 <h3 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h3>
 <p>Two settings in <code>sandbox.conf</code> (or per-project <code>conf.d/*.conf</code>):</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Log level: debug, info (default), warn, error</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="nv">CHAPERON_LOG_LEVEL</span><span class="o">=</span><span class="s2">&quot;info&quot;</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="nv">CHAPERON_LOG_LEVEL</span><span class="o">=</span><span class="s2">"info"</span>
 </span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
 </span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Days to retain log files (pruned at each chaperon startup)</span>
 </span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="nv">CHAPERON_LOG_RETAIN_DAYS</span><span class="o">=</span><span class="m">7</span>
@@ -2377,22 +2379,23 @@
 </span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>tail<span class="w"> </span>-20<span class="w"> </span>~/.local/state/agent-sandbox/chaperon/&lt;hostname&gt;_&lt;pid&gt;_&lt;timestamp&gt;.log
 </span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>
 </span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># Find all security denials across sessions</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>grep<span class="w"> </span><span class="s1">&#39;\[WARN\].*stderr:.*sandbox:&#39;</span><span class="w"> </span>~/.local/state/agent-sandbox/chaperon/*.log
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>grep<span class="w"> </span><span class="s1">'\[WARN\].*stderr:.*sandbox:'</span><span class="w"> </span>~/.local/state/agent-sandbox/chaperon/*.log
 </span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>
 </span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="c1"># Find all denied commands</span>
-</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>grep<span class="w"> </span><span class="s1">&#39;\[WARN\].*stderr:.*⚠&#39;</span><span class="w"> </span>~/.local/state/agent-sandbox/chaperon/*.log
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>grep<span class="w"> </span><span class="s1">'\[WARN\].*stderr:.*⚠'</span><span class="w"> </span>~/.local/state/agent-sandbox/chaperon/*.log
 </span></code></pre></div>
 <p>For deeper tracing, set <code>CHAPERON_LOG_LEVEL=debug</code> to capture handler success exit codes and submitted script content.</p>
 <h2 id="handler-dispatch">Handler Dispatch<a class="headerlink" href="#handler-dispatch" title="Permanent link">&para;</a></h2>
-<p>Filesystem-based: when a request for command <code>X</code> arrives, the chaperon looks for <code>handlers/X.sh</code> and calls <code>handle_X()</code>. If no handler exists, <code>handlers/blocked.sh</code> is used.</p>
+<p>All <code>handlers/*.sh</code> files are sourced <strong>once, at chaperon startup</strong>; each request for command <code>X</code> is dispatched to <code>handle_X()</code> if that handler was loaded, otherwise to <code>handle_blocked()</code>. Handler files are never re-read while the chaperon runs, so modifying the install tree after launch cannot inject code into the host-side chaperon.</p>
 <p>This design makes it trivial to add support for new commands (drop a handler file) or block them (they're blocked by default).</p>
 <h3 id="sbatch-handler">sbatch Handler<a class="headerlink" href="#sbatch-handler" title="Permanent link">&para;</a></h3>
 <p>The sbatch handler (<code>handlers/sbatch.sh</code>) performs four validation/transformation steps before submission:</p>
 <ol>
 <li><strong>CWD validation</strong>: The requested working directory must be a physical path under the project directory (resolves symlinks to prevent escape). Both sbatch and srun (allocation mode) validate CWD.</li>
 <li><strong>Argument whitelisting</strong>: Every flag is checked against <code>_SBATCH_ALLOWED_FLAGS</code> (~40 safe flags). Denied flags cause immediate rejection with a clear error message.</li>
-<li><strong><code>--output</code> / <code>--error</code> path transformation</strong> (bwrap/firejail only): values are redirected to <code>$project_dir/.sandbox-state/slurm-logs/</code>; the in-sandbox wrapper creates a relative symlink from the user's intended path to the staging file. Closes the slurmstepd-side <code>O_NOFOLLOW</code>-absence escape (e.g., <code>sbatch --output=/etc/cron.d/evil</code>). Disabled on landlock — see <a href="../chaperon-output-staging/"><code>docs/reference/chaperon-output-staging.md</code></a>.</li>
-<li><strong>Job wrapping</strong>: The user's script is written to a temp file, and a wrapper script is generated that runs it inside <code>sandbox-exec.sh --project-dir $PROJECT_DIR</code>. The wrapper is submitted to the real sbatch.</li>
+<li><strong><code>--output</code> / <code>--error</code> path transformation</strong> (bwrap/firejail only): values are redirected to <code>$project_dir/.sandbox-state/slurm-logs/</code>; the in-sandbox wrapper creates a relative symlink from the user's intended path to the staging file. Closes the slurmstepd-side <code>O_NOFOLLOW</code>-absence escape (e.g., <code>sbatch --output=/etc/cron.d/evil</code>). <code>%x</code> (job name), unknown <code>%</code> patterns and backslashes are refused before the transform, since slurmstepd expands the value outside the sandbox; job names with <code>/</code> or equal to <code>.</code>/<code>..</code> are refused on every backend. Disabled on landlock — see <a href="../chaperon-output-staging/"><code>docs/reference/chaperon-output-staging.md</code></a>. Before creating or using <code>.sandbox-state/</code>, <code>slurm-logs/</code> or <code>chaperon/</code>, the chaperon walks each component and refuses the submission if any is a symlink, is not a directory owned by the user, or does not canonicalise to the literal path; it also refuses if the staging file already exists as a symlink. The chaperon log falls back to the XDG location in that case. On landlock (no staging) the paths are validated instead: project-contained directory without symlink components, no <code>..</code> or backslash, only directory-neutral <code>%</code> patterns in the file name (<code>%x</code> refused), no existing symlink target; <code>/dev/null</code> allowed. A bad <code>#SBATCH --output</code>/<code>--error</code> directive fails the submission.</li>
+<li><strong><code>--export</code> rewriting</strong>: <code>--export</code> (CLI, or the last <code>#SBATCH --export</code> directive when the CLI has none) is parsed and only <code>ALL</code>, <code>NONE</code>, <code>NIL</code> or a comma list of bare variable <strong>names</strong> is passed to Slurm. <code>NAME=VALUE</code> pairs are applied inside the sandbox instead (<code>/usr/bin/env NAME=VALUE &lt;interpreter&gt;</code> as the command handed to <code>sandbox-exec.sh</code>), so agent-chosen values never reach the host-side job environment. Names must match <code>^[A-Za-z_][A-Za-z0-9_]*$</code>; shell/loader/Slurm/sandbox control names (<code>BASH_ENV</code>, <code>ENV</code>, <code>BASH_FUNC_*</code>, <code>SHELLOPTS</code>, <code>BASHOPTS</code>, <code>PS4</code>, <code>LD_*</code>, <code>GCONV_PATH</code>, <code>PATH</code>, <code>SANDBOX_*</code>, <code>_SANDBOX*</code>, <code>_CHAPERON*</code>, <code>CHAPERON_*</code>, <code>REAL_*</code>, <code>SLURM_*</code>, <code>_PASSWD_SRC_FILE</code>, <code>_GROUP_SRC_FILE</code>, <code>BWRAP</code>, and every launcher config variable) are rejected.</li>
+<li><strong>Job wrapping</strong>: A self-contained wrapper is generated that runs the script inside <code>sandbox-exec.sh --project-dir $PROJECT_DIR</code>, and is submitted to the real sbatch. The wrapper runs on the compute node <strong>outside</strong> the sandbox, so it does not trust its environment: it starts with <code>#!/bin/bash -p</code> (no <code>BASH_ENV</code>/<code>ENV</code>, no imported functions), runs only builtins before the absolute-path <code>sandbox-exec.sh</code> exec (the script body is captured with <code>read</code>, not <code>cat</code>), and unsets launcher-config variables (<code>SANDBOX_CONF</code>, <code>HOME_ACCESS</code>, <code>BWRAP</code>, <code>PRIVATE_TMP</code>, <code>NETWORK_FILTER_MODE</code>, <code>_PASSWD_SRC_FILE</code>, …, <code>SANDBOX_*</code>, <code>REAL_*</code>, <code>BASH_ENV</code>, <code>ENV</code>) before it. The compute-node sandbox therefore resolves its settings from the config files, not from the job environment.</li>
 </ol>
 <h3 id="job-tagging-and-scoping-via-comment">Job Tagging and Scoping via <code>--comment</code><a class="headerlink" href="#job-tagging-and-scoping-via-comment" title="Permanent link">&para;</a></h3>
 <p>The chaperon needs to track which jobs belong to which sandbox session/project so that <code>squeue</code>, <code>scancel</code>, and other scoped handlers can filter appropriately. This is done by injecting a structured tag into Slurm's <code>--comment</code> field on every submitted job.</p>
@@ -2413,7 +2416,7 @@
 <tr>
 <td><code>sid</code></td>
 <td><code>&lt;PID&gt;.&lt;epoch&gt;</code></td>
-<td>Unique per chaperon instance (session scope). Set once at startup and guarded against re-initialization when <code>_handler_lib.sh</code> is re-sourced per handler dispatch.</td>
+<td>Unique per chaperon instance (session scope). Set once at startup and guarded against re-initialization when <code>_handler_lib.sh</code> is sourced by each handler file.</td>
 </tr>
 <tr>
 <td><code>proj</code></td>
@@ -2433,9 +2436,9 @@
 </tbody>
 </table>
 <p>This tag is set once at submission and is <strong>inherited by array tasks</strong>, <strong>survives preemption</strong> (job ID may change, comment does not), and is <strong>queryable via squeue/sacct</strong>:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-h<span class="w"> </span>-o<span class="w"> </span><span class="s2">&quot;%i %k&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">&quot;chaperon:sid=</span><span class="nv">$SID</span><span class="s2">&quot;</span><span class="w">     </span><span class="c1"># session</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-h<span class="w"> </span>-o<span class="w"> </span><span class="s2">&quot;%i %k&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">&quot;chaperon:.*proj=</span><span class="nv">$HASH</span><span class="s2">&quot;</span><span class="w">  </span><span class="c1"># project</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-h<span class="w"> </span>-o<span class="w"> </span><span class="s2">&quot;%i %k&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">&quot;chaperon:&quot;</span><span class="w">              </span><span class="c1"># all sandbox jobs</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-h<span class="w"> </span>-o<span class="w"> </span><span class="s2">"%i %k"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">"chaperon:sid=</span><span class="nv">$SID</span><span class="s2">"</span><span class="w">     </span><span class="c1"># session</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-h<span class="w"> </span>-o<span class="w"> </span><span class="s2">"%i %k"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">"chaperon:.*proj=</span><span class="nv">$HASH</span><span class="s2">"</span><span class="w">  </span><span class="c1"># project</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-h<span class="w"> </span>-o<span class="w"> </span><span class="s2">"%i %k"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">"chaperon:"</span><span class="w">              </span><span class="c1"># all sandbox jobs</span>
 </span></code></pre></div>
 <h3 id="scancel-handler">scancel Handler<a class="headerlink" href="#scancel-handler" title="Permanent link">&para;</a></h3>
 <p>The scancel handler (<code>handlers/scancel.sh</code>) queries <code>squeue --comment</code> to resolve which jobs are in scope, then passes only matching IDs to the real scancel. No file-based tracking — the tag in Slurm is the source of truth.</p>
@@ -2540,7 +2543,8 @@
 4. Calls real srun with the validated flags and wrapped command</p>
 <p><strong>Step mode</strong> (<code>SLURM_JOB_ID</code> set — inside a compute-node allocation):
 1. Validates flags against a step-only whitelist (no scheduling flags — steps inherit the job's resources)
-2. Execs real srun directly — the command runs within the existing sandboxed allocation</p>
+2. Wraps the command in <code>sandbox-exec.sh --project-dir $DIR</code> exactly like allocation mode, then calls real srun. Step tasks are spawned by <code>slurmstepd</code> on the allocated nodes, outside any sandbox: the sandbox that encloses the calling job does <strong>not</strong> extend to them. Each task therefore runs its own <code>sandbox-exec.sh</code> (multi-task steps get one sandbox per task). (Earlier versions exec'd real srun unwrapped here, which ran the step unsandboxed with the chaperon's host environment.)</p>
+<p><code>--export</code> is not on the srun whitelist in either mode (rejected as an unrecognized flag). srun <code>-o</code>/<code>-e</code>/<code>-i</code> are opened by slurmstepd outside the sandbox and srun has no staging redirect, so on every backend they get the same validation as landlock sbatch output paths (project-contained, no symlink components or target, no <code>..</code>, safe <code>%</code> patterns only).</p>
 <p><strong>Denied srun flags</strong> (both modes):</p>
 <table>
 <thead>
@@ -2865,28 +2869,34 @@
 </ol>
 <p>To block a command without proxying it, create a standalone stub that prints an error without sourcing <code>_stub_lib.sh</code>.</p>
 <h3 id="adding-a-new-allowed-sbatch-flag">Adding a new allowed sbatch flag<a class="headerlink" href="#adding-a-new-allowed-sbatch-flag" title="Permanent link">&para;</a></h3>
-<p>Add the flag to <code>_SBATCH_ALLOWED_FLAGS</code> in <code>handlers/_handler_lib.sh</code>. If it takes a value argument, also add it to <code>_SBATCH_VALUE_FLAGS</code>.</p>
+<p>Add the flag to <code>_SBATCH_ALLOWED_FLAGS</code> in <code>handlers/_handler_lib.sh</code>, then classify it exactly the way Slurm's getopt does (check with <code>sbatch --flag</code> and <code>sbatch --flag=x</code>):</p>
+<ul>
+<li><strong>required argument</strong> (<code>--flag value</code> and <code>--flag=value</code>): also add it to <code>_SBATCH_VALUE_FLAGS</code> and to <code>_STUB_VALUE_FLAGS</code> in <code>stubs/sbatch</code>; a short form also needs an entry in <code>_slurm_long_flag</code>;</li>
+<li><strong>optional argument</strong> (<code>--flag[=value]</code>, e.g. <code>--nice</code>, <code>--exclusive</code>): add it to <code>_SBATCH_OPTARG_FLAGS</code> only. A value binds only with <code>=</code>; the next word is never consumed (Slurm would take it as the batch script);</li>
+<li><strong>no argument</strong>: nothing else to do.</li>
+</ul>
+<p>The same classes apply to srun (<code>_SRUN_VALUE_FLAGS</code> / <code>_SRUN_OPTARG_FLAGS</code> in <code>handlers/srun.sh</code>). The handlers re-emit every flag as one token (<code>--long=value</code> or the bare flag) and pass the job after a chaperon-inserted <code>--</code>, so a misclassified flag cannot put a user word in Slurm's command slot; but a wrong class still changes what the agent's command means, so keep the lists exact.</p>
 <h3 id="configuring-slurm-scope">Configuring Slurm scope<a class="headerlink" href="#configuring-slurm-scope" title="Permanent link">&para;</a></h3>
 <p>Set <code>SLURM_SCOPE</code> in <code>sandbox.conf</code>:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Jobs from any sandbox session with the same project dir (default)</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="nv">SLURM_SCOPE</span><span class="o">=</span><span class="s2">&quot;project&quot;</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="nv">SLURM_SCOPE</span><span class="o">=</span><span class="s2">"project"</span>
 </span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
 </span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="c1"># Only jobs submitted by THIS sandbox session</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="nv">SLURM_SCOPE</span><span class="o">=</span><span class="s2">&quot;session&quot;</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="nv">SLURM_SCOPE</span><span class="o">=</span><span class="s2">"session"</span>
 </span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>
 </span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="c1"># All jobs of the current user (including non-sandbox jobs)</span>
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="nv">SLURM_SCOPE</span><span class="o">=</span><span class="s2">&quot;user&quot;</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="nv">SLURM_SCOPE</span><span class="o">=</span><span class="s2">"user"</span>
 </span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>
 </span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="c1"># No restriction (full access to your own jobs)</span>
-</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="nv">SLURM_SCOPE</span><span class="o">=</span><span class="s2">&quot;none&quot;</span>
+</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="nv">SLURM_SCOPE</span><span class="o">=</span><span class="s2">"none"</span>
 </span></code></pre></div>
 <h3 id="querying-sandbox-jobs">Querying sandbox jobs<a class="headerlink" href="#querying-sandbox-jobs" title="Permanent link">&para;</a></h3>
 <p>The <code>--comment</code> tag makes it easy to filter squeue from outside:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># All sandbox jobs for this user</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-o<span class="w"> </span><span class="s2">&quot;%.18i %.9P %.8j %.2t %.10M %k&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>chaperon:
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-o<span class="w"> </span><span class="s2">"%.18i %.9P %.8j %.2t %.10M %k"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>chaperon:
 </span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
 </span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="c1"># Jobs from a specific project</span>
-</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-h<span class="w"> </span>-o<span class="w"> </span><span class="s2">&quot;%i %k&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">&quot;proj=&lt;hash&gt;&quot;</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>squeue<span class="w"> </span>--me<span class="w"> </span>-h<span class="w"> </span>-o<span class="w"> </span><span class="s2">"%i %k"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span><span class="s2">"proj=&lt;hash&gt;"</span>
 </span></code></pre></div>
 
 
@@ -2999,7 +3009,7 @@
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.footer", "navigation.instant", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.action.edit", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>
