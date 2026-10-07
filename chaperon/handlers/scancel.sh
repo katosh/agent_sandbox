@@ -146,7 +146,10 @@ handle_scancel() {
 
     # Get the set of jobs allowed by this scope
     local allowed_jobs
-    allowed_jobs="$(_get_scoped_jobs "$scope" "$project_dir")"
+    allowed_jobs="$(_get_scoped_jobs "$scope" "$project_dir")" || {
+        echo "sandbox: could not list jobs from Slurm; nothing was cancelled." >&2
+        return 1
+    }
 
     if [[ -z "$allowed_jobs" ]] && ! "$cancel_all"; then
         # No chaperon jobs in queue — check if the requested IDs even exist

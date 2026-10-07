@@ -145,37 +145,19 @@ handle_squeue() {
         return "$rc"
     fi
 
-    # For session/project scopes, filter by chaperon tag.
-    # If the user explicitly requested specific job IDs (-j), validate
-    # each one against the scope instead of injecting a scoped job list.
-    if [[ -n "$user_job_ids" ]]; then
-        # User asked for specific jobs — validate each is in scope
-        local scoped_job_ids
-        scoped_job_ids="$(_get_scoped_jobs "$scope" "$project_dir")"
-
-        # Check each requested job against scoped set
-        local requested_ids validated_ids=""
-        IFS=',' read -ra requested_ids <<< "$user_job_ids"
-        for _req_id in "${requested_ids[@]}"; do
-            local _base_id="${_req_id%%_*}"  # strip array suffix
-            if echo "$scoped_job_ids" | grep -qE "^${_base_id}(_|$)"; then
-                [[ -n "$validated_ids" ]] && validated_ids+=","
-                validated_ids+="$_req_id"
-            fi
-        done
-
-        if [[ -z "$validated_ids" ]]; then
-            # None of the requested jobs are in scope
-            return 0
-        fi
-
-        local rc=0
-        "$real_squeue" --me -j "$validated_ids" "${validated_flags[@]}" | _strip_chaperon_tags || rc=$?
-        return "$rc"
-    fi
-
-    # No explicit -j: show all jobs in scope.
+    # Session/project scope: filter by chaperon tag.
     #
+    # An explicit -j (if any) is forwarded to the SAME call that answers
+    # the query, so the scope check and the answer use one consistent
+    # slurmctld read.  Pre-fix, -j first ran a full `squeue --me` scan
+    # plus a `sacct` query (both under `timeout 10`, errors discarded) to
+    # build a scope set; when that scan timed out the set came back empty,
+    # every requested id was dropped as "not in scope", and the handler
+    # returned empty output at rc 0, indistinguishable from "not queued"
+    # (nexus-code#1744).  Errors from the real squeue now propagate.
+    local job_args=()
+    [[ -n "$user_job_ids" ]] && job_args=(-j "$user_job_ids")
+
     # Instead of collecting scoped job IDs and passing them via -j (which
     # hits ARG_MAX with many jobs and costs an extra squeue call), we make
     # a SINGLE squeue --me call with the comment field injected into the
@@ -217,7 +199,7 @@ handle_squeue() {
 
     if $_out_json && command -v jq >/dev/null 2>&1; then
         # JSON: comment is already in the output — filter with jq.
-        "$real_squeue" --me "${validated_flags[@]}" \
+        "$real_squeue" --me "${job_args[@]}" "${validated_flags[@]}" \
             | jq --arg pat "$scope_pattern" \
                 '.jobs |= map(select(.comment // "" | test($pat)))' \
             | _strip_chaperon_tags || rc=$?
@@ -274,16 +256,22 @@ handle_squeue() {
         esac
 
         # Single squeue call → scope filter → strip chaperon tags.
-        "$real_squeue" --me "${_modified_flags[@]}" \
+        "$real_squeue" --me "${job_args[@]}" "${_modified_flags[@]}" \
             | _squeue_filter_scope "$scope_pattern" "$_noheader" \
             | _strip_chaperon_tags || rc=$?
 
     else
         # -O/--Format or YAML: separator injection is not feasible.
-        # Fall back to batched -j calls (two squeue calls, but these
-        # format modes are rare).
+        # Validate scope with one id-limited (or full, without -j) tagged
+        # query, then run the real query on the in-scope ids.  A failing
+        # validation call is an error, never an empty answer.
+        local _vq _vrc=0
+        _vq="$("$real_squeue" --me "${job_args[@]}" -h -o "%i${_sep:-$'\x1f'}%k")" || _vrc=$?
+        if (( _vrc != 0 )); then
+            return "$_vrc"
+        fi
         local scoped_job_ids
-        scoped_job_ids="$(_get_scoped_jobs "$scope" "$project_dir")"
+        scoped_job_ids="$(printf '%s\n' "$_vq" | _squeue_filter_scope "$scope_pattern" 1)"
         [[ -z "$scoped_job_ids" ]] && return 0
         _squeue_batched "$real_squeue" "$scoped_job_ids" \
             "${validated_flags[@]}" \

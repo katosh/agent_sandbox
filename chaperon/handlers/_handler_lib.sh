@@ -1861,12 +1861,17 @@ _query_chaperon_jobs() {
     local pattern="$1"
     local _real_squeue="${REAL_SQUEUE:-/usr/bin/squeue}"
     local _real_sacct="${REAL_SACCT:-/usr/bin/sacct}"
-    local _results
+    local _results _raw _rc=0
 
-    # squeue: pending/running jobs
-    _results="$(timeout 10 "$_real_squeue" --me -h -o "%i %k" 2>/dev/null \
-        | grep -E "$pattern" \
-        | awk '{print $1}')" || true
+    # squeue: pending/running jobs.  A failed or timed-out squeue is an
+    # ERROR, not "no jobs": returning an empty set here made callers
+    # (scancel, scontrol) report "nothing in scope" at rc 0 (nexus-code#1744).
+    _raw="$(timeout 10 "$_real_squeue" --me -h -o "%i %k")" || _rc=$?
+    if (( _rc != 0 )); then
+        _sandbox_warn "could not list jobs from Slurm (squeue exit $_rc); refusing to treat this as an empty scope."
+        return "$_rc"
+    fi
+    _results="$(printf '%s\n' "$_raw" | grep -E "$pattern" | awk '{print $1}')" || true
 
     # sacct fallback: recently completed jobs (if slurmdbd is available)
     if [[ -x "$_real_sacct" ]]; then
@@ -1903,7 +1908,12 @@ _get_scoped_jobs() {
             local _real_squeue="${REAL_SQUEUE:-/usr/bin/squeue}"
             local _real_sacct="${REAL_SACCT:-/usr/bin/sacct}"
             local _user_jobs
-            _user_jobs="$(timeout 10 "$_real_squeue" --me -h -o "%i" 2>/dev/null)" || true
+            local _urc=0
+            _user_jobs="$(timeout 10 "$_real_squeue" --me -h -o "%i")" || _urc=$?
+            if (( _urc != 0 )); then
+                _sandbox_warn "could not list jobs from Slurm (squeue exit $_urc); refusing to treat this as an empty scope."
+                return "$_urc"
+            fi
             # sacct fallback for completed jobs
             if [[ -x "$_real_sacct" ]]; then
                 local _sacct_jobs
@@ -1931,12 +1941,23 @@ _get_job_comment() {
     local _real_sacct="${REAL_SACCT:-/usr/bin/sacct}"
     local comment
 
-    # Try squeue first (fast, no database dependency)
-    comment="$(timeout 10 "$_real_squeue" -j "$base_id" --me -h -o "%k" 2>/dev/null)" || true
+    # Try squeue first (fast, no database dependency).  "Invalid job id"
+    # means the job is gone (fall through to sacct); any other failure
+    # (timeout, controller unreachable) is a lookup ERROR (return 2) so
+    # callers can tell it apart from "job not found".
+    local _sq_err _sq_rc=0
+    _sq_err="$(mktemp)" || return 2
+    comment="$(timeout 10 "$_real_squeue" -j "$base_id" --me -h -o "%k" 2>"$_sq_err")" || _sq_rc=$?
     if [[ -n "$comment" ]]; then
+        rm -f "$_sq_err"
         printf '%s' "$comment"
         return 0
     fi
+    if (( _sq_rc != 0 )) && ! grep -qi "invalid job id" "$_sq_err"; then
+        rm -f "$_sq_err"
+        return 2
+    fi
+    rm -f "$_sq_err"
 
     # Fall back to sacct (persistent, survives job completion)
     if [[ -x "$_real_sacct" ]]; then
@@ -1968,7 +1989,12 @@ _validate_job_in_scope() {
 
     # Query the job's comment (squeue first, sacct fallback)
     local comment
-    comment="$(_get_job_comment "$base_id")" || true
+    local _crc=0
+    comment="$(_get_job_comment "$base_id")" || _crc=$?
+    if (( _crc == 2 )); then
+        _sandbox_warn "could not query Slurm for job $job_id (controller unreachable or timed out); try again."
+        return 1
+    fi
 
     if [[ -z "$comment" ]]; then
         _sandbox_warn "job $job_id not found in queue or not owned by you."

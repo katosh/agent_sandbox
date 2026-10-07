@@ -3613,6 +3613,113 @@ else
     skip "Scope filter tests — chaperon/handlers/squeue.sh not found"
 fi
 
+# 5o-bis. squeue -j: no silent zero (nexus-code#1744).
+#     Pre-fix, `squeue -j <id>` first ran a `timeout 10 squeue --me` scan
+#     plus sacct with errors discarded; a timed-out scan emptied the scope
+#     set and the handler returned empty output at rc 0 ("not queued").
+#     Now -j rides the single tagged call, and slurm failures propagate.
+if [[ -f "$_SQUEUE_HANDLER" ]]; then
+    _SQ_TMP="$(mktemp -d)"
+    _SQ_PROJ="/sq-proj"
+    _SQ_HASH="$(printf '%s' "$_SQ_PROJ" | md5sum | cut -c1-12)"
+    cat > "$_SQ_TMP/squeue" <<'FAKE'
+#!/bin/bash
+echo "$*" >> "$FAKE_LOG"
+[[ "${FAKE_MODE:-ok}" == invalid ]] && { echo "slurm_load_jobs error: Invalid job id specified" >&2; exit 1; }
+[[ "${FAKE_MODE:-ok}" == fail ]] && { echo "squeue: error: Unable to contact slurm controller" >&2; exit 1; }
+ids=""; fmt="%i"; nohdr=0
+while (($#)); do case "$1" in -j) ids="$2"; shift;; -o) fmt="$2"; shift;; -h) nohdr=1;; esac; shift; done
+(( nohdr )) || echo "JOBID STATE"
+for r in "100|PENDING|chaperon:sid=1.1,proj=$FAKE_PROJ:END" "200|RUNNING|chaperon:sid=2.2,proj=other0000000:END"; do
+    IFS='|' read -r i t c <<<"$r"
+    [[ -n "$ids" && ",$ids," != *",$i,"* ]] && continue
+    o="${fmt//%i/$i}"; o="${o//%T/$t}"; o="${o//%.400k/$c}"; o="${o//%k/$c}"; echo "$o"
+done
+FAKE
+    chmod +x "$_SQ_TMP/squeue"
+    _sq_run() {  # prints stdout; sets _SQ_RC and _SQ_CALLS
+        : > "$_SQ_TMP/calls"
+        _SQ_OUT="$(bash -c '
+            set -o pipefail
+            source "$1"; shift
+            REQ_ARGS=("$@"); handle_squeue /sq-proj x' _ "$_SQUEUE_HANDLER" "$@" 2>"$_SQ_TMP/err")"
+        _SQ_RC=$?
+        _SQ_CALLS=$(wc -l < "$_SQ_TMP/calls")
+    }
+    export REAL_SQUEUE="$_SQ_TMP/squeue" FAKE_LOG="$_SQ_TMP/calls" FAKE_PROJ="$_SQ_HASH" SLURM_SCOPE=project
+
+    _sq_run -h -o '%T' -j 100
+    if [[ "$_SQ_OUT" == "PENDING" && $_SQ_RC -eq 0 && $_SQ_CALLS -eq 1 ]]; then
+        pass "squeue -j in scope: answered by one squeue call"
+    else
+        fail "squeue -j in scope" "out=$_SQ_OUT rc=$_SQ_RC calls=$_SQ_CALLS"
+    fi
+
+    _sq_run -h -o '%T' -j 200
+    if [[ -z "$_SQ_OUT" && $_SQ_RC -eq 0 ]]; then
+        pass "squeue -j out of scope: filtered, rc 0"
+    else
+        fail "squeue -j out of scope" "out=$_SQ_OUT rc=$_SQ_RC"
+    fi
+
+    FAKE_MODE=fail _sq_run -h -o '%T' -j 100
+    if [[ $_SQ_RC -ne 0 && -z "$_SQ_OUT" ]]; then
+        pass "squeue -j: slurm failure propagates as non-zero (no silent zero)"
+    else
+        fail "squeue -j slurm failure swallowed" "out=$_SQ_OUT rc=$_SQ_RC"
+    fi
+
+    FAKE_MODE=fail _sq_run -h -O jobid -j 100
+    if [[ $_SQ_RC -ne 0 ]]; then
+        pass "squeue -j -O: slurm failure propagates as non-zero"
+    else
+        fail "squeue -j -O slurm failure swallowed" "rc=$_SQ_RC"
+    fi
+
+    # Shared helpers + other handlers: a Slurm failure must not read as "empty".
+    _LIB="$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    _sq_lib() {  # _sq_lib <mode> <shell snippet>; sets _SQ_OUT/_SQ_RC/_SQ_ERR
+        _SQ_OUT="$(FAKE_MODE="$1" bash -c 'set -o pipefail; source "$1"; _CHAPERON_SESSION_ID=1.1; '"$2" _ "$_LIB" 2>"$_SQ_TMP/err")"
+        _SQ_RC=$?; _SQ_ERR="$(cat "$_SQ_TMP/err")"
+    }
+    _sq_lib ok '_get_scoped_jobs project /sq-proj'
+    [[ $_SQ_RC -eq 0 && "$_SQ_OUT" == 100 ]] && pass "_get_scoped_jobs: returns in-scope ids" \
+        || fail "_get_scoped_jobs ok" "out=$_SQ_OUT rc=$_SQ_RC"
+    _sq_lib fail '_get_scoped_jobs project /sq-proj'
+    [[ $_SQ_RC -ne 0 && -z "$_SQ_OUT" && "$_SQ_ERR" == *"could not list jobs"* ]] && pass "_get_scoped_jobs: squeue failure is non-zero, not empty" \
+        || fail "_get_scoped_jobs swallowed failure" "out=$_SQ_OUT rc=$_SQ_RC"
+    _sq_lib fail '_get_scoped_jobs user /sq-proj'
+    [[ $_SQ_RC -ne 0 && "$_SQ_ERR" == *"could not list jobs"* ]] && pass "_get_scoped_jobs (user scope): squeue failure is non-zero" \
+        || fail "_get_scoped_jobs user swallowed failure" "rc=$_SQ_RC"
+    _sq_lib fail '_validate_job_in_scope 100 project /sq-proj'
+    [[ $_SQ_RC -ne 0 && "$_SQ_ERR" == *"could not query Slurm"* ]] && pass "_validate_job_in_scope: Slurm failure reported as lookup error" \
+        || fail "_validate_job_in_scope failure message" "rc=$_SQ_RC err=$_SQ_ERR"
+    _sq_lib invalid '_validate_job_in_scope 999 project /sq-proj'
+    [[ $_SQ_RC -ne 0 && "$_SQ_ERR" == *"not found"* ]] && pass "_validate_job_in_scope: invalid job id still reported as not found" \
+        || fail "_validate_job_in_scope invalid id" "rc=$_SQ_RC err=$_SQ_ERR"
+
+    # scancel (bare, cancel-all) with failing squeue must error and cancel nothing.
+    printf '#!/bin/bash\necho "$*" >> "$FAKE_LOG.scancel"\n' > "$_SQ_TMP/scancel"; chmod +x "$_SQ_TMP/scancel"
+    _SQ_OUT="$(FAKE_MODE=fail REAL_SCANCEL="$_SQ_TMP/scancel" bash -c 'set -o pipefail; source "$1"; REQ_ARGS=(); handle_scancel /sq-proj x' _ "$SCRIPT_DIR/chaperon/handlers/scancel.sh" 2>&1)"; _SQ_RC=$?
+    if [[ $_SQ_RC -ne 0 && ! -e "$_SQ_TMP/calls.scancel" ]]; then
+        pass "scancel: squeue failure errors out and cancels nothing"
+    else
+        fail "scancel swallowed squeue failure" "rc=$_SQ_RC out=$_SQ_OUT"
+    fi
+
+    # scontrol show job (all) with failing squeue must be non-zero.
+    printf '#!/bin/bash\nexit 0\n' > "$_SQ_TMP/scontrol"; chmod +x "$_SQ_TMP/scontrol"
+    _SQ_OUT="$(FAKE_MODE=fail REAL_SCONTROL="$_SQ_TMP/scontrol" bash -c 'set -o pipefail; source "$1"; REQ_ARGS=(show job); handle_scontrol /sq-proj x' _ "$SCRIPT_DIR/chaperon/handlers/scontrol.sh" 2>&1)"; _SQ_RC=$?
+    [[ $_SQ_RC -ne 0 ]] && pass "scontrol show job: squeue failure is non-zero, not 'no jobs'" \
+        || fail "scontrol swallowed squeue failure" "rc=$_SQ_RC out=$_SQ_OUT"
+    unset -f _sq_lib; unset _LIB _SQ_ERR
+
+    unset REAL_SQUEUE FAKE_LOG FAKE_PROJ SLURM_SCOPE
+    unset -f _sq_run
+    rm -rf "$_SQ_TMP"
+    unset _SQ_TMP _SQ_PROJ _SQ_HASH _SQ_OUT _SQ_RC _SQ_CALLS
+fi
+
 # 5p. sacct self-scope unit tests: verify _is_self_user / _is_self_uid
 #     and that handle_sacct does not duplicate --user when the caller
 #     passes a self-scoped value. No real Slurm needed — REAL_SACCT is

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-07
+
+### Fixed
+
+- **chaperon: `squeue -j <id>` no longer returns empty at rc 0 when
+  slurmctld is slow.** With `SLURM_SCOPE=project|session`, `-j` first ran
+  a full `squeue --me` scan and an `sacct` query, both under
+  `timeout 10` with errors discarded, to build a scope set. A timed-out
+  scan produced an empty set, every id was dropped as out of scope, and
+  the caller saw "not in the queue". `-j` now goes through the same single
+  tagged `squeue --me -j <ids>` call that answers the query, the `sacct`
+  leg is gone from this path, and a failing squeue passes through as
+  non-zero with its stderr. Reported in nexus-code#1744.
+
+- **chaperon: Slurm failures are no longer read as "nothing in scope"
+  by scancel, scontrol and sstat.** The shared scope lookups
+  (`_query_chaperon_jobs`, `_get_scoped_jobs`) discarded squeue errors
+  and timeouts, so a bare `scancel` reported "no sandbox-submitted jobs"
+  and `scontrol show job` reported "No sandbox-submitted jobs found in
+  queue", both at rc 0, while jobs were running. They now fail with a
+  clear message and a non-zero exit, and `scancel` cancels nothing.
+  Per-job validation (`scontrol`, `sstat`) now distinguishes "job not
+  found" (Slurm says invalid job id) from "could not query Slurm" and
+  asks the caller to retry. The `sacct` fallback stays best-effort.
+
 ## [0.14.0] - 2026-10-02
 
 ### Security

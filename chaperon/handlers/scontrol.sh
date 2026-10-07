@@ -108,7 +108,7 @@ handle_scontrol() {
                     else
                         # No job ID — show all jobs in scope
                         local scoped_ids
-                        scoped_ids="$(_get_scoped_jobs "$scope" "$project_dir")"
+                        scoped_ids="$(_get_scoped_jobs "$scope" "$project_dir")" || return 1
                         if [[ -z "$scoped_ids" ]]; then
                             echo "No sandbox-submitted jobs found in queue" >&2
                             return 0
