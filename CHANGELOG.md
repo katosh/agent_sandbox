@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **sbatch stub: a data file in the script slot fails fast instead of
+  being slurped.** `sbatch` takes the first bare file among its
+  arguments as the batch script. When that was a multi-GB data file
+  (`sbatch --partition=short big.h5ad`, script forgotten or an
+  unlisted value flag), the stub `cat`ed it into a shell variable and
+  base64-encoded it, crawling for minutes and then submitting garbage as
+  the script. The stub now applies real sbatch's checks before reading:
+  the first line must be `#!` and the file at most 4 MiB, with the
+  message pointing at the `sbatch job.sh data-file` form. Files passed
+  after the script were never read and still are not.
+
 ## [0.15.0] - 2026-10-07
 
 ### Fixed

@@ -152,6 +152,27 @@ if [[ -n "$SCRIPT_FILE" ]]; then
     # Read the script file and send as SCRIPT.
     # Forward any positional args after the script file as SCRIPT_ARGs so
     # they reach $1/$@/$# inside the user's wrapped script on the compute node.
+    #
+    # Validate BEFORE reading, the way real sbatch does.  A data file that
+    # lands in the script slot (e.g. `sbatch --partition=short big.h5ad`,
+    # where the intended script was forgotten) must fail fast; slurping it
+    # into a shell variable and base64-encoding it took minutes for a
+    # multi-GB file and then submitted garbage as the batch script.
+    _script_max=4194304   # 4 MiB, far above any real batch script
+    _script_size="$(stat -c %s -- "$SCRIPT_FILE" 2>/dev/null || wc -c < "$SCRIPT_FILE")"
+    if (( _script_size > _script_max )); then
+        echo "sbatch: error: Batch script '$SCRIPT_FILE' is too large (${_script_size} bytes, limit ${_script_max}). If it is a data file, pass it as an argument AFTER the script: sbatch job.sh $SCRIPT_FILE" >&2
+        exit 1
+    fi
+    if [[ "$(head -c 2 -- "$SCRIPT_FILE" 2>/dev/null)" != "#!" ]]; then
+        {
+            echo "sbatch: error: This does not look like a batch script.  The first"
+            echo "sbatch: error: line must start with #! followed by the path to an interpreter."
+            echo "sbatch: error: For instance: #!/bin/sh"
+            echo "sbatch: error: ('$SCRIPT_FILE' was taken as the script; pass data files after the script: sbatch job.sh $SCRIPT_FILE)"
+        } >&2
+        exit 1
+    fi
     _CHAPERON_SCRIPT="$(cat "$SCRIPT_FILE")"
     export _CHAPERON_SCRIPT
     _CHAPERON_SCRIPT_ARGS=("${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}")

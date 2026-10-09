@@ -5532,6 +5532,45 @@ else
     fail "sbatch optional-argument flag handling / argv shape wrong"
 fi
 
+# 6.7p-bis. A data file in the sbatch script slot fails fast in the stub.
+# Pre-fix, `sbatch --partition=short big.h5ad` (script forgotten) made the
+# stub `cat` the whole file into a shell variable and base64 it: minutes
+# for multi-GB files, then garbage submitted as the batch script. Now the
+# stub applies real sbatch's checks (shebang, size) BEFORE reading, and
+# data files AFTER the script are untouched script args.
+if (
+    set -u
+    _bad=0
+    _sd="$(mktemp -d)"
+    cp "$SCRIPT_DIR/chaperon/stubs/sbatch" "$_sd/sbatch"
+    printf '%s\n' 'chaperon_call() { printf "%s\n" "$@" > "$_REC_OUT"; printf "%s" "${_CHAPERON_SCRIPT:-}" > "$_REC_OUT.script"; }' > "$_sd/_stub_lib.sh"
+    export _REC_OUT="$_sd/rec"
+    printf '#!/bin/bash\necho job\n' > "$_sd/job.sh"
+    head -c 6000000 /dev/zero | tr '\0' 'x' > "$_sd/big.h5ad"       # > 4 MiB, no shebang
+    printf 'plain text, no shebang\n' > "$_sd/noshebang.txt"
+    cd "$_sd"
+    # data file in the script slot: rejected, nothing sent, fast.
+    for _f in big.h5ad noshebang.txt; do
+        rm -f "$_REC_OUT"
+        _t0=$SECONDS
+        _err="$(bash ./sbatch --partition=short "$_f" 2>&1)" && { echo "accepted $_f as script"; _bad=1; }
+        (( SECONDS - _t0 < 5 )) || { echo "$_f: rejection too slow"; _bad=1; }
+        [[ -e "$_REC_OUT" ]] && { echo "$_f: request was sent"; _bad=1; }
+        [[ "$_err" == *"sbatch: error:"* ]] || { echo "$_f: no sbatch-style error: $_err"; _bad=1; }
+    done
+    # data file AFTER the script: not read, forwarded as a script arg.
+    rm -f "$_REC_OUT"
+    bash ./sbatch job.sh big.h5ad || { echo "job.sh big.h5ad rejected"; _bad=1; }
+    grep -qx 'echo job' "$_REC_OUT.script" || { echo "job.sh not sent as script"; _bad=1; }
+    [[ "$(wc -c < "$_REC_OUT.script")" -lt 1000 ]] || { echo "data file leaked into script"; _bad=1; }
+    rm -rf "$_sd"
+    exit $_bad
+); then
+    pass "sbatch stub: data file in script slot fails fast (shebang/size); data after script is an arg"
+else
+    fail "sbatch stub reads/accepts non-script file as the batch script"
+fi
+
 # 6.7q. %x (agent-controlled job name) in --output/--error is refused on
 # the staging path too (bwrap/firejail; slurmstepd expands it outside
 # the sandbox, `-J ../../x` escaped the staging dir), as are unknown
