@@ -1885,7 +1885,9 @@ _query_chaperon_jobs() {
         fi
     fi
 
+    # Empty scope is success (rc 0); only a Slurm failure returns non-zero.
     [[ -n "${_results:-}" ]] && printf '%s\n' "$_results"
+    return 0
 }
 
 # Get the set of job IDs that this scope allows.
@@ -1923,6 +1925,7 @@ _get_scoped_jobs() {
                 [[ -n "$_sacct_jobs" ]] && _user_jobs="$(printf '%s\n%s' "${_user_jobs:-}" "$_sacct_jobs" | sort -u)"
             fi
             [[ -n "${_user_jobs:-}" ]] && printf '%s\n' "$_user_jobs"
+            return 0
             ;;
         *)
             _sandbox_warn "unknown SLURM_SCOPE value: '$scope'. Valid values: session, project, user, none"

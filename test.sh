@@ -3685,6 +3685,14 @@ FAKE
     _sq_lib ok '_get_scoped_jobs project /sq-proj'
     if [[ $_SQ_RC -eq 0 && "$_SQ_OUT" == 100 ]]; then pass "_get_scoped_jobs: returns in-scope ids"
     else fail "_get_scoped_jobs ok" "out=$_SQ_OUT rc=$_SQ_RC"; fi
+    # Empty scope (no matching jobs) is success, not an error: scancel/scontrol
+    # treat a non-zero from _get_scoped_jobs as "Slurm unreachable".
+    _sq_lib ok '_get_scoped_jobs project /nomatch-proj'
+    if [[ $_SQ_RC -eq 0 && -z "$_SQ_OUT" ]]; then
+        pass "_get_scoped_jobs: empty scope returns rc 0 (not a Slurm error)"
+    else
+        fail "_get_scoped_jobs empty scope" "out=$_SQ_OUT rc=$_SQ_RC"
+    fi
     _sq_lib fail '_get_scoped_jobs project /sq-proj'
     if [[ $_SQ_RC -ne 0 && -z "$_SQ_OUT" && "$_SQ_ERR" == *"could not list jobs"* ]]; then pass "_get_scoped_jobs: squeue failure is non-zero, not empty"
     else fail "_get_scoped_jobs swallowed failure" "out=$_SQ_OUT rc=$_SQ_RC"; fi
