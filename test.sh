@@ -3683,20 +3683,20 @@ FAKE
         _SQ_RC=$?; _SQ_ERR="$(cat "$_SQ_TMP/err")"
     }
     _sq_lib ok '_get_scoped_jobs project /sq-proj'
-    [[ $_SQ_RC -eq 0 && "$_SQ_OUT" == 100 ]] && pass "_get_scoped_jobs: returns in-scope ids" \
-        || fail "_get_scoped_jobs ok" "out=$_SQ_OUT rc=$_SQ_RC"
+    if [[ $_SQ_RC -eq 0 && "$_SQ_OUT" == 100 ]]; then pass "_get_scoped_jobs: returns in-scope ids"
+    else fail "_get_scoped_jobs ok" "out=$_SQ_OUT rc=$_SQ_RC"; fi
     _sq_lib fail '_get_scoped_jobs project /sq-proj'
-    [[ $_SQ_RC -ne 0 && -z "$_SQ_OUT" && "$_SQ_ERR" == *"could not list jobs"* ]] && pass "_get_scoped_jobs: squeue failure is non-zero, not empty" \
-        || fail "_get_scoped_jobs swallowed failure" "out=$_SQ_OUT rc=$_SQ_RC"
+    if [[ $_SQ_RC -ne 0 && -z "$_SQ_OUT" && "$_SQ_ERR" == *"could not list jobs"* ]]; then pass "_get_scoped_jobs: squeue failure is non-zero, not empty"
+    else fail "_get_scoped_jobs swallowed failure" "out=$_SQ_OUT rc=$_SQ_RC"; fi
     _sq_lib fail '_get_scoped_jobs user /sq-proj'
-    [[ $_SQ_RC -ne 0 && "$_SQ_ERR" == *"could not list jobs"* ]] && pass "_get_scoped_jobs (user scope): squeue failure is non-zero" \
-        || fail "_get_scoped_jobs user swallowed failure" "rc=$_SQ_RC"
+    if [[ $_SQ_RC -ne 0 && "$_SQ_ERR" == *"could not list jobs"* ]]; then pass "_get_scoped_jobs (user scope): squeue failure is non-zero"
+    else fail "_get_scoped_jobs user swallowed failure" "rc=$_SQ_RC"; fi
     _sq_lib fail '_validate_job_in_scope 100 project /sq-proj'
-    [[ $_SQ_RC -ne 0 && "$_SQ_ERR" == *"could not query Slurm"* ]] && pass "_validate_job_in_scope: Slurm failure reported as lookup error" \
-        || fail "_validate_job_in_scope failure message" "rc=$_SQ_RC err=$_SQ_ERR"
+    if [[ $_SQ_RC -ne 0 && "$_SQ_ERR" == *"could not query Slurm"* ]]; then pass "_validate_job_in_scope: Slurm failure reported as lookup error"
+    else fail "_validate_job_in_scope failure message" "rc=$_SQ_RC err=$_SQ_ERR"; fi
     _sq_lib invalid '_validate_job_in_scope 999 project /sq-proj'
-    [[ $_SQ_RC -ne 0 && "$_SQ_ERR" == *"not found"* ]] && pass "_validate_job_in_scope: invalid job id still reported as not found" \
-        || fail "_validate_job_in_scope invalid id" "rc=$_SQ_RC err=$_SQ_ERR"
+    if [[ $_SQ_RC -ne 0 && "$_SQ_ERR" == *"not found"* ]]; then pass "_validate_job_in_scope: invalid job id still reported as not found"
+    else fail "_validate_job_in_scope invalid id" "rc=$_SQ_RC err=$_SQ_ERR"; fi
 
     # scancel (bare, cancel-all) with failing squeue must error and cancel nothing.
     printf '#!/bin/bash\necho "$*" >> "$FAKE_LOG.scancel"\n' > "$_SQ_TMP/scancel"; chmod +x "$_SQ_TMP/scancel"
@@ -3710,8 +3710,8 @@ FAKE
     # scontrol show job (all) with failing squeue must be non-zero.
     printf '#!/bin/bash\nexit 0\n' > "$_SQ_TMP/scontrol"; chmod +x "$_SQ_TMP/scontrol"
     _SQ_OUT="$(FAKE_MODE=fail REAL_SCONTROL="$_SQ_TMP/scontrol" bash -c 'set -o pipefail; source "$1"; REQ_ARGS=(show job); handle_scontrol /sq-proj x' _ "$SCRIPT_DIR/chaperon/handlers/scontrol.sh" 2>&1)"; _SQ_RC=$?
-    [[ $_SQ_RC -ne 0 ]] && pass "scontrol show job: squeue failure is non-zero, not 'no jobs'" \
-        || fail "scontrol swallowed squeue failure" "rc=$_SQ_RC out=$_SQ_OUT"
+    if [[ $_SQ_RC -ne 0 ]]; then pass "scontrol show job: squeue failure is non-zero, not 'no jobs'"
+    else fail "scontrol swallowed squeue failure" "rc=$_SQ_RC out=$_SQ_OUT"; fi
     unset -f _sq_lib; unset _LIB _SQ_ERR
 
     unset REAL_SQUEUE FAKE_LOG FAKE_PROJ SLURM_SCOPE
