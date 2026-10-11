@@ -5540,6 +5540,34 @@ else
     fail "sbatch optional-argument flag handling / argv shape wrong"
 fi
 
+# 6.7p-ter. Shell batch scripts are never launched as `<shell> -s -- <args>`.
+# That form hung in execve (100% CPU, SIGKILL-proof) when the first
+# positional was a multi-GB file on a host with an endpoint-security LSM.
+# The wrapper must run `<shell> <tmpfile> "$@"` with the script on stdin.
+if (
+    set -u
+    _bad=0
+    _d="$(mktemp -d)"
+    export SANDBOX_BACKEND=bwrap
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    PROJECT_DIR="$_d"; REQ_CWD="$_d"; REQ_ARGS=(--parsable)
+    validate_sbatch_args >/dev/null 2>&1
+    for _sh in '#!/bin/bash' '#!/usr/bin/env bash' '#!/bin/sh' '#!/bin/bash --'; do
+        create_wrapped_script "$SCRIPT_DIR/sandbox-exec.sh" "$_d" "$_sh"$'\necho hi' "$_d/w.sh" /data/big.h5ad x \
+            || { echo "$_sh: wrapper not created"; _bad=1; continue; }
+        grep -Eq -- '(bash|sh|zsh|dash|ksh|ash) -s( |$)' "$_d/w.sh" && { echo "$_sh: wrapper still uses '-s --'"; _bad=1; }
+        grep -q 'cat > "$_t"' "$_d/w.sh" || { echo "$_sh: no tmpfile runner"; _bad=1; }
+        grep -q '"$_t" "$@"' "$_d/w.sh" || { echo "$_sh: positionals not forwarded"; _bad=1; }
+        grep -q '/data/big.h5ad' "$_d/w.sh" || { echo "$_sh: arg lost"; _bad=1; }
+    done
+    rm -rf "$_d"
+    exit $_bad
+); then
+    pass "sbatch wrapper: shell scripts run from a tmpfile with forwarded positionals, never '-s --'"
+else
+    fail "sbatch wrapper still launches shell scripts via '-s --' (or lost positionals)"
+fi
+
 # 6.7q. %x (agent-controlled job name) in --output/--error is refused on
 # the staging path too (bwrap/firejail; slurmstepd expands it outside
 # the sandbox, `-J ../../x` escaped the staging dir), as are unknown

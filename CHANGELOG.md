@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **sbatch jobs with a large file as the first argument no longer hang
+  before the script starts.** Shell batch scripts were launched as
+  `<shell> -s -- <args>`. On a host with an endpoint-security LSM that
+  form stalled in `execve` at 100% CPU (SIGKILL-proof) while reading the
+  first argument, a 7.8 GB h5ad, at ~44 KB/s. The wrapper now writes the
+  script (from stdin) to a private tmpfile inside the sandbox and runs
+  `<shell> FILE <args>`, as non-shell interpreters already did. `$0` is
+  now the tmpfile path instead of the shell name.
+
 ## [0.15.1] - 2026-10-11
 
 ### Fixed
