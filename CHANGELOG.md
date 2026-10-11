@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-10-11
+
+### Fixed
+
+- **chaperon: `scancel` and `scontrol show job` no longer fail when no
+  jobs are in scope.** The 0.15.0 error propagation treated the scope
+  helpers' return code 1 for a legitimately empty scope as "Slurm
+  unreachable", so `scancel`, `scancel --all`/`--me`/`-u` and out-of-scope
+  `scancel` were rejected with "could not list jobs from Slurm" whenever
+  nothing matched. An empty scope now returns 0; only a real squeue
+  failure is an error. Regression test added.
+
 ## [0.15.0] - 2026-10-07
 
 ### Fixed
