@@ -1740,7 +1740,7 @@ trap '"'"'rm -f "$_t"'"'"' EXIT
 cat > "$_t"
 '"$interp_clean"' "$_t" "$@"'
             local runner_q="${runner//\'/\'\\\'\'}"
-            printf 'printf '"'"'%%s\n'"'"' "$_SCRIPT" | exec %q --project-dir %q -- %sbash -c '"'"'%s'"'"' _chaperon%s\n' \
+            printf 'printf '"'"'%%s\\n'"'"' "$_SCRIPT" | exec %q --project-dir %q -- %sbash -c '"'"'%s'"'"' _chaperon%s\n' \
                 "$sandbox_exec" "$project_dir" "$_env_prefix" "$runner_q" "$quoted_script_args"
         else
             # Non-shell path: inside the sandbox, materialise the script to
