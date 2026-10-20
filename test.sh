@@ -6684,6 +6684,188 @@ if [[ "$_ml_out" == "$_ml_want" ]]; then
 else
     fail "ML12: repair eligibility / ordering" "got: $_ml_out"
 fi
+# ── RB: lost writable binds are re-bound (MOUNT_GUARD_REBIND) ──
+# The project bind (and the read-only binds nested below it) can vanish
+# from a running sandbox together; the path then falls through to the
+# read-only parent bind. RB01-RB05 are unit tests of the pure logic,
+# RB06 the helper's refusals, RB07 an end-to-end repair in a throwaway
+# bwrap namespace laid out like a real session.
+_rb_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    mkdir -p "$_T/par/proj/child" "$_T/h"; touch "$_T/par/proj/f"
+    HOME="$_T/h"; BLOCKED_FILES=(); EXTRA_BLOCKED_PATHS=()
+    backend_mount_expectations() { printf '%s\n' "ro:same $_T/par" "rw:same $_T/par/proj" "ro:same $_T/par/proj/child" \
+        "ro:same $_T/par/proj/f" "rw $_T/par/other" "mask:tmpfs $_T/par/proj/m"; }
+    _show() { for i in "${!_MG_PATH[@]}"; do printf '%s=%s ' "${_MG_PATH[i]#$_T/par}" "${_MG_HOW[i]:--}"; done; echo; }
+    MOUNT_GUARD_REBIND=true;  _mount_guard_prepare "$_T/par/proj" || echo "prepare failed"; _show
+    MOUNT_GUARD_REBIND=false; _mount_guard_prepare "$_T/par/proj" || echo "prepare failed"; _show
+)"
+# With the switch off, only leaves stay repairable: "par" and "proj" have
+# expected mounts below them.
+_rb_want=$'=ro /proj=rw /proj/child=ro /proj/f=ro /other=- /proj/m=tmpfs \n=- /proj=- /proj/child=ro /proj/f=ro /other=- /proj/m=tmpfs '
+if [[ "$_rb_out" == "$_rb_want" ]]; then
+    pass "RB01: rw/ro binds onto themselves are repairable with children; only leaves with MOUNT_GUARD_REBIND=false"
+else
+    fail "RB01: bind repair eligibility" "got: $_rb_out"
+fi
+
+# RB02-RB04. Depth ordering, missing-bind detection and the blocking
+# rules, from a synthetic mountinfo (project and nested child lost).
+_rb_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    mkdir -p "$_T/par/proj/child" "$_T/h"
+    HOME="$_T/h"; BLOCKED_FILES=(); EXTRA_BLOCKED_PATHS=()
+    backend_mount_expectations() { printf '%s\n' "ro:same $_T/par/proj/child" "rw:same $_T/par/proj" "ro:same $_T/par"; }
+    _mount_guard_prepare "$_T/par/proj" || { echo "prepare failed"; exit 0; }
+    # depth key, sorted parents first
+    for i in "${!_MG_PATH[@]}"; do printf '%s %s\n' "$(_mg_depth "${_MG_PATH[i]}")" "$i"; done | sort -n -s -k1,1 | awk '{printf "%s ", $2}'; echo
+    _mi() { # _mi MOUNTPOINT OPTS...: one mountinfo line
+        printf '%s %s %s / %s %s - ext4 /dev/x rw\n' "$RANDOM" 1 8:1 "$1" "$2"; }
+    { _mi / ro,relatime; _mi "$_T/par" ro,nosuid,nodev,relatime; } > "$_T/mi.lost"
+    { _mi / ro,relatime; _mi "$_T/par" ro,nosuid,nodev,relatime; _mi "$_T/par/proj" rw,nosuid,nodev,relatime; _mi "$_T/par/proj/child" ro,nosuid,nodev,relatime; } > "$_T/mi.ok"
+    { _mi / ro,relatime; _mi "$_T/par" ro,nosuid,nodev,relatime; _mi "$_T/par/proj/child" ro,nosuid,nodev,relatime; } > "$_T/mi.childonly"
+    _mg_read_mountinfo "$_T/mi.lost"
+    for i in "${!_MG_PATH[@]}"; do _mg_evaluate "$i" 0; printf '%s:%s ' "${_MG_PATH[i]#$_T/par}" "${_MG_VERDICT:-intact}"; done; echo
+    _mg_read_mountinfo "$_T/mi.ok"
+    for i in "${!_MG_PATH[@]}"; do _mg_evaluate "$i" 0; printf '%s:%s ' "${_MG_PATH[i]#$_T/par}" "${_MG_VERDICT:-intact}"; done; echo
+    # blocking: all three expected at arming
+    declare -A _ever=([0]=1 [1]=1 [2]=1)
+    _mg_read_mountinfo "$_T/mi.lost"
+    for i in 0 1 2; do _mg_repair_blocked "$i" && printf '%s=%s ' "$i" "$_MG_BLOCK" || printf '%s=free ' "$i"; done; echo
+    _mg_read_mountinfo "$_T/mi.childonly"
+    _mg_repair_blocked 1 && printf '1=%s ' "$_MG_BLOCK" || printf '1=free '; echo
+)"
+_rb_want=$'2 1 0 \n/proj/child:degraded /proj:degraded :intact \n/proj/child:intact /proj:intact :intact \n0=above 1=free 2=free \n1=below '
+if [[ "$_rb_out" == "$_rb_want" ]]; then
+    pass "RB02-RB04: parent-first order, lost-bind detection from mountinfo, blocked while a parent is missing or a child present"
+else
+    fail "RB02-RB04: ordering / detection / blocking" "got: $_rb_out"
+fi
+# RB05. Mount option mapping and the helper's refusals: it will not
+# act in a namespace owned by another uid (here the host's), on a
+# non-canonical path or for an unknown kind, and says why.
+_rb_helper="$SCRIPT_DIR/backends/mount-repair.py"
+if command -v python3 >/dev/null 2>&1 && [[ -f "$_rb_helper" ]]; then
+    _rb_flags="$(python3 -I -c "
+import importlib.util as u
+sp = u.spec_from_file_location('mr', '$_rb_helper'); m = u.module_from_spec(sp); sp.loader.exec_module(m)
+print(m._opts_flags('rw,nosuid,nodev,relatime'), m._opts_flags('rw,noexec,noatime,foo'), m._opts_flags(None), m._opts_flags('ro,relatime'))" 2>&1)"
+    _rb_ino="$(stat -L -c %i /proc/$$/ns/mnt 2>/dev/null)"
+    _rb_r1="$(python3 -I "$_rb_helper" $$ "$_rb_ino" rw /tmp d "$(id -u)" 2>&1)"; _rb_c1=$?
+    _rb_r2="$(python3 -I "$_rb_helper" $$ "$_rb_ino" rw /tmp/../x d "$(id -u)" 2>&1)"; _rb_c2=$?
+    _rb_r3="$(python3 -I "$_rb_helper" $$ "$_rb_ino" bogus /tmp 2>&1)"; _rb_c3=$?
+    if [[ "$_rb_flags" == "6 1032 6 0" && $_rb_c1 -ne 0 && "$_rb_r1" == *"namespace"* \
+          && $_rb_c2 -eq 1 && "$_rb_r2" == *canonical* && $_rb_c3 -eq 1 && "$_rb_r3" == *"unknown kind"* ]]; then
+        pass "RB05: bind options map to mount flags; helper refuses a foreign user namespace, a non-canonical path and an unknown kind"
+    else
+        fail "RB05: option mapping / helper refusals" "flags=$_rb_flags c1=$_rb_c1 '$_rb_r1' c2=$_rb_c2 '$_rb_r2' c3=$_rb_c3 '$_rb_r3'"
+    fi
+else
+    skip "RB05: python3 or backends/mount-repair.py not available"
+fi
+
+# RB06/RB07. End to end in a throwaway bwrap namespace laid out like a
+# real session: --ro-bind PARENT, then --ro-bind DIR and --bind DIR
+# (stacked, as the project path is), then --ro-bind DIR/child. RB06
+# loses every mount on DIR at once (umount2 MNT_DETACH in a loop, which
+# also drops the nested child: what the kernel does when the directory
+# entry is invalidated); RB07 loses only the writable top mount and
+# leaves the read-only one below it. The guard must bring DIR back
+# writable and the child read-only, with the options they had. The temp
+# dir is on whatever filesystem $TMPDIR is (local in CI; point it at a
+# network filesystem to exercise that).
+_rb_helper="$SCRIPT_DIR/backends/mount-repair.py"
+for _rb_mode in detach-all detach; do
+  if [[ "$_rb_mode" == detach-all ]]; then _rb_id=RB06; else _rb_id=RB07; fi
+  if is_bwrap && command -v python3 >/dev/null 2>&1 && [[ -f "$_rb_helper" ]] \
+     && bwrap --ro-bind / / true >/dev/null 2>&1; then
+    _rb_t="$(mktemp -d)"; trap_rm_dir "$_rb_t"
+    _rb_par="$_rb_t/par"; _rb_dir="$_rb_par/proj"; _rb_child="$_rb_dir/child"
+    mkdir -p "$_rb_child" "$_rb_t/h" "$_rb_t/armed"
+    cat > "$_rb_t/probe.py" <<'RBPY'
+import ctypes, errno, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+pid, op, path = sys.argv[1], sys.argv[2], sys.argv[3]
+fds = [(os.open('/proc/%s/ns/user' % pid, os.O_RDONLY), 0x10000000), (os.open('/proc/%s/ns/mnt' % pid, os.O_RDONLY), 0x20000)]
+for fd, t in fds:
+    if libc.setns(fd, t) != 0:
+        sys.exit('setns: ' + os.strerror(ctypes.get_errno()))
+os.chdir('/')
+if op == 'detach':
+    if libc.umount2(path.encode(), 2) != 0:
+        sys.exit('umount2: ' + os.strerror(ctypes.get_errno()))
+elif op == 'detach-all':
+    n = 0
+    while libc.umount2(path.encode(), 2) == 0:
+        n += 1
+    if n == 0:
+        sys.exit('nothing to detach')
+else:
+    try:
+        fd = os.open(path + '/probe', os.O_CREAT | os.O_WRONLY, 0o600); os.close(fd); os.unlink(path + '/probe')
+        print('WRITE-OK')
+    except OSError as e:
+        print('WRITE-FAIL ' + errno.errorcode[e.errno])
+RBPY
+    # The "launcher" holds bwrap as a child, as sandbox-exec.sh's pid
+    # does for the guard; its stderr receives the guard's reports.
+    bash -c 'bwrap --die-with-parent --unshare-pid --ro-bind / / --ro-bind "$1" "$1" --ro-bind "$2" "$2" --bind "$2" "$2" --ro-bind "$3" "$3" -- sleep 90 & wait' \
+        _ "$_rb_par" "$_rb_dir" "$_rb_child" 2>"$_rb_t/l.err" &
+    _rb_l=$!
+    (
+        export _SANDBOX_LIB_NO_INIT=1 _CHAPERON_FIFO_DIR="$_rb_t/armed"
+        source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+        set +euo pipefail    # as _mount_guard_main runs the watcher
+        SANDBOX_DIR="$SCRIPT_DIR"; SANDBOX_BACKEND=bwrap; HOME="$_rb_t/h"; BLOCKED_FILES=(); EXTRA_BLOCKED_PATHS=()
+        MOUNT_GUARD=repair; MOUNT_GUARD_INTERVAL=1; MOUNT_GUARD_REBIND=true
+        backend_mount_expectations() { printf '%s\n' "ro:same $_rb_par" "ro:same $_rb_dir" "rw:same $_rb_dir" "ro:same $_rb_child"; }
+        _mount_guard_prepare "$_rb_dir" || exit 1
+        _rb_ns=""
+        for _i in $(seq 1 40); do _rb_ns="$(_mount_guard_find_target "$_rb_l" | cut -d' ' -f1)"; [[ -n "$_rb_ns" ]] && break; sleep 0.25; done
+        echo "$_rb_ns" > "$_rb_t/ns"
+        _mount_guard_run "$_rb_l"
+    ) >/dev/null 2>&1 &
+    _rb_g=$!
+    for _i in $(seq 1 60); do [[ -d "$_rb_t/armed/.mount-guard-armed" ]] && break; sleep 0.25; done
+    _rb_ns="$(cat "$_rb_t/ns" 2>/dev/null)"
+    _rb_probe() { python3 "$_rb_t/probe.py" "$_rb_ns" "$@" 2>&1; }
+    # last (topmost) entry's options for a mount point, empty if none
+    _rb_mi() { awk -v p="$1" '$5 == p {o = $6} END {print o}' "/proc/$_rb_ns/mountinfo" 2>/dev/null; }
+    if [[ ! -d "$_rb_t/armed/.mount-guard-armed" || ! "$_rb_ns" =~ ^[0-9]+$ ]]; then
+        skip "$_rb_id: throwaway bwrap namespace or guard did not come up"
+    else
+        _rb_before="$(_rb_probe write "$_rb_dir") / $(_rb_probe write "$_rb_child")"
+        _rb_det="$(_rb_probe "$_rb_mode" "$_rb_dir")"
+        _rb_lost="$(_rb_probe write "$_rb_dir")"
+        for _i in $(seq 1 40); do [[ "$(_rb_mi "$_rb_dir")" == rw,* && -n "$(_rb_mi "$_rb_child")" ]] && break; sleep 0.25; done
+        _rb_after="$(_rb_probe write "$_rb_dir") / $(_rb_probe write "$_rb_child")"
+        _rb_odir="$(_rb_mi "$_rb_dir")"; _rb_ochild="$(_rb_mi "$_rb_child")"
+        for _i in $(seq 1 40); do [[ "$(grep -c RESTORED "$_rb_t/l.err")" -ge 2 ]] && break; sleep 0.25; done
+        _rb_rep="$(cat "$_rb_t/l.err")"
+        if [[ "$_rb_before" != "WRITE-OK / WRITE-FAIL EROFS" ]]; then
+            fail "$_rb_id: test namespace not as expected before the loss" "$_rb_before"
+        elif [[ -n "$_rb_det" || "$_rb_lost" != "WRITE-FAIL EROFS" ]]; then
+            fail "$_rb_id: simulated loss did not make the project read-only" "det=$_rb_det lost=$_rb_lost"
+        elif [[ "$_rb_after" == "WRITE-OK / WRITE-FAIL EROFS" && "$_rb_odir" == rw,nosuid,nodev,* \
+                && "$_rb_ochild" == ro,nosuid,nodev,* && "$_rb_rep" == *"$_rb_dir "*RESTORED* \
+                && "$_rb_rep" == *"$_rb_child "*RESTORED* ]]; then
+            pass "$_rb_id: guard re-binds a lost writable project bind ($_rb_mode) and its read-only child (rw/ro, nosuid,nodev kept)"
+        else
+            fail "$_rb_id: lost binds not restored" "after=$_rb_after dir=$_rb_odir child=$_rb_ochild report=$_rb_rep"
+        fi
+    fi
+    pkill -P "$_rb_l" 2>/dev/null; kill "$_rb_l" "$_rb_g" 2>/dev/null; wait "$_rb_l" "$_rb_g" 2>/dev/null
+    unset -f _rb_probe _rb_mi
+  else
+    skip "$_rb_id: needs bwrap with unprivileged user namespaces and python3"
+  fi
+done
+unset _rb_out _rb_want _rb_flags _rb_ino _rb_r1 _rb_r2 _rb_r3 _rb_c1 _rb_c2 _rb_c3 _rb_t _rb_par _rb_dir _rb_child \
+      _rb_l _rb_g _rb_ns _rb_before _rb_mode _rb_id _rb_det _rb_lost _rb_after _rb_odir _rb_ochild _rb_rep _rb_helper
 unset _ml_a _ml_pid _ml_before _ml_after _ml_rc _ml_r _ml_i1 _ml_m1 _ml_ok _ml_why _ml_out _ml_want \
       _ml_secret _ml_ready _ml_conf _ml_conf6 _ml_mode _ml_l _ml_msg _ml_ph \
       _ml_hid _ml_go _ml_state _ml_stash _ml_detached _ml_err

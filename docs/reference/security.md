@@ -342,7 +342,9 @@ The **mount guard** covers these: a watcher outside the sandbox compares
 the sandbox's mount table with what the backend set up every
 `MOUNT_GUARD_INTERVAL` seconds and reports every loss loudly, flagging
 the ones that expose a protected path. On bwrap the default
-`MOUNT_GUARD=repair` then puts the lost mask or read-only overlay back.
+`MOUNT_GUARD=repair` then puts the lost mask or read-only overlay back
+and, with `MOUNT_GUARD_REBIND` (default), a lost writable project bind
+and the read-only binds nested below it.
 With `MOUNT_GUARD=kill` (opt-in) it terminates the sandbox on such an
 exposure instead; a loss that fails closed (for example the project bind
 falling through to a read-only parent) is never fatal. Between the loss
