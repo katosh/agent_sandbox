@@ -6687,9 +6687,9 @@ fi
 # ── RB: lost writable binds are re-bound (MOUNT_GUARD_REBIND) ──
 # The project bind (and the read-only binds nested below it) can vanish
 # from a running sandbox together; the path then falls through to the
-# read-only parent bind. RB01-RB05 are unit tests of the pure logic,
-# RB06 the helper's refusals, RB07 an end-to-end repair in a throwaway
-# bwrap namespace laid out like a real session.
+# read-only parent bind. RB01-RB04 are unit tests of the pure logic,
+# RB05 the option mapping and the helper's refusals, RB06/RB07 end-to-end
+# repairs in a throwaway bwrap namespace laid out like a real session.
 _rb_out="$(
     export _SANDBOX_LIB_NO_INIT=1
     source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
