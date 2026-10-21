@@ -879,7 +879,7 @@ backend_prepare() {
 # (sandbox-lib.sh §Mount guard). Device nodes, /dev and /proc are left
 # out. A kind may carry ":<how>", telling MOUNT_GUARD=repair how to
 # re-create it: mask:null (--ro-bind /dev/null), mask:tmpfs (--tmpfs),
-# ro:same (--ro-bind of a path onto itself). Read-only binds from
+# ro:same / rw:same (--ro-bind / --bind of a path onto itself). Binds from
 # another source are not repairable (the source is usually not visible
 # inside, and a bind must come from the sandbox's own mount table). An option this parser does not know makes it print nothing (the
 # guard then stays off rather than guess the argument layout).
@@ -890,8 +890,13 @@ backend_mount_expectations() {
         _o="${_a[_i]}"
         case "$_o" in
             --bind|--bind-try|--dev-bind|--dev-bind-try)
-                [[ "${_a[_i+2]:-}" == /dev || "${_a[_i+2]:-}" == /dev/* ]] \
-                    || _out+=("rw ${_a[_i+2]}")
+                if [[ "${_a[_i+2]:-}" == /dev || "${_a[_i+2]:-}" == /dev/* ]]; then
+                    :
+                elif [[ "$_o" == --bind* && "${_a[_i+1]}" == "${_a[_i+2]}" ]]; then
+                    _out+=("rw:same ${_a[_i+2]}")
+                else
+                    _out+=("rw ${_a[_i+2]}")
+                fi
                 _i=$((_i + 3)) ;;
             --ro-bind|--ro-bind-try)
                 if [[ "${_a[_i+1]}" == /dev/null ]]; then

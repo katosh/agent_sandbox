@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **mount guard: a project directory bind that vanishes from a running
+  bwrap sandbox is re-bound in place.** On network filesystems the
+  kernel can detach the writable bind of the project directory together
+  with the read-only binds nested below it (a stale-handle answer makes
+  the NFS client invalidate the directory, and every mount on it goes in
+  every namespace). Everything under the project then fell through to
+  the read-only parent bind and failed with `EROFS` until the sandbox
+  was restarted, interrupting every agent in it. With
+  `MOUNT_GUARD_REBIND=true` (default; `false` restores the old
+  behaviour) the existing mount guard re-creates lost binds of a path
+  onto itself, writable or read-only, parents before children, with the
+  `nosuid`/`nodev`/`noexec`/`noatime` options they had when the guard
+  armed. A bind is refused when the path no longer resolves to the
+  host's own object, held back while a mount above it is missing and
+  refused while one below is still present; failures are retried with
+  exponential backoff (at most 60 s). `backends/mount-repair.py` uses
+  plain `mount(2)` for these binds, so repair of a lost read-only
+  overlay also works on kernels older than 5.12, and it now refuses
+  unless the sandbox's user namespace is owned by the calling uid and
+  is not the host's.
+
 ## [0.15.1] - 2026-10-11
 
 ### Fixed
