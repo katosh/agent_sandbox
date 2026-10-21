@@ -3542,7 +3542,7 @@ _mount_guard_run() {
         mkdir -- "$_CHAPERON_FIFO_DIR/.mount-guard-armed" 2>/dev/null || true
     fi
     local -A _reported=() _repfail=() _nextt=() _delay=()
-    local _mp _verdict _what _p _k _nsino="${_ns//[^0-9]/}" _rrc _gone _pre _retry
+    local _mp _verdict _what _p _k _nsino="${_ns//[^0-9]/}" _rrc _gone _pre _retry _d
     # repair is a bwrap feature (firejail's namespaces are root-owned and
     # cannot be entered unprivileged): elsewhere it behaves as warn.
     local _mg_note=""
@@ -3580,7 +3580,7 @@ _mount_guard_run() {
                         [[ "$_MG_BLOCK" == above ]] && continue
                         _rrc=1; _MG_REPAIR_ERR="an expected mount below it is still present and would be hidden"
                     else
-                        _mg_repair "$_i" "$_target" "$_nsino" "${_base_ro[_i]}" "${_base_opts[_i]:-}"; _rrc=$?
+                        _mg_repair "$_i" "$_target" "$_nsino" "${_base_ro[_i]}" "${_base_opts[$_i]:-}"; _rrc=$?
                     fi
                 fi
                 if (( _rrc == 0 )); then
@@ -3604,9 +3604,12 @@ _mount_guard_run() {
                 # a NEW mount in the wrong state is terminal.
                 _retry=0; (( _rrc == 1 || _rrc == 4 )) && _retry=1
                 if (( _retry )); then
-                    _delay[$_i]=$(( ${_delay[$_i]:-$_interval} * 2 ))
-                    (( _delay[_i] > 60 )) && _delay[$_i]=60
-                    _nextt[$_i]=$(( SECONDS + _delay[_i] ))
+                    # $_i, not _i: _delay and _nextt are associative arrays,
+                    # whose subscript is not evaluated as arithmetic.
+                    _d=$(( ${_delay[$_i]:-$_interval} * 2 ))
+                    (( _d > 60 )) && _d=60
+                    _delay[$_i]=$_d
+                    _nextt[$_i]=$(( SECONDS + _d ))
                 fi
                 if [[ -n "${_repfail[$_i]:-}" ]]; then
                     (( _retry )) && continue

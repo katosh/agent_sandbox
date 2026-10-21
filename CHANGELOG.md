@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   object with the requested read-only state, mounts nothing, says
   "already present" on stderr and exits 0. Masks (`null`, `tmpfs`) keep
   their one-shot behaviour: they have no host object to compare.
+- **mount guard: the repair backoff and the restored mount options now
+  take effect.** 0.16.0 read two associative arrays with a literal `_i`
+  subscript, so the retry delay was always 0 (a refused repair retried
+  every interval) and the recorded mount options (`noexec`, `noatime`,
+  ...) were never passed to the helper, which fell back to
+  `nosuid,nodev`.
 
 ## [0.16.0] - 2026-10-21
 
