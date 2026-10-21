@@ -1970,7 +1970,9 @@ agent-sandbox:</p>
 the sandbox's mount table with what the backend set up every
 <code>MOUNT_GUARD_INTERVAL</code> seconds and reports every loss loudly, flagging
 the ones that expose a protected path. On bwrap the default
-<code>MOUNT_GUARD=repair</code> then puts the lost mask or read-only overlay back.
+<code>MOUNT_GUARD=repair</code> then puts the lost mask or read-only overlay back
+and, with <code>MOUNT_GUARD_REBIND</code> (default), a lost writable project bind
+and the read-only binds nested below it.
 With <code>MOUNT_GUARD=kill</code> (opt-in) it terminates the sandbox on such an
 exposure instead; a loss that fails closed (for example the project bind
 falling through to a read-only parent) is never fatal. Between the loss
