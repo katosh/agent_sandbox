@@ -60,6 +60,12 @@ Safety (a repair may never make the sandbox less safe):
     module and libc symbol is resolved before setns, and sys.path is
     emptied before entering.
 
+ro and rw are idempotent: if the topmost mount at PATH already shows the
+host's object with the requested read-only state, nothing is mounted
+(stderr says "already present", exit 0), so a repeated or concurrent
+repair never stacks a second mount. The mount table is opened through
+the host's /proc before entering and read again just before mounting.
+
 The helper refuses to act unless the user namespace that owns the target
 mount namespace is owned by the calling uid and is not the one it is
 running in (the host's), so it can never mount anything in a namespace
@@ -167,6 +173,64 @@ def _walk(path):
         raise
 
 
+def _unescape(field):
+    """Undo mountinfo's octal escapes (space, tab, newline and backslash
+    are written as a backslash and three octal digits). Plain string
+    code: nothing may be imported once inside the sandbox."""
+    out, i, n = [], 0, len(field)
+    while i < n:
+        c = field[i]
+        d = field[i + 1:i + 4]
+        if c == "\\" and len(d) == 3 and all(x in "01234567" for x in d):
+            out.append(chr(int(d, 8)))
+            i += 4
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _mount_point_listed(mifd, path):
+    """True when PATH is a mount point in the mount table read from MIFD
+    (a descriptor of the sandbox's /proc/PID/mountinfo opened before
+    entering; a read after setns still shows that namespace, without
+    going through the sandbox's /proc)."""
+    os.lseek(mifd, 0, os.SEEK_SET)
+    chunks = []
+    while True:
+        b = os.read(mifd, 65536)
+        if not b:
+            break
+        chunks.append(b)
+    for line in os.fsdecode(b"".join(chunks)).split("\n"):
+        f = line.split(" ")
+        if len(f) > 5 and _unescape(f[4]) == path:
+            return True
+    return False
+
+
+def _already_present(mifd, path, host, read_only):
+    """True when the topmost mount at PATH already is what a repair would
+    create: PATH is a mount point, resolves (the topmost mount decides
+    path resolution) to the host's object and has the requested
+    read-only state. Anything that cannot be established counts as not
+    present, and the repair then runs as before."""
+    try:
+        if mifd is None or not _mount_point_listed(mifd, path):
+            return False
+        vfd, vst = _walk(path)
+    except (OSError, Refused):
+        return False
+    try:
+        if (vst.st_dev, vst.st_ino) != (host.st_dev, host.st_ino):
+            return False
+        return bool(os.fstatvfs(vfd).f_flag & ST_RDONLY) == read_only
+    except OSError:
+        return False
+    finally:
+        os.close(vfd)
+
+
 def _have_mount_setattr():
     """True when the kernel implements mount_setattr (Linux 5.12). An
     invalid descriptor gets EBADF from a kernel that has it."""
@@ -240,6 +304,20 @@ def repair(pid, ns_ino, kind, path, want_type=None, want_uid=None, opts=None):
     if os.fstat(usrfd).st_ino == own_user.st_ino:
         raise Refused("the target is in our own user namespace (the host's); refusing")
 
+    # The sandbox's mount table, opened before entering (see
+    # _mount_point_listed), for the idempotence check below. The
+    # namespace is checked again after the open, so a recycled pid
+    # cannot hand us another namespace's table.
+    mifd = None
+    if kind in ("ro", "rw"):
+        try:
+            mifd = os.open("/proc/%d/mountinfo" % pid, os.O_RDONLY | os.O_CLOEXEC)
+            if os.stat("/proc/%d/ns/mnt" % pid).st_ino != ns_ino:
+                os.close(mifd)
+                mifd = None
+        except OSError:
+            mifd = None
+
     classic = kind == "rw" or (kind == "ro" and not _have_mount_setattr())
     host = None
     if kind in ("ro", "rw"):
@@ -263,6 +341,20 @@ def repair(pid, ns_ino, kind, path, want_type=None, want_uid=None, opts=None):
     _setns(usrfd, CLONE_NEWUSER, "user")
     _setns(mntfd, CLONE_NEWNS, "mount")
     os.chdir("/")
+
+    # Idempotent for ro and rw: a second repair of the same path (a late
+    # first one, a concurrent run) must not stack an identical mount on a
+    # good one. Only these two kinds are checked: their identity is the
+    # host's object (device and inode) plus the read-only state, which can
+    # be established exactly. A mask (null, tmpfs) has no host object to
+    # compare, and masking again what is already masked would at best hide
+    # what the agent wrote into the old tmpfs, so masks keep their
+    # one-shot semantics (the guard asks for them only once the mount is
+    # gone).
+    if kind in ("ro", "rw") and _already_present(mifd, path, host, kind == "ro"):
+        sys.stderr.write("already present: %s is mounted %s as expected; nothing mounted\n"
+                         % (path, "read-only" if kind == "ro" else "writable"))
+        return
 
     if classic:
         _bind_classic(path, kind == "ro", _opts_flags(opts), host)

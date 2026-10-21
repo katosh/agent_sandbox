@@ -6689,7 +6689,8 @@ fi
 # from a running sandbox together; the path then falls through to the
 # read-only parent bind. RB01-RB04 are unit tests of the pure logic,
 # RB05 the option mapping and the helper's refusals, RB06/RB07 end-to-end
-# repairs in a throwaway bwrap namespace laid out like a real session.
+# repairs in a throwaway bwrap namespace laid out like a real session,
+# RB08-RB11 a repair that is not visible and the helper's idempotence.
 _rb_out="$(
     export _SANDBOX_LIB_NO_INIT=1
     source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
@@ -6864,6 +6865,229 @@ RBPY
     skip "$_rb_id: needs bwrap with unprivileged user namespaces and python3"
   fi
 done
+# RB08. The verdict on a repair the helper reported as done
+# (_mg_verify_repair), from synthetic mountinfo with mount ids. The path
+# being no mount point, or its topmost mount being the very one seen
+# before the repair, is "nothing in place" (4: retried); a NEW mount in
+# the wrong read-only state is 3 (terminal); a new mount in the right
+# state is 0. Order of the answers: nothing mounted; unchanged mount id;
+# new writable mount; new read-only mount; new read-only mount with no
+# mount before; unreadable table.
+_rb_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    mkdir -p "$_T/par/proj" "$_T/h"
+    HOME="$_T/h"; BLOCKED_FILES=(); EXTRA_BLOCKED_PATHS=()
+    backend_mount_expectations() { printf '%s\n' "ro:same $_T/par" "rw:same $_T/par/proj"; }
+    MOUNT_GUARD_REBIND=true
+    _mount_guard_prepare "$_T/par/proj" || { echo "prepare failed"; exit 0; }
+    _pi=""; for i in "${!_MG_PATH[@]}"; do [[ "${_MG_PATH[i]}" == "$_T/par/proj" ]] && _pi=$i; done
+    _mi() { printf '%s 1 8:1 / %s %s - ext4 /dev/x rw\n' "$1" "$2" "$3"; }
+    { _mi 10 / ro,relatime; _mi 20 "$_T/par" ro,nosuid,nodev,relatime; } > "$_T/mi.none"
+    { _mi 10 / ro,relatime; _mi 20 "$_T/par" ro,nosuid,nodev,relatime; _mi 30 "$_T/par/proj" ro,nosuid,nodev,relatime; } > "$_T/mi.same"
+    { _mi 10 / ro,relatime; _mi 20 "$_T/par" ro,nosuid,nodev,relatime; _mi 31 "$_T/par/proj" rw,nosuid,nodev,relatime; } > "$_T/mi.newrw"
+    { _mi 10 / ro,relatime; _mi 20 "$_T/par" ro,nosuid,nodev,relatime; _mi 32 "$_T/par/proj" ro,nosuid,nodev,relatime; } > "$_T/mi.newro"
+    _v() { local rc=0; _mg_verify_repair "$_pi" 0 "$1" "$2" || rc=$?; printf '%s ' "$rc"; }
+    _v 30 "$_T/mi.none"; _v 30 "$_T/mi.same"; _v 30 "$_T/mi.newrw"; _v 30 "$_T/mi.newro"
+    _v "" "$_T/mi.newro"; _v 30 "$_T/mi.missing"
+    echo
+)"
+if [[ "$_rb_out" == "4 4 0 3 3 4 " ]]; then
+    pass "RB08: a repair that left no mount, or only the old one, is retryable; a new mount in the wrong state is terminal"
+else
+    fail "RB08: repair verdict" "got: $_rb_out"
+fi
+
+# Shared by RB09/RB10: a throwaway bwrap namespace laid out as in
+# RB06/RB07 plus a read-only bind of a directory with a space in its
+# name. _rb_up T sets _rb_l (the launcher), _rb_pid (a process in the
+# namespace) and _rb_ino (its mount namespace inode); _rb_probe runs
+# probe.py (detach, detach-all, wrongro, write) in that namespace.
+_rb_up() {
+    local t="$1" i
+    _rb_par="$t/par"; _rb_dir="$_rb_par/proj"; _rb_child="$_rb_dir/child"; _rb_sp="$_rb_par/sp ace"
+    mkdir -p "$_rb_child" "$_rb_sp" "$t/h" "$t/armed" "$t/state"
+    cat > "$t/probe.py" <<'RBPY'
+import ctypes, errno, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+pid, op, path = sys.argv[1], sys.argv[2], sys.argv[3]
+for fd, t in [(os.open('/proc/%s/ns/user' % pid, os.O_RDONLY), 0x10000000), (os.open('/proc/%s/ns/mnt' % pid, os.O_RDONLY), 0x20000)]:
+    if libc.setns(fd, t) != 0:
+        sys.exit('setns: ' + os.strerror(ctypes.get_errno()))
+os.chdir('/')
+b = path.encode()
+if op == 'detach':
+    if libc.umount2(b, 2) != 0:
+        sys.exit('umount2: ' + os.strerror(ctypes.get_errno()))
+elif op == 'detach-all':
+    n = 0
+    while libc.umount2(b, 2) == 0:
+        n += 1
+    if n == 0:
+        sys.exit('nothing to detach')
+elif op == 'wrongro':    # a NEW read-only bind where a writable one belongs
+    if libc.mount(b, b, None, 4096, None) != 0 or libc.mount(None, b, None, 32 | 4096 | 1, None) != 0:
+        sys.exit('mount: ' + os.strerror(ctypes.get_errno()))
+else:
+    try:
+        fd = os.open(path + '/probe', os.O_CREAT | os.O_WRONLY, 0o600); os.close(fd); os.unlink(path + '/probe')
+        print('WRITE-OK')
+    except OSError as e:
+        print('WRITE-FAIL ' + errno.errorcode[e.errno])
+RBPY
+    bash -c 'bwrap --die-with-parent --unshare-pid --ro-bind / / --ro-bind "$1" "$1" --ro-bind "$2" "$2" --bind "$2" "$2" --ro-bind "$3" "$3" --ro-bind "$4" "$4" -- sleep 90 & wait' \
+        _ "$_rb_par" "$_rb_dir" "$_rb_child" "$_rb_sp" >/dev/null 2>"$t/l.err" &
+    _rb_l=$!
+    # the sandbox's "sleep": a descendant of the launcher in another mount namespace
+    local q c own; _rb_pid=""; own="$(readlink /proc/self/ns/mnt)"
+    for i in $(seq 1 40); do
+        q="$_rb_l"
+        while [[ -n "$q" && -z "$_rb_pid" ]]; do
+            c="${q%% *}"; q="${q#"$c"}"; q="${q# }"
+            for _r in $(pgrep -P "$c" 2>/dev/null); do
+                q+=" $_r"
+                [[ "$(cat "/proc/$_r/comm" 2>/dev/null)" == sleep && "$(readlink "/proc/$_r/ns/mnt" 2>/dev/null)" != "$own" ]] && _rb_pid="$_r"
+            done
+        done
+        [[ -n "$_rb_pid" ]] && break; sleep 0.25
+    done
+    _rb_ino="$(stat -L -c %i "/proc/$_rb_pid/ns/mnt" 2>/dev/null)"
+    [[ "$_rb_pid" =~ ^[0-9]+$ && "$_rb_ino" =~ ^[0-9]+$ ]]
+}
+_rb_probe() { python3 "$_rb_t/probe.py" "$_rb_pid" "$@" 2>&1; }
+# number of mount table rows for a mount point (escaped as mountinfo does)
+_rb_rows() { E="${1// /\\040}" awk '$5 == ENVIRON["E"] {n++} END {print n+0}' "/proc/$_rb_pid/mountinfo" 2>/dev/null; }
+_rb_down() { pkill -P "$_rb_l" 2>/dev/null; kill "$_rb_l" ${_rb_g:-} 2>/dev/null; wait "$_rb_l" ${_rb_g:-} 2>/dev/null; }
+
+# RB09. The helper is idempotent for ro and rw: after a mount is lost, a
+# repair followed by a second repair of the same path (a concurrent or
+# late run) leaves exactly one mount there, and says so on stderr. Done
+# for the writable project, a read-only child and a read-only directory
+# whose name has a space (mountinfo escapes it).
+_rb_helper="$SCRIPT_DIR/backends/mount-repair.py"
+if is_bwrap && command -v python3 >/dev/null 2>&1 && [[ -f "$_rb_helper" ]] \
+   && bwrap --ro-bind / / true >/dev/null 2>&1; then
+    _rb_t="$(mktemp -d)"; trap_rm_dir "$_rb_t"; _rb_g=""
+    if ! _rb_up "$_rb_t"; then
+        skip "RB09: throwaway bwrap namespace did not come up"
+    else
+        _rb_u="$(id -u)"
+        _rb_b="$(_rb_rows "$_rb_dir")/$(_rb_rows "$_rb_child")/$(_rb_rows "$_rb_sp")"
+        _rb_probe detach-all "$_rb_dir" >/dev/null; _rb_probe detach "$_rb_sp" >/dev/null
+        _rb_lostn="$(_rb_rows "$_rb_dir")/$(_rb_rows "$_rb_child")/$(_rb_rows "$_rb_sp")"
+        _rb_res=""
+        _rb_h() { # _rb_h KIND PATH -> "rc/rows/already-present "
+            local e rc; e="$(python3 -I "$_rb_helper" "$_rb_pid" "$_rb_ino" "$1" "$2" d "$_rb_u" nosuid,nodev 2>&1 >/dev/null)"; rc=$?
+            printf '%s/%s/%s ' "$rc" "$(_rb_rows "$2")" "$([[ "$e" == *"already present"* ]] && echo y || echo n)"; }
+        for _rb_x in "rw $_rb_dir" "ro $_rb_child" "ro $_rb_sp"; do
+            _rb_res+="$(_rb_h ${_rb_x%% *} "${_rb_x#* }")"; _rb_res+="$(_rb_h ${_rb_x%% *} "${_rb_x#* }")"
+        done
+        _rb_w="$(_rb_probe write "$_rb_dir") / $(_rb_probe write "$_rb_child")"
+        # each path: the first call mounts (n), the repeat does not (y); one row each
+        if [[ "$_rb_b" == 2/1/1 && "$_rb_lostn" == 0/0/0 && "$_rb_w" == "WRITE-OK / WRITE-FAIL EROFS"               && "$_rb_res" == "0/1/n 0/1/y 0/1/n 0/1/y 0/1/n 0/1/y " ]]; then
+            pass "RB09: ro/rw repair run twice leaves exactly one mount (project, child, name with a space) and reports 'already present'"
+        else
+            fail "RB09: helper idempotence" "before=$_rb_b lost=$_rb_lostn calls=$_rb_res write=$_rb_w"
+        fi
+        unset -f _rb_h
+    fi
+    _rb_down
+else
+    skip "RB09: needs bwrap with unprivileged user namespaces and python3"
+fi
+
+# RB10/RB11. The guard against a repair it cannot see. A stub helper
+# stands in for backends/mount-repair.py: it records each call, runs the
+# real helper and then, per mode, either detaches the new writable mount
+# again at once (RB10: "repair, then immediate re-loss", twice) or
+# replaces it with a NEW read-only mount (RB11: wrong state). RB10 must
+# retry with growing delays, report the failure once and end restored
+# with a single mount per path; RB11 must call the helper once and leave
+# the path alone.
+_rb_guard_case() { # _rb_guard_case MODE -> prints a result line
+    local mode="$1" t i
+    t="$(mktemp -d)"; _rb_t="$t"; _rb_g=""
+    mkdir -p "$t/sd/backends"
+    _rb_up "$t" || { echo "NOUP"; rm -rf "$t"; return; }
+    echo "$mode" > "$t/state/mode"
+    cat > "$t/sd/backends/mount-repair.py" <<'RBSTUB'
+import os, subprocess, sys, time
+st, real, probe = os.environ['RB_STATE'], os.environ['RB_REAL'], os.environ['RB_PROBE']
+pid, ino, kind, path = sys.argv[1:5]
+with open(st + '/calls', 'a') as f:
+    f.write('%s %s %.2f\n' % (kind, path, time.time()))
+n = sum(1 for l in open(st + '/calls') if l.split(' ')[1] == path)
+mode = open(st + '/mode').read().strip()
+if kind == 'rw' and mode == 'wrongstate':
+    subprocess.call([sys.executable, probe, pid, 'wrongro', path]); sys.exit(0)
+rc = subprocess.call([sys.executable, '-I', real] + sys.argv[1:])
+if kind == 'rw' and mode == 'relose' and n <= 2:
+    subprocess.call([sys.executable, probe, pid, 'detach-all', path])
+sys.exit(rc)
+RBSTUB
+    (
+        export _SANDBOX_LIB_NO_INIT=1 _CHAPERON_FIFO_DIR="$t/armed" RB_STATE="$t/state" RB_REAL="$SCRIPT_DIR/backends/mount-repair.py" RB_PROBE="$t/probe.py"
+        source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+        set +euo pipefail
+        SANDBOX_DIR="$t/sd"; SANDBOX_BACKEND=bwrap; HOME="$t/h"; BLOCKED_FILES=(); EXTRA_BLOCKED_PATHS=()
+        MOUNT_GUARD=repair; MOUNT_GUARD_INTERVAL=1; MOUNT_GUARD_REBIND=true
+        backend_mount_expectations() { printf '%s\n' "ro:same $_rb_par" "ro:same $_rb_dir" "rw:same $_rb_dir" "ro:same $_rb_child"; }
+        _mount_guard_prepare "$_rb_dir" || exit 1
+        _mount_guard_run "$_rb_l"
+    ) >/dev/null 2>&1 &
+    _rb_g=$!
+    for i in $(seq 1 60); do [[ -d "$t/armed/.mount-guard-armed" ]] && break; sleep 0.25; done
+    if [[ ! -d "$t/armed/.mount-guard-armed" ]]; then echo "NOGUARD"; _rb_down; rm -rf "$t"; return; fi
+    _rb_probe detach-all "$_rb_dir" >/dev/null
+    if [[ "$mode" == relose ]]; then
+        for i in $(seq 1 60); do [[ "$(grep -c RESTORED "$t/l.err")" -ge 2 ]] && break; sleep 0.5; done
+    else
+        for i in $(seq 1 60); do [[ "$(grep -c 'Could not restore' "$t/l.err")" -ge 1 ]] && break; sleep 0.5; done
+        sleep 6    # several more ticks: a terminal verdict must not be retried
+    fi
+    local calls rep nfail nrest w rows gap
+    calls="$(grep -c "^rw $_rb_dir " "$t/state/calls")"
+    rep="$(cat "$t/l.err")"
+    nfail="$(grep -c "Could not restore.*$_rb_dir\|$_rb_dir .*Could not restore" "$t/l.err")"
+    nrest="$(grep -c "$_rb_dir .*RESTORED" "$t/l.err")"
+    w="$(_rb_probe write "$_rb_dir") / $(_rb_probe write "$_rb_child")"
+    rows="$(_rb_rows "$_rb_dir")/$(_rb_rows "$_rb_child")"
+    gap="$(awk -v p="$_rb_dir" '$1=="rw" && $2==p {t[++n]=$3} END {if (n>=3) printf "%d", t[3]-t[1]; else print -1}' "$t/state/calls")"
+    printf 'calls=%s failreports=%s restored=%s write=[%s] rows=%s span=%s wrong=%s\n' \
+        "$calls" "$nfail" "$nrest" "$w" "$rows" "$gap" "$([[ "$rep" == *"wrong read-only state"* ]] && echo y || echo n)"
+    _rb_down; rm -rf "$t"
+}
+if is_bwrap && command -v python3 >/dev/null 2>&1 && [[ -f "$SCRIPT_DIR/backends/mount-repair.py" ]] \
+   && bwrap --ro-bind / / true >/dev/null 2>&1; then
+    _rb_out="$(_rb_guard_case relose)"
+    # three helper runs (two lost again at once, one stays), one report of
+    # the failure, one RESTORED, writable project, one mount per path, and
+    # at least 4 s between the first and third run (backoff 2 s then 4 s)
+    if [[ "$_rb_out" =~ ^calls=3\ failreports=1\ restored=1\ write=\[WRITE-OK\ /\ WRITE-FAIL\ EROFS\]\ rows=1/1\ span=([0-9]+)\ wrong=n$ && "${BASH_REMATCH[1]}" -ge 4 ]]; then
+        pass "RB10: a repair lost again at once is retried with backoff, reported once, then restored (one mount per path)"
+    elif [[ "$_rb_out" == NO* ]]; then
+        skip "RB10: throwaway bwrap namespace or guard did not come up ($_rb_out)"
+    else
+        fail "RB10: repair not visible is not retried / restored" "got: $_rb_out"
+    fi
+    _rb_out="$(_rb_guard_case wrongstate)"
+    # exactly one helper run, the failure reported once as a wrong state,
+    # never restored, the new read-only mount left as it is
+    if [[ "$_rb_out" == "calls=1 failreports=1 restored=0 write=[WRITE-FAIL EROFS / WRITE-FAIL EROFS] rows=1/"[01]" span=-1 wrong=y" ]]; then
+        pass "RB11: a new mount in the wrong read-only state is reported once and never retried"
+    elif [[ "$_rb_out" == NO* ]]; then
+        skip "RB11: throwaway bwrap namespace or guard did not come up ($_rb_out)"
+    else
+        fail "RB11: wrong-state repair" "got: $_rb_out"
+    fi
+else
+    skip "RB10: needs bwrap with unprivileged user namespaces and python3"
+    skip "RB11: needs bwrap with unprivileged user namespaces and python3"
+fi
+unset -f _rb_up _rb_probe _rb_rows _rb_down _rb_guard_case
+unset _rb_sp _rb_pid _rb_u _rb_b _rb_lostn _rb_res _rb_x _rb_w
+
 unset _rb_out _rb_want _rb_flags _rb_ino _rb_r1 _rb_r2 _rb_r3 _rb_c1 _rb_c2 _rb_c3 _rb_t _rb_par _rb_dir _rb_child \
       _rb_l _rb_g _rb_ns _rb_before _rb_mode _rb_id _rb_det _rb_lost _rb_after _rb_odir _rb_ochild _rb_rep _rb_helper
 unset _ml_a _ml_pid _ml_before _ml_after _ml_rc _ml_r _ml_i1 _ml_m1 _ml_ok _ml_why _ml_out _ml_want \
