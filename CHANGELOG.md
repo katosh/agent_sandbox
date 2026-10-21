@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-10-21
+
 ### Fixed
 
 - **mount guard: a repair that is not visible is retried instead of
