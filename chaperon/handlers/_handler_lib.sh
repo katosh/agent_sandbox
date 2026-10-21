@@ -1706,8 +1706,7 @@ EOF
         printf '_SCRIPT="${_SCRIPT%%$'"'"'\\n'"'"'}"\n'
 
         if _is_shell_interpreter "$interpreter"; then
-            # Shell path: pipe script to `<interp> -s -- <args>` so the
-            # shell reads the body from stdin and assigns positionals.
+            # Shell path: see the runner below (script file, not `-s --`).
             #
             # Strip any standalone `--` tokens from the interpreter line —
             # `--` ends option processing, so a shebang like
@@ -1723,28 +1722,26 @@ EOF
                 [[ "$_it" == "--" ]] && continue
                 interp_clean+="${interp_clean:+ }$_it"
             done
-            local sep=""
-            if (( ${#script_args[@]} > 0 )); then
-                sep=" --"
-            fi
-            # When the slurm-output prelude is non-empty (bwrap/firejail
-            # + at least one --output/--error captured), wrap the
-            # inside-sandbox invocation in `bash -c '<prelude>; exec
-            # <interp> -s ...'`. The outer bash runs the prelude (which
-            # creates the relative symlinks under sandbox bind-mount
-            # control), then exec's the user's chosen shell with the
-            # script piped to stdin still intact. Without the prelude
-            # (landlock or no --output/--error), keep the original
-            # direct-exec form.
-            if [[ -n "$_slurm_link_prelude" ]]; then
-                local _inside="$_slurm_link_prelude"$'\n'"exec $interp_clean -s$sep \"\$@\""
-                local _inside_q="${_inside//\'/\'\\\'\'}"
-                printf 'printf '"'"'%%s\\n'"'"' "$_SCRIPT" | exec %q --project-dir %q -- %sbash -c '"'"'%s'"'"' _chaperon%s\n' \
-                    "$sandbox_exec" "$project_dir" "$_env_prefix" "$_inside_q" "$quoted_script_args"
-            else
-                printf 'printf '"'"'%%s\\n'"'"' "$_SCRIPT" | exec %q --project-dir %q -- %s%s -s%s%s\n' \
-                    "$sandbox_exec" "$project_dir" "$_env_prefix" "$interp_clean" "$sep" "$quoted_script_args"
-            fi
+            # The script is NOT run as `<interp> -s -- <args>`: with a large
+            # file as the first positional that form hung in execve at 100%
+            # CPU on hosts with an endpoint-security LSM (Falcon) that
+            # treats the first argument after `-s --` as the script and
+            # reads it (7.8 GB h5ad, SIGKILL-proof).  Instead the runner
+            # inside the sandbox writes the script (read from stdin, so no
+            # ARG_MAX limit) to a private tmpfile and runs `<interp> FILE
+            # <args>`, the same shape as a normal script launch.  $0 is the
+            # tmpfile path.  The prelude (if any) runs first, before set -e,
+            # so a prelude failure never aborts the user's script.
+            local runner=""
+            [[ -n "$_slurm_link_prelude" ]] && runner="$_slurm_link_prelude"$'\n'
+            runner+='set -e
+_t=$(mktemp /tmp/.chaperon-script-XXXXXX) || exit 1
+trap '"'"'rm -f "$_t"'"'"' EXIT
+cat > "$_t"
+'"$interp_clean"' "$_t" "$@"'
+            local runner_q="${runner//\'/\'\\\'\'}"
+            printf 'printf '"'"'%%s\\n'"'"' "$_SCRIPT" | exec %q --project-dir %q -- %sbash -c '"'"'%s'"'"' _chaperon%s\n' \
+                "$sandbox_exec" "$project_dir" "$_env_prefix" "$runner_q" "$quoted_script_args"
         else
             # Non-shell path: inside the sandbox, materialise the script to
             # a private tmpfs file, chmod +x, exec it with the positionals.
