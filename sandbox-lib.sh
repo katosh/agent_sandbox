@@ -3365,7 +3365,7 @@ _mg_evaluate() {
     if [[ -n "${_MG_TOP_FS[$_mp]+x}" ]]; then
         if [[ "$_base_ro" == 1 ]] && ! _mg_is_ro "${_MG_TOP_OPTS[$_mp]}"; then
             _MG_VERDICT=EXPOSED; _MG_WHAT="read-only mount became read-write"
-        elif [[ "${_MG_HOW[_i]}" == rw && "$_base_ro" != 1 ]] && _mg_is_ro "${_MG_TOP_OPTS[$_mp]}"; then
+        elif [[ "$_kind" == rw && "$_base_ro" != 1 ]] && _mg_is_ro "${_MG_TOP_OPTS[$_mp]}"; then
             # The writable bind went, a read-only mount of the same path
             # stacked below it (a read-only parent view) did not.
             _MG_VERDICT=degraded; _MG_WHAT="writable bind lost; the path now shows a read-only mount"
