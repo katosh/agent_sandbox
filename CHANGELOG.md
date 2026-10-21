@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **mount guard: a repair that is not visible is retried instead of
+  abandoned.** When the helper reported success but the sandbox's mount
+  table then showed no mount at the path (the fresh bind was detached
+  again while the kernel was still invalidating the directory), the guard
+  reported once and never tried again, leaving the sandbox degraded for
+  as long as it ran. A path that is not a mount point afterwards, or
+  whose topmost mount is still the one seen before the repair, is now
+  retried like a refusal: exponential backoff (the interval, doubling,
+  at most 60 s), one report, and the usual `RESTORED` notice when a later
+  attempt shows. No count limit: each attempt is one helper run per 60 s
+  at most, and nothing can be stacked (see below). A new mount in the
+  wrong read-only state stays terminal.
+- **mount-repair.py: repairing a read-only or writable bind is
+  idempotent.** A second repair of the same path (a late first one, a
+  manual run alongside the guard) stacked an identical mount on a good
+  one. The helper now reads the sandbox's mount table before mounting
+  and, when the topmost mount at the path already shows the host's
+  object with the requested read-only state, mounts nothing, says
+  "already present" on stderr and exits 0. Masks (`null`, `tmpfs`) keep
+  their one-shot behaviour: they have no host object to compare.
+
 ## [0.16.0] - 2026-10-21
 
 ### Fixed

@@ -3136,8 +3136,16 @@ _prepare_sandbox_env() {
 # the options it had at arming (nosuid, nodev, ...). A refused repair (symlink at the path, host object changed
 # type or owner, no kernel support) is reported like warn and retried
 # with exponential backoff (the interval, doubling, capped at 60 s), so a
-# path that reappears is protected again; a repair that ran but does not
-# show up in the mount table is not retried.
+# path that reappears is protected again. So is a repair that ran but
+# left nothing in place (the path is not a mount point afterwards, or
+# its topmost mount is still the one seen before: the fresh mount was
+# detached again): there is nothing a retry could stack onto, and the
+# helper does not mount over a mount that is already right, so even a
+# mount that only became visible late is never doubled. It is reported
+# once, retried without a count limit (like a refusal, at most one
+# helper run per 60 s once the backoff is capped) and announced as
+# RESTORED when a later attempt shows. A repair that put a NEW mount at
+# the path in the wrong read-only state is not retried.
 # Reports go to the launching terminal (the backend process's stderr,
 # /dev/tty as fallback) with a bell, to syslog (logger) and to tmux
 # (display-message) when available. Each loss is reported once.
@@ -3161,18 +3169,19 @@ _mg_esc() {
     printf '%s' "$_s"
 }
 
-declare -A _MG_TOP_OPTS=() _MG_TOP_FS=()
+declare -A _MG_TOP_OPTS=() _MG_TOP_FS=() _MG_TOP_ID=()
 # _mg_read_mountinfo PID — index PID's mountinfo by mount point; for a
 # stacked mount point the last listed (topmost) entry wins.
 _mg_read_mountinfo() {
-    local _mi _line _mp _opts _fs _src="/proc/$1/mountinfo"
+    local _mi _line _mp _opts _fs _id _src="/proc/$1/mountinfo"
     [[ "$1" == /* ]] && _src="$1"   # a mountinfo file (unit tests)
-    _MG_TOP_OPTS=(); _MG_TOP_FS=()
+    _MG_TOP_OPTS=(); _MG_TOP_FS=(); _MG_TOP_ID=()
     _mi="$(cat "$_src" 2>/dev/null)" || return 1
     [[ -n "$_mi" ]] || return 1
     while IFS= read -r _line; do
-        read -r _ _ _ _ _mp _opts _ <<< "$_line"
+        read -r _id _ _ _ _mp _opts _ <<< "$_line"
         _fs="${_line#* - }"; _fs="${_fs%% *}"
+        _MG_TOP_ID[$_mp]="$_id"
         _MG_TOP_OPTS[$_mp]="$_opts"
         _MG_TOP_FS[$_mp]="$_fs"
     done <<< "$_mi"
@@ -3326,6 +3335,38 @@ _mg_repair() {
     [[ -n "$_MG_REPAIR_ERR" ]] || _MG_REPAIR_ERR="helper failed (status $_rc)"
     [[ $_rc -eq 1 ]] && return 1
     return 2
+}
+
+# _mg_verify_repair INDEX BASE_RO PRE_ID TARGET — after the helper
+# reported success for INDEX, re-read TARGET's mount table and judge the
+# result. PRE_ID is the id of the topmost mount at the path before the
+# repair (empty = none). Returns 0 when the path is a mount point again
+# in the expected state (read-only unless a tmpfs that was not; writable
+# for rw). Otherwise _MG_REPAIR_ERR says why and the status is
+#   4  nothing new is in place: the path is not a mount point, or its
+#      topmost mount is still the one seen before the repair (the fresh
+#      mount was detached again, or the table could not be read). No
+#      mount was added that a retry could stack onto, so it is retried
+#      like a refusal; the helper is idempotent, so a mount that merely
+#      became visible late is never doubled.
+#   3  a NEW mount is at the path, but not the expected one (read-only
+#      state wrong): terminal, never retried.
+_mg_verify_repair() {
+    local _i="$1" _base_ro="$2" _pre="$3" _mp="${_MG_ESC[$1]}"
+    if ! _mg_read_mountinfo "$4"; then
+        _MG_REPAIR_ERR="the sandbox's mount table could not be read after the repair"; return 4
+    fi
+    if [[ -z "${_MG_TOP_FS[$_mp]+x}" ]]; then
+        _MG_REPAIR_ERR="the repaired mount does not show in the sandbox's mount table (it is not a mount point)"; return 4
+    fi
+    if [[ -n "$_pre" && "${_MG_TOP_ID[$_mp]}" == "$_pre" ]]; then
+        _MG_REPAIR_ERR="the repaired mount does not show in the sandbox's mount table (the mount at the path is unchanged)"; return 4
+    fi
+    if { [[ "$_base_ro" != 1 ]] || _mg_is_ro "${_MG_TOP_OPTS[$_mp]}"; } \
+       && { [[ "${_MG_HOW[_i]}" != rw ]] || ! _mg_is_ro "${_MG_TOP_OPTS[$_mp]}"; }; then
+        return 0
+    fi
+    _MG_REPAIR_ERR="the repaired mount is in the wrong read-only state in the sandbox's mount table"; return 3
 }
 
 # _mg_depth PATH — number of components (the repair order key).
@@ -3501,7 +3542,7 @@ _mount_guard_run() {
         mkdir -- "$_CHAPERON_FIFO_DIR/.mount-guard-armed" 2>/dev/null || true
     fi
     local -A _reported=() _repfail=() _nextt=() _delay=()
-    local _mp _verdict _what _p _k _nsino="${_ns//[^0-9]/}" _rrc _gone
+    local _mp _verdict _what _p _k _nsino="${_ns//[^0-9]/}" _rrc _gone _pre _retry
     # repair is a bwrap feature (firejail's namespaces are root-owned and
     # cannot be entered unprivileged): elsewhere it behaves as warn.
     local _mg_note=""
@@ -3530,6 +3571,7 @@ _mount_guard_run() {
                 _gone=""; [[ -z "${_MG_TOP_FS[$_mp]+x}" ]] && _gone=1
                 [[ "${_MG_HOW[_i]}" == rw && "${_base_ro[_i]}" != 1 ]] && _mg_is_ro "${_MG_TOP_OPTS[$_mp]:-}" && _gone=1
                 _rrc=2; _MG_REPAIR_ERR="the mount is still there but no longer read-only"
+                _pre="${_MG_TOP_ID[$_mp]:-}"
                 if [[ -n "$_gone" ]]; then
                     # Backoff after a refusal; an ancestor still missing
                     # waits for its own repair (reported there).
@@ -3544,9 +3586,8 @@ _mount_guard_run() {
                 if (( _rrc == 0 )); then
                     # Trust the kernel's table, not the helper: the path
                     # must be a mount point again, read-only unless tmpfs.
-                    if _mg_read_mountinfo "$_target" && [[ -n "${_MG_TOP_FS[$_mp]+x}" ]] \
-                       && { [[ "${_base_ro[_i]}" != 1 ]] || _mg_is_ro "${_MG_TOP_OPTS[$_mp]}"; } \
-                       && { [[ "${_MG_HOW[_i]}" != rw ]] || ! _mg_is_ro "${_MG_TOP_OPTS[$_mp]}"; }; then
+                    _mg_verify_repair "$_i" "${_base_ro[_i]}" "$_pre" "$_target"; _rrc=$?
+                    if (( _rrc == 0 )); then
                         unset "_repfail[$_i]" "_nextt[$_i]" "_delay[$_i]"
                         if [[ "$_verdict" == EXPOSED ]]; then
                             _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: protection LOST at ${_MG_PATH[_i]} (${_what}) and RESTORED (MOUNT_GUARD=repair). The path was unprotected for up to ${_interval}s before the repair; whatever the agent read or wrote there in that window is not undone."
@@ -3555,23 +3596,24 @@ _mount_guard_run() {
                         fi
                         continue
                     fi
-                    _rrc=3; _MG_REPAIR_ERR="the repaired mount does not show in the sandbox's mount table"
                 fi
-                # A refusal (the path is missing, a symlink, changed) may
-                # clear up: retry every interval, report once. A repair
-                # that ran but is not visible is never retried (no
-                # stacking of mounts).
-                if (( _rrc == 1 )); then
+                # A refusal (the path is missing, a symlink, changed) or
+                # a repair that left nothing in place (the path is not a
+                # mount point, or still shows the old mount) may clear
+                # up: retry with backoff, report once. A repair that put
+                # a NEW mount in the wrong state is terminal.
+                _retry=0; (( _rrc == 1 || _rrc == 4 )) && _retry=1
+                if (( _retry )); then
                     _delay[$_i]=$(( ${_delay[$_i]:-$_interval} * 2 ))
                     (( _delay[_i] > 60 )) && _delay[$_i]=60
                     _nextt[$_i]=$(( SECONDS + _delay[_i] ))
                 fi
                 if [[ -n "${_repfail[$_i]:-}" ]]; then
-                    (( _rrc == 1 )) && continue
+                    (( _retry )) && continue
                     _reported[$_i]=1; continue
                 fi
                 _repfail[$_i]=1
-                (( _rrc == 1 )) || _reported[$_i]=1
+                (( _retry )) || _reported[$_i]=1
                 if [[ "$_verdict" == EXPOSED ]]; then
                     _mount_guard_notify "$_lpid" "sandbox: MOUNT GUARD: protection LOST at ${_MG_PATH[_i]} (${_what}). Could not restore it: ${_MG_REPAIR_ERR}. The sandbox no longer enforces its policy there; restart it (MOUNT_GUARD=repair, not terminating)."
                 else
