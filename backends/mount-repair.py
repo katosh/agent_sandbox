@@ -3,7 +3,7 @@
 
 Used by the mount guard (sandbox-lib.sh §Mount guard, MOUNT_GUARD=repair).
 
-    mount-repair.py PID MNTNS_INODE KIND PATH [TYPE UID]
+    mount-repair.py PID MNTNS_INODE KIND PATH [TYPE UID [OPTS]]
 
     PID          a process in the sandbox's mount namespace
     MNTNS_INODE  inode number of that namespace (guards against pid reuse)
@@ -13,9 +13,23 @@ Used by the mount guard (sandbox-lib.sh §Mount guard, MOUNT_GUARD=repair).
                         remounted read-only, e.g. under a read-only $HOME)
                  ro     read-only bind of PATH onto itself (the object the
                         host sees at PATH right now)
+                 rw     writable bind of PATH onto itself, for a project or
+                        extra-writable directory that fell through to the
+                        read-only parent bind after losing its own mount
     PATH         absolute mount point, as listed in the sandbox's mountinfo
-    TYPE, UID    (ro only) expected file type (f|d) and owner uid of the
+    TYPE, UID    (ro, rw) expected file type (f|d) and owner uid of the
                  host object at PATH, recorded when the sandbox started
+    OPTS         (ro, rw) the per-mount options the lost mount had, as in
+                 mountinfo ("rw,nosuid,nodev,relatime"); only nosuid,
+                 nodev, noexec, noatime and nodiratime are carried over
+                 (default nosuid,nodev)
+
+The bind kinds use the classic mount(2) calls (MS_BIND, then MS_REMOUNT)
+because the descriptor-based API cannot clear a read-only flag inherited
+from the parent bind before Linux 5.12 (mount_setattr). The path is
+resolved once without following symlinks and then once more by mount(2)
+inside the sandbox; a new mount that does not show the host's object is
+detached again. ro uses the descriptor-based API where the kernel has it.
 
 Why this works unprivileged: bwrap's mount namespace is owned by a user
 namespace that the invoking user created, so a process of that user in
@@ -46,6 +60,11 @@ Safety (a repair may never make the sandbox less safe):
     module and libc symbol is resolved before setns, and sys.path is
     emptied before entering.
 
+The helper refuses to act unless the user namespace that owns the target
+mount namespace is owned by the calling uid and is not the one it is
+running in (the host's), so it can never mount anything in a namespace
+it does not already hold full rights in.
+
 Exit status: 0 repaired; 1 refused (reason on stderr); 2 not supported
 here (kernel, permissions, namespace gone).
 """
@@ -68,10 +87,18 @@ MOUNT_ATTR_RDONLY, MOUNT_ATTR_NOSUID, MOUNT_ATTR_NODEV = 0x1, 0x2, 0x4
 CLONE_NEWNS, CLONE_NEWUSER = 0x00020000, 0x10000000
 NS_GET_USERNS = 0xb701
 ST_RDONLY = 1
+NS_GET_OWNER_UID = 0xb704
+MS_RDONLY, MS_NOSUID, MS_NODEV, MS_NOEXEC = 1, 2, 4, 8
+MS_NOATIME, MS_NODIRATIME, MS_REMOUNT, MS_BIND = 1024, 2048, 32, 4096
+MNT_DETACH = 2
+OPT_FLAGS = {"nosuid": MS_NOSUID, "nodev": MS_NODEV, "noexec": MS_NOEXEC,
+             "noatime": MS_NOATIME, "nodiratime": MS_NODIRATIME}
 
 libc = ctypes.CDLL(None, use_errno=True)
 libc.syscall.restype = ctypes.c_long
-libc.setns.restype = ctypes.c_int      # resolve both symbols on the host
+libc.setns.restype = ctypes.c_int      # resolve these symbols on the host,
+libc.mount.restype = ctypes.c_int      # not in the sandbox's filesystem
+libc.umount2.restype = ctypes.c_int
 
 
 class Refused(Exception):
@@ -140,11 +167,56 @@ def _walk(path):
         raise
 
 
-def repair(pid, ns_ino, kind, path, want_type=None, want_uid=None):
+def _have_mount_setattr():
+    """True when the kernel implements mount_setattr (Linux 5.12). An
+    invalid descriptor gets EBADF from a kernel that has it."""
+    r = libc.syscall(ctypes.c_long(SYS_mount_setattr), ctypes.c_long(-1),
+                     b"", ctypes.c_long(AT_EMPTY_PATH), None, ctypes.c_long(0))
+    return not (r < 0 and ctypes.get_errno() == errno.ENOSYS)
+
+
+def _opts_flags(opts):
+    flags = 0
+    for o in (opts or "nosuid,nodev").split(","):
+        flags |= OPT_FLAGS.get(o, 0)
+    return flags
+
+
+def _bind_classic(path, read_only, flags, host):
+    """Bind PATH onto itself in the current mount namespace, then set the
+    mount's flags. The source is resolved in this namespace, where PATH
+    now falls through to the parent bind of the same host directory."""
+    tfd, tst = _walk(path)
+    os.close(tfd)
+    if (tst.st_dev, tst.st_ino) != (host.st_dev, host.st_ino):
+        raise Refused("the sandbox's %s is not the host's object" % path)
+    bpath = path.encode()
+    if libc.mount(bpath, bpath, None, MS_BIND, None) != 0:
+        raise Refused("bind %s: %s" % (path, os.strerror(ctypes.get_errno())))
+    want = MS_REMOUNT | MS_BIND | flags | (MS_RDONLY if read_only else 0)
+    if libc.mount(None, bpath, None, want, None) != 0:
+        err = os.strerror(ctypes.get_errno())
+        # The new mount may not carry the intended flags (read-only
+        # lost, or a parent's flag locked): never leave it in place.
+        libc.umount2(bpath, MNT_DETACH)
+        raise Refused("remount %s: %s" % (path, err))
+    vfd, vst = _walk(path)
+    try:
+        if (vst.st_dev, vst.st_ino) != (host.st_dev, host.st_ino):
+            libc.umount2(bpath, MNT_DETACH)
+            raise Refused("mounted, but %s does not show the host's object" % path)
+        if bool(os.fstatvfs(vfd).f_flag & ST_RDONLY) != read_only:
+            libc.umount2(bpath, MNT_DETACH)
+            raise Refused("mounted, but %s has the wrong read-only state" % path)
+    finally:
+        os.close(vfd)
+
+
+def repair(pid, ns_ino, kind, path, want_type=None, want_uid=None, opts=None):
     if (not path.startswith("/") or path == "/" or "//" in path or path.endswith("/")
             or any(c in (".", "..") for c in path.split("/")[1:])):
         raise Refused("not a canonical absolute path: %r" % path)
-    if kind not in ("null", "tmpfs", "tmpfs-ro", "ro"):
+    if kind not in ("null", "tmpfs", "tmpfs-ro", "ro", "rw"):
         raise Refused("unknown kind %r" % kind)
     try:
         mntfd = os.open("/proc/%d/ns/mnt" % pid, os.O_RDONLY | os.O_CLOEXEC)
@@ -156,9 +228,21 @@ def repair(pid, ns_ino, kind, path, want_type=None, want_uid=None):
         usrfd = fcntl.ioctl(mntfd, NS_GET_USERNS)
     except OSError as e:
         raise Unsupported("cannot find the namespace's owning user namespace: %s" % e.strerror)
+    # Only a namespace we own (and are not already in: the host's) may be
+    # entered; anything else is refused before a single setns().
+    try:
+        owner = int.from_bytes(fcntl.ioctl(usrfd, NS_GET_OWNER_UID, bytes(4)), sys.byteorder)
+        own_user = os.stat("/proc/self/ns/user")
+    except OSError as e:
+        raise Unsupported("cannot identify the namespace's owner: %s" % e.strerror)
+    if owner != os.geteuid():
+        raise Refused("the sandbox's user namespace is owned by uid %d, not by us" % owner)
+    if os.fstat(usrfd).st_ino == own_user.st_ino:
+        raise Refused("the target is in our own user namespace (the host's); refusing")
 
+    classic = kind == "rw" or (kind == "ro" and not _have_mount_setattr())
     host = None
-    if kind == "ro":
+    if kind in ("ro", "rw"):
         # The host object at PATH, before entering: what the sandbox must
         # see at PATH, too (bwrap bound PATH onto itself).
         hfd, host = _walk(path)
@@ -179,6 +263,10 @@ def repair(pid, ns_ino, kind, path, want_type=None, want_uid=None):
     _setns(usrfd, CLONE_NEWUSER, "user")
     _setns(mntfd, CLONE_NEWNS, "mount")
     os.chdir("/")
+
+    if classic:
+        _bind_classic(path, kind == "ro", _opts_flags(opts), host)
+        return
 
     tfd, tst = _walk(path)
     attr = MountAttr(MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV, 0, 0, 0)
@@ -225,18 +313,19 @@ def repair(pid, ns_ino, kind, path, want_type=None, want_uid=None):
 
 
 def main(argv):
-    if len(argv) not in (5, 7):
+    if len(argv) not in (5, 7, 8):
         sys.stderr.write(__doc__)
         return 2
     try:
         pid, ns_ino = int(argv[1]), int(argv[2])
-        want_type = argv[5] if len(argv) == 7 else None
-        want_uid = int(argv[6]) if len(argv) == 7 else None
+        want_type = argv[5] if len(argv) >= 7 else None
+        want_uid = int(argv[6]) if len(argv) >= 7 else None
+        opts = argv[7] if len(argv) == 8 else None
     except ValueError:
         sys.stderr.write("mount-repair: bad numeric argument\n")
         return 2
     try:
-        repair(pid, ns_ino, argv[3], argv[4], want_type, want_uid)
+        repair(pid, ns_ino, argv[3], argv[4], want_type, want_uid, opts)
     except Refused as e:
         sys.stderr.write("%s\n" % e)
         return 1
