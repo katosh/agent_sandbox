@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-21
+
 ### Fixed
 
 - **mount guard: a project directory bind that vanishes from a running
