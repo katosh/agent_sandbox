@@ -3945,7 +3945,10 @@ _sess_dump_launch_config() {
                   SANDBOX_NPROC_LIMIT DEVICES DEVICES_BLACKLIST BLOCKED_ENV_VARS \
                   BLOCKED_ENV_PATTERNS ALLOWED_ENV_VARS HIDE_FROM_SANDBOX \
                   ENABLED_AGENTS HOME_SEEDED_FILES SANDBOX_MODULES; do
-            printf '%s\x1f%s\n' "$_n" "$(declare -p "$_n" 2>/dev/null | tr '\n' ' ')"
+            # Attribute flags (exported or not) are not configuration:
+            # compare the values only.
+            printf '%s\x1f%s\n' "$_n" "$(declare -p "$_n" 2>/dev/null | tr '\n' ' ' \
+                | sed -E 's/^declare -[-a-zA-Z]+ /declare -- /')"
         done
     } > "$_tmp" 2>/dev/null || return 1
     mv -f -- "$_tmp" "$_f"
@@ -4413,6 +4416,13 @@ _reload_plan() {
     return 0
 }
 
+# _reload_short VALUE — a value for a message: declare's prefix dropped, cut at 100 characters.
+_reload_short() {
+    local _v="${1#declare -- }"
+    if (( ${#_v} > 100 )); then _v="${_v:0:100}..."; fi
+    printf '%s' "$_v"
+}
+
 # _reload_env_diff OLD NEW — RESTART lines for launch config that
 # changed; none of it can reach processes that are already running.
 _reload_env_diff() {
@@ -4430,7 +4440,8 @@ _reload_env_diff() {
             _SANDBOX_ENV_PATH) _label="PATH (from SANDBOX_ENV)" ;;
             *) _label="$_k" ;;
         esac
-        printf 'RESTART\x1f%s changed; environment and process-level settings cannot reach a running session\n' "$_label"
+        printf 'RESTART\x1f%s changed (was: %s; now: %s); environment and process-level settings cannot reach a running session\n' \
+            "$_label" "$(_reload_short "${o[$_k]-<none>}")" "$(_reload_short "${n[$_k]-<none>}")"
     done
     return 0
 }
@@ -4675,8 +4686,21 @@ _sess_reload_run() {
     _rc=0
     env "${_penv[@]}" "$SANDBOX_DIR/sandbox-exec.sh" "${_pargs[@]}" -- true >"$_pd/out" 2>"$_pd/err" </dev/null || _rc=$?
     if [[ -s "$_pd/err" ]]; then
-        echo "Config messages:"
-        sed 's/^/  /' "$_pd/err"
+        # Informational notes (one per blocklist entry the network layer
+        # cannot enforce, ...) would bury the plan: count them unless the
+        # configuration could not be loaded.
+        local _nn
+        _nn="$(grep -c '^sandbox: NOTE' "$_pd/err")"
+        if [[ $_rc -ne 0 || ! -r "$_pd/state.tsv" ]]; then
+            echo "Config messages:"
+            sed 's/^/  /' "$_pd/err"
+        elif grep -qv '^sandbox: NOTE' "$_pd/err"; then
+            echo "Config messages:"
+            grep -v '^sandbox: NOTE' "$_pd/err" | sed 's/^/  /'
+            if (( _nn > 0 )); then echo "  (and $_nn informational notes)"; fi
+        elif (( _nn > 0 )); then
+            echo "Config messages: $_nn informational notes"
+        fi
     fi
     if [[ $_rc -ne 0 || ! -r "$_pd/state.tsv" ]]; then
         echo "agent-sandbox: the configuration could not be loaded or validated (status $_rc); session unchanged" >&2

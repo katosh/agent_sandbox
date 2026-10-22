@@ -7271,8 +7271,11 @@ _lr_out="$(
     printf 'HOME_ACCESS%sdeclare -- HOME_ACCESS="write" \nPRIVATE_TMP%sdeclare -- PRIVATE_TMP="true" \n' "$_US" "$_US" > "$_T/new"
     echo "env=$(_reload_env_diff "$_T/old" "$_T/new" | tr "$_US" '|')"
     echo "same=[$(_reload_env_diff "$_T/old" "$_T/old")]"
+    X_LR_PROBE=1; _a="$(declare -p X_LR_PROBE | sed -E 's/^declare -[-a-zA-Z]+ /declare -- /')"
+    export X_LR_PROBE; _b="$(declare -p X_LR_PROBE | sed -E 's/^declare -[-a-zA-Z]+ /declare -- /')"
+    echo "flags=[$([[ "$_a" == "$_b" ]] && echo same)]"
 )"
-_lr_want=$'rt=3:/b c:[]:[]:[]:launch:null\nnorebind=[][null]\nenv=RESTART|HOME_ACCESS changed; environment and process-level settings cannot reach a running session\nsame=[]'
+_lr_want=$'rt=3:/b c:[]:[]:[]:launch:null\nnorebind=[][null]\nenv=RESTART|HOME_ACCESS changed (was: HOME_ACCESS=\"read\" ; now: HOME_ACCESS=\"write\" ); environment and process-level settings cannot reach a running session\nsame=[]\nflags=[same]'
 if [[ "$_lr_out" == "$_lr_want" ]]; then
     pass "LR04: state files round-trip empty fields; the guard drops rebinding when disabled; launch-config changes need a restart"
 else
@@ -7288,24 +7291,28 @@ if is_bwrap && command -v python3 >/dev/null 2>&1 && [[ -f "$SCRIPT_DIR/backends
     # launcher's pid is not addressable from its pid namespace.
     _lr_t="$(mktemp -d)"; trap_rm_dir "$_lr_t"
     mkdir -m 700 "$_lr_t/xdg"
-    _lr_pidf="$PROJECT_DIR/.test-lr-pid-$$"; _lr_res="$PROJECT_DIR/.test-lr-res-$$"
-    _TEST_TEMP_FILES+=("$_lr_pidf" "$_lr_res"); rm -f "$_lr_pidf" "$_lr_res"
+    _lr_pidf="$PROJECT_DIR/.test-lr-pid-$$"; _lr_res="$PROJECT_DIR/.test-lr-res-$$"; _lr_go="$PROJECT_DIR/.test-lr-go-$$"
+    _TEST_TEMP_FILES+=("$_lr_pidf" "$_lr_res" "$_lr_go"); rm -f "$_lr_pidf" "$_lr_res" "$_lr_go"
     XDG_RUNTIME_DIR="$_lr_t/xdg" MOUNT_GUARD_INTERVAL=1 "$SANDBOX_EXEC" --backend bwrap --project-dir "$PROJECT_DIR" -- bash -c '
-        for i in $(seq 1 150); do [[ -s "$1" ]] && break; sleep 0.2; done
+        for i in $(seq 1 150); do [[ -s "$1" && -e "$4" ]] && break; sleep 0.2; done
         L=$(cat "$1")
         { ls "$2"/sessions/*/session 2>&1; kill -0 "$L" 2>&1; echo "kill-rc=$?"
           for p in /proc/[0-9]*; do [[ "${p#/proc/}" == "$L" ]] && echo VISIBLE-LAUNCHER; done; } > "$3"' \
-        _ "$_lr_pidf" "$_lr_t/xdg/agent-sandbox" "$_lr_res" >"$_lr_t/l5.out" 2>"$_lr_t/l5.err" &
+        _ "$_lr_pidf" "$_lr_t/xdg/agent-sandbox" "$_lr_res" "$_lr_go" >"$_lr_t/l5.out" 2>"$_lr_t/l5.err" &
     _lr_l=$!
     echo "$_lr_l" > "$_lr_pidf"
     _lr_rec=""
     for _i in $(seq 1 100); do
         _lr_rec="$(compgen -G "$_lr_t/xdg/agent-sandbox/sessions/*/session" | head -n1)"
-        [[ -n "$_lr_rec" && -e "$_lr_res" ]] && break; sleep 0.2
+        [[ -n "$_lr_rec" ]] && break; sleep 0.2
     done
     _lr_rec_ok=no
     if [[ -n "$_lr_rec" ]] && grep -q "^launcher_pid=$_lr_l\$" "$_lr_rec" && grep -q '^backend=bwrap$' "$_lr_rec" \
        && [[ "$(stat -c %a "${_lr_rec%/*}")" == 700 ]]; then _lr_rec_ok=yes; fi
+    # The record only exists while the session runs: the sandbox's command
+    # was held until it had been looked at; let it probe and exit now.
+    : > "$_lr_go"
+    for _i in $(seq 1 100); do [[ -e "$_lr_res" ]] && break; sleep 0.2; done
     wait "$_lr_l" 2>/dev/null
     _lr_r="$(cat "$_lr_res" 2>/dev/null)"
     _lr_after="$(XDG_RUNTIME_DIR="$_lr_t/xdg" "$SANDBOX_EXEC" sessions 2>&1)"
@@ -7396,7 +7403,7 @@ else
     skip "LR05: needs bwrap with unprivileged user namespaces and python3"
     skip "LR06: needs bwrap with unprivileged user namespaces and python3"
 fi
-unset _lr_out _lr_want _lr_t _lr_o _lr_c _lr_pidf _lr_res _lr_l _lr_rec _lr_rec_ok _lr_r _lr_after _lr_flag _lr_log _lr_conf _lr_ok _lr_why
+unset _lr_out _lr_want _lr_t _lr_o _lr_c _lr_pidf _lr_res _lr_go _lr_l _lr_rec _lr_rec_ok _lr_r _lr_after _lr_flag _lr_log _lr_conf _lr_ok _lr_why
 # ── H01: Hardlink /etc/passwd into project dir ──
 local _hlink="$PROJECT_DIR/.test-passwd-hardlink-$$"
 if ln /etc/passwd "$_hlink" 2>/dev/null; then
