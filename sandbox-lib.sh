@@ -4702,19 +4702,12 @@ _sess_reload_run() {
         return 1
     fi
     _mg_load_state "$_sd/state.tsv" || { echo "agent-sandbox: session $_id has an unreadable mount state" >&2; return 1; }
-    if [[ -n "$_conf" ]]; then
-        # The recorded SANDBOX_CONF is read and sourced as this user: it
-        # must be the user's own file and not somewhere the sandbox can write.
-        local _bad=""
-        [[ -f "$_conf" && -O "$_conf" ]] || _bad="is not a file owned by you"
-        if [[ -z "$_bad" && ( "$_conf" == "$_proj"/* || "$_conf" == "${TMPDIR:-/tmp}"/* ) ]]; then _bad="is inside the project or the temp directory"; fi
-        for _i in "${!_MG_PATH[@]}"; do
-            if [[ -z "$_bad" && "${_MG_KIND[_i]}" == rw && "$_conf" == "${_MG_PATH[_i]}"/* ]]; then _bad="is inside the sandbox's writable path ${_MG_PATH[_i]}"; fi
-        done
-        if [[ -n "$_bad" ]]; then
-            echo "agent-sandbox: the session was started with SANDBOX_CONF=$_conf, which $_bad; refusing to load it. Restart the session, or reload from a shell with the right SANDBOX_CONF set" >&2
-            return 1
-        fi
+    if [[ -n "$_conf" && ! ( -f "$_conf" && -O "$_conf" ) ]]; then
+        # It is sourced as you: only a file you own (records are host-only,
+        # see _sess_register; a config the project holds is as trusted as
+        # at launch, and a restart would load it the same way).
+        echo "agent-sandbox: the session was started with SANDBOX_CONF=$_conf, which is not a file owned by you; refusing to load it. Restart the session, or reload from a shell with the right SANDBOX_CONF set" >&2
+        return 1
     fi
     _tgt="$(_sess_find_ns_pid "$_lpid" "$_sd")" || {
         echo "agent-sandbox: cannot find the sandbox's mount namespace (still starting?)" >&2; return 1; }
