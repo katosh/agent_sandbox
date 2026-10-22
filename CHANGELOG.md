@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-22
+
 ### Added
 
 - **`agent-sandbox sessions` and `agent-sandbox reload`: live reload of a
