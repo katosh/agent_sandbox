@@ -845,6 +845,24 @@ _CHAPERON_LAUNCHER_CONFIG_VARS=(
     CLEANUP_MATERIALIZED_BLOCKED_FILES
 )
 
+# chaperon_path_is_writable PATH
+# Returns 0 if PATH is the project, or under it, or under a path the
+# running session has writable. The set is the chaperon's reloadable view
+# (chaperon.sh: _CHAPERON_VIEW_WRITABLE, refreshed on SIGUSR1 by
+# `agent-sandbox reload`), so a path added or revoked while the session
+# runs is seen without a restart.
+chaperon_path_is_writable() {
+    local _p="${1%/}" _w _proj="${PROJECT_DIR:-}"
+    [[ -n "$_p" ]] || return 1
+    if [[ -n "$_proj" && ( "$_p" == "${_proj%/}" || "$_p" == "${_proj%/}"/* ) ]]; then
+        return 0
+    fi
+    for _w in "${_CHAPERON_VIEW_WRITABLE[@]+"${_CHAPERON_VIEW_WRITABLE[@]}"}"; do
+        [[ "$_p" == "$_w" || "$_p" == "$_w"/* ]] && return 0
+    done
+    return 1
+}
+
 # _is_denied_export_name <name>
 # Returns 0 if <name> must not be set via --export.
 _is_denied_export_name() {

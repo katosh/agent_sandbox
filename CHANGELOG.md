@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`agent-sandbox sessions` and `agent-sandbox reload`: live reload of a
+  running bwrap session.** Every launch now records itself in a per-user
+  runtime directory the sandbox cannot see or write
+  (`$XDG_RUNTIME_DIR/agent-sandbox/sessions/`; without it
+  `${XDG_STATE_HOME:-~/.local/state}/agent-sandbox/sessions/`, masked by
+  the bwrap backend). `sessions` lists the live ones. `reload [ID |
+  --project DIR] [--dry-run] [--force-detach]` re-runs the launch-time
+  config load and validation for the session's project, builds the desired
+  mounts with the launch builder, and applies the difference from the host
+  with `backends/mount-repair.py`: new writable binds first, then the
+  overlays inside them (mounts a new parent bind would hide are re-created
+  on top of it); a writable path that left the config is remounted
+  read-only. If files are open for writing the kernel refuses (EBUSY): it
+  is reported and the path stays writable, unless `--force-detach`
+  detaches it (already-open handles keep their access). Only paths already
+  visible in the sandbox can be added; environment and process-level
+  settings (`SANDBOX_ENV`, `PATH`, ...) and removed protections are
+  reported as "needs restart". The trigger is host-side only (SIGUSR1 to
+  the mount guard and the chaperon, which re-read host-only files; never
+  the chaperon FIFO). bwrap only; landlock and firejail print "not
+  supported, restart". See [Live reload](docs/live-reload.md).
+- **mount-repair.py: `revoke` and `detach` kinds** (remount the topmost
+  mount read-only; lazily unmount it) and exit status 3 (busy).
+
 ## [0.16.1] - 2026-10-21
 
 ### Fixed
