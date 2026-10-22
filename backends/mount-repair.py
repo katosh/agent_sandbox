@@ -16,6 +16,16 @@ Used by the mount guard (sandbox-lib.sh §Mount guard, MOUNT_GUARD=repair).
                  rw     writable bind of PATH onto itself, for a project or
                         extra-writable directory that fell through to the
                         read-only parent bind after losing its own mount
+                 revoke remount the topmost mount at PATH read-only (live
+                        reload: a writable bind that left the config). It
+                        keeps the mount's nosuid/nodev/noexec/noatime
+                        options and never detaches anything; if files are
+                        open for writing through the mount the kernel
+                        refuses (EBUSY) and the helper exits 3, leaving
+                        the mount writable.
+                 detach lazily unmount the topmost mount at PATH (live
+                        reload --force-detach). Open handles keep their
+                        access; only the path stops showing the mount.
     PATH         absolute mount point, as listed in the sandbox's mountinfo
     TYPE, UID    (ro, rw) expected file type (f|d) and owner uid of the
                  host object at PATH, recorded when the sandbox started
@@ -72,7 +82,8 @@ running in (the host's), so it can never mount anything in a namespace
 it does not already hold full rights in.
 
 Exit status: 0 repaired; 1 refused (reason on stderr); 2 not supported
-here (kernel, permissions, namespace gone).
+here (kernel, permissions, namespace gone); 3 busy (revoke only: files
+are open for writing, the mount was left as it was).
 """
 import ctypes
 import errno
@@ -112,6 +123,10 @@ class Refused(Exception):
 
 
 class Unsupported(Exception):
+    pass
+
+
+class Busy(Exception):
     pass
 
 
@@ -209,6 +224,24 @@ def _mount_point_listed(mifd, path):
     return False
 
 
+def _mount_options(mifd, path):
+    """Per-mount options (mountinfo field 6) of the topmost mount listed
+    at PATH, or None. Same table and escaping as _mount_point_listed."""
+    os.lseek(mifd, 0, os.SEEK_SET)
+    chunks = []
+    while True:
+        b = os.read(mifd, 65536)
+        if not b:
+            break
+        chunks.append(b)
+    opts = None
+    for line in os.fsdecode(b"".join(chunks)).split("\n"):
+        f = line.split(" ")
+        if len(f) > 5 and _unescape(f[4]) == path:
+            opts = f[5]
+    return opts
+
+
 def _already_present(mifd, path, host, read_only):
     """True when the topmost mount at PATH already is what a repair would
     create: PATH is a mount point, resolves (the topmost mount decides
@@ -276,11 +309,39 @@ def _bind_classic(path, read_only, flags, host):
         os.close(vfd)
 
 
+def _revoke(mifd, path, detach):
+    """Make the topmost mount at PATH read-only (detach: unmount it
+    lazily). Runs inside the sandbox's namespaces."""
+    cur = _mount_options(mifd, path)
+    if cur is None:
+        raise Refused("%s is not a mount point in the sandbox" % path)
+    bpath = path.encode()
+    if detach:
+        if libc.umount2(bpath, MNT_DETACH) != 0:
+            raise Refused("detach %s: %s" % (path, os.strerror(ctypes.get_errno())))
+        return
+    # Keep the options the mount has: a bind remount that drops a locked
+    # one (nosuid, nodev, ...) is refused by the kernel.
+    flags = _opts_flags(cur)
+    want = MS_REMOUNT | MS_BIND | MS_RDONLY | flags
+    if libc.mount(None, bpath, None, want, None) != 0:
+        e = ctypes.get_errno()
+        if e == errno.EBUSY:
+            raise Busy("%s has files open for writing; left writable" % path)
+        raise Refused("remount %s read-only: %s" % (path, os.strerror(e)))
+    vfd, _ = _walk(path)
+    try:
+        if not os.fstatvfs(vfd).f_flag & ST_RDONLY:
+            raise Refused("remounted, but %s is not read-only" % path)
+    finally:
+        os.close(vfd)
+
+
 def repair(pid, ns_ino, kind, path, want_type=None, want_uid=None, opts=None):
     if (not path.startswith("/") or path == "/" or "//" in path or path.endswith("/")
             or any(c in (".", "..") for c in path.split("/")[1:])):
         raise Refused("not a canonical absolute path: %r" % path)
-    if kind not in ("null", "tmpfs", "tmpfs-ro", "ro", "rw"):
+    if kind not in ("null", "tmpfs", "tmpfs-ro", "ro", "rw", "revoke", "detach"):
         raise Refused("unknown kind %r" % kind)
     try:
         mntfd = os.open("/proc/%d/ns/mnt" % pid, os.O_RDONLY | os.O_CLOEXEC)
@@ -309,7 +370,7 @@ def repair(pid, ns_ino, kind, path, want_type=None, want_uid=None, opts=None):
     # namespace is checked again after the open, so a recycled pid
     # cannot hand us another namespace's table.
     mifd = None
-    if kind in ("ro", "rw"):
+    if kind in ("ro", "rw", "revoke", "detach"):
         try:
             mifd = os.open("/proc/%d/mountinfo" % pid, os.O_RDONLY | os.O_CLOEXEC)
             if os.stat("/proc/%d/ns/mnt" % pid).st_ino != ns_ino:
@@ -318,6 +379,11 @@ def repair(pid, ns_ino, kind, path, want_type=None, want_uid=None, opts=None):
         except OSError:
             mifd = None
 
+    if kind in ("revoke", "detach"):
+        # Live reload: act on the mount that is there. No host object is
+        # involved, so nothing is resolved before entering.
+        if mifd is None:
+            raise Unsupported("the sandbox's mount table could not be opened")
     classic = kind == "rw" or (kind == "ro" and not _have_mount_setattr())
     host = None
     if kind in ("ro", "rw"):
@@ -341,6 +407,10 @@ def repair(pid, ns_ino, kind, path, want_type=None, want_uid=None, opts=None):
     _setns(usrfd, CLONE_NEWUSER, "user")
     _setns(mntfd, CLONE_NEWNS, "mount")
     os.chdir("/")
+
+    if kind in ("revoke", "detach"):
+        _revoke(mifd, path, kind == "detach")
+        return
 
     # Idempotent for ro and rw: a second repair of the same path (a late
     # first one, a concurrent run) must not stack an identical mount on a
@@ -424,6 +494,9 @@ def main(argv):
     except Unsupported as e:
         sys.stderr.write("%s\n" % e)
         return 2
+    except Busy as e:
+        sys.stderr.write("%s\n" % e)
+        return 3
     except OSError as e:
         sys.stderr.write("%s\n" % e)
         return 1

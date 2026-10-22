@@ -7094,6 +7094,341 @@ unset _ml_a _ml_pid _ml_before _ml_after _ml_rc _ml_r _ml_i1 _ml_m1 _ml_ok _ml_w
       _ml_secret _ml_ready _ml_conf _ml_conf6 _ml_mode _ml_l _ml_msg _ml_ph \
       _ml_hid _ml_go _ml_state _ml_stash _ml_detached _ml_err
 unset -f _ml_ns_pid _ml_protective _ml_ofs
+# ── LR: live reload (agent-sandbox sessions / reload) ───────────
+#
+# LR01. The session registry (sandbox-lib.sh §Live sessions): only a
+# record whose launcher pid exists with the recorded start time, on this
+# host, is live. A dead one is pruned; another host's, one whose
+# namespace pid is gone, a mismatching id and a hand-written record with
+# a bad backend are ignored (and never trusted).
+_lr_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    set +e
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    mkdir -m 700 "$_T/xdg"; export XDG_RUNTIME_DIR="$_T/xdg"
+    _b="$(_sess_base_dir)"; _sess_mkbase "$_b" || echo "MKBASE-FAILED"
+    _me="$(_proc_starttime $$)"
+    _mk() { local d="$_b/$1"; mkdir -m 700 "$d"; _SESS_DIR="$d"
+            _sess_set "id=$2" version=0.0.0 "backend=$3" "project=$4" "launcher_pid=$5" \
+                "launcher_start=$6" "started=$7" "host=${8:-$(_sess_host)}"; }
+    _mk aaaaaaa1 aaaaaaa1 bwrap /p/a $$ "$_me" 1000
+    _mk bbbbbbb2 bbbbbbb2 bwrap /p/b 2147483000 1 2000
+    _mk ccccccc3 ccccccc3 bwrap /p/c $$ "$_me" 3000 otherhost
+    _mk ddddddd4 ddddddd4 bwrap /p/d $$ "$_me" 4000
+    printf '99999999 1 1\n' > "$_b/ddddddd4/ns"
+    _mk eeeeeee5 fffffff6 bwrap /p/e $$ "$_me" 5000
+    mkdir -m 700 "$_b/not-an-id"; cp "$_b/aaaaaaa1/session" "$_b/not-an-id/session"
+    mkdir -m 700 "$_b/1111111a"
+    printf 'id=1111111a\nversion=0.0.0\nbackend=bwrap;x\nproject=/p/f\nlauncher_pid=%s\nlauncher_start=%s\nstarted=1\nhost=%s\n' \
+        "$$" "$_me" "$(_sess_host)" > "$_b/1111111a/session"
+    echo "base=${_b#"$_T"/}"
+    echo "live=$(_sess_live_ids "$_b" | tr '\n' ,)"
+    echo "dead-pruned=$([[ -e $_b/bbbbbbb2 ]] && echo no || echo yes)"
+    echo "foreign-kept=$([[ -e $_b/ccccccc3 ]] && echo yes || echo no)"
+    echo "mode=$(stat -c %a "$_b")"
+)"
+_lr_want=$'base=xdg/agent-sandbox/sessions\nlive=aaaaaaa1,\ndead-pruned=yes\nforeign-kept=yes\nmode=700'
+if [[ "$_lr_out" == "$_lr_want" ]]; then
+    pass "LR01: session registry lists only live records of this host and prunes dead ones; forged records are ignored"
+else
+    fail "LR01: session registry" "got: $_lr_out"
+fi
+
+# LR02. The subcommands' refusals, through the real entry point (no
+# sandbox is started): nothing running, an ambiguous project, an
+# ambiguous or malformed id, id and --project together, an unsupported
+# backend, and a session of another version.
+_lr_t="$(mktemp -d)"; trap_rm_dir "$_lr_t"
+mkdir -m 700 "$_lr_t/xdg"; mkdir -p "$_lr_t/p1/sub" "$_lr_t/p2" "$_lr_t/p3"
+_lr_run() { XDG_RUNTIME_DIR="$_lr_t/xdg" "$SANDBOX_EXEC" "$@" 2>&1; }
+_lr_mk() {   # ID BACKEND PROJECT [VERSION] — a live-looking record whose launcher is this shell
+    (
+        export _SANDBOX_LIB_NO_INIT=1
+        source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+        set +e
+        export XDG_RUNTIME_DIR="$_lr_t/xdg"
+        _b="$(_sess_base_dir)"; _sess_mkbase "$_b"
+        mkdir -m 700 "$_b/$1"; _SESS_DIR="$_b/$1"
+        _sess_set "id=$1" "version=${4:-$(_sess_version)}" "backend=$2" "project=$3" "launcher_pid=$$" \
+            "launcher_start=$(_proc_starttime $$)" "started=$(date +%s)" "host=$(_sess_host)"
+    )
+}
+_lr_o1="$(_lr_run sessions)"; _lr_c1=$?
+_lr_o2="$(_lr_run reload)"; _lr_c2=$?
+_lr_mk 11111111 bwrap "$_lr_t/p1"; _lr_mk 22222222 bwrap "$_lr_t/p1"
+_lr_mk 33333333 landlock "$_lr_t/p2"; _lr_mk 44444441 bwrap "$_lr_t/p3"; _lr_mk 44444442 bwrap "$_lr_t/p3"
+_lr_mk 55555555 bwrap "$_lr_t/p2/x" 0.0.1
+_lr_o3="$(_lr_run sessions)"
+_lr_o4="$(_lr_run reload --project "$_lr_t/p1")"; _lr_c4=$?
+_lr_o5="$(cd "$_lr_t/p1/sub" && _lr_run reload)"; _lr_c5=$?
+_lr_o6="$(_lr_run reload 3333)"; _lr_c6=$?
+_lr_o7="$(_lr_run reload 4444444)"; _lr_c7=$?
+_lr_o8="$(_lr_run reload 33333333 --project "$_lr_t/p2")"; _lr_c8=$?
+_lr_o9="$(_lr_run reload 5555)"; _lr_c9=$?
+_lr_o10="$(_lr_run reload --bogus)"; _lr_c10=$?
+_lr_o11="$(_lr_run reload zzzz)"; _lr_c11=$?
+if [[ $_lr_c1 -eq 0 && "$_lr_o1" == "No live sandbox sessions." && $_lr_c2 -eq 1 && "$_lr_o2" == *"no live session"* \
+      && "$_lr_o3" == *11111111*"$_lr_t/p1"* && "$_lr_o3" == *33333333*landlock* \
+      && $_lr_c4 -eq 2 && "$_lr_o4" == *ambiguous*11111111*22222222* \
+      && $_lr_c5 -eq 2 && "$_lr_o5" == *ambiguous* \
+      && $_lr_c6 -eq 1 && "$_lr_o6" == *"not supported on the landlock backend"* \
+      && $_lr_c7 -eq 2 && "$_lr_o7" == *ambiguous* \
+      && $_lr_c8 -eq 2 && "$_lr_o8" == *"not both"* \
+      && $_lr_c9 -eq 1 && "$_lr_o9" == *"runs 0.0.1"* \
+      && $_lr_c10 -eq 2 && $_lr_c11 -eq 2 ]]; then
+    pass "LR02: sessions lists live sessions; reload refuses ambiguous, malformed, unsupported-backend and other-version sessions"
+else
+    fail "LR02: sessions/reload refusals" "c=$_lr_c1/$_lr_c2/$_lr_c4/$_lr_c5/$_lr_c6/$_lr_c7/$_lr_c8/$_lr_c9/$_lr_c10/$_lr_c11 o4=$_lr_o4 o6=$_lr_o6 o9=$_lr_o9"
+fi
+unset -f _lr_run _lr_mk
+
+# LR03. The reload plan from synthetic mount states (no sandbox):
+# revocation of a writable path that left the config, additions in
+# launch order (writable binds first, overlays after), a mount that a new
+# parent bind would hide is re-created on top of it, one that cannot be is
+# a refusal, a path still covered by a writable ancestor keeps its own
+# bind, a protection removed from the config is not loosened live, a
+# revoked leftover is stable, an unchanged session has an empty plan.
+_lr_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    set +e
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    _US=$'\x1f'
+    _st() { local f="$_T/$1" l; shift; : > "$f"; for l in "$@"; do printf '%s\n' "${l//|/$_US}" >> "$f"; done; }
+    _plan() { _RELOAD_PRESENT_FN=true _reload_plan "$_T/$1" "$_T/$2" | tr "$_US" '|'; }
+    _st a.cur 'rw|/proj|1|rw|d|1000|launch' 'ro|/proj/.sandbox-state|1|ro|d|1000|launch' 'ro|/data/ro1|1|ro|d|1000|launch' \
+        'rw|/data/old|1|rw|d|1000|launch' 'mask|/sec|1|null|f|1000|launch'
+    _st a.new 'rw|/proj|1|rw|d|1000|launch' 'ro|/proj/.sandbox-state|1|ro|d|1000|launch' 'rw|/data/ro1|1|rw|d|1000|launch' \
+        'rw|/data/new|1|rw|d|1000|launch' 'mask|/data/new/.env|1|null|f|1000|launch' 'ro|/data/new/.git|1|ro|d|1000|launch'
+    echo "== A"; _plan a.cur a.new
+    _st b.cur 'rw|/proj|1|rw|d|1000|launch' 'mask|/data/new/.env|1|null|f|1000|launch' 'ro|/data/blk/x|1||d|1000|launch'
+    _st b.new 'rw|/proj|1|rw|d|1000|launch' 'rw|/data/new|1|rw|d|1000|launch' 'mask|/data/new/.env|1|null|f|1000|launch' \
+        'rw|/data/blk|1|rw|d|1000|launch' 'ro|/data/blk/x|1||d|1000|launch'
+    echo "== B"; _plan b.cur b.new
+    _st c.cur 'rw|/proj|1|rw|d|1000|launch' 'rw|/proj/sub|1|rw|d|1000|launch'
+    _st c.new 'rw|/proj|1|rw|d|1000|launch'
+    echo "== C"; _plan c.cur c.new; echo "-- same"; _plan c.cur c.cur
+    _st d.cur 'rw|/proj|1|rw|d|1000|launch' 'ro|/data/old|1|ro|d|1000|rev'
+    _st d.new 'rw|/proj|1|rw|d|1000|launch'
+    _st d.new2 'rw|/proj|1|rw|d|1000|launch' 'rw|/data/old|1|rw|d|1000|launch'
+    echo "== D"; _plan d.cur d.new; echo "-- again"; _plan d.cur d.new2
+    _st e.cur 'rw|/proj|1|rw|d|1000|launch' 'ro|/x|1|ro|d|1000|launch'
+    _st e.new 'rw|/proj|1|rw|d|1000|launch' 'mask|/x|1|null|f|1000|launch'
+    echo "== E"; _plan e.cur e.new
+    _st f.cur 'rw|/proj|1|rw|d|1000|launch' 'rw|/data/kid|1|rw|d|1000|launch' 'ro|/data/kid/s|1|ro|d|1000|launch'
+    _st f.new 'rw|/proj|1|rw|d|1000|launch' 'rw|/data|1|rw|d|1000|launch' 'ro|/data/kid|1|ro|d|1000|launch' 'ro|/data/kid/s|1|ro|d|1000|launch'
+    echo "== F"; _plan f.cur f.new
+)"
+_lr_want='== A
+NOTE|protection at /sec is no longer in the config but stays enforced until the session is restarted
+REVOKE|/data/old
+ADD|rw|/data/ro1|1|rw|d|1000
+ADD|rw|/data/new|1|rw|d|1000
+ADD|mask|/data/new/.env|1|null|f|1000
+ADD|ro|/data/new/.git|1|ro|d|1000
+== B
+REFUSE|/data/blk|would hide the existing mount at /data/blk/x, which cannot be re-created live; restart the session
+ADD|rw|/data/new|1|rw|d|1000
+REAPPLY|mask|/data/new/.env|1|null|f|1000
+== C
+NOTE|/proj/sub stays writable through /proj; its own bind is kept
+-- same
+== D
+-- again
+ADD|rw|/data/old|1|rw|d|1000
+== E
+RESTART|/x changed protection kind (ro to mask)
+== F
+REVOKE|/data/kid
+ADD|rw|/data|1|rw|d|1000
+REAPPLY|ro|/data/kid|1|ro|d|1000
+REAPPLY|ro|/data/kid/s|1|ro|d|1000'
+if [[ "$_lr_out" == "$_lr_want" ]]; then
+    pass "LR03: reload plan: revoke, additions in launch order, hidden children re-created or refused, covered/loosened/revoked cases"
+else
+    fail "LR03: reload plan" "$(diff <(echo "$_lr_want") <(echo "$_lr_out") | head -20)"
+fi
+
+# LR04. State files keep empty fields and odd paths; the guard's view of
+# a state file honours MOUNT_GUARD_REBIND=false; a change in non-mount
+# launch config is reported as "needs restart".
+_lr_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    set +e
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    _MG_KIND=(rw ro mask); _MG_PATH=(/a "/b c" /d); _MG_POLICY=(1 0 1); _MG_HOW=(rw "" null)
+    _MG_FTYPE=(d "" f); _MG_UID=(1000 "" 1000); _MG_ORIGIN=()
+    _mg_dump_state "$_T/s" || echo DUMP-FAILED
+    _mg_load_state "$_T/s"
+    echo "rt=${#_MG_PATH[@]}:${_MG_PATH[1]}:[${_MG_HOW[1]}]:[${_MG_FTYPE[1]}]:[${_MG_UID[1]}]:${_MG_ORIGIN[0]}:${_MG_HOW[2]}"
+    MOUNT_GUARD_REBIND=false _mg_load_state "$_T/s" guard
+    echo "norebind=[${_MG_HOW[0]}][${_MG_HOW[2]}]"
+    _US=$'\x1f'
+    printf 'HOME_ACCESS%sdeclare -- HOME_ACCESS="read" \nPRIVATE_TMP%sdeclare -- PRIVATE_TMP="true" \n' "$_US" "$_US" > "$_T/old"
+    printf 'HOME_ACCESS%sdeclare -- HOME_ACCESS="write" \nPRIVATE_TMP%sdeclare -- PRIVATE_TMP="true" \n' "$_US" "$_US" > "$_T/new"
+    echo "env=$(_reload_env_diff "$_T/old" "$_T/new" | tr "$_US" '|')"
+    echo "same=[$(_reload_env_diff "$_T/old" "$_T/old")]"
+    X_LR_PROBE=1; _a="$(declare -p X_LR_PROBE | sed -E 's/^declare -[-a-zA-Z]+ /declare -- /')"
+    export X_LR_PROBE; _b="$(declare -p X_LR_PROBE | sed -E 's/^declare -[-a-zA-Z]+ /declare -- /')"
+    echo "flags=[$([[ "$_a" == "$_b" ]] && echo same)]"
+)"
+_lr_want=$'rt=3:/b c:[]:[]:[]:launch:null\nnorebind=[][null]\nenv=RESTART|HOME_ACCESS changed (was: HOME_ACCESS=\"read\" ; now: HOME_ACCESS=\"write\" ); environment and process-level settings cannot reach a running session\nsame=[]\nflags=[same]'
+if [[ "$_lr_out" == "$_lr_want" ]]; then
+    pass "LR04: state files round-trip empty fields; the guard drops rebinding when disabled; launch-config changes need a restart"
+else
+    fail "LR04: state files / env diff" "got: $_lr_out"
+fi
+
+# LR04b. The guard pauses while a reload applies (marker = reloader pid +
+# start time, stale once that process is gone); only bwrap sessions are
+# registered (landlock/firejail cannot hide the registry from the agent).
+_lr_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    _SESS_DIR="$_T"
+    printf '%s %s\n' "$$" "$(_proc_starttime "$$")" > "$_T/reloading"
+    _sess_reload_busy && echo -n "live=busy " || echo -n "live=idle "
+    printf '%s %s\n' "$$" "1" > "$_T/reloading"
+    _sess_reload_busy && echo -n "wrongstart=busy " || echo -n "wrongstart=idle "
+    printf '%s %s\n' "999999999" "1" > "$_T/reloading"
+    _sess_reload_busy && echo -n "dead=busy " || echo -n "dead=idle "
+    rm -f "$_T/reloading"
+    _sess_reload_busy && echo -n "none=busy " || echo -n "none=idle "
+    _SESS_BASE="$_T/base"; mkdir -m 700 "$_SESS_BASE"
+    SANDBOX_BACKEND=landlock; _sess_register "$_T" "" && echo -n "landlock=registered" || echo -n "landlock=skipped"
+)"
+if [[ "$_lr_out" == "live=busy wrongstart=idle dead=idle none=idle landlock=skipped" ]]; then
+    pass "LR04b: the reload marker pauses the guard only while its reloader lives; non-bwrap sessions are not registered"
+else
+    fail "LR04b: reload marker / registration" "got: $_lr_out"
+fi
+
+# LR05/LR06 need a real bwrap namespace with unprivileged user namespaces.
+if is_bwrap && command -v python3 >/dev/null 2>&1 && [[ -f "$SCRIPT_DIR/backends/mount-repair.py" ]] \
+   && bwrap --ro-bind / / true >/dev/null 2>&1; then
+    # LR05. A running session is registered where the sandbox has no path,
+    # and nothing inside can reach the host processes a reload signals:
+    # the registry directory does not exist in the sandbox and the
+    # launcher's pid is not addressable from its pid namespace.
+    _lr_t="$(mktemp -d)"; trap_rm_dir "$_lr_t"
+    mkdir -m 700 "$_lr_t/xdg"
+    _lr_pidf="$PROJECT_DIR/.test-lr-pid-$$"; _lr_res="$PROJECT_DIR/.test-lr-res-$$"; _lr_go="$PROJECT_DIR/.test-lr-go-$$"
+    _TEST_TEMP_FILES+=("$_lr_pidf" "$_lr_res" "$_lr_go"); rm -f "$_lr_pidf" "$_lr_res" "$_lr_go"
+    XDG_RUNTIME_DIR="$_lr_t/xdg" MOUNT_GUARD_INTERVAL=1 "$SANDBOX_EXEC" --backend bwrap --project-dir "$PROJECT_DIR" -- bash -c '
+        for i in $(seq 1 150); do [[ -s "$1" && -e "$4" ]] && break; sleep 0.2; done
+        L=$(cat "$1")
+        { ls "$2"/sessions/*/session 2>&1; kill -0 "$L" 2>&1; echo "kill-rc=$?"
+          for p in /proc/[0-9]*; do [[ "${p#/proc/}" == "$L" ]] && echo VISIBLE-LAUNCHER; done; } > "$3"' \
+        _ "$_lr_pidf" "$_lr_t/xdg/agent-sandbox" "$_lr_res" "$_lr_go" >"$_lr_t/l5.out" 2>"$_lr_t/l5.err" &
+    _lr_l=$!
+    echo "$_lr_l" > "$_lr_pidf"
+    _lr_rec=""
+    for _i in $(seq 1 100); do
+        _lr_rec="$(compgen -G "$_lr_t/xdg/agent-sandbox/sessions/*/session" | head -n1)"
+        [[ -n "$_lr_rec" ]] && break; sleep 0.2
+    done
+    _lr_rec_ok=no
+    if [[ -n "$_lr_rec" ]] && grep -q "^launcher_pid=$_lr_l\$" "$_lr_rec" && grep -q '^backend=bwrap$' "$_lr_rec" \
+       && [[ "$(stat -c %a "${_lr_rec%/*}")" == 700 ]]; then _lr_rec_ok=yes; fi
+    # The record only exists while the session runs: the sandbox's command
+    # was held until it had been looked at; let it probe and exit now.
+    : > "$_lr_go"
+    for _i in $(seq 1 100); do [[ -e "$_lr_res" ]] && break; sleep 0.2; done
+    wait "$_lr_l" 2>/dev/null
+    _lr_r="$(cat "$_lr_res" 2>/dev/null)"
+    _lr_after="$(XDG_RUNTIME_DIR="$_lr_t/xdg" "$SANDBOX_EXEC" sessions 2>&1)"
+    if [[ "$_lr_rec_ok" != yes ]]; then
+        fail "LR05: the launch did not register a 0700 session record" "rec=$_lr_rec err=$(cat "$_lr_t/l5.err")"
+    elif [[ "$_lr_r" == *"No such file"* && "$_lr_r" == *"No such process"* && "$_lr_r" == *"kill-rc=1"* \
+            && "$_lr_r" != *VISIBLE-LAUNCHER* ]]; then
+        pass "LR05: the session record is not visible in the sandbox and the launcher pid is not reachable from it"
+    else
+        fail "LR05: sandbox can see the registry or the launcher" "result: $_lr_r"
+    fi
+    if [[ "$_lr_after" == "No live sandbox sessions." ]]; then
+        pass "LR05b: the record of an ended session is gone (or pruned)"
+    else
+        fail "LR05b: record of an ended session still listed" "$_lr_after"
+    fi
+
+    # LR06. End to end: a running sandbox gets two directories added
+    # writable by a config change and `reload`; one of them has a file open
+    # for writing. Revoking both: the free one becomes read-only, the busy
+    # one reports BUSY and stays writable, --force-detach then detaches it.
+    _lr_t="$(mktemp -d)"; trap_rm_dir "$_lr_t"
+    mkdir -m 700 "$_lr_t/xdg" "$_lr_t/e1" "$_lr_t/e2"
+    _lr_flag="$_lr_t/flag"; _lr_log="$PROJECT_DIR/.test-lr-log-$$"
+    _lr_conf="$HOME/.config/agent-sandbox/conf.d/zz-test-reload-sess-$$.conf"
+    _TEST_TEMP_FILES+=("$_lr_conf" "$_lr_log"); rm -f "$_lr_log"
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    printf '[[ "$_PROJECT_DIR" == "%s" ]] || return 0\nREADONLY_MOUNTS+=("%s" "%s")\nif [[ -f "%s" ]]; then EXTRA_WRITABLE_PATHS+=("%s" "%s"); fi\ntrue\n' \
+        "$_ml_proj" "$_lr_t/e1" "$_lr_t/e2" "$_lr_flag" "$_lr_t/e1" "$_lr_t/e2" > "$_lr_conf"
+    XDG_RUNTIME_DIR="$_lr_t/xdg" MOUNT_GUARD_INTERVAL=1 timeout 170 "$SANDBOX_EXEC" --backend bwrap --project-dir "$PROJECT_DIR" -- bash -c '
+        held=0
+        for i in $(seq 1 500); do
+            a=E; b=E
+            : > "$1/p" 2>/dev/null && a=W
+            : > "$2/p" 2>/dev/null && b=W
+            if [[ $b == W && $held == 0 ]]; then exec 9>>"$2/held"; held=1; fi
+            echo "$a$b" >> "$3"
+            sleep 0.3
+        done' _ "$_lr_t/e1" "$_lr_t/e2" "$_lr_log" >"$_lr_t/l6.out" 2>"$_lr_t/l6.err" &
+    _lr_l=$!
+    _lr_last() { tail -n1 "$_lr_log" 2>/dev/null; }
+    # Wait until the log's last line has been $1 for three samples (0.9 s).
+    _lr_settle() {
+        local want="$1" n=0 i
+        for i in $(seq 1 120); do
+            if [[ "$(_lr_last)" == "$want" ]]; then n=$((n + 1)); else n=0; fi
+            [[ $n -ge 3 ]] && return 0
+            sleep 0.3
+        done
+        return 1
+    }
+    _lr_reload() { XDG_RUNTIME_DIR="$_lr_t/xdg" MOUNT_GUARD_INTERVAL=1 timeout 60 "$SANDBOX_EXEC" reload --project "$_ml_proj" "$@" 2>&1; }
+    _lr_ok=true; _lr_why=""
+    _lr_fin() { _lr_ok=false; _lr_why+="$* | "; }
+    for _i in $(seq 1 100); do compgen -G "$_lr_t/xdg/agent-sandbox/sessions/*/ns" >/dev/null && break; sleep 0.2; done
+    _lr_settle EE || _lr_fin "initial state not EE (last=$(_lr_last))"
+    touch "$_lr_flag"
+    _lr_o="$(_lr_reload --dry-run)"; _lr_c=$?
+    sleep 1.5
+    if [[ $_lr_c -ne 0 || "$_lr_o" != *"writable bind"*"$_lr_t/e1"* || "$_lr_o" != *"$_lr_t/e2"* || "$(_lr_last)" != EE ]]; then
+        _lr_fin "dry-run rc=$_lr_c last=$(_lr_last) out=$_lr_o"
+    fi
+    _lr_o="$(_lr_reload)"; _lr_c=$?
+    _lr_settle WW || _lr_fin "add: not WW (last=$(_lr_last)) rc=$_lr_c out=$_lr_o"
+    [[ $_lr_c -eq 0 && "$_lr_o" == *"mounted  $_lr_t/e1"* && "$_lr_o" == *"now guarding the new set"* ]] \
+        || _lr_fin "add: rc=$_lr_c out=$_lr_o"
+    rm -f "$_lr_flag"
+    _lr_o="$(_lr_reload)"; _lr_c=$?
+    _lr_settle EW || _lr_fin "revoke: not EW (last=$(_lr_last)) rc=$_lr_c out=$_lr_o"
+    [[ $_lr_c -eq 3 && "$_lr_o" == *"revoked  $_lr_t/e1"* && "$_lr_o" == *"BUSY"*"$_lr_t/e2"* ]] \
+        || _lr_fin "revoke: rc=$_lr_c out=$_lr_o"
+    _lr_o="$(_lr_reload --force-detach)"; _lr_c=$?
+    _lr_settle EE || _lr_fin "force-detach: not EE (last=$(_lr_last)) rc=$_lr_c out=$_lr_o"
+    [[ $_lr_c -eq 0 && "$_lr_o" == *"detached although files are open"* ]] || _lr_fin "force-detach: rc=$_lr_c out=$_lr_o"
+    _lr_o="$(_lr_reload)"; _lr_c=$?
+    [[ $_lr_c -eq 0 && "$_lr_o" == *"Nothing to do"* ]] || _lr_fin "settled: rc=$_lr_c out=$_lr_o"
+    kill "$_lr_l" 2>/dev/null; wait "$_lr_l" 2>/dev/null
+    if $_lr_ok; then
+        pass "LR06: reload adds writable binds to a running sandbox, revokes them read-only, reports BUSY, and --force-detach detaches"
+    elif [[ ! -s "$_lr_log" ]]; then
+        skip "LR06: throwaway sandbox did not come up ($(head -c 300 "$_lr_t/l6.err"))"
+    else
+        fail "LR06: live reload end to end" "$_lr_why"
+    fi
+    unset -f _lr_last _lr_settle _lr_reload _lr_fin
+    rm -f "$_lr_conf"
+else
+    skip "LR05: needs bwrap with unprivileged user namespaces and python3"
+    skip "LR06: needs bwrap with unprivileged user namespaces and python3"
+fi
+unset _lr_out _lr_want _lr_t _lr_o _lr_c _lr_pidf _lr_res _lr_go _lr_l _lr_rec _lr_rec_ok _lr_r _lr_after _lr_flag _lr_log _lr_conf _lr_ok _lr_why
 # ── H01: Hardlink /etc/passwd into project dir ──
 local _hlink="$PROJECT_DIR/.test-passwd-hardlink-$$"
 if ln /etc/passwd "$_hlink" 2>/dev/null; then

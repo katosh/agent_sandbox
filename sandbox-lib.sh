@@ -3490,6 +3490,47 @@ _mount_guard_notify() {
     fi
 }
 
+# _mg_reload_state — adopt the session's new expectation set (written by
+# `agent-sandbox reload` to $_SESS_DIR/state.tsv) and re-arm on it. Runs
+# in the dynamic scope of _mount_guard_run and rebuilds its bookkeeping
+# from the sandbox's mount table; an expectation that was already guarded
+# and is missing now stays guarded (it is a loss to report or repair, not
+# a mount that never existed).
+_mg_reload_state() {
+    local _sf="${_SESS_DIR:-}/state.tsv" _i _p _e _gen
+    local -A _o_opts=() _o_ro=()
+    [[ -n "${_SESS_DIR:-}" && -r "$_sf" ]] || return 0
+    for _i in "${_guarded[@]}"; do
+        _p="${_MG_PATH[_i]}"
+        _o_opts["$_p"]="${_base_opts[$_i]:-}"; _o_ro["$_p"]="${_base_ro[_i]:-0}"
+    done
+    _mg_load_state "$_sf" guard || return 0
+    _mg_read_mountinfo "$_target" || return 0
+    _ever=(); _guarded=(); _base_ro=(); _base_opts=()
+    _reported=(); _repfail=(); _nextt=(); _delay=()
+    for _i in "${!_MG_ESC[@]}"; do
+        _e="${_MG_ESC[_i]}"; _p="${_MG_PATH[_i]}"
+        if [[ -n "${_MG_TOP_FS[$_e]+x}" ]]; then
+            _base_opts[$_i]="${_MG_TOP_OPTS[$_e]}"
+            if _mg_is_ro "${_MG_TOP_OPTS[$_e]}"; then _base_ro[_i]=1; else _base_ro[_i]=0; fi
+        elif [[ -n "${_o_ro[$_p]+x}" ]]; then
+            _base_opts[$_i]="${_o_opts[$_p]}"; _base_ro[_i]="${_o_ro[$_p]}"
+        else
+            continue
+        fi
+        _ever[$_i]=1; _guarded+=("$_i")
+    done
+    local -a _sorted=() _d
+    for _i in "${_guarded[@]}"; do _sorted+=("$(_mg_depth "${_MG_PATH[_i]}") $_i"); done
+    if (( ${#_sorted[@]} )); then
+        mapfile -t _d < <(printf '%s\n' "${_sorted[@]}" | sort -n -s -k1,1)
+        _guarded=(); for _i in "${_d[@]}"; do _guarded+=("${_i#* }"); done
+    fi
+    _gen="$(cat "${_SESS_DIR}/state.gen" 2>/dev/null)" || _gen=""
+    [[ -z "$_gen" ]] || _sess_publish guard.ack "$_gen"
+    return 0
+}
+
 # _mount_guard_run LAUNCHER_PID — the watcher loop (run in background).
 _mount_guard_run() {
     local _lpid="$1" _lstart _target="" _tstart _ns _tries=0 _prev="" _cur
@@ -3541,6 +3582,9 @@ _mount_guard_run() {
     if [[ -n "${_CHAPERON_FIFO_DIR:-}" && -d "$_CHAPERON_FIFO_DIR" && ! -L "$_CHAPERON_FIFO_DIR" ]]; then
         mkdir -- "$_CHAPERON_FIFO_DIR/.mount-guard-armed" 2>/dev/null || true
     fi
+    # Tell `agent-sandbox reload` which process stands for the sandbox
+    # (sandbox-lib.sh §Live sessions).
+    _sess_publish ns "$_target ${_ns//[^0-9]/} $_tstart"
     local -A _reported=() _repfail=() _nextt=() _delay=()
     local _mp _verdict _what _p _k _nsino="${_ns//[^0-9]/}" _rrc _gone _pre _retry _d
     # repair is a bwrap feature (firejail's namespaces are root-owned and
@@ -3549,16 +3593,28 @@ _mount_guard_run() {
     if [[ "$_mode" == repair && "${SANDBOX_BACKEND:-}" != bwrap ]]; then
         _mode=warn; _mg_note="; repair needs bwrap"
     fi
+    local _msp
     while :; do
-        sleep "$_interval"
+        # A background sleep that `wait` can be interrupted from: SIGUSR1
+        # (agent-sandbox reload) must not sit out the whole interval.
+        sleep "$_interval" & _msp=$!
+        wait "$_msp" 2>/dev/null
+        kill "$_msp" 2>/dev/null
         _alive "$_lpid" "$_lstart" || return 0
         if ! _alive "$_target" "$_tstart"; then
             # Sandbox init gone: find another process in the same namespace
             # (none left = the sandbox has ended).
             _target="$(_mg_find_in_ns "$_lpid" "$_ns")" || return 0
             _tstart="$(_proc_starttime "$_target")" || return 0
+            _sess_publish ns "$_target ${_ns//[^0-9]/} $_tstart"
         fi
         _mg_read_mountinfo "$_target" || continue
+        if [[ -n "${_MG_RELOAD:-}" ]]; then
+            _MG_RELOAD=""
+            _mg_reload_state
+        fi
+        # A reload is changing the mounts (see _sess_reload_run): wait.
+        if _sess_reload_busy; then continue; fi
         for _i in "${_guarded[@]}"; do
             _mp="${_MG_ESC[_i]}"
             [[ -z "${_reported[$_i]:-}" ]] || continue
@@ -3648,8 +3704,15 @@ _mount_guard_run() {
 # failure can ever abort or alter the launch itself.
 _mount_guard_main() {
     ( set +euo pipefail; trap - EXIT TERM INT HUP ERR
+      # SIGUSR1 = "re-read the session's mount state" (agent-sandbox
+      # reload); handled in the watcher loop. The pid published here is the
+      # process that runs the loop (not the wrapper subshell around it).
+      _MG_RELOAD=""
+      trap '_MG_RELOAD=1' USR1
+      _sess_publish guard.pid "$BASHPID $(_proc_starttime "$BASHPID")"
       _mount_guard_prepare "$1" || exit 0
-      _mount_guard_run "$2" )
+      _mount_guard_run "$2"
+      _sess_guard_exit "$2" )
 }
 
 # _start_mount_guard PROJECT_DIR — fork the watcher (bwrap/firejail).
@@ -3670,6 +3733,1158 @@ _start_mount_guard() {
         _mount_guard_main "$1" "$$" </dev/null >/dev/null 2>&1 &
     fi
     _MOUNT_GUARD_PID=$!
+}
+
+# ── Live sessions: registry, `sessions`, `reload` ───────────────
+#
+# Why: policy edits (a new EXTRA_WRITABLE_PATHS entry, a revoked one) only
+# applied to NEW sessions; a long-running agent session had to be
+# restarted, losing its context. `agent-sandbox reload` applies the
+# mount-level part of a config change to a RUNNING bwrap session.
+#
+# Registry. Every launch writes a record under a per-user directory that
+# the sandbox can neither see nor write:
+#   $XDG_RUNTIME_DIR/agent-sandbox/sessions/<id>/   (preferred)
+#   ${XDG_STATE_HOME:-~/.local/state}/agent-sandbox/sessions/<id>/
+# /run is a fresh tmpfs inside a bwrap sandbox, so the first location does
+# not exist there; the fallback lives under $HOME, which the sandbox may
+# see, so the bwrap backend masks it with a tmpfs (backends/bwrap.sh).
+# Files in a session directory:
+#   session        key=value record (id, version, backend, project, launcher
+#                  pid + start time, chaperon pid + start time, ...)
+#   state.tsv      the mounts the session is expected to have (the mount
+#                  guard's expectation arrays, one per line); reload diffs
+#                  the desired set against it and rewrites it
+#   launch-config  non-mount config at launch (SANDBOX_ENV, PATH, ...),
+#                  to report "needs restart" for changes reload cannot apply
+#   chaperon-view  what the chaperon is told about the writable set
+#   guard.pid, ns, guard.ack, state.gen   the guard's handshake files
+# A record is live only while its launcher pid exists with the recorded
+# start time (and, once the guard has published it, the sandbox's mount
+# namespace inode matches); readers ignore and prune the rest. Everything
+# read from a record is validated; a record is data, never code.
+#
+# Trigger. Reload runs on the HOST: it re-runs the launch-time config
+# load in a child (`sandbox-exec.sh --plan-out`), applies mount changes
+# with backends/mount-repair.py and then sends SIGUSR1 to the guard and
+# the chaperon, which re-read their host-only files. A signal needs a pid
+# the sender can address: the sandbox has its own pid namespace
+# (--unshare-pid), so nothing inside can signal them, and the files live
+# where the sandbox has no path. The chaperon FIFO is never involved.
+
+_SESS_US=$'\x1f'
+_SESS_BASE=""
+_SESS_DIR=""
+_SESS_ID=""
+declare -A _SESS=()
+declare -a _MG_ORIGIN=()
+
+_sess_host() { printf '%s' "${HOSTNAME:-$(hostname 2>/dev/null)}"; }
+
+_sess_version() {
+    local _v
+    _v="$(cat "$SANDBOX_DIR/VERSION" 2>/dev/null)" || _v=""
+    _v="${_v//[[:space:]]/}"
+    printf '%s' "${_v:-unknown}"
+}
+
+# _sess_base_dir — the registry directory (not created).
+_sess_base_dir() {
+    local _x="${XDG_RUNTIME_DIR:-}" _s="${XDG_STATE_HOME:-}"
+    if [[ -n "$_x" && "$_x" == /* && -d "$_x" && ! -L "$_x" && -O "$_x" ]]; then
+        printf '%s' "${_x%/}/agent-sandbox/sessions"
+        return 0
+    fi
+    [[ -n "$_s" && "$_s" == /* ]] || _s="$HOME/.local/state"
+    printf '%s' "${_s%/}/agent-sandbox/sessions"
+}
+
+# _sess_mkbase DIR — create DIR (0700, ours, not a symlink).
+_sess_mkbase() {
+    local _b="$1"
+    [[ "$_b" == /* ]] || return 1
+    ( umask 077; mkdir -p -- "$_b" ) 2>/dev/null || return 1
+    [[ -d "$_b" && ! -L "$_b" && -O "$_b" ]] || return 1
+    chmod 700 -- "$_b" 2>/dev/null || return 1
+    return 0
+}
+
+# _sess_prepare_base [nocreate] — resolve (and create) the registry
+# directory BEFORE backend_prepare, so the backend can mask it when it
+# would be visible inside the sandbox. An empty _SESS_BASE disables
+# registration.
+_sess_prepare_base() {
+    _SESS_BASE="$(_sess_base_dir)"
+    if [[ "${1:-}" != nocreate ]]; then
+        if ! _sess_mkbase "$_SESS_BASE"; then _SESS_BASE=""; fi
+    fi
+    return 0
+}
+
+_sess_new_id() {
+    local _i
+    _i="$(od -An -N4 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+    if [[ ! "$_i" =~ ^[0-9a-f]{8}$ ]]; then
+        _i="$(printf '%08x' $(( ((RANDOM << 16) | RANDOM) & 0xffffffff )))"
+    fi
+    printf '%s' "$_i"
+}
+
+# _sess_set KEY=VALUE... — merge into $_SESS_DIR/session (atomic).
+_sess_set() {
+    [[ -n "${_SESS_DIR:-}" && -d "$_SESS_DIR" ]] || return 1
+    local -A _kv=()
+    local _line _a _k _v _tmp="$_SESS_DIR/.session.$$"
+    if [[ -f "$_SESS_DIR/session" ]]; then
+        while IFS= read -r _line || [[ -n "$_line" ]]; do
+            [[ "$_line" == *=* ]] || continue
+            _kv["${_line%%=*}"]="${_line#*=}"
+        done < "$_SESS_DIR/session"
+    fi
+    for _a in "$@"; do
+        _k="${_a%%=*}"; _v="${_a#*=}"
+        [[ "$_k" =~ ^[a-z_]+$ && "$_v" != *$'\n'* ]] || return 1
+        _kv["$_k"]="$_v"
+    done
+    for _k in "${!_kv[@]}"; do
+        printf '%s=%s\n' "$_k" "${_kv[$_k]}"
+    done | sort > "$_tmp" || return 1
+    mv -f -- "$_tmp" "$_SESS_DIR/session"
+}
+
+# _sess_reload_busy — true while a live `reload` of this session is
+# applying changes: its marker names the reloader (pid, start time) and is
+# ignored once that process is gone.
+_sess_reload_busy() {
+    local _p _s
+    [[ -n "${_SESS_DIR:-}" && -f "$_SESS_DIR/reloading" && ! -L "$_SESS_DIR/reloading" ]] || return 1
+    read -r _p _s < "$_SESS_DIR/reloading" 2>/dev/null || return 1
+    [[ "$_p" =~ ^[0-9]+$ && "$_s" =~ ^[0-9]+$ ]] || return 1
+    [[ "$(_proc_starttime "$_p" 2>/dev/null)" == "$_s" ]]
+}
+
+# _sess_publish NAME CONTENT — atomic one-line file in the session dir.
+_sess_publish() {
+    [[ -n "${_SESS_DIR:-}" && -d "$_SESS_DIR" ]] || return 0
+    printf '%s\n' "$2" > "$_SESS_DIR/.$1.$$" 2>/dev/null \
+        && mv -f -- "$_SESS_DIR/.$1.$$" "$_SESS_DIR/$1" 2>/dev/null
+    return 0
+}
+
+# ── State files (the mount guard's expectation arrays) ───────────
+# One line per expectation, fields joined by 0x1f (not IFS-whitespace, so
+# empty fields survive `read`): kind path policy how ftype uid origin.
+
+_mg_dump_state() {
+    local _f="$1" _i _tmp="$1.tmp.$$"
+    {
+        for _i in "${!_MG_PATH[@]}"; do
+            [[ "${_MG_PATH[_i]}" == *$'\n'* || "${_MG_PATH[_i]}" == *"$_SESS_US"* ]] && continue
+            printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
+                "${_MG_KIND[_i]}" "${_MG_PATH[_i]}" "${_MG_POLICY[_i]:-0}" \
+                "${_MG_HOW[_i]:-}" "${_MG_FTYPE[_i]:-}" "${_MG_UID[_i]:-}" \
+                "${_MG_ORIGIN[_i]:-launch}"
+        done
+    } > "$_tmp" 2>/dev/null || return 1
+    mv -f -- "$_tmp" "$_f"
+}
+
+# _mg_load_state FILE [guard] — fill the _MG_* arrays from a state file.
+# With "guard", apply the repairability rules of MOUNT_GUARD_REBIND the
+# way _mount_guard_prepare does (the file is written with rebinding
+# enabled, so a reload can decide what is applicable regardless).
+_mg_load_state() {
+    local _f="$1" _mode="${2:-}" _k _p _pol _how _ft _uid _org _i _j
+    _MG_KIND=(); _MG_PATH=(); _MG_ESC=(); _MG_POLICY=(); _MG_HOW=()
+    _MG_FTYPE=(); _MG_UID=(); _MG_ORIGIN=()
+    [[ -r "$_f" && ! -L "$_f" ]] || return 1
+    while IFS=$'\x1f' read -r _k _p _pol _how _ft _uid _org || [[ -n "$_k" ]]; do
+        case "$_k" in rw|ro|mask) ;; *) continue ;; esac
+        [[ "$_p" == /?* ]] || continue
+        [[ "$_pol" == 1 ]] || _pol=0
+        case "$_how" in null|tmpfs|ro|rw) ;; *) _how="" ;; esac
+        case "$_ft" in f|d) ;; *) _ft="" ;; esac
+        [[ "$_uid" =~ ^[0-9]+$ ]] || _uid=""
+        [[ "$_org" =~ ^[a-z]+$ ]] || _org="launch"
+        _MG_KIND+=("$_k"); _MG_PATH+=("$_p"); _MG_ESC+=("$(_mg_esc "$_p")")
+        _MG_POLICY+=("$_pol"); _MG_HOW+=("$_how"); _MG_FTYPE+=("$_ft")
+        _MG_UID+=("$_uid"); _MG_ORIGIN+=("$_org")
+    done < "$_f"
+    if [[ "$_mode" == guard && "${MOUNT_GUARD_REBIND:-true}" != true ]]; then
+        for _i in "${!_MG_PATH[@]}"; do
+            [[ -n "${_MG_HOW[_i]}" ]] || continue
+            if [[ "${_MG_HOW[_i]}" == rw ]]; then _MG_HOW[_i]=""; continue; fi
+            for _j in "${!_MG_PATH[@]}"; do
+                if [[ "${_MG_PATH[_j]}" == "${_MG_PATH[_i]}"/* ]]; then _MG_HOW[_i]=""; break; fi
+            done
+        done
+    fi
+    return 0
+}
+
+# _rl_state_set KIND PATH POLICY HOW FTYPE UID ORIGIN — replace or add.
+_rl_state_set() {
+    local _i
+    for _i in "${!_MG_PATH[@]}"; do
+        if [[ "${_MG_PATH[_i]}" == "$2" ]]; then
+            _MG_KIND[_i]="$1"; _MG_POLICY[_i]="$3"; _MG_HOW[_i]="$4"
+            _MG_FTYPE[_i]="$5"; _MG_UID[_i]="$6"; _MG_ORIGIN[_i]="$7"
+            return 0
+        fi
+    done
+    _MG_KIND+=("$1"); _MG_PATH+=("$2"); _MG_ESC+=("$(_mg_esc "$2")")
+    _MG_POLICY+=("$3"); _MG_HOW+=("$4"); _MG_FTYPE+=("$5"); _MG_UID+=("$6")
+    _MG_ORIGIN+=("$7")
+    return 0
+}
+
+# Per-launch helper dirs (chaperon FIFO, proxy sockets, mail-block
+# stubs) get a new random name on every launch; they are not policy.
+_reload_volatile() {
+    case "${1##*/}" in
+        chaperon-*|agent-sandbox-proxy-*|agent-sandbox-mailblock-*) return 0 ;;
+    esac
+    return 1
+}
+
+# _sess_dump_launch_config FILE — the config that no mount reflects and
+# no running process can pick up: reload reports a change as "restart".
+_sess_dump_launch_config() {
+    local _f="$1" _tmp="$1.tmp.$$" _n
+    {
+        for _n in _SANDBOX_CHILD_ENV _SANDBOX_ENV_PATH HOME_ACCESS PRIVATE_TMP \
+                  PRIVATE_IPC FILTER_PASSWD NETWORK_FILTER_MODE NETWORK_FILTER_FALLBACK \
+                  NETWORK_MAIL_BLOCK NETWORK_BLOCKLIST NETWORK_BLOCKLIST_EXCEPT \
+                  SANDBOX_NPROC_LIMIT DEVICES DEVICES_BLACKLIST BLOCKED_ENV_VARS \
+                  BLOCKED_ENV_PATTERNS ALLOWED_ENV_VARS HIDE_FROM_SANDBOX \
+                  ENABLED_AGENTS HOME_SEEDED_FILES SANDBOX_MODULES; do
+            # Attribute flags (exported or not) are not configuration:
+            # compare the values only.
+            printf '%s\x1f%s\n' "$_n" "$(declare -p "$_n" 2>/dev/null | tr '\n' ' ' \
+                | sed -E 's/^declare -[-a-zA-Z]+ /declare -- /')"
+        done
+    } > "$_tmp" 2>/dev/null || return 1
+    mv -f -- "$_tmp" "$_f"
+}
+
+# _sess_write_view STATE OUT [LOG_LEVEL] — the chaperon's reloadable view:
+# every path the session has writable, from the applied mount state.
+_sess_write_view() {
+    local _s="$1" _o="$2" _lvl="${3:-info}" _k _p _r
+    {
+        printf 'log_level\t%s\n' "$_lvl"
+        while IFS=$'\x1f' read -r _k _p _r; do
+            if [[ "$_k" == rw ]] && ! _reload_volatile "$_p"; then
+                printf 'writable\t%s\n' "$_p"
+            fi
+        done < "$_s"
+    } > "$_o.tmp.$$" 2>/dev/null || return 1
+    mv -f -- "$_o.tmp.$$" "$_o"
+}
+
+# _sess_plan_dump PROJECT OUTDIR — (plan mode) write the desired state
+# of a launch for PROJECT into OUTDIR. Run after backend_prepare.
+_sess_plan_dump() {
+    (
+        MOUNT_GUARD_REBIND=true
+        _mount_guard_prepare "$1" || exit 3
+        _mg_dump_state "$2/state.tsv" || exit 1
+        _sess_dump_launch_config "$2/launch-config" || exit 1
+        _sess_write_view "$2/state.tsv" "$2/chaperon-view" "${CHAPERON_LOG_LEVEL:-info}" || exit 1
+    )
+}
+
+# _sess_register PROJECT CHAPERON_DIR — record this launch. Run after
+# backend_prepare (and after the dry-run exit). Failure is not fatal.
+_sess_register() {
+    local _proj="$1" _chap="${2:-}" _id _dir _st
+    [[ -n "${_SESS_BASE:-}" ]] || return 1
+    # Only bwrap sessions can be reloaded, and only bwrap masks the
+    # registry inside the sandbox: on landlock or firejail an agent with a
+    # writable HOME could read and forge records.
+    [[ "${SANDBOX_BACKEND:-}" == bwrap ]] || return 1
+    _sess_mkbase "$_SESS_BASE" || return 1
+    _sess_prune "$_SESS_BASE"
+    _id="$(_sess_new_id)"; _dir="$_SESS_BASE/$_id"
+    ( umask 077; mkdir -- "$_dir" ) 2>/dev/null || return 1
+    _SESS_DIR="$_dir"; _SESS_ID="$_id"
+    _st="$(_proc_starttime "$$")" || { rm -rf -- "$_dir"; _SESS_DIR=""; return 1; }
+    if [[ "$_proj" == *$'\n'* || "$_chap" == *$'\n'* ]]; then
+        rm -rf -- "$_dir"; _SESS_DIR=""; return 1
+    fi
+    _sess_set "id=$_id" "version=$(_sess_version)" "backend=${SANDBOX_BACKEND:-}" \
+        "project=$_proj" "launcher_pid=$$" "launcher_start=$_st" \
+        "started=$(date +%s)" "host=$(_sess_host)" "conf=${SANDBOX_CONF:-}" \
+        "home_access_env=${_HOME_ACCESS_ENV:-}" "chaperon_dir=$_chap" \
+        || { rm -rf -- "$_dir"; _SESS_DIR=""; return 1; }
+    if [[ "${SANDBOX_BACKEND:-}" == bwrap ]]; then
+        ( MOUNT_GUARD_REBIND=true
+          _mount_guard_prepare "$_proj" || exit 0
+          _mg_dump_state "$_dir/state.tsv"
+          _sess_write_view "$_dir/state.tsv" "$_dir/chaperon-view" "${CHAPERON_LOG_LEVEL:-info}" ) || true
+    fi
+    _sess_dump_launch_config "$_dir/launch-config" || true
+    return 0
+}
+
+# _sess_rm_dir DIR — remove one session directory (shape-checked).
+_sess_rm_dir() {
+    local _d="$1" _pp
+    _pp="${_d%/*}"
+    [[ "${_d##*/}" =~ ^[0-9a-f]{8}$ && "${_pp##*/}" == sessions \
+       && -d "$_d" && ! -L "$_d" && -O "$_d" ]] || return 1
+    rm -rf -- "$_d" 2>/dev/null
+    return 0
+}
+
+_sess_remove() {
+    if [[ -n "${_SESS_DIR:-}" ]]; then _sess_rm_dir "$_SESS_DIR" || true; fi
+    return 0
+}
+
+# _sess_guard_exit LAUNCHER_PID — the guard has ended; if the launcher is
+# gone too, the session is over.
+_sess_guard_exit() {
+    if [[ -z "$(_proc_starttime "$1" 2>/dev/null)" ]]; then _sess_remove; fi
+    return 0
+}
+
+# _sess_read DIR — parse and validate one record into _SESS.
+_sess_read() {
+    local _d="$1" _line _k _v _id="${1##*/}"
+    _SESS=()
+    [[ "$_id" =~ ^[0-9a-f]{8}$ && -d "$_d" && ! -L "$_d" && -O "$_d" \
+       && -f "$_d/session" && ! -L "$_d/session" ]] || return 1
+    while IFS= read -r _line || [[ -n "$_line" ]]; do
+        [[ "$_line" == *=* ]] || continue
+        _k="${_line%%=*}"; _v="${_line#*=}"
+        [[ "$_k" =~ ^[a-z_]+$ ]] || continue
+        _SESS["$_k"]="$_v"
+    done < "$_d/session"
+    [[ "${_SESS[id]:-}" == "$_id" ]] || return 1
+    [[ "${_SESS[launcher_pid]:-}" =~ ^[0-9]+$ && "${_SESS[launcher_start]:-}" =~ ^[0-9]+$ \
+       && "${_SESS[started]:-}" =~ ^[0-9]+$ ]] || return 1
+    [[ "${_SESS[project]:-}" == /?* && "${_SESS[project]}" != *[[:cntrl:]]* ]] || return 1
+    [[ "${_SESS[backend]:-}" =~ ^[a-z]+$ ]] || return 1
+    [[ "${_SESS[version]:-}" =~ ^[A-Za-z0-9._+-]+$ ]] || return 1
+    [[ "${_SESS[host]:-}" != *[[:cntrl:]]* ]] || return 1
+    for _k in chaperon_pid chaperon_start; do
+        [[ -z "${_SESS[$_k]:-}" || "${_SESS[$_k]}" =~ ^[0-9]+$ ]] || return 1
+    done
+    [[ -z "${_SESS[chaperon_dir]:-}" || "${_SESS[chaperon_dir]}" == /?* ]] || return 1
+    [[ -z "${_SESS[conf]:-}" || "${_SESS[conf]}" == /?* ]] || return 1
+    [[ "${_SESS[conf]:-}" != *[[:cntrl:]]* ]] || return 1
+    case "${_SESS[home_access_env]:-}" in ""|restricted|tmpwrite|read|write) ;; *) return 1 ;; esac
+    [[ "${_SESS[chaperon_dir]:-}" != *[[:cntrl:]]* ]] || return 1
+    _SESS[dir]="$_d"
+    return 0
+}
+
+# _sess_alive — is the record in _SESS a live session of this host?
+# 0 live; 1 dead (prune it); 2 another host (leave it); 3 the sandbox's
+# mount namespace changed (ignore it; the owner cleans up).
+_sess_alive() {
+    local _st _np _ni _nst _cur
+    [[ "${_SESS[host]:-}" == "$(_sess_host)" ]] || return 2
+    _st="$(_proc_starttime "${_SESS[launcher_pid]}" 2>/dev/null)" || return 1
+    [[ "$_st" == "${_SESS[launcher_start]}" ]] || return 1
+    [[ "$(stat -c %u "/proc/${_SESS[launcher_pid]}" 2>/dev/null)" == "$(id -u)" ]] || return 1
+    if [[ -f "${_SESS[dir]}/ns" && ! -L "${_SESS[dir]}/ns" ]]; then
+        read -r _np _ni _nst < "${_SESS[dir]}/ns" 2>/dev/null || true
+        if [[ "$_np" =~ ^[0-9]+$ && "$_ni" =~ ^[0-9]+$ ]]; then
+            _cur="$(stat -L -c %i "/proc/$_np/ns/mnt" 2>/dev/null)" || return 3
+            [[ "$_cur" == "$_ni" ]] || return 3
+        fi
+    fi
+    return 0
+}
+
+# _sess_prune_invalid DIR — an unreadable record is removed once it is
+# older than ten minutes (a launch writes it within milliseconds).
+_sess_prune_invalid() {
+    local _d="$1"
+    [[ "${_d##*/}" =~ ^[0-9a-f]{8}$ && -d "$_d" && ! -L "$_d" && -O "$_d" ]] || return 0
+    if [[ -n "$(find "$_d" -maxdepth 0 -mmin +10 2>/dev/null)" ]]; then
+        _sess_rm_dir "$_d" || true
+    fi
+    return 0
+}
+
+# _sess_prune BASE — drop the records of dead sessions of this host.
+_sess_prune() {
+    _sess_live_ids "$1" >/dev/null
+    return 0
+}
+
+# _sess_live_ids BASE — print the ids of live sessions, oldest first;
+# dead and unreadable records are pruned on the way.
+_sess_live_ids() {
+    local _b="$1" _d _rc
+    local -a _rows=()
+    [[ -d "$_b" && ! -L "$_b" && -O "$_b" ]] || return 0
+    for _d in "$_b"/*; do
+        [[ -d "$_d" ]] || continue
+        if ! _sess_read "$_d"; then
+            _sess_prune_invalid "$_d"
+            continue
+        fi
+        _rc=0; _sess_alive || _rc=$?
+        if [[ $_rc -eq 0 ]]; then
+            _rows+=("${_SESS[started]} ${_SESS[id]}")
+        elif [[ $_rc -eq 1 ]]; then
+            _sess_rm_dir "$_d" || true
+        fi
+    done
+    if (( ${#_rows[@]} > 0 )); then
+        printf '%s\n' "${_rows[@]}" | sort -n -s -k1,1 | cut -d' ' -f2
+    fi
+    return 0
+}
+
+# _sess_ppid PID — parent pid.
+_sess_ppid() {
+    local _pid="$1" _s
+    _s="$(cat "/proc/$_pid/stat" 2>/dev/null)" || return 1
+    _s="${_s##*) }"
+    # shellcheck disable=SC2086  # intentional split of stat fields
+    set -- $_s
+    printf '%s' "${2:-}"
+}
+
+# _sess_descends PID ANCESTOR — ANCESTOR is within six parents of PID.
+_sess_descends() {
+    local _p="$1" _a="$2" _n=0
+    while [[ "$_p" =~ ^[0-9]+$ && "$_p" -gt 1 && $_n -lt 6 ]]; do
+        _p="$(_sess_ppid "$_p")" || return 1
+        [[ "$_p" == "$_a" ]] && return 0
+        _n=$((_n + 1))
+    done
+    return 1
+}
+
+# _sess_signal_verified PID START LAUNCHER SIG — signal a host process of
+# the session, after checking it is the one recorded.
+_sess_signal_verified() {
+    local _pid="$1" _start="$2" _l="$3" _sig="$4"
+    [[ "$_pid" =~ ^[0-9]+$ && "$_start" =~ ^[0-9]+$ ]] || return 1
+    [[ "$(_proc_starttime "$_pid" 2>/dev/null)" == "$_start" ]] || return 1
+    [[ "$(stat -c %u "/proc/$_pid" 2>/dev/null)" == "$(id -u)" ]] || return 1
+    _sess_descends "$_pid" "$_l" || return 1
+    kill "-$_sig" "$_pid" 2>/dev/null
+}
+
+# _sess_resolve BASE ID PROJECT — pick the session to act on and leave
+# its record in _SESS. 1: none; 2: ambiguous or bad argument.
+_sess_resolve() {
+    local _b="$1" _want="$2" _wproj="$3" _id _cwd _p _best=0
+    local -a _ids=() _exact=() _under=() _cand=()
+    mapfile -t _ids < <(_sess_live_ids "$_b")
+    if [[ -n "$_want" ]]; then
+        if [[ ! "$_want" =~ ^[0-9a-f]{1,8}$ ]]; then
+            echo "agent-sandbox: '$_want' is not a session id (see: agent-sandbox sessions)" >&2
+            return 2
+        fi
+        for _id in "${_ids[@]+"${_ids[@]}"}"; do
+            if [[ "$_id" == "$_want"* ]]; then _cand+=("$_id"); fi
+        done
+    else
+        if [[ -n "$_wproj" ]]; then
+            _cwd="$(cd -- "$_wproj" 2>/dev/null && pwd -P)" || {
+                echo "agent-sandbox: no such directory: $_wproj" >&2; return 2; }
+        else
+            _cwd="$(pwd -P)" || return 2
+        fi
+        for _id in "${_ids[@]+"${_ids[@]}"}"; do
+            _sess_read "$_b/$_id" || continue
+            _p="${_SESS[project]}"
+            if [[ "$_p" == "$_cwd" ]]; then
+                _exact+=("$_id")
+            elif [[ -z "$_wproj" && "$_cwd" == "${_p%/}"/* ]]; then
+                _under+=("$_id")
+                if [[ ${#_p} -gt $_best ]]; then _best=${#_p}; fi
+            fi
+        done
+        if (( ${#_exact[@]} > 0 )); then
+            _cand=("${_exact[@]}")
+        else
+            for _id in "${_under[@]+"${_under[@]}"}"; do
+                _sess_read "$_b/$_id" || continue
+                if [[ ${#_SESS[project]} -eq $_best ]]; then _cand+=("$_id"); fi
+            done
+        fi
+    fi
+    case ${#_cand[@]} in
+        0)
+            if [[ -n "$_want" ]]; then
+                echo "agent-sandbox: no live session with id '$_want' (see: agent-sandbox sessions)" >&2
+            else
+                echo "agent-sandbox: no live session for ${_wproj:-this directory} (see: agent-sandbox sessions)" >&2
+            fi
+            return 1 ;;
+        1) ;;
+        *)
+            echo "agent-sandbox: ambiguous: ${#_cand[@]} live sessions match; name one:" >&2
+            for _id in "${_cand[@]}"; do
+                _sess_read "$_b/$_id" && echo "  $_id  ${_SESS[project]}" >&2
+            done
+            return 2 ;;
+    esac
+    _sess_read "$_b/${_cand[0]}" || return 1
+    return 0
+}
+
+# ── `agent-sandbox sessions` ─────────────────────────────────────
+
+_sess_cli_sessions() {
+    local _base _id
+    local -a _ids=()
+    case "${1:-}" in
+        -h|--help)
+            cat <<'EOF'
+Usage: agent-sandbox sessions
+
+List the live sandbox sessions of this user on this host: id, start time,
+version, backend and project directory. Use the id with `agent-sandbox
+reload`.
+EOF
+            return 0 ;;
+        "") ;;
+        *) echo "Error: unexpected argument '$1' (usage: agent-sandbox sessions)" >&2; return 2 ;;
+    esac
+    _base="$(_sess_base_dir)"
+    mapfile -t _ids < <(_sess_live_ids "$_base")
+    if (( ${#_ids[@]} == 0 )); then
+        echo "No live sandbox sessions."
+        return 0
+    fi
+    printf '%-9s %-17s %-9s %-8s %s\n' ID STARTED VERSION BACKEND PROJECT
+    for _id in "${_ids[@]}"; do
+        _sess_read "$_base/$_id" || continue
+        printf '%-9s %-17s %-9s %-8s %s\n' "$_id" \
+            "$(date -d "@${_SESS[started]}" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "${_SESS[started]}")" \
+            "${_SESS[version]}" "${_SESS[backend]}" "${_SESS[project]}"
+    done
+    return 0
+}
+
+# ── Reload: plan ─────────────────────────────────────────────────
+
+# _rl_sort_depth ARRAYNAME — stable sort of paths, parents first.
+_rl_sort_depth() {
+    local -n _rsd_arr="$1"
+    local _x
+    local -a _tmp=()
+    (( ${#_rsd_arr[@]} > 1 )) || return 0
+    for _x in "${_rsd_arr[@]}"; do _tmp+=("$(_mg_depth "$_x") $_x"); done
+    mapfile -t _tmp < <(printf '%s\n' "${_tmp[@]}" | sort -n -s -k1,1)
+    _rsd_arr=()
+    for _x in "${_tmp[@]}"; do _rsd_arr+=("${_x#* }"); done
+    return 0
+}
+
+# Whether a mount point is currently present in the sandbox: overridden
+# by the unit tests; the default reads the table _mg_read_mountinfo made.
+_RELOAD_PRESENT_FN="_rl_is_present"
+_rl_is_present() { [[ -n "${_MG_TOP_FS[$(_mg_esc "$1")]+x}" ]]; }
+
+# _reload_plan CURRENT_STATE DESIRED_STATE — print the plan, one line per
+# action, fields joined by 0x1f:
+#   REVOKE path                       remount the writable bind read-only
+#   ADD kind path policy how ftype uid   mount (writable binds first)
+#   REAPPLY kind path policy how ftype uid   re-create a mount that a new
+#                                     bind on a parent would hide
+#   NOTE text | REFUSE path reason | RESTART text
+# The desired state comes from the launch-time builder, so additions are
+# in launch order; a removal is a revocation, never an unmount.
+_reload_plan() {
+    local _cur="$1" _new="$2" _i _p _q _nk _ck _anc _blocked
+    local -A c_kind=() c_how=() c_pol=() c_ft=() c_uid=() c_org=()
+    local -A n_kind=() n_how=() n_pol=() n_ft=() n_uid=()
+    local -A add_set=() revoke_set=() seen=()
+    local -a c_order=() n_order=() adds_rw=() adds_ov=() revokes=() adds=() reapply=()
+    local -a lines_note=() lines_restart=() lines_refuse=()
+
+    _mg_load_state "$_cur" || {
+        printf 'ERROR\x1fthe session has no readable mount state (started by another version?)\n'; return 1; }
+    for _i in "${!_MG_PATH[@]}"; do
+        _p="${_MG_PATH[_i]}"
+        c_kind["$_p"]="${_MG_KIND[_i]}"; c_how["$_p"]="${_MG_HOW[_i]}"
+        c_pol["$_p"]="${_MG_POLICY[_i]}"; c_ft["$_p"]="${_MG_FTYPE[_i]}"
+        c_uid["$_p"]="${_MG_UID[_i]}"; c_org["$_p"]="${_MG_ORIGIN[_i]}"
+        c_order+=("$_p")
+    done
+    _mg_load_state "$_new" || {
+        printf 'ERROR\x1fcannot read the desired mount state\n'; return 1; }
+    for _i in "${!_MG_PATH[@]}"; do
+        _p="${_MG_PATH[_i]}"
+        n_kind["$_p"]="${_MG_KIND[_i]}"; n_how["$_p"]="${_MG_HOW[_i]}"
+        n_pol["$_p"]="${_MG_POLICY[_i]}"; n_ft["$_p"]="${_MG_FTYPE[_i]}"
+        n_uid["$_p"]="${_MG_UID[_i]}"
+        n_order+=("$_p")
+    done
+
+    # Revocations and notes: what the session has that the config no longer asks for.
+    for _p in "${c_order[@]}"; do
+        _reload_volatile "$_p" && continue
+        _ck="${c_kind[$_p]}"; _nk="${n_kind[$_p]:-}"
+        case "$_ck" in
+            rw)
+                [[ "$_nk" == rw ]] && continue
+                _anc=""
+                if [[ -z "$_nk" ]]; then
+                    for _q in "${n_order[@]}"; do
+                        if [[ "${n_kind[$_q]}" == rw && "$_p" == "$_q"/* ]] && ! _reload_volatile "$_q"; then
+                            _anc="$_q"; break
+                        fi
+                    done
+                fi
+                if [[ -n "$_anc" ]]; then
+                    lines_note+=("$_p stays writable through $_anc; its own bind is kept")
+                else
+                    revokes+=("$_p"); revoke_set["$_p"]=1
+                fi ;;
+            ro|mask)
+                if [[ -z "$_nk" && "${c_org[$_p]}" != rev ]]; then
+                    lines_note+=("protection at $_p is no longer in the config but stays enforced until the session is restarted")
+                fi ;;
+        esac
+    done
+
+    # Additions, in launch order: writable binds first, then overlays.
+    for _p in "${n_order[@]}"; do
+        _reload_volatile "$_p" && continue
+        _nk="${n_kind[$_p]}"; _ck="${c_kind[$_p]:-}"
+        case "$_nk" in
+            rw)
+                [[ "$_ck" == rw ]] && continue
+                if [[ "$_ck" == mask ]]; then
+                    lines_restart+=("$_p changed from a mask to a writable bind"); continue
+                fi
+                adds_rw+=("$_p") ;;
+            ro|mask)
+                if [[ -z "$_ck" ]]; then
+                    adds_ov+=("$_p")
+                elif [[ "$_ck" == "$_nk" ]]; then
+                    :
+                elif [[ "$_ck" == rw && "$_nk" == ro ]]; then
+                    :   # revoked above
+                else
+                    lines_restart+=("$_p changed protection kind ($_ck to $_nk)")
+                fi ;;
+        esac
+    done
+    _rl_sort_depth adds_rw
+    _rl_sort_depth adds_ov
+    adds=("${adds_rw[@]}" "${adds_ov[@]}")
+    for _p in "${adds[@]}"; do add_set["$_p"]=1; done
+
+    # A new mount at P hides every mount below P that the session already
+    # has. They are re-created on top of it; one that cannot be re-created
+    # blocks the addition.
+    local -a kept=()
+    for _p in "${adds[@]}"; do
+        _blocked=""
+        if [[ -n "${_RL_PROTECT:-}" && ( "$_RL_PROTECT" == "$_p" || "$_RL_PROTECT" == "$_p"/* ) ]]; then
+            lines_refuse+=("$_p${_SESS_US}would expose the session registry that the sandbox hides; restart the session")
+            add_set["$_p"]=""
+            continue
+        fi
+        for _q in "${c_order[@]}"; do
+            [[ "$_q" == "$_p"/* ]] || continue
+            _reload_volatile "$_q" && continue
+            "$_RELOAD_PRESENT_FN" "$_q" || continue
+            [[ -n "${add_set[$_q]:-}" ]] && continue
+            if [[ -n "${revoke_set[$_q]:-}" ]]; then
+                [[ -n "${c_ft[$_q]}" ]] || { _blocked="$_q"; break; }
+            elif [[ -z "${c_how[$_q]}" ]]; then
+                _blocked="$_q"; break
+            fi
+        done
+        if [[ -n "$_blocked" ]]; then
+            lines_refuse+=("$_p${_SESS_US}would hide the existing mount at $_blocked, which cannot be re-created live; restart the session")
+            add_set["$_p"]=""
+        else
+            kept+=("$_p")
+        fi
+    done
+    adds=("${kept[@]}")
+    for _p in "${adds[@]}"; do
+        for _q in "${c_order[@]}"; do
+            [[ "$_q" == "$_p"/* ]] || continue
+            _reload_volatile "$_q" && continue
+            "$_RELOAD_PRESENT_FN" "$_q" || continue
+            [[ -n "${add_set[$_q]:-}" || -n "${seen[$_q]:-}" ]] && continue
+            seen["$_q"]=1; reapply+=("$_q")
+        done
+    done
+    _rl_sort_depth reapply
+
+    for _p in "${lines_restart[@]}"; do printf 'RESTART\x1f%s\n' "$_p"; done
+    for _p in "${lines_refuse[@]}"; do printf 'REFUSE\x1f%s\n' "$_p"; done
+    for _p in "${lines_note[@]}"; do printf 'NOTE\x1f%s\n' "$_p"; done
+    for _p in "${revokes[@]}"; do printf 'REVOKE\x1f%s\n' "$_p"; done
+    for _p in "${adds[@]}"; do
+        printf 'ADD\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "${n_kind[$_p]}" "$_p" \
+            "${n_pol[$_p]}" "${n_how[$_p]}" "${n_ft[$_p]}" "${n_uid[$_p]}"
+    done
+    for _p in "${reapply[@]}"; do
+        if [[ -n "${revoke_set[$_p]:-}" ]]; then
+            printf 'REAPPLY\x1fro\x1f%s\x1f1\x1fro\x1f%s\x1f%s\n' "$_p" "${c_ft[$_p]}" "${c_uid[$_p]}"
+        else
+            printf 'REAPPLY\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "${c_kind[$_p]}" "$_p" \
+                "${c_pol[$_p]}" "${c_how[$_p]}" "${c_ft[$_p]}" "${c_uid[$_p]}"
+        fi
+    done
+    return 0
+}
+
+# _reload_short VALUE — a value for a message: declare's prefix dropped, cut at 100 characters.
+_reload_short() {
+    local _v="${1#declare -- }"
+    if (( ${#_v} > 100 )); then _v="${_v:0:100}..."; fi
+    printf '%s' "$_v"
+}
+
+# _reload_env_diff OLD NEW — RESTART lines for launch config that
+# changed; none of it can reach processes that are already running.
+_reload_env_diff() {
+    local -A o=() n=() seen=()
+    local _k _v _label
+    [[ -r "$1" && -r "$2" ]] || return 0
+    while IFS=$'\x1f' read -r _k _v || [[ -n "$_k" ]]; do o["$_k"]="$_v"; done < "$1"
+    while IFS=$'\x1f' read -r _k _v || [[ -n "$_k" ]]; do n["$_k"]="$_v"; done < "$2"
+    for _k in "${!n[@]}" "${!o[@]}"; do
+        [[ -z "${seen[$_k]:-}" ]] || continue
+        seen["$_k"]=1
+        [[ "${o[$_k]-<none>}" == "${n[$_k]-<none>}" ]] && continue
+        case "$_k" in
+            _SANDBOX_CHILD_ENV) _label="SANDBOX_ENV" ;;
+            _SANDBOX_ENV_PATH) _label="PATH (from SANDBOX_ENV)" ;;
+            *) _label="$_k" ;;
+        esac
+        printf 'RESTART\x1f%s changed (was: %s; now: %s); environment and process-level settings cannot reach a running session\n' \
+            "$_label" "$(_reload_short "${o[$_k]-<none>}")" "$(_reload_short "${n[$_k]-<none>}")"
+    done
+    return 0
+}
+
+# _reload_print_plan PLAN — human-readable; sets _RL_NACT (mount actions)
+# and _RL_NBAD (items that need a restart or were refused).
+_RL_NACT=0; _RL_NBAD=0
+_reload_print_plan() {
+    local _act _a _b _c _d _e _f
+    _RL_NACT=0; _RL_NBAD=0
+    while IFS=$'\x1f' read -r _act _a _b _c _d _e _f; do
+        case "$_act" in
+            REVOKE)  printf '  - revoke write access  %s\n' "$_a"; _RL_NACT=$((_RL_NACT + 1)) ;;
+            ADD)
+                case "$_a" in
+                    rw)   printf '  + writable bind       %s\n' "$_b" ;;
+                    ro)   printf '  + read-only overlay   %s\n' "$_b" ;;
+                    *)    printf '  + mask                %s\n' "$_b" ;;
+                esac
+                _RL_NACT=$((_RL_NACT + 1)) ;;
+            REAPPLY) printf '  ~ re-create (hidden by a new bind above it)  %s\n' "$_b"; _RL_NACT=$((_RL_NACT + 1)) ;;
+            NOTE)    printf '  = %s\n' "$_a" ;;
+            REFUSE)  printf '  ! cannot add %s: %s\n' "$_a" "$_b"; _RL_NBAD=$((_RL_NBAD + 1)) ;;
+            RESTART) printf '  ! needs restart: %s\n' "$_a"; _RL_NBAD=$((_RL_NBAD + 1)) ;;
+            ERROR)   printf '  ! %s\n' "$_a"; _RL_NBAD=$((_RL_NBAD + 1)) ;;
+        esac
+    done < "$1"
+    return 0
+}
+
+# ── Reload: apply ────────────────────────────────────────────────
+
+_RL_HELPER=""; _RL_PID=""; _RL_NSINO=""; _RL_ERR=""
+# _rl_helper KIND PATH [FTYPE UID OPTS] — run backends/mount-repair.py
+# in the sandbox's namespaces. Status: the helper's (0 done, 1 refused,
+# 2 not possible, 3 busy); _RL_ERR holds its message.
+_rl_helper() {
+    local _out _rc=0
+    _out="$(timeout 15 python3 -I "$_RL_HELPER" "$_RL_PID" "$_RL_NSINO" "$@" 2>&1 >/dev/null </dev/null)" || _rc=$?
+    _RL_ERR="${_out//$'\n'/; }"
+    if [[ $_rc -eq 124 ]]; then _RL_ERR="the helper timed out"; _rc=2; fi
+    [[ $_rc -eq 0 || -n "$_RL_ERR" ]] || _RL_ERR="helper failed (status $_rc)"
+    return $_rc
+}
+
+# _rl_verify PATH WANT — the sandbox's own table agrees (ro | rw | any).
+_rl_verify() {
+    local _mp
+    _mg_read_mountinfo "$_RL_PID" || return 1
+    _mp="$(_mg_esc "$1")"
+    [[ -n "${_MG_TOP_FS[$_mp]+x}" ]] || return 1
+    case "$2" in
+        ro) _mg_is_ro "${_MG_TOP_OPTS[$_mp]}" ;;
+        rw) ! _mg_is_ro "${_MG_TOP_OPTS[$_mp]}" ;;
+        *) return 0 ;;
+    esac
+}
+
+_rl_say() { printf '    %s\n' "$*"; }
+
+# _reload_apply PLAN TARGET_PID NS_INODE SESSDIR FORCE — apply REVOKE,
+# ADD and REAPPLY lines to the running sandbox and update the mount
+# state (_MG_* arrays; the caller writes them). Status 0 when every
+# action took effect, 3 when some did not.
+_reload_apply() {
+    local _plan="$1" _sdir="$4" _force="$5" _act _a _b _c _d _e _f _rc _o _ft _uid _opts _i
+    local _fail=0 _mp _detached=false _nodet
+    local -A _present_opts=()
+    _RL_HELPER="$SANDBOX_DIR/backends/mount-repair.py"; _RL_PID="$2"; _RL_NSINO="$3"
+    _mg_load_state "$_sdir/state.tsv" || return 1
+    _mg_read_mountinfo "$_RL_PID" || { echo "  cannot read the sandbox's mount table" >&2; return 1; }
+    for _mp in "${!_MG_TOP_OPTS[@]}"; do _present_opts["$_mp"]="${_MG_TOP_OPTS[$_mp]}"; done
+    exec 8< "$_plan"
+    while IFS=$'\x1f' read -r -u 8 _act _a _b _c _d _e _f; do
+        case "$_act" in
+        REVOKE)
+            _ft=""; _uid=""
+            for _i in "${!_MG_PATH[@]}"; do
+                if [[ "${_MG_PATH[_i]}" == "$_a" ]]; then _ft="${_MG_FTYPE[_i]}"; _uid="${_MG_UID[_i]}"; fi
+            done
+            if [[ -z "$_ft" && -e "$_a" ]]; then
+                if [[ -d "$_a" ]]; then _ft=d; else _ft=f; fi
+                _uid="$(stat -c %u -- "$_a" 2>/dev/null)" || _uid=""
+            fi
+            _detached=false
+            _rc=0; _rl_helper revoke "$_a" || _rc=$?
+            if [[ $_rc -eq 1 && "$_RL_ERR" == *"not a mount point"* && -n "$_ft" ]]; then
+                _rc=0; _rl_helper ro "$_a" "$_ft" "$_uid" nosuid,nodev || _rc=$?
+            fi
+            _nodet=""
+            if [[ $_rc -eq 3 && "$_force" == true ]]; then
+                # A lazy unmount takes every mount below the path with it
+                # (masks and read-only overlays inside it): not with those.
+                for _i in "${!_MG_PATH[@]}"; do
+                    if [[ "${_MG_PATH[_i]}" == "$_a"/* ]] && ! _reload_volatile "${_MG_PATH[_i]}"; then
+                        echo "  ! $_a: --force-detach would also drop the protection mounted at ${_MG_PATH[_i]}; not detached" >&2
+                        _nodet=1; break
+                    fi
+                done
+            fi
+            if [[ $_rc -eq 3 && "$_force" == true && -z "$_nodet" ]]; then
+                _rc=0; _rl_helper detach "$_a" || _rc=$?
+                if [[ $_rc -eq 0 ]]; then
+                    _detached=true
+                    echo "  ! $_a: detached although files are open for writing. Handles that are already open KEEP write access; only the path stops showing the mount."
+                    _rc=0; _rl_helper ro "$_a" "$_ft" "$_uid" nosuid,nodev || _rc=$?
+                    if [[ $_rc -ne 0 ]]; then
+                        _rl_say "(could not place a read-only overlay afterwards: $_RL_ERR)"
+                        _rc=0
+                    fi
+                fi
+            fi
+            if [[ $_rc -eq 0 ]]; then
+                if [[ "$_detached" == true ]] || _rl_verify "$_a" ro; then
+                    echo "  revoked  $_a"
+                    _rl_state_set ro "$_a" 1 "${_ft:+ro}" "$_ft" "$_uid" rev
+                else
+                    echo "  ! $_a: revoke reported success but the sandbox's mount table disagrees" >&2
+                    _fail=1
+                fi
+            elif [[ $_rc -eq 3 ]]; then
+                echo "  ! BUSY   $_a: files are open for writing, so it stays WRITABLE. Close them and reload again, or use --force-detach (open handles then keep their access)."
+                _fail=1
+            else
+                echo "  ! $_a: could not revoke: $_RL_ERR" >&2
+                _fail=1
+            fi ;;
+        ADD|REAPPLY)
+            _o="${_present_opts[$(_mg_esc "$_b")]:-nosuid,nodev}"
+            if [[ -z "$_d" ]]; then
+                echo "  ! $_b: cannot be mounted live (not a bind or mask of the kind the helper can create); restart the session" >&2
+                _fail=1; continue
+            fi
+            _rc=0
+            case "$_d" in
+                rw|ro) _rl_helper "$_d" "$_b" "$_e" "$_f" "$_o" || _rc=$? ;;
+                *)     _rl_helper "$_d" "$_b" || _rc=$? ;;
+            esac
+            if [[ $_rc -eq 0 ]]; then
+                case "$_d" in rw) _opts=rw ;; ro) _opts=ro ;; *) _opts=any ;; esac
+                if _rl_verify "$_b" "$_opts"; then
+                    if [[ "$_act" == ADD ]]; then
+                        echo "  mounted  $_b ($_a)"
+                        _rl_state_set "$_a" "$_b" "$_c" "$_d" "$_e" "$_f" reload
+                    else
+                        echo "  restored $_b"
+                    fi
+                else
+                    echo "  ! $_b: mounted, but the sandbox's mount table does not show it as expected" >&2
+                    _fail=1
+                fi
+            else
+                if [[ "$_act" == ADD ]]; then
+                    case "$_RL_ERR" in
+                        *"does not exist"*|*"not the host's object"*|*"symlink"*)
+                            echo "  ! $_b: not visible in the sandbox as the host's own path ($_RL_ERR). Only paths the sandbox can already see can be added live; restart the session." >&2 ;;
+                        *) echo "  ! $_b: $_RL_ERR" >&2 ;;
+                    esac
+                else
+                    echo "  ! $_b: could not be re-created after the new bind above it: $_RL_ERR. It is now served by that bind." >&2
+                fi
+                _fail=1
+            fi ;;
+        esac
+    done
+    exec 8<&-
+    [[ $_fail -eq 0 ]] || return 3
+    return 0
+}
+
+# ── Reload: command ──────────────────────────────────────────────
+
+_sess_reload_usage() {
+    cat <<'EOF'
+Usage: agent-sandbox reload [ID | --project DIR] [--dry-run] [--force-detach]
+
+Apply the mount-level part of a config change to a RUNNING sandbox
+session (bwrap only), without restarting it. The configuration (user
+config, conf.d, admin pins, denied paths) is loaded and validated exactly
+as at launch, the mounts it asks for are compared with the session's, and
+the difference is applied from the host:
+
+  * a path that became writable is bound writable (it must already be
+    visible in the sandbox); overlays inside it are put on top;
+  * a path that is no longer writable is remounted READ-ONLY. If files
+    are open for writing the kernel refuses (EBUSY): it is reported and
+    stays writable. --force-detach detaches it instead; processes that
+    already hold files open keep their write access, only the path stops
+    showing the mount;
+  * environment (SANDBOX_ENV, PATH, ...) and everything else a running
+    process cannot pick up is listed as "needs restart" and not applied.
+
+With no argument the session of the current directory's project is used;
+it is an error if that is ambiguous. --dry-run prints the plan and
+changes nothing.
+
+Exit status: 0 applied (or nothing to do); 1 error, nothing applied;
+2 usage; 3 applied partly: some changes were refused, busy or need a
+restart.
+EOF
+}
+
+# _sess_find_ns_pid LAUNCHER SESSDIR — "<pid> <mnt-ns-inode>" of the
+# sandbox's init (from the guard's handshake file, else by searching the
+# launcher's descendants for the expected mounts; needs _MG_ESC loaded).
+_sess_find_ns_pid() {
+    local _l="$1" _sd="$2" _np _ni _nst _t
+    if [[ -f "$_sd/ns" && ! -L "$_sd/ns" ]]; then
+        read -r _np _ni _nst < "$_sd/ns" 2>/dev/null || true
+        if [[ "$_np" =~ ^[0-9]+$ && "$_ni" =~ ^[0-9]+$ && "$_nst" =~ ^[0-9]+$ ]] \
+           && [[ "$(_proc_starttime "$_np" 2>/dev/null)" == "$_nst" ]] \
+           && [[ "$(stat -L -c %i "/proc/$_np/ns/mnt" 2>/dev/null)" == "$_ni" ]]; then
+            printf '%s %s' "$_np" "$_ni"; return 0
+        fi
+    fi
+    _t="$(_mount_guard_find_target "$_l")" || return 1
+    _np="${_t%% *}"
+    _ni="$(stat -L -c %i "/proc/$_np/ns/mnt" 2>/dev/null)" || return 1
+    [[ "$_ni" =~ ^[0-9]+$ ]] || return 1
+    printf '%s %s' "$_np" "$_ni"
+}
+
+_sess_reload_run() {
+    local _sd="$1" _dry="$2" _force="$3" _pd _tgt _tpid _nsino _rc=0 _gen _i _ack
+    local _id _proj _lpid _chd _conf _hae _interval
+    _sess_read "$_sd" || { echo "agent-sandbox: the session record is unreadable" >&2; return 1; }
+    _id="${_SESS[id]}"; _proj="${_SESS[project]}"; _lpid="${_SESS[launcher_pid]}"
+    _chd="${_SESS[chaperon_dir]:-}"; _conf="${_SESS[conf]:-}"; _hae="${_SESS[home_access_env]:-}"
+    local _cpid="${_SESS[chaperon_pid]:-}" _cstart="${_SESS[chaperon_start]:-}"
+    _rc=0; _sess_alive || _rc=$?
+    if [[ $_rc -ne 0 ]]; then
+        echo "agent-sandbox: session $_id is no longer running" >&2; return 1
+    fi
+    if [[ ! -r "$_sd/state.tsv" ]]; then
+        echo "agent-sandbox: session $_id has no mount state (started by a version without live reload); restart it" >&2
+        return 1
+    fi
+    _mg_load_state "$_sd/state.tsv" || { echo "agent-sandbox: session $_id has an unreadable mount state" >&2; return 1; }
+    if [[ -n "$_conf" && ! ( -f "$_conf" && -O "$_conf" ) ]]; then
+        # It is sourced as you: only a file you own (records are host-only,
+        # see _sess_register; a config the project holds is as trusted as
+        # at launch, and a restart would load it the same way).
+        echo "agent-sandbox: the session was started with SANDBOX_CONF=$_conf, which is not a file owned by you; refusing to load it. Restart the session, or reload from a shell with the right SANDBOX_CONF set" >&2
+        return 1
+    fi
+    _tgt="$(_sess_find_ns_pid "$_lpid" "$_sd")" || {
+        echo "agent-sandbox: cannot find the sandbox's mount namespace (still starting?)" >&2; return 1; }
+    _tpid="${_tgt%% *}"; _nsino="${_tgt#* }"
+
+    _pd="$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-reload-XXXXXX")" || return 1
+    local -a _penv=()
+    # env wants its -u options before the NAME=VALUE words.
+    if [[ -z "$_conf" ]]; then _penv+=(-u SANDBOX_CONF); fi
+    if [[ -z "$_hae" ]]; then _penv+=(-u HOME_ACCESS); fi
+    # Sourcing this library reset the exported launch overrides (env wins
+    # over config at launch) to the defaults; hand the planning child the
+    # values the reloader's environment actually had, as a launch would.
+    local _ov _ovv
+    for _ov in PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD NETWORK_FILTER_MODE NETWORK_FILTER_FALLBACK \
+               NETWORK_MAIL_BLOCK MOUNT_GUARD MOUNT_GUARD_INTERVAL MOUNT_GUARD_REBIND; do
+        _ovv="_${_ov}_OVERRIDE"; _ovv="${!_ovv:-}"
+        if [[ -n "$_ovv" ]]; then _penv+=("$_ov=$_ovv"); else _penv=(-u "$_ov" "${_penv[@]}"); fi
+    done
+    if [[ -n "$_conf" ]]; then _penv+=("SANDBOX_CONF=$_conf"); fi
+    if [[ -n "$_hae" ]]; then _penv+=("HOME_ACCESS=$_hae"); fi
+    local -a _pargs=(--backend bwrap --project-dir "$_proj" --plan-out "$_pd")
+    if [[ -n "$_chd" ]]; then _pargs+=(--plan-chaperon-dir "$_chd"); fi
+    echo "Session $_id: $_proj"
+    _rc=0
+    env "${_penv[@]}" "$SANDBOX_DIR/sandbox-exec.sh" "${_pargs[@]}" -- true >"$_pd/out" 2>"$_pd/err" </dev/null || _rc=$?
+    if [[ -s "$_pd/err" ]]; then
+        # Informational notes (one per blocklist entry the network layer
+        # cannot enforce, ...) would bury the plan: count them unless the
+        # configuration could not be loaded.
+        local _nn
+        _nn="$(grep -c '^sandbox: NOTE' "$_pd/err")"
+        if [[ $_rc -ne 0 || ! -r "$_pd/state.tsv" ]]; then
+            echo "Config messages:"
+            sed 's/^/  /' "$_pd/err"
+        elif grep -qv '^sandbox: NOTE' "$_pd/err"; then
+            echo "Config messages:"
+            grep -v '^sandbox: NOTE' "$_pd/err" | sed 's/^/  /'
+            if (( _nn > 0 )); then echo "  (and $_nn informational notes)"; fi
+        elif (( _nn > 0 )); then
+            echo "Config messages: $_nn informational notes"
+        fi
+    fi
+    if [[ $_rc -ne 0 || ! -r "$_pd/state.tsv" ]]; then
+        echo "agent-sandbox: the configuration could not be loaded or validated (status $_rc); session unchanged" >&2
+        rm -rf -- "$_pd"; return 1
+    fi
+
+    _mg_read_mountinfo "$_tpid" || { echo "agent-sandbox: cannot read the sandbox's mount table" >&2; rm -rf -- "$_pd"; return 1; }
+    _RL_PROTECT="$(_sess_base_dir 2>/dev/null)" || _RL_PROTECT=""
+    _reload_plan "$_sd/state.tsv" "$_pd/state.tsv" > "$_pd/plan" || { cat "$_pd/plan" >&2; rm -rf -- "$_pd"; return 1; }
+    _reload_env_diff "$_sd/launch-config" "$_pd/launch-config" >> "$_pd/plan"
+    if [[ ! -s "$_pd/plan" ]]; then
+        echo "Nothing to do: the session already matches the configuration."
+        rm -rf -- "$_pd"; return 0
+    fi
+    if [[ "$_dry" == true ]]; then echo "Plan (dry run, nothing applied):"; else echo "Plan:"; fi
+    _reload_print_plan "$_pd/plan"
+    if [[ "$_dry" == true ]]; then rm -rf -- "$_pd"; return 0; fi
+
+    local _arc=0
+    if [[ $_RL_NACT -gt 0 ]]; then
+        echo "Applying:"
+        # While the mounts change under the guard's old expectations it
+        # must not "repair" a revoke back to writable: it pauses its checks
+        # until this marker (reloader pid + start time) is gone or stale.
+        printf '%s %s\n' "$$" "$(_proc_starttime "$$")" > "$_sd/reloading" 2>/dev/null || true
+        _reload_apply "$_pd/plan" "$_tpid" "$_nsino" "$_sd" "$_force" || _arc=$?
+        if [[ $_arc -eq 1 ]]; then rm -f -- "$_sd/reloading"; rm -rf -- "$_pd"; return 1; fi
+        # _reload_apply left the new state in the _MG_* arrays.
+        _mg_dump_state "$_sd/state.tsv" || { rm -f -- "$_sd/reloading"; echo "agent-sandbox: cannot write the new mount state" >&2; rm -rf -- "$_pd"; return 1; }
+    fi
+    local _lvl="info" _k _v
+    if [[ -r "$_pd/chaperon-view" ]]; then
+        while IFS=$'\t' read -r _k _v; do
+            if [[ "$_k" == log_level ]]; then _lvl="$_v"; fi
+        done < "$_pd/chaperon-view"
+    fi
+    _sess_write_view "$_sd/state.tsv" "$_sd/chaperon-view" "$_lvl" || true
+    _gen="$(date +%s%N)"
+    printf '%s\n' "$_gen" > "$_sd/.state.gen.$$" && mv -f -- "$_sd/.state.gen.$$" "$_sd/state.gen"
+
+    # Tell the guard and the chaperon to re-read their host-only files.
+    local _gp _gs _sent=0
+    if [[ -f "$_sd/guard.pid" && ! -L "$_sd/guard.pid" ]]; then
+        read -r _gp _gs < "$_sd/guard.pid" 2>/dev/null || true
+        if _sess_signal_verified "$_gp" "$_gs" "$_lpid" USR1; then _sent=1; fi
+    fi
+    if [[ $_sent -eq 1 ]]; then
+        _interval="${MOUNT_GUARD_INTERVAL:-5}"
+        [[ "$_interval" =~ ^[0-9]+$ ]] || _interval=5
+        _ack=""
+        for _i in $(seq 1 $(( (_interval + 6) * 5 ))); do
+            _ack="$(cat "$_sd/guard.ack" 2>/dev/null)" || _ack=""
+            [[ "$_ack" == "$_gen" ]] && break
+            sleep 0.2
+        done
+        if [[ "$_ack" == "$_gen" ]]; then echo "Mount guard: now guarding the new set."
+        else echo "! Mount guard: did not confirm in time; it re-reads the new set on its own signal handling." >&2; _arc=3; fi
+    else
+        echo "Mount guard: not running for this session (MOUNT_GUARD=off?); the new set is not watched."
+    fi
+    rm -f -- "$_sd/reloading"
+    if _sess_signal_verified "$_cpid" "$_cstart" "$_lpid" USR1; then
+        echo "Chaperon: told to re-read its view."
+    else
+        echo "Chaperon: not running for this session; nothing to tell."
+    fi
+    rm -rf -- "$_pd"
+    if [[ $_arc -ne 0 || $_RL_NBAD -gt 0 ]]; then
+        echo "Done, with items that were not applied (see above)."
+        return 3
+    fi
+    echo "Done."
+    return 0
+}
+
+_sess_cli_reload() {
+    local _id="" _proj="" _dry=false _force=false _base _rc=0 _sd _backend _ver
+    while (( $# > 0 )); do
+        case "$1" in
+            -h|--help) _sess_reload_usage; return 0 ;;
+            --dry-run) _dry=true ;;
+            --force-detach) _force=true ;;
+            --project)
+                if (( $# < 2 )); then echo "Error: --project needs a directory" >&2; return 2; fi
+                _proj="$2"; shift ;;
+            --project=*) _proj="${1#--project=}" ;;
+            -*) echo "Error: unknown option '$1' (agent-sandbox reload --help)" >&2; return 2 ;;
+            *)
+                if [[ -n "$_id" ]]; then echo "Error: only one session id can be given" >&2; return 2; fi
+                _id="$1" ;;
+        esac
+        shift
+    done
+    if [[ -n "$_id" && -n "$_proj" ]]; then
+        echo "Error: give a session id or --project, not both" >&2; return 2
+    fi
+    _base="$(_sess_base_dir)"
+    _sess_resolve "$_base" "$_id" "$_proj" || return $?
+    _sd="${_SESS[dir]}"; _backend="${_SESS[backend]}"; _ver="${_SESS[version]}"
+    if [[ "$_backend" != bwrap ]]; then
+        echo "agent-sandbox: live reload is not supported on the $_backend backend (it needs bwrap); restart session ${_SESS[id]} to apply config changes" >&2
+        return 1
+    fi
+    if [[ "$_ver" != "$(_sess_version)" ]]; then
+        echo "agent-sandbox: session ${_SESS[id]} runs $_ver but $(_sess_version) is installed; the mount sets may not be comparable. Restart it." >&2
+        return 1
+    fi
+    if ! command -v python3 >/dev/null 2>&1 || [[ ! -f "$SANDBOX_DIR/backends/mount-repair.py" ]]; then
+        echo "agent-sandbox: live reload needs python3 and backends/mount-repair.py" >&2
+        return 1
+    fi
+    if command -v flock >/dev/null 2>&1; then
+        (
+            flock -n 9 || { echo "agent-sandbox: another reload of session ${_SESS[id]} is in progress" >&2; exit 1; }
+            _sess_reload_run "$_sd" "$_dry" "$_force"
+        ) 9>"$_sd/lock" || _rc=$?
+    else
+        _sess_reload_run "$_sd" "$_dry" "$_force" || _rc=$?
+    fi
+    return $_rc
+}
+
+# _sess_cli sessions|reload ARGS... — the `agent-sandbox` subcommands.
+# Host-side only: refuses nothing inside a sandbox by itself, but a
+# sandbox sees no registry (see the header of this section).
+_sess_cli() {
+    local _cmd="$1" _rc=0
+    shift
+    set +e
+    case "$_cmd" in
+        sessions) _sess_cli_sessions "$@" || _rc=$? ;;
+        reload)   _sess_cli_reload "$@" || _rc=$? ;;
+        *)        echo "Error: unknown subcommand '$_cmd'" >&2; _rc=2 ;;
+    esac
+    return $_rc
 }
 
 # ── Test-harness early-return ────────────────────────────────────
