@@ -3613,6 +3613,8 @@ _mount_guard_run() {
             _MG_RELOAD=""
             _mg_reload_state
         fi
+        # A reload is changing the mounts (see _sess_reload_run): wait.
+        if _sess_reload_busy; then continue; fi
         for _i in "${_guarded[@]}"; do
             _mp="${_MG_ESC[_i]}"
             [[ -z "${_reported[$_i]:-}" ]] || continue
@@ -3850,6 +3852,17 @@ _sess_set() {
     mv -f -- "$_tmp" "$_SESS_DIR/session"
 }
 
+# _sess_reload_busy — true while a live `reload` of this session is
+# applying changes: its marker names the reloader (pid, start time) and is
+# ignored once that process is gone.
+_sess_reload_busy() {
+    local _p _s
+    [[ -n "${_SESS_DIR:-}" && -f "$_SESS_DIR/reloading" && ! -L "$_SESS_DIR/reloading" ]] || return 1
+    read -r _p _s < "$_SESS_DIR/reloading" 2>/dev/null || return 1
+    [[ "$_p" =~ ^[0-9]+$ && "$_s" =~ ^[0-9]+$ ]] || return 1
+    [[ "$(_proc_starttime "$_p" 2>/dev/null)" == "$_s" ]]
+}
+
 # _sess_publish NAME CONTENT — atomic one-line file in the session dir.
 _sess_publish() {
     [[ -n "${_SESS_DIR:-}" && -d "$_SESS_DIR" ]] || return 0
@@ -3986,6 +3999,10 @@ _sess_plan_dump() {
 _sess_register() {
     local _proj="$1" _chap="${2:-}" _id _dir _st
     [[ -n "${_SESS_BASE:-}" ]] || return 1
+    # Only bwrap sessions can be reloaded, and only bwrap masks the
+    # registry inside the sandbox: on landlock or firejail an agent with a
+    # writable HOME could read and forge records.
+    [[ "${SANDBOX_BACKEND:-}" == bwrap ]] || return 1
     _sess_mkbase "$_SESS_BASE" || return 1
     _sess_prune "$_SESS_BASE"
     _id="$(_sess_new_id)"; _dir="$_SESS_BASE/$_id"
@@ -4367,6 +4384,11 @@ _reload_plan() {
     local -a kept=()
     for _p in "${adds[@]}"; do
         _blocked=""
+        if [[ -n "${_RL_PROTECT:-}" && ( "$_RL_PROTECT" == "$_p" || "$_RL_PROTECT" == "$_p"/* ) ]]; then
+            lines_refuse+=("$_p${_SESS_US}would expose the session registry that the sandbox hides; restart the session")
+            add_set["$_p"]=""
+            continue
+        fi
         for _q in "${c_order[@]}"; do
             [[ "$_q" == "$_p"/* ]] || continue
             _reload_volatile "$_q" && continue
@@ -4508,7 +4530,7 @@ _rl_say() { printf '    %s\n' "$*"; }
 # action took effect, 3 when some did not.
 _reload_apply() {
     local _plan="$1" _sdir="$4" _force="$5" _act _a _b _c _d _e _f _rc _o _ft _uid _opts _i
-    local _fail=0 _mp _detached=false
+    local _fail=0 _mp _detached=false _nodet
     local -A _present_opts=()
     _RL_HELPER="$SANDBOX_DIR/backends/mount-repair.py"; _RL_PID="$2"; _RL_NSINO="$3"
     _mg_load_state "$_sdir/state.tsv" || return 1
@@ -4531,7 +4553,18 @@ _reload_apply() {
             if [[ $_rc -eq 1 && "$_RL_ERR" == *"not a mount point"* && -n "$_ft" ]]; then
                 _rc=0; _rl_helper ro "$_a" "$_ft" "$_uid" nosuid,nodev || _rc=$?
             fi
+            _nodet=""
             if [[ $_rc -eq 3 && "$_force" == true ]]; then
+                # A lazy unmount takes every mount below the path with it
+                # (masks and read-only overlays inside it): not with those.
+                for _i in "${!_MG_PATH[@]}"; do
+                    if [[ "${_MG_PATH[_i]}" == "$_a"/* ]] && ! _reload_volatile "${_MG_PATH[_i]}"; then
+                        echo "  ! $_a: --force-detach would also drop the protection mounted at ${_MG_PATH[_i]}; not detached" >&2
+                        _nodet=1; break
+                    fi
+                done
+            fi
+            if [[ $_rc -eq 3 && "$_force" == true && -z "$_nodet" ]]; then
                 _rc=0; _rl_helper detach "$_a" || _rc=$?
                 if [[ $_rc -eq 0 ]]; then
                     _detached=true
@@ -4669,6 +4702,20 @@ _sess_reload_run() {
         return 1
     fi
     _mg_load_state "$_sd/state.tsv" || { echo "agent-sandbox: session $_id has an unreadable mount state" >&2; return 1; }
+    if [[ -n "$_conf" ]]; then
+        # The recorded SANDBOX_CONF is read and sourced as this user: it
+        # must be the user's own file and not somewhere the sandbox can write.
+        local _bad=""
+        [[ -f "$_conf" && -O "$_conf" ]] || _bad="is not a file owned by you"
+        if [[ -z "$_bad" && ( "$_conf" == "$_proj"/* || "$_conf" == "${TMPDIR:-/tmp}"/* ) ]]; then _bad="is inside the project or the temp directory"; fi
+        for _i in "${!_MG_PATH[@]}"; do
+            if [[ -z "$_bad" && "${_MG_KIND[_i]}" == rw && "$_conf" == "${_MG_PATH[_i]}"/* ]]; then _bad="is inside the sandbox's writable path ${_MG_PATH[_i]}"; fi
+        done
+        if [[ -n "$_bad" ]]; then
+            echo "agent-sandbox: the session was started with SANDBOX_CONF=$_conf, which $_bad; refusing to load it. Restart the session, or reload from a shell with the right SANDBOX_CONF set" >&2
+            return 1
+        fi
+    fi
     _tgt="$(_sess_find_ns_pid "$_lpid" "$_sd")" || {
         echo "agent-sandbox: cannot find the sandbox's mount namespace (still starting?)" >&2; return 1; }
     _tpid="${_tgt%% *}"; _nsino="${_tgt#* }"
@@ -4708,6 +4755,7 @@ _sess_reload_run() {
     fi
 
     _mg_read_mountinfo "$_tpid" || { echo "agent-sandbox: cannot read the sandbox's mount table" >&2; rm -rf -- "$_pd"; return 1; }
+    _RL_PROTECT="$(_sess_base_dir 2>/dev/null)" || _RL_PROTECT=""
     _reload_plan "$_sd/state.tsv" "$_pd/state.tsv" > "$_pd/plan" || { cat "$_pd/plan" >&2; rm -rf -- "$_pd"; return 1; }
     _reload_env_diff "$_sd/launch-config" "$_pd/launch-config" >> "$_pd/plan"
     if [[ ! -s "$_pd/plan" ]]; then
@@ -4721,10 +4769,14 @@ _sess_reload_run() {
     local _arc=0
     if [[ $_RL_NACT -gt 0 ]]; then
         echo "Applying:"
+        # While the mounts change under the guard's old expectations it
+        # must not "repair" a revoke back to writable: it pauses its checks
+        # until this marker (reloader pid + start time) is gone or stale.
+        printf '%s %s\n' "$$" "$(_proc_starttime "$$")" > "$_sd/reloading" 2>/dev/null || true
         _reload_apply "$_pd/plan" "$_tpid" "$_nsino" "$_sd" "$_force" || _arc=$?
-        if [[ $_arc -eq 1 ]]; then rm -rf -- "$_pd"; return 1; fi
+        if [[ $_arc -eq 1 ]]; then rm -f -- "$_sd/reloading"; rm -rf -- "$_pd"; return 1; fi
         # _reload_apply left the new state in the _MG_* arrays.
-        _mg_dump_state "$_sd/state.tsv" || { echo "agent-sandbox: cannot write the new mount state" >&2; rm -rf -- "$_pd"; return 1; }
+        _mg_dump_state "$_sd/state.tsv" || { rm -f -- "$_sd/reloading"; echo "agent-sandbox: cannot write the new mount state" >&2; rm -rf -- "$_pd"; return 1; }
     fi
     local _lvl="info" _k _v
     if [[ -r "$_pd/chaperon-view" ]]; then
@@ -4756,6 +4808,7 @@ _sess_reload_run() {
     else
         echo "Mount guard: not running for this session (MOUNT_GUARD=off?); the new set is not watched."
     fi
+    rm -f -- "$_sd/reloading"
     if _sess_signal_verified "$_cpid" "$_cstart" "$_lpid" USR1; then
         echo "Chaperon: told to re-read its view."
     else

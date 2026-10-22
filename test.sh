@@ -7282,6 +7282,31 @@ else
     fail "LR04: state files / env diff" "got: $_lr_out"
 fi
 
+# LR04b. The guard pauses while a reload applies (marker = reloader pid +
+# start time, stale once that process is gone); only bwrap sessions are
+# registered (landlock/firejail cannot hide the registry from the agent).
+_lr_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    _SESS_DIR="$_T"
+    printf '%s %s\n' "$$" "$(_proc_starttime "$$")" > "$_T/reloading"
+    _sess_reload_busy && echo -n "live=busy " || echo -n "live=idle "
+    printf '%s %s\n' "$$" "1" > "$_T/reloading"
+    _sess_reload_busy && echo -n "wrongstart=busy " || echo -n "wrongstart=idle "
+    printf '%s %s\n' "999999999" "1" > "$_T/reloading"
+    _sess_reload_busy && echo -n "dead=busy " || echo -n "dead=idle "
+    rm -f "$_T/reloading"
+    _sess_reload_busy && echo -n "none=busy " || echo -n "none=idle "
+    _SESS_BASE="$_T/base"; mkdir -m 700 "$_SESS_BASE"
+    SANDBOX_BACKEND=landlock; _sess_register "$_T" "" && echo -n "landlock=registered" || echo -n "landlock=skipped"
+)"
+if [[ "$_lr_out" == "live=busy wrongstart=idle dead=idle none=idle landlock=skipped" ]]; then
+    pass "LR04b: the reload marker pauses the guard only while its reloader lives; non-bwrap sessions are not registered"
+else
+    fail "LR04b: reload marker / registration" "got: $_lr_out"
+fi
+
 # LR05/LR06 need a real bwrap namespace with unprivileged user namespaces.
 if is_bwrap && command -v python3 >/dev/null 2>&1 && [[ -f "$SCRIPT_DIR/backends/mount-repair.py" ]] \
    && bwrap --ro-bind / / true >/dev/null 2>&1; then
