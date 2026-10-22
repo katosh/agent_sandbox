@@ -4725,6 +4725,15 @@ _sess_reload_run() {
     # env wants its -u options before the NAME=VALUE words.
     if [[ -z "$_conf" ]]; then _penv+=(-u SANDBOX_CONF); fi
     if [[ -z "$_hae" ]]; then _penv+=(-u HOME_ACCESS); fi
+    # Sourcing this library reset the exported launch overrides (env wins
+    # over config at launch) to the defaults; hand the planning child the
+    # values the reloader's environment actually had, as a launch would.
+    local _ov _ovv
+    for _ov in PRIVATE_TMP PRIVATE_IPC FILTER_PASSWD NETWORK_FILTER_MODE NETWORK_FILTER_FALLBACK \
+               NETWORK_MAIL_BLOCK MOUNT_GUARD MOUNT_GUARD_INTERVAL MOUNT_GUARD_REBIND; do
+        _ovv="_${_ov}_OVERRIDE"; _ovv="${!_ovv:-}"
+        if [[ -n "$_ovv" ]]; then _penv+=("$_ov=$_ovv"); else _penv=(-u "$_ov" "${_penv[@]}"); fi
+    done
     if [[ -n "$_conf" ]]; then _penv+=("SANDBOX_CONF=$_conf"); fi
     if [[ -n "$_hae" ]]; then _penv+=("HOME_ACCESS=$_hae"); fi
     local -a _pargs=(--backend bwrap --project-dir "$_proj" --plan-out "$_pd")
