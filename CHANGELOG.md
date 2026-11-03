@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-02
+
 ### Changed
 
 - **`bin/tmux` does less work per call.** The wrapper runs on every tmux
