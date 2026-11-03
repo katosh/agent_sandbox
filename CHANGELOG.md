@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`bin/tmux` does less work per call.** The wrapper runs on every tmux
+  invocation, so its overhead multiplies for workloads that call tmux
+  often. It no longer re-derives its own directory with a `cd`/`pwd`
+  subshell, and probes `/usr/bin/tmux -V` only when a newer candidate
+  binary has to be compared against it. Per call: 7 → 5 execs and 9 → 3
+  forks. Socket, config, binary selection and environment are unchanged.
+  New regression test: `tests/test_tmux_wrapper.sh` (run by `test.sh`).
+
 ## [0.17.0] - 2026-10-22
 
 ### Added

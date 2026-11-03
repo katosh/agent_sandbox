@@ -8135,6 +8135,17 @@ if [[ -f "$SCRIPT_DIR/sandbox-tmux.conf" ]]; then
 else
     fail "sandbox-tmux.conf missing"
 fi
+# bin/tmux per-call logic (TERM fallback, binary selection), run on
+# the host against fake binaries.
+if [[ -f "$SCRIPT_DIR/tests/test_tmux_wrapper.sh" ]]; then
+    if _tw_out=$(bash "$SCRIPT_DIR/tests/test_tmux_wrapper.sh" 2>&1); then
+        pass "tmux wrapper: TERM fallback and binary selection (regression)"
+    else
+        fail "tmux wrapper: TERM fallback and binary selection (regression)" "$_tw_out"
+    fi
+else
+    skip "tests/test_tmux_wrapper.sh not present"
+fi
 
 # ── sandbox-notify ──────────────────────────────────────────────
 # sandbox-notify must exit cleanly even when run from a process with
