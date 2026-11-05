@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Slurm job logs no longer start with
+  `environment: line 26:  : command not found`, and the intended
+  `--output`/`--error` path is a relative symlink again.** In the
+  in-sandbox staging prelude, the `realpath --relative-to` line ended in
+  a backslash continuation inside the generator's `$(cat <<EOF …)`. On
+  bash 4.4 that came out as `\ ` (an escaped space): bash ran a command
+  named " " (the error; a `bash -c` string reports as `environment`
+  there), the `realpath` result was discarded, and the `||` branch always
+  linked the absolute staging path. The line is now a single line. New
+  test: "job wrapper (prelude)" in section 6.7, which runs a generated
+  wrapper against a stub `sandbox-exec.sh`.
+- **The mount guard no longer writes a temp file per mountinfo line.**
+  `_mg_read_mountinfo` runs on every guard pass (every
+  `MOUNT_GUARD_INTERVAL`, 5 s by default) for the whole session. It split
+  each line with a here-string, and bash before 5.1 backs every
+  here-string with an `sh-thd.*` file in `$TMPDIR`. On a host with a
+  134-line mount table that was 135 files created and unlinked per pass.
+  In a Slurm job, `$TMPDIR` is often per-job node scratch, where tools
+  watching that directory saw the files. The parser now reads the table
+  with `mapfile` and splits fields by parameter expansion. Its output is
+  unchanged (ML03, RB02-RB04, new ML13).
+
 ## [0.17.1] - 2026-11-02
 
 ### Changed
