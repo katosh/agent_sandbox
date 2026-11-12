@@ -84,6 +84,51 @@ fi
 chaperon_log_init "$PROJECT_DIR" "$FIFO_DIR"
 chaperon_log info "starting (pid=$$, ppid=$PPID, fifo=$FIFO_DIR)"
 
+# ── Live reload: the chaperon's host-side view ───────────────────
+# `agent-sandbox reload` rewrites <session dir>/chaperon-view (a host-only
+# directory the sandbox cannot see) and sends this process SIGUSR1; the
+# view is then re-read HERE, by the chaperon itself. It lists the paths
+# the session has writable (chaperon_path_is_writable in
+# handlers/_handler_lib.sh) and the log level. Handlers and the job
+# wrapper still load their config fresh per launch; this is only the
+# long-lived state. CHAPERON_SESSION_DIR is read once and unset, so it
+# reaches neither handlers nor submitted jobs.
+_CHAPERON_SESSION_DIR=""
+_CHAPERON_VIEW_WRITABLE=()
+_chaperon_reload_requested=false
+if [[ -n "${CHAPERON_SESSION_DIR:-}" ]]; then
+    _sd="$CHAPERON_SESSION_DIR"
+    if [[ "$_sd" == /* && "${_sd##*/}" =~ ^[0-9a-f]{8}$ && -d "$_sd" && ! -L "$_sd" && -O "$_sd" ]]; then
+        _CHAPERON_SESSION_DIR="$_sd"
+    fi
+    unset _sd
+fi
+unset CHAPERON_SESSION_DIR
+
+# _chaperon_load_view — replace the view from <session dir>/chaperon-view.
+# Lines are "<key><TAB><value>": writable (absolute path), log_level.
+_chaperon_load_view() {
+    local _f="$_CHAPERON_SESSION_DIR/chaperon-view" _k _v _lvl=""
+    local -a _w=()
+    [[ -n "$_CHAPERON_SESSION_DIR" && -f "$_f" && ! -L "$_f" ]] || return 0
+    while IFS=$'\t' read -r _k _v || [[ -n "$_k" ]]; do
+        case "$_k" in
+            writable)
+                [[ "$_v" == /* && "$_v" != *$'\n'* && "/$_v/" != */../* ]] && _w+=("${_v%/}") ;;
+            log_level)
+                [[ "$_v" =~ ^[a-z]+$ && -n "${_CHAPERON_LOG_LEVELS[$_v]+x}" ]] && _lvl="$_v" ;;
+        esac
+    done < "$_f"
+    _CHAPERON_VIEW_WRITABLE=("${_w[@]+"${_w[@]}"}")
+    if [[ -n "$_lvl" ]]; then
+        CHAPERON_LOG_LEVEL="$_lvl"
+        _CHAPERON_LOG_LEVEL_NUM="${_CHAPERON_LOG_LEVELS[$_lvl]}"
+    fi
+    chaperon_log info "view loaded (${#_CHAPERON_VIEW_WRITABLE[@]} writable path(s), log level ${CHAPERON_LOG_LEVEL:-info})"
+    return 0
+}
+_chaperon_load_view
+
 # Catch unexpected deaths from set -e. Without this, a failed command
 # kills the process silently (stderr is chaperon.err, but the bash
 # error message gives no context). Log the failing line before exit.
@@ -115,6 +160,10 @@ _chaperon_cleanup() {
     chaperon_log info "shutting down (pid=$$)"
     exec 3<&- 2>/dev/null || true
     rm -rf "$FIFO_DIR" 2>/dev/null || true
+    # The session record dies with the session (agent-sandbox sessions).
+    if [[ -n "${_CHAPERON_SESSION_DIR:-}" && -d "$_CHAPERON_SESSION_DIR" && ! -L "$_CHAPERON_SESSION_DIR" && -O "$_CHAPERON_SESSION_DIR" ]]; then
+        rm -rf -- "$_CHAPERON_SESSION_DIR" 2>/dev/null || true
+    fi
     local _d
     for _d in "${_CHAPERON_CLEANUP_DIRS[@]+"${_CHAPERON_CLEANUP_DIRS[@]}"}"; do
         [[ -d "$_d" && ! -L "$_d" ]] && rm -rf -- "$_d" 2>/dev/null
@@ -123,6 +172,7 @@ _chaperon_cleanup() {
 }
 
 trap _chaperon_cleanup SIGTERM SIGINT SIGHUP EXIT
+trap '_chaperon_reload_requested=true' USR1
 
 # ── Open request FIFO ────────────────────────────────────────────
 # Open read+write (O_RDWR) on the req FIFO. This:
@@ -160,6 +210,10 @@ dispatch_handler() {
 # ── Main loop ────────────────────────────────────────────────────
 
 while true; do
+    if [[ "$_chaperon_reload_requested" == true ]]; then
+        _chaperon_reload_requested=false
+        _chaperon_load_view
+    fi
     # Read next request with a timeout. If no request arrives within
     # 5 seconds, check if the parent is still alive. This handles the
     # case where PR_SET_PDEATHSIG doesn't fire (e.g., reparenting).

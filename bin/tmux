@@ -3,7 +3,15 @@
 # Uses sandbox-tmux.conf which sets the prefix key to Ctrl-a for clean
 # nesting within an outer tmux.
 _self="$(readlink -f "${BASH_SOURCE[0]}")"
-_sandbox_dir="$(cd "$(dirname "$_self")" && pwd)/.."
+# readlink -f prints a canonical absolute path, so its directory is already
+# what `cd "$(dirname …)" && pwd` would print; take it without the two
+# subshells and the dirname exec. (The else branch is the old form, kept
+# for the case where readlink -f printed nothing.)
+if [[ "$_self" == /* ]]; then
+    _sandbox_dir="${_self%/*}/.."
+else
+    _sandbox_dir="$(cd "$(dirname "$_self")" && pwd)/.."
+fi
 _conf="$_sandbox_dir/sandbox-tmux.conf"
 
 # Fall back to xterm-256color when the current TERM has no terminfo
@@ -14,7 +22,8 @@ fi
 
 # Ensure the tmux socket directory exists. With PRIVATE_TMP=true the
 # sandbox gets a fresh /tmp, and older tmux versions (≤ 2.6) don't
-# create /tmp/tmux-<uid>/ themselves.
+# create /tmp/tmux-<uid>/ themselves. (Not $EUID: bash 4.4 imports EUID
+# and UID from the environment, so they are caller-controlled.)
 _sockdir="/tmp/tmux-$(id -u)"
 [[ -d "$_sockdir" ]] || mkdir -m 700 -p "$_sockdir"
 
@@ -42,7 +51,9 @@ _tmux_ver_num() {
 }
 
 _TMUX_BIN="/usr/bin/tmux"
-_best="$(_tmux_ver_num "$_TMUX_BIN")" || _best=0
+# The version of /usr/bin/tmux only matters when a candidate below has to
+# be compared against it, so it is probed then, not on every call.
+_best=""
 
 if [[ -n "$SANDBOX_TMUX_BIN" && -x "$SANDBOX_TMUX_BIN" ]]; then
     # Explicit override wins, no version check.
@@ -58,6 +69,9 @@ else
         # Never re-invoke this very wrapper (it shadows `tmux` on PATH).
         [[ "$(readlink -f "$_cand")" == "$_self" ]] && continue
         _cv="$(_tmux_ver_num "$_cand")" || continue
+        if [[ -z "$_best" ]]; then
+            _best="$(_tmux_ver_num "$_TMUX_BIN")" || _best=0
+        fi
         if (( _cv > _best )); then
             _best="$_cv"
             _TMUX_BIN="$_cand"

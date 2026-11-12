@@ -9,6 +9,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Slurm job logs no longer start with
+  `environment: line 26:  : command not found`, and the intended
+  `--output`/`--error` path is a relative symlink again.** In the
+  in-sandbox staging prelude, the `realpath --relative-to` line ended in
+  a backslash continuation inside the generator's `$(cat <<EOF …)`. On
+  bash 4.4 that came out as `\ ` (an escaped space): bash ran a command
+  named " " (the error; a `bash -c` string reports as `environment`
+  there), the `realpath` result was discarded, and the `||` branch always
+  linked the absolute staging path. The line is now a single line. New
+  test: "job wrapper (prelude)" in section 6.7, which runs a generated
+  wrapper against a stub `sandbox-exec.sh`.
+- **The mount guard no longer writes a temp file per mountinfo line.**
+  `_mg_read_mountinfo` runs on every guard pass (every
+  `MOUNT_GUARD_INTERVAL`, 5 s by default) for the whole session. It split
+  each line with a here-string, and bash before 5.1 backs every
+  here-string with an `sh-thd.*` file in `$TMPDIR`. On a host with a
+  134-line mount table that was 135 files created and unlinked per pass.
+  In a Slurm job, `$TMPDIR` is often per-job node scratch, where tools
+  watching that directory saw the files. The parser now reads the table
+  with `mapfile` and splits fields by parameter expansion. Its output is
+  unchanged (ML03, RB02-RB04, new ML13).
+
+## [0.17.1] - 2026-11-02
+
+### Changed
+
+- **`bin/tmux` does less work per call.** The wrapper runs on every tmux
+  invocation, so its overhead multiplies for workloads that call tmux
+  often. It no longer re-derives its own directory with a `cd`/`pwd`
+  subshell, and probes `/usr/bin/tmux -V` only when a newer candidate
+  binary has to be compared against it. Per call: 7 → 5 execs and 9 → 3
+  forks. Socket, config, binary selection and environment are unchanged.
+  New regression test: `tests/test_tmux_wrapper.sh` (run by `test.sh`).
+
+## [0.17.0] - 2026-10-22
+
+### Added
+
+- **`agent-sandbox sessions` and `agent-sandbox reload`: live reload of a
+  running bwrap session.** Every launch now records itself in a per-user
+  runtime directory the sandbox cannot see or write
+  (`$XDG_RUNTIME_DIR/agent-sandbox/sessions/`; without it
+  `${XDG_STATE_HOME:-~/.local/state}/agent-sandbox/sessions/`, masked by
+  the bwrap backend). `sessions` lists the live ones. `reload [ID |
+  --project DIR] [--dry-run] [--force-detach]` re-runs the launch-time
+  config load and validation for the session's project, builds the desired
+  mounts with the launch builder, and applies the difference from the host
+  with `backends/mount-repair.py`: new writable binds first, then the
+  overlays inside them (mounts a new parent bind would hide are re-created
+  on top of it); a writable path that left the config is remounted
+  read-only. If files are open for writing the kernel refuses (EBUSY): it
+  is reported and the path stays writable, unless `--force-detach`
+  detaches it (already-open handles keep their access). Only paths already
+  visible in the sandbox can be added; environment and process-level
+  settings (`SANDBOX_ENV`, `PATH`, ...) and removed protections are
+  reported as "needs restart". The trigger is host-side only (SIGUSR1 to
+  the mount guard and the chaperon, which re-read host-only files; never
+  the chaperon FIFO). bwrap only; landlock and firejail print "not
+  supported, restart". See [Live reload](docs/live-reload.md).
+- **mount-repair.py: `revoke` and `detach` kinds** (remount the topmost
+  mount read-only; lazily unmount it) and exit status 3 (busy).
+
+## [0.16.1] - 2026-10-21
+
+### Fixed
+
+- **mount guard: a repair that is not visible is retried instead of
+  abandoned.** When the helper reported success but the sandbox's mount
+  table then showed no mount at the path (the fresh bind was detached
+  again while the kernel was still invalidating the directory), the guard
+  reported once and never tried again, leaving the sandbox degraded for
+  as long as it ran. A path that is not a mount point afterwards, or
+  whose topmost mount is still the one seen before the repair, is now
+  retried like a refusal: exponential backoff (the interval, doubling,
+  at most 60 s), one report, and the usual `RESTORED` notice when a later
+  attempt shows. No count limit: each attempt is one helper run per 60 s
+  at most, and nothing can be stacked (see below). A new mount in the
+  wrong read-only state stays terminal.
+- **mount-repair.py: repairing a read-only or writable bind is
+  idempotent.** A second repair of the same path (a late first one, a
+  manual run alongside the guard) stacked an identical mount on a good
+  one. The helper now reads the sandbox's mount table before mounting
+  and, when the topmost mount at the path already shows the host's
+  object with the requested read-only state, mounts nothing, says
+  "already present" on stderr and exits 0. Masks (`null`, `tmpfs`) keep
+  their one-shot behaviour: they have no host object to compare.
+- **mount guard: the repair backoff and the restored mount options now
+  take effect.** 0.16.0 read two associative arrays with a literal `_i`
+  subscript, so the retry delay was always 0 (a refused repair retried
+  every interval) and the recorded mount options (`noexec`, `noatime`,
+  ...) were never passed to the helper, which fell back to
+  `nosuid,nodev`.
+
+## [0.16.0] - 2026-10-21
+
+### Fixed
+
 - **mount guard: a project directory bind that vanishes from a running
   bwrap sandbox is re-bound in place.** On network filesystems the
   kernel can detach the writable bind of the project directory together

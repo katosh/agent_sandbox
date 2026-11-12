@@ -5203,6 +5203,36 @@ for _h67_case in "shell|landlock|#!/bin/bash" "prelude|bwrap|#!/bin/bash" "pytho
 done
 unset _h67_case _h67_name _h67_be _h67_sb
 
+# 6.7c2. The staging prelude runs clean and links RELATIVELY. It is a
+# `bash -c` string, so every error in it reads "environment: line N"
+# on bash 4.4. A backslash line continuation inside the generator's
+# `$(cat <<EOF …)` used to come out as `\ ` (an escaped space) on bash
+# 4.4: "environment: line 26:  : command not found" in every job log,
+# and the realpath result was discarded, so the link was always the
+# absolute staging path. Runs the real wrapper against a stub
+# sandbox-exec.sh that just executes its command.
+if _h67_out="$(
+    set -u
+    export SANDBOX_BACKEND=bwrap SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    mkdir -p "$_T/stage" "$_T/out"
+    printf '#!/bin/bash\nshift 3\nexec "$@"\n' > "$_T/sbx"; chmod +x "$_T/sbx"
+    PROJECT_DIR="$_T"; REQ_ARGS=()
+    validate_sbatch_args 2>/dev/null || { echo "validate failed"; exit 1; }
+    _USER_SLURM_OUTPUT="$_T/out/x_%j.log"; _STAGING_SLURM_OUTPUT="$_T/stage/x_%j.log"
+    _USER_SLURM_ERROR=""; _STAGING_SLURM_ERROR=""
+    create_wrapped_script "$_T/sbx" "$_T" $'#!/bin/bash\necho payload-ran' "$_T/w" 2>/dev/null || { echo "create failed"; exit 1; }
+    grep -qF 'agent-sandbox: link intended' "$_T/w" || { echo "no prelude in wrapper"; exit 1; }
+    cd "$_T" && env SLURM_JOB_ID=1234567 /bin/bash "$_T/w" > "$_T/o" 2> "$_T/e"
+    printf 'out=%s err=[%s] link=%s' "$(cat "$_T/o")" "$(cat "$_T/e")" "$(readlink "$_T/out/x_1234567.log")"
+)"; [[ "$_h67_out" == "out=payload-ran err=[] link=../stage/x_1234567.log" ]]; then
+    pass "job wrapper (prelude): runs without stderr noise and links the intended path relatively"
+else
+    fail "job wrapper (prelude): stderr noise or non-relative link" "$_h67_out"
+fi
+unset _h67_out
+
 # 6.7d. #SBATCH --export directives: rewritten (last one wins), denied
 # names fail the submission, and a CLI --export overrides them.
 if (
@@ -6712,12 +6742,38 @@ if [[ "$_ml_out" == "$_ml_want" ]]; then
 else
     fail "ML12: repair eligibility / ordering" "got: $_ml_out"
 fi
+# ML13. The mountinfo parser runs every MOUNT_GUARD_INTERVAL for the whole
+# session. Bash < 5.1 backs every here-string / here-document with a
+# temp file in $TMPDIR, so the parser must use neither (one temp file per
+# mountinfo line per pass otherwise). Also pins the field split on a line
+# with optional fields and an escaped space in the mount point.
+_ml_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    case "$(declare -f _mg_read_mountinfo)" in *'<<'*) echo -n "heredoc " ;; esac
+    printf '%s\n' "1 0 0:1 / / rw - tmpfs t rw" \
+        "7 1 8:1 /a\\040b /p\\040q rw,nosuid shared:5 master:2 - nfs s:/x rw" \
+        "8 1 8:1 / /p\\040q ro,relatime - ext4 /dev/d rw" > "$_T/mi"
+    _mg_read_mountinfo "$_T/mi" || echo -n "rc=$? "
+    for k in / '/p\040q'; do printf '%s=%s,%s,%s ' "$k" "${_MG_TOP_ID[$k]}" "${_MG_TOP_OPTS[$k]}" "${_MG_TOP_FS[$k]}"; done
+    : > "$_T/empty"; _mg_read_mountinfo "$_T/empty" && echo -n "empty-ok "
+    _mg_read_mountinfo "$_T/missing" 2>&1 && echo -n "missing-ok "
+)"
+_ml_want='/=1,rw,tmpfs /p\040q=8,ro,relatime,ext4 '
+if [[ "$_ml_out" == "$_ml_want" ]]; then
+    pass "ML13: mountinfo parser splits fields without here-strings (no \$TMPDIR temp file per line)"
+else
+    fail "ML13: mountinfo parser" "got: $_ml_out"
+fi
+
 # ── RB: lost writable binds are re-bound (MOUNT_GUARD_REBIND) ──
 # The project bind (and the read-only binds nested below it) can vanish
 # from a running sandbox together; the path then falls through to the
 # read-only parent bind. RB01-RB04 are unit tests of the pure logic,
 # RB05 the option mapping and the helper's refusals, RB06/RB07 end-to-end
-# repairs in a throwaway bwrap namespace laid out like a real session.
+# repairs in a throwaway bwrap namespace laid out like a real session,
+# RB08-RB11 a repair that is not visible and the helper's idempotence.
 _rb_out="$(
     export _SANDBOX_LIB_NO_INIT=1
     source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
@@ -6892,12 +6948,570 @@ RBPY
     skip "$_rb_id: needs bwrap with unprivileged user namespaces and python3"
   fi
 done
+# RB08. The verdict on a repair the helper reported as done
+# (_mg_verify_repair), from synthetic mountinfo with mount ids. The path
+# being no mount point, or its topmost mount being the very one seen
+# before the repair, is "nothing in place" (4: retried); a NEW mount in
+# the wrong read-only state is 3 (terminal); a new mount in the right
+# state is 0. Order of the answers: nothing mounted; unchanged mount id;
+# new writable mount; new read-only mount; new read-only mount with no
+# mount before; unreadable table.
+_rb_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    mkdir -p "$_T/par/proj" "$_T/h"
+    HOME="$_T/h"; BLOCKED_FILES=(); EXTRA_BLOCKED_PATHS=()
+    backend_mount_expectations() { printf '%s\n' "ro:same $_T/par" "rw:same $_T/par/proj"; }
+    MOUNT_GUARD_REBIND=true
+    _mount_guard_prepare "$_T/par/proj" || { echo "prepare failed"; exit 0; }
+    _pi=""; for i in "${!_MG_PATH[@]}"; do [[ "${_MG_PATH[i]}" == "$_T/par/proj" ]] && _pi=$i; done
+    _mi() { printf '%s 1 8:1 / %s %s - ext4 /dev/x rw\n' "$1" "$2" "$3"; }
+    { _mi 10 / ro,relatime; _mi 20 "$_T/par" ro,nosuid,nodev,relatime; } > "$_T/mi.none"
+    { _mi 10 / ro,relatime; _mi 20 "$_T/par" ro,nosuid,nodev,relatime; _mi 30 "$_T/par/proj" ro,nosuid,nodev,relatime; } > "$_T/mi.same"
+    { _mi 10 / ro,relatime; _mi 20 "$_T/par" ro,nosuid,nodev,relatime; _mi 31 "$_T/par/proj" rw,nosuid,nodev,relatime; } > "$_T/mi.newrw"
+    { _mi 10 / ro,relatime; _mi 20 "$_T/par" ro,nosuid,nodev,relatime; _mi 32 "$_T/par/proj" ro,nosuid,nodev,relatime; } > "$_T/mi.newro"
+    _v() { local rc=0; _mg_verify_repair "$_pi" 0 "$1" "$2" || rc=$?; printf '%s ' "$rc"; }
+    _v 30 "$_T/mi.none"; _v 30 "$_T/mi.same"; _v 30 "$_T/mi.newrw"; _v 30 "$_T/mi.newro"
+    _v "" "$_T/mi.newro"; _v 30 "$_T/mi.missing"
+    echo
+)"
+if [[ "$_rb_out" == "4 4 0 3 3 4 " ]]; then
+    pass "RB08: a repair that left no mount, or only the old one, is retryable; a new mount in the wrong state is terminal"
+else
+    fail "RB08: repair verdict" "got: $_rb_out"
+fi
+
+# Shared by RB09/RB10: a throwaway bwrap namespace laid out as in
+# RB06/RB07 plus a read-only bind of a directory with a space in its
+# name. _rb_up T sets _rb_l (the launcher), _rb_pid (a process in the
+# namespace) and _rb_ino (its mount namespace inode); _rb_probe runs
+# probe.py (detach, detach-all, wrongro, write) in that namespace.
+_rb_up() {
+    local t="$1" i
+    _rb_par="$t/par"; _rb_dir="$_rb_par/proj"; _rb_child="$_rb_dir/child"; _rb_sp="$_rb_par/sp ace"
+    mkdir -p "$_rb_child" "$_rb_sp" "$t/h" "$t/armed" "$t/state"
+    cat > "$t/probe.py" <<'RBPY'
+import ctypes, errno, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+pid, op, path = sys.argv[1], sys.argv[2], sys.argv[3]
+for fd, t in [(os.open('/proc/%s/ns/user' % pid, os.O_RDONLY), 0x10000000), (os.open('/proc/%s/ns/mnt' % pid, os.O_RDONLY), 0x20000)]:
+    if libc.setns(fd, t) != 0:
+        sys.exit('setns: ' + os.strerror(ctypes.get_errno()))
+os.chdir('/')
+b = path.encode()
+if op == 'detach':
+    if libc.umount2(b, 2) != 0:
+        sys.exit('umount2: ' + os.strerror(ctypes.get_errno()))
+elif op == 'detach-all':
+    n = 0
+    while libc.umount2(b, 2) == 0:
+        n += 1
+    if n == 0:
+        sys.exit('nothing to detach')
+elif op == 'wrongro':    # a NEW read-only bind where a writable one belongs
+    if libc.mount(b, b, None, 4096, None) != 0 or libc.mount(None, b, None, 32 | 4096 | 1, None) != 0:
+        sys.exit('mount: ' + os.strerror(ctypes.get_errno()))
+else:
+    try:
+        fd = os.open(path + '/probe', os.O_CREAT | os.O_WRONLY, 0o600); os.close(fd); os.unlink(path + '/probe')
+        print('WRITE-OK')
+    except OSError as e:
+        print('WRITE-FAIL ' + errno.errorcode[e.errno])
+RBPY
+    bash -c 'bwrap --die-with-parent --unshare-pid --ro-bind / / --ro-bind "$1" "$1" --ro-bind "$2" "$2" --bind "$2" "$2" --ro-bind "$3" "$3" --ro-bind "$4" "$4" -- sleep 90 & wait' \
+        _ "$_rb_par" "$_rb_dir" "$_rb_child" "$_rb_sp" >/dev/null 2>"$t/l.err" &
+    _rb_l=$!
+    # the sandbox's "sleep": a descendant of the launcher in another mount namespace
+    local q c own; _rb_pid=""; own="$(readlink /proc/self/ns/mnt)"
+    for i in $(seq 1 40); do
+        q="$_rb_l"
+        while [[ -n "$q" && -z "$_rb_pid" ]]; do
+            c="${q%% *}"; q="${q#"$c"}"; q="${q# }"
+            for _r in $(pgrep -P "$c" 2>/dev/null); do
+                q+=" $_r"
+                [[ "$(cat "/proc/$_r/comm" 2>/dev/null)" == sleep && "$(readlink "/proc/$_r/ns/mnt" 2>/dev/null)" != "$own" ]] && _rb_pid="$_r"
+            done
+        done
+        [[ -n "$_rb_pid" ]] && break; sleep 0.25
+    done
+    _rb_ino="$(stat -L -c %i "/proc/$_rb_pid/ns/mnt" 2>/dev/null)"
+    [[ "$_rb_pid" =~ ^[0-9]+$ && "$_rb_ino" =~ ^[0-9]+$ ]]
+}
+_rb_probe() { python3 "$_rb_t/probe.py" "$_rb_pid" "$@" 2>&1; }
+# number of mount table rows for a mount point (escaped as mountinfo does)
+_rb_rows() { E="${1// /\\040}" awk '$5 == ENVIRON["E"] {n++} END {print n+0}' "/proc/$_rb_pid/mountinfo" 2>/dev/null; }
+_rb_down() { pkill -P "$_rb_l" 2>/dev/null; kill "$_rb_l" ${_rb_g:-} 2>/dev/null; wait "$_rb_l" ${_rb_g:-} 2>/dev/null; }
+
+# RB09. The helper is idempotent for ro and rw: after a mount is lost, a
+# repair followed by a second repair of the same path (a concurrent or
+# late run) leaves exactly one mount there, and says so on stderr. Done
+# for the writable project, a read-only child and a read-only directory
+# whose name has a space (mountinfo escapes it).
+_rb_helper="$SCRIPT_DIR/backends/mount-repair.py"
+if is_bwrap && command -v python3 >/dev/null 2>&1 && [[ -f "$_rb_helper" ]] \
+   && bwrap --ro-bind / / true >/dev/null 2>&1; then
+    _rb_t="$(mktemp -d)"; trap_rm_dir "$_rb_t"; _rb_g=""
+    if ! _rb_up "$_rb_t"; then
+        skip "RB09: throwaway bwrap namespace did not come up"
+    else
+        _rb_u="$(id -u)"
+        _rb_b="$(_rb_rows "$_rb_dir")/$(_rb_rows "$_rb_child")/$(_rb_rows "$_rb_sp")"
+        _rb_probe detach-all "$_rb_dir" >/dev/null; _rb_probe detach "$_rb_sp" >/dev/null
+        _rb_lostn="$(_rb_rows "$_rb_dir")/$(_rb_rows "$_rb_child")/$(_rb_rows "$_rb_sp")"
+        _rb_res=""
+        _rb_h() { # _rb_h KIND PATH -> "rc/rows/already-present "
+            local e rc; e="$(python3 -I "$_rb_helper" "$_rb_pid" "$_rb_ino" "$1" "$2" d "$_rb_u" nosuid,nodev 2>&1 >/dev/null)"; rc=$?
+            printf '%s/%s/%s ' "$rc" "$(_rb_rows "$2")" "$([[ "$e" == *"already present"* ]] && echo y || echo n)"; }
+        for _rb_x in "rw $_rb_dir" "ro $_rb_child" "ro $_rb_sp"; do
+            _rb_res+="$(_rb_h ${_rb_x%% *} "${_rb_x#* }")"; _rb_res+="$(_rb_h ${_rb_x%% *} "${_rb_x#* }")"
+        done
+        _rb_w="$(_rb_probe write "$_rb_dir") / $(_rb_probe write "$_rb_child")"
+        # each path: the first call mounts (n), the repeat does not (y); one row each
+        if [[ "$_rb_b" == 2/1/1 && "$_rb_lostn" == 0/0/0 && "$_rb_w" == "WRITE-OK / WRITE-FAIL EROFS"               && "$_rb_res" == "0/1/n 0/1/y 0/1/n 0/1/y 0/1/n 0/1/y " ]]; then
+            pass "RB09: ro/rw repair run twice leaves exactly one mount (project, child, name with a space) and reports 'already present'"
+        else
+            fail "RB09: helper idempotence" "before=$_rb_b lost=$_rb_lostn calls=$_rb_res write=$_rb_w"
+        fi
+        unset -f _rb_h
+    fi
+    _rb_down
+else
+    skip "RB09: needs bwrap with unprivileged user namespaces and python3"
+fi
+
+# RB10/RB11. The guard against a repair it cannot see. A stub helper
+# stands in for backends/mount-repair.py: it records each call, runs the
+# real helper and then, per mode, either detaches the new writable mount
+# again at once (RB10: "repair, then immediate re-loss", twice) or
+# replaces it with a NEW read-only mount (RB11: wrong state). RB10 must
+# retry with growing delays, report the failure once and end restored
+# with a single mount per path; RB11 must call the helper once and leave
+# the path alone.
+_rb_guard_case() { # _rb_guard_case MODE -> prints a result line
+    local mode="$1" t i
+    t="$(mktemp -d)"; _rb_t="$t"; _rb_g=""
+    mkdir -p "$t/sd/backends"
+    _rb_up "$t" || { echo "NOUP"; rm -rf "$t"; return; }
+    echo "$mode" > "$t/state/mode"
+    cat > "$t/sd/backends/mount-repair.py" <<'RBSTUB'
+import os, subprocess, sys, time
+st, real, probe = os.environ['RB_STATE'], os.environ['RB_REAL'], os.environ['RB_PROBE']
+pid, ino, kind, path = sys.argv[1:5]
+with open(st + '/calls', 'a') as f:
+    f.write('%s %s %.2f\n' % (kind, path, time.time()))
+n = sum(1 for l in open(st + '/calls') if l.split(' ')[1] == path)
+mode = open(st + '/mode').read().strip()
+if kind == 'rw' and mode == 'wrongstate':
+    subprocess.call([sys.executable, probe, pid, 'wrongro', path]); sys.exit(0)
+rc = subprocess.call([sys.executable, '-I', real] + sys.argv[1:])
+if kind == 'rw' and mode == 'relose' and n <= 2:
+    subprocess.call([sys.executable, probe, pid, 'detach-all', path])
+sys.exit(rc)
+RBSTUB
+    (
+        export _SANDBOX_LIB_NO_INIT=1 _CHAPERON_FIFO_DIR="$t/armed" RB_STATE="$t/state" RB_REAL="$SCRIPT_DIR/backends/mount-repair.py" RB_PROBE="$t/probe.py"
+        source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+        set +euo pipefail
+        SANDBOX_DIR="$t/sd"; SANDBOX_BACKEND=bwrap; HOME="$t/h"; BLOCKED_FILES=(); EXTRA_BLOCKED_PATHS=()
+        MOUNT_GUARD=repair; MOUNT_GUARD_INTERVAL=1; MOUNT_GUARD_REBIND=true
+        backend_mount_expectations() { printf '%s\n' "ro:same $_rb_par" "ro:same $_rb_dir" "rw:same $_rb_dir" "ro:same $_rb_child"; }
+        _mount_guard_prepare "$_rb_dir" || exit 1
+        _mount_guard_run "$_rb_l"
+    ) >/dev/null 2>&1 &
+    _rb_g=$!
+    for i in $(seq 1 60); do [[ -d "$t/armed/.mount-guard-armed" ]] && break; sleep 0.25; done
+    if [[ ! -d "$t/armed/.mount-guard-armed" ]]; then echo "NOGUARD"; _rb_down; rm -rf "$t"; return; fi
+    _rb_probe detach-all "$_rb_dir" >/dev/null
+    if [[ "$mode" == relose ]]; then
+        for i in $(seq 1 60); do [[ "$(grep -c RESTORED "$t/l.err")" -ge 2 ]] && break; sleep 0.5; done
+    else
+        for i in $(seq 1 60); do [[ "$(grep -c 'Could not restore' "$t/l.err")" -ge 1 ]] && break; sleep 0.5; done
+        sleep 6    # several more ticks: a terminal verdict must not be retried
+    fi
+    local calls rep nfail nrest w rows gap
+    calls="$(grep -c "^rw $_rb_dir " "$t/state/calls")"
+    rep="$(cat "$t/l.err")"
+    nfail="$(grep -c "Could not restore.*$_rb_dir\|$_rb_dir .*Could not restore" "$t/l.err")"
+    nrest="$(grep -c "$_rb_dir .*RESTORED" "$t/l.err")"
+    w="$(_rb_probe write "$_rb_dir") / $(_rb_probe write "$_rb_child")"
+    rows="$(_rb_rows "$_rb_dir")/$(_rb_rows "$_rb_child")"
+    gap="$(awk -v p="$_rb_dir" '$1=="rw" && $2==p {t[++n]=$3} END {if (n>=3) printf "%d", t[3]-t[1]; else print -1}' "$t/state/calls")"
+    printf 'calls=%s failreports=%s restored=%s write=[%s] rows=%s span=%s wrong=%s\n' \
+        "$calls" "$nfail" "$nrest" "$w" "$rows" "$gap" "$([[ "$rep" == *"wrong read-only state"* ]] && echo y || echo n)"
+    _rb_down; rm -rf "$t"
+}
+if is_bwrap && command -v python3 >/dev/null 2>&1 && [[ -f "$SCRIPT_DIR/backends/mount-repair.py" ]] \
+   && bwrap --ro-bind / / true >/dev/null 2>&1; then
+    _rb_out="$(_rb_guard_case relose)"
+    # three helper runs (two lost again at once, one stays), one report of
+    # the failure, one RESTORED, writable project, one mount per path, and
+    # at least 4 s between the first and third run (backoff 2 s then 4 s)
+    if [[ "$_rb_out" =~ ^calls=3\ failreports=1\ restored=1\ write=\[WRITE-OK\ /\ WRITE-FAIL\ EROFS\]\ rows=1/1\ span=([0-9]+)\ wrong=n$ && "${BASH_REMATCH[1]}" -ge 4 ]]; then
+        pass "RB10: a repair lost again at once is retried with backoff, reported once, then restored (one mount per path)"
+    elif [[ "$_rb_out" == NO* ]]; then
+        skip "RB10: throwaway bwrap namespace or guard did not come up ($_rb_out)"
+    else
+        fail "RB10: repair not visible is not retried / restored" "got: $_rb_out"
+    fi
+    _rb_out="$(_rb_guard_case wrongstate)"
+    # exactly one helper run, the failure reported once as a wrong state,
+    # never restored, the new read-only mount left as it is
+    if [[ "$_rb_out" == "calls=1 failreports=1 restored=0 write=[WRITE-FAIL EROFS / WRITE-FAIL EROFS] rows=1/"[01]" span=-1 wrong=y" ]]; then
+        pass "RB11: a new mount in the wrong read-only state is reported once and never retried"
+    elif [[ "$_rb_out" == NO* ]]; then
+        skip "RB11: throwaway bwrap namespace or guard did not come up ($_rb_out)"
+    else
+        fail "RB11: wrong-state repair" "got: $_rb_out"
+    fi
+else
+    skip "RB10: needs bwrap with unprivileged user namespaces and python3"
+    skip "RB11: needs bwrap with unprivileged user namespaces and python3"
+fi
+unset -f _rb_up _rb_probe _rb_rows _rb_down _rb_guard_case
+unset _rb_sp _rb_pid _rb_u _rb_b _rb_lostn _rb_res _rb_x _rb_w
+
 unset _rb_out _rb_want _rb_flags _rb_ino _rb_r1 _rb_r2 _rb_r3 _rb_c1 _rb_c2 _rb_c3 _rb_t _rb_par _rb_dir _rb_child \
       _rb_l _rb_g _rb_ns _rb_before _rb_mode _rb_id _rb_det _rb_lost _rb_after _rb_odir _rb_ochild _rb_rep _rb_helper
 unset _ml_a _ml_pid _ml_before _ml_after _ml_rc _ml_r _ml_i1 _ml_m1 _ml_ok _ml_why _ml_out _ml_want \
       _ml_secret _ml_ready _ml_conf _ml_conf6 _ml_mode _ml_l _ml_msg _ml_ph \
       _ml_hid _ml_go _ml_state _ml_stash _ml_detached _ml_err
 unset -f _ml_ns_pid _ml_protective _ml_ofs
+# ── LR: live reload (agent-sandbox sessions / reload) ───────────
+#
+# LR01. The session registry (sandbox-lib.sh §Live sessions): only a
+# record whose launcher pid exists with the recorded start time, on this
+# host, is live. A dead one is pruned; another host's, one whose
+# namespace pid is gone, a mismatching id and a hand-written record with
+# a bad backend are ignored (and never trusted).
+_lr_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    set +e
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    mkdir -m 700 "$_T/xdg"; export XDG_RUNTIME_DIR="$_T/xdg"
+    _b="$(_sess_base_dir)"; _sess_mkbase "$_b" || echo "MKBASE-FAILED"
+    _me="$(_proc_starttime $$)"
+    _mk() { local d="$_b/$1"; mkdir -m 700 "$d"; _SESS_DIR="$d"
+            _sess_set "id=$2" version=0.0.0 "backend=$3" "project=$4" "launcher_pid=$5" \
+                "launcher_start=$6" "started=$7" "host=${8:-$(_sess_host)}"; }
+    _mk aaaaaaa1 aaaaaaa1 bwrap /p/a $$ "$_me" 1000
+    _mk bbbbbbb2 bbbbbbb2 bwrap /p/b 2147483000 1 2000
+    _mk ccccccc3 ccccccc3 bwrap /p/c $$ "$_me" 3000 otherhost
+    _mk ddddddd4 ddddddd4 bwrap /p/d $$ "$_me" 4000
+    printf '99999999 1 1\n' > "$_b/ddddddd4/ns"
+    _mk eeeeeee5 fffffff6 bwrap /p/e $$ "$_me" 5000
+    mkdir -m 700 "$_b/not-an-id"; cp "$_b/aaaaaaa1/session" "$_b/not-an-id/session"
+    mkdir -m 700 "$_b/1111111a"
+    printf 'id=1111111a\nversion=0.0.0\nbackend=bwrap;x\nproject=/p/f\nlauncher_pid=%s\nlauncher_start=%s\nstarted=1\nhost=%s\n' \
+        "$$" "$_me" "$(_sess_host)" > "$_b/1111111a/session"
+    echo "base=${_b#"$_T"/}"
+    echo "live=$(_sess_live_ids "$_b" | tr '\n' ,)"
+    echo "dead-pruned=$([[ -e $_b/bbbbbbb2 ]] && echo no || echo yes)"
+    echo "foreign-kept=$([[ -e $_b/ccccccc3 ]] && echo yes || echo no)"
+    echo "mode=$(stat -c %a "$_b")"
+)"
+_lr_want=$'base=xdg/agent-sandbox/sessions\nlive=aaaaaaa1,\ndead-pruned=yes\nforeign-kept=yes\nmode=700'
+if [[ "$_lr_out" == "$_lr_want" ]]; then
+    pass "LR01: session registry lists only live records of this host and prunes dead ones; forged records are ignored"
+else
+    fail "LR01: session registry" "got: $_lr_out"
+fi
+
+# LR02. The subcommands' refusals, through the real entry point (no
+# sandbox is started): nothing running, an ambiguous project, an
+# ambiguous or malformed id, id and --project together, an unsupported
+# backend, and a session of another version.
+_lr_t="$(mktemp -d)"; trap_rm_dir "$_lr_t"
+mkdir -m 700 "$_lr_t/xdg"; mkdir -p "$_lr_t/p1/sub" "$_lr_t/p2" "$_lr_t/p3"
+_lr_run() { XDG_RUNTIME_DIR="$_lr_t/xdg" "$SANDBOX_EXEC" "$@" 2>&1; }
+_lr_mk() {   # ID BACKEND PROJECT [VERSION] — a live-looking record whose launcher is this shell
+    (
+        export _SANDBOX_LIB_NO_INIT=1
+        source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+        set +e
+        export XDG_RUNTIME_DIR="$_lr_t/xdg"
+        _b="$(_sess_base_dir)"; _sess_mkbase "$_b"
+        mkdir -m 700 "$_b/$1"; _SESS_DIR="$_b/$1"
+        _sess_set "id=$1" "version=${4:-$(_sess_version)}" "backend=$2" "project=$3" "launcher_pid=$$" \
+            "launcher_start=$(_proc_starttime $$)" "started=$(date +%s)" "host=$(_sess_host)"
+    )
+}
+_lr_o1="$(_lr_run sessions)"; _lr_c1=$?
+_lr_o2="$(_lr_run reload)"; _lr_c2=$?
+_lr_mk 11111111 bwrap "$_lr_t/p1"; _lr_mk 22222222 bwrap "$_lr_t/p1"
+_lr_mk 33333333 landlock "$_lr_t/p2"; _lr_mk 44444441 bwrap "$_lr_t/p3"; _lr_mk 44444442 bwrap "$_lr_t/p3"
+_lr_mk 55555555 bwrap "$_lr_t/p2/x" 0.0.1
+_lr_o3="$(_lr_run sessions)"
+_lr_o4="$(_lr_run reload --project "$_lr_t/p1")"; _lr_c4=$?
+_lr_o5="$(cd "$_lr_t/p1/sub" && _lr_run reload)"; _lr_c5=$?
+_lr_o6="$(_lr_run reload 3333)"; _lr_c6=$?
+_lr_o7="$(_lr_run reload 4444444)"; _lr_c7=$?
+_lr_o8="$(_lr_run reload 33333333 --project "$_lr_t/p2")"; _lr_c8=$?
+_lr_o9="$(_lr_run reload 5555)"; _lr_c9=$?
+_lr_o10="$(_lr_run reload --bogus)"; _lr_c10=$?
+_lr_o11="$(_lr_run reload zzzz)"; _lr_c11=$?
+if [[ $_lr_c1 -eq 0 && "$_lr_o1" == "No live sandbox sessions." && $_lr_c2 -eq 1 && "$_lr_o2" == *"no live session"* \
+      && "$_lr_o3" == *11111111*"$_lr_t/p1"* && "$_lr_o3" == *33333333*landlock* \
+      && $_lr_c4 -eq 2 && "$_lr_o4" == *ambiguous*11111111*22222222* \
+      && $_lr_c5 -eq 2 && "$_lr_o5" == *ambiguous* \
+      && $_lr_c6 -eq 1 && "$_lr_o6" == *"not supported on the landlock backend"* \
+      && $_lr_c7 -eq 2 && "$_lr_o7" == *ambiguous* \
+      && $_lr_c8 -eq 2 && "$_lr_o8" == *"not both"* \
+      && $_lr_c9 -eq 1 && "$_lr_o9" == *"runs 0.0.1"* \
+      && $_lr_c10 -eq 2 && $_lr_c11 -eq 2 ]]; then
+    pass "LR02: sessions lists live sessions; reload refuses ambiguous, malformed, unsupported-backend and other-version sessions"
+else
+    fail "LR02: sessions/reload refusals" "c=$_lr_c1/$_lr_c2/$_lr_c4/$_lr_c5/$_lr_c6/$_lr_c7/$_lr_c8/$_lr_c9/$_lr_c10/$_lr_c11 o4=$_lr_o4 o6=$_lr_o6 o9=$_lr_o9"
+fi
+unset -f _lr_run _lr_mk
+
+# LR03. The reload plan from synthetic mount states (no sandbox):
+# revocation of a writable path that left the config, additions in
+# launch order (writable binds first, overlays after), a mount that a new
+# parent bind would hide is re-created on top of it, one that cannot be is
+# a refusal, a path still covered by a writable ancestor keeps its own
+# bind, a protection removed from the config is not loosened live, a
+# revoked leftover is stable, an unchanged session has an empty plan.
+_lr_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    set +e
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    _US=$'\x1f'
+    _st() { local f="$_T/$1" l; shift; : > "$f"; for l in "$@"; do printf '%s\n' "${l//|/$_US}" >> "$f"; done; }
+    _plan() { _RELOAD_PRESENT_FN=true _reload_plan "$_T/$1" "$_T/$2" | tr "$_US" '|'; }
+    _st a.cur 'rw|/proj|1|rw|d|1000|launch' 'ro|/proj/.sandbox-state|1|ro|d|1000|launch' 'ro|/data/ro1|1|ro|d|1000|launch' \
+        'rw|/data/old|1|rw|d|1000|launch' 'mask|/sec|1|null|f|1000|launch'
+    _st a.new 'rw|/proj|1|rw|d|1000|launch' 'ro|/proj/.sandbox-state|1|ro|d|1000|launch' 'rw|/data/ro1|1|rw|d|1000|launch' \
+        'rw|/data/new|1|rw|d|1000|launch' 'mask|/data/new/.env|1|null|f|1000|launch' 'ro|/data/new/.git|1|ro|d|1000|launch'
+    echo "== A"; _plan a.cur a.new
+    _st b.cur 'rw|/proj|1|rw|d|1000|launch' 'mask|/data/new/.env|1|null|f|1000|launch' 'ro|/data/blk/x|1||d|1000|launch'
+    _st b.new 'rw|/proj|1|rw|d|1000|launch' 'rw|/data/new|1|rw|d|1000|launch' 'mask|/data/new/.env|1|null|f|1000|launch' \
+        'rw|/data/blk|1|rw|d|1000|launch' 'ro|/data/blk/x|1||d|1000|launch'
+    echo "== B"; _plan b.cur b.new
+    _st c.cur 'rw|/proj|1|rw|d|1000|launch' 'rw|/proj/sub|1|rw|d|1000|launch'
+    _st c.new 'rw|/proj|1|rw|d|1000|launch'
+    echo "== C"; _plan c.cur c.new; echo "-- same"; _plan c.cur c.cur
+    _st d.cur 'rw|/proj|1|rw|d|1000|launch' 'ro|/data/old|1|ro|d|1000|rev'
+    _st d.new 'rw|/proj|1|rw|d|1000|launch'
+    _st d.new2 'rw|/proj|1|rw|d|1000|launch' 'rw|/data/old|1|rw|d|1000|launch'
+    echo "== D"; _plan d.cur d.new; echo "-- again"; _plan d.cur d.new2
+    _st e.cur 'rw|/proj|1|rw|d|1000|launch' 'ro|/x|1|ro|d|1000|launch'
+    _st e.new 'rw|/proj|1|rw|d|1000|launch' 'mask|/x|1|null|f|1000|launch'
+    echo "== E"; _plan e.cur e.new
+    _st f.cur 'rw|/proj|1|rw|d|1000|launch' 'rw|/data/kid|1|rw|d|1000|launch' 'ro|/data/kid/s|1|ro|d|1000|launch'
+    _st f.new 'rw|/proj|1|rw|d|1000|launch' 'rw|/data|1|rw|d|1000|launch' 'ro|/data/kid|1|ro|d|1000|launch' 'ro|/data/kid/s|1|ro|d|1000|launch'
+    echo "== F"; _plan f.cur f.new
+)"
+_lr_want='== A
+NOTE|protection at /sec is no longer in the config but stays enforced until the session is restarted
+REVOKE|/data/old
+ADD|rw|/data/ro1|1|rw|d|1000
+ADD|rw|/data/new|1|rw|d|1000
+ADD|mask|/data/new/.env|1|null|f|1000
+ADD|ro|/data/new/.git|1|ro|d|1000
+== B
+REFUSE|/data/blk|would hide the existing mount at /data/blk/x, which cannot be re-created live; restart the session
+ADD|rw|/data/new|1|rw|d|1000
+REAPPLY|mask|/data/new/.env|1|null|f|1000
+== C
+NOTE|/proj/sub stays writable through /proj; its own bind is kept
+-- same
+== D
+-- again
+ADD|rw|/data/old|1|rw|d|1000
+== E
+RESTART|/x changed protection kind (ro to mask)
+== F
+REVOKE|/data/kid
+ADD|rw|/data|1|rw|d|1000
+REAPPLY|ro|/data/kid|1|ro|d|1000
+REAPPLY|ro|/data/kid/s|1|ro|d|1000'
+if [[ "$_lr_out" == "$_lr_want" ]]; then
+    pass "LR03: reload plan: revoke, additions in launch order, hidden children re-created or refused, covered/loosened/revoked cases"
+else
+    fail "LR03: reload plan" "$(diff <(echo "$_lr_want") <(echo "$_lr_out") | head -20)"
+fi
+
+# LR04. State files keep empty fields and odd paths; the guard's view of
+# a state file honours MOUNT_GUARD_REBIND=false; a change in non-mount
+# launch config is reported as "needs restart".
+_lr_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    set +e
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    _MG_KIND=(rw ro mask); _MG_PATH=(/a "/b c" /d); _MG_POLICY=(1 0 1); _MG_HOW=(rw "" null)
+    _MG_FTYPE=(d "" f); _MG_UID=(1000 "" 1000); _MG_ORIGIN=()
+    _mg_dump_state "$_T/s" || echo DUMP-FAILED
+    _mg_load_state "$_T/s"
+    echo "rt=${#_MG_PATH[@]}:${_MG_PATH[1]}:[${_MG_HOW[1]}]:[${_MG_FTYPE[1]}]:[${_MG_UID[1]}]:${_MG_ORIGIN[0]}:${_MG_HOW[2]}"
+    MOUNT_GUARD_REBIND=false _mg_load_state "$_T/s" guard
+    echo "norebind=[${_MG_HOW[0]}][${_MG_HOW[2]}]"
+    _US=$'\x1f'
+    printf 'HOME_ACCESS%sdeclare -- HOME_ACCESS="read" \nPRIVATE_TMP%sdeclare -- PRIVATE_TMP="true" \n' "$_US" "$_US" > "$_T/old"
+    printf 'HOME_ACCESS%sdeclare -- HOME_ACCESS="write" \nPRIVATE_TMP%sdeclare -- PRIVATE_TMP="true" \n' "$_US" "$_US" > "$_T/new"
+    echo "env=$(_reload_env_diff "$_T/old" "$_T/new" | tr "$_US" '|')"
+    echo "same=[$(_reload_env_diff "$_T/old" "$_T/old")]"
+    X_LR_PROBE=1; _a="$(declare -p X_LR_PROBE | sed -E 's/^declare -[-a-zA-Z]+ /declare -- /')"
+    export X_LR_PROBE; _b="$(declare -p X_LR_PROBE | sed -E 's/^declare -[-a-zA-Z]+ /declare -- /')"
+    echo "flags=[$([[ "$_a" == "$_b" ]] && echo same)]"
+)"
+_lr_want=$'rt=3:/b c:[]:[]:[]:launch:null\nnorebind=[][null]\nenv=RESTART|HOME_ACCESS changed (was: HOME_ACCESS=\"read\" ; now: HOME_ACCESS=\"write\" ); environment and process-level settings cannot reach a running session\nsame=[]\nflags=[same]'
+if [[ "$_lr_out" == "$_lr_want" ]]; then
+    pass "LR04: state files round-trip empty fields; the guard drops rebinding when disabled; launch-config changes need a restart"
+else
+    fail "LR04: state files / env diff" "got: $_lr_out"
+fi
+
+# LR04b. The guard pauses while a reload applies (marker = reloader pid +
+# start time, stale once that process is gone); only bwrap sessions are
+# registered (landlock/firejail cannot hide the registry from the agent).
+_lr_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    _SESS_DIR="$_T"
+    printf '%s %s\n' "$$" "$(_proc_starttime "$$")" > "$_T/reloading"
+    _sess_reload_busy && echo -n "live=busy " || echo -n "live=idle "
+    printf '%s %s\n' "$$" "1" > "$_T/reloading"
+    _sess_reload_busy && echo -n "wrongstart=busy " || echo -n "wrongstart=idle "
+    printf '%s %s\n' "999999999" "1" > "$_T/reloading"
+    _sess_reload_busy && echo -n "dead=busy " || echo -n "dead=idle "
+    rm -f "$_T/reloading"
+    _sess_reload_busy && echo -n "none=busy " || echo -n "none=idle "
+    _SESS_BASE="$_T/base"; mkdir -m 700 "$_SESS_BASE"
+    SANDBOX_BACKEND=landlock; _sess_register "$_T" "" && echo -n "landlock=registered" || echo -n "landlock=skipped"
+)"
+if [[ "$_lr_out" == "live=busy wrongstart=idle dead=idle none=idle landlock=skipped" ]]; then
+    pass "LR04b: the reload marker pauses the guard only while its reloader lives; non-bwrap sessions are not registered"
+else
+    fail "LR04b: reload marker / registration" "got: $_lr_out"
+fi
+
+# LR05/LR06 need a real bwrap namespace with unprivileged user namespaces.
+if is_bwrap && command -v python3 >/dev/null 2>&1 && [[ -f "$SCRIPT_DIR/backends/mount-repair.py" ]] \
+   && bwrap --ro-bind / / true >/dev/null 2>&1; then
+    # LR05. A running session is registered where the sandbox has no path,
+    # and nothing inside can reach the host processes a reload signals:
+    # the registry directory does not exist in the sandbox and the
+    # launcher's pid is not addressable from its pid namespace.
+    _lr_t="$(mktemp -d)"; trap_rm_dir "$_lr_t"
+    mkdir -m 700 "$_lr_t/xdg"
+    _lr_pidf="$PROJECT_DIR/.test-lr-pid-$$"; _lr_res="$PROJECT_DIR/.test-lr-res-$$"; _lr_go="$PROJECT_DIR/.test-lr-go-$$"
+    _TEST_TEMP_FILES+=("$_lr_pidf" "$_lr_res" "$_lr_go"); rm -f "$_lr_pidf" "$_lr_res" "$_lr_go"
+    XDG_RUNTIME_DIR="$_lr_t/xdg" MOUNT_GUARD_INTERVAL=1 "$SANDBOX_EXEC" --backend bwrap --project-dir "$PROJECT_DIR" -- bash -c '
+        for i in $(seq 1 150); do [[ -s "$1" && -e "$4" ]] && break; sleep 0.2; done
+        L=$(cat "$1")
+        { ls "$2"/sessions/*/session 2>&1; kill -0 "$L" 2>&1; echo "kill-rc=$?"
+          for p in /proc/[0-9]*; do [[ "${p#/proc/}" == "$L" ]] && echo VISIBLE-LAUNCHER; done; } > "$3"' \
+        _ "$_lr_pidf" "$_lr_t/xdg/agent-sandbox" "$_lr_res" "$_lr_go" >"$_lr_t/l5.out" 2>"$_lr_t/l5.err" &
+    _lr_l=$!
+    echo "$_lr_l" > "$_lr_pidf"
+    _lr_rec=""
+    for _i in $(seq 1 100); do
+        _lr_rec="$(compgen -G "$_lr_t/xdg/agent-sandbox/sessions/*/session" | head -n1)"
+        [[ -n "$_lr_rec" ]] && break; sleep 0.2
+    done
+    _lr_rec_ok=no
+    if [[ -n "$_lr_rec" ]] && grep -q "^launcher_pid=$_lr_l\$" "$_lr_rec" && grep -q '^backend=bwrap$' "$_lr_rec" \
+       && [[ "$(stat -c %a "${_lr_rec%/*}")" == 700 ]]; then _lr_rec_ok=yes; fi
+    # The record only exists while the session runs: the sandbox's command
+    # was held until it had been looked at; let it probe and exit now.
+    : > "$_lr_go"
+    for _i in $(seq 1 100); do [[ -e "$_lr_res" ]] && break; sleep 0.2; done
+    wait "$_lr_l" 2>/dev/null
+    _lr_r="$(cat "$_lr_res" 2>/dev/null)"
+    _lr_after="$(XDG_RUNTIME_DIR="$_lr_t/xdg" "$SANDBOX_EXEC" sessions 2>&1)"
+    if [[ "$_lr_rec_ok" != yes ]]; then
+        fail "LR05: the launch did not register a 0700 session record" "rec=$_lr_rec err=$(cat "$_lr_t/l5.err")"
+    elif [[ "$_lr_r" == *"No such file"* && "$_lr_r" == *"No such process"* && "$_lr_r" == *"kill-rc=1"* \
+            && "$_lr_r" != *VISIBLE-LAUNCHER* ]]; then
+        pass "LR05: the session record is not visible in the sandbox and the launcher pid is not reachable from it"
+    else
+        fail "LR05: sandbox can see the registry or the launcher" "result: $_lr_r"
+    fi
+    if [[ "$_lr_after" == "No live sandbox sessions." ]]; then
+        pass "LR05b: the record of an ended session is gone (or pruned)"
+    else
+        fail "LR05b: record of an ended session still listed" "$_lr_after"
+    fi
+
+    # LR06. End to end: a running sandbox gets two directories added
+    # writable by a config change and `reload`; one of them has a file open
+    # for writing. Revoking both: the free one becomes read-only, the busy
+    # one reports BUSY and stays writable, --force-detach then detaches it.
+    _lr_t="$(mktemp -d)"; trap_rm_dir "$_lr_t"
+    mkdir -m 700 "$_lr_t/xdg" "$_lr_t/e1" "$_lr_t/e2"
+    _lr_flag="$_lr_t/flag"; _lr_log="$PROJECT_DIR/.test-lr-log-$$"
+    _lr_conf="$HOME/.config/agent-sandbox/conf.d/zz-test-reload-sess-$$.conf"
+    _TEST_TEMP_FILES+=("$_lr_conf" "$_lr_log"); rm -f "$_lr_log"
+    mkdir -p "$HOME/.config/agent-sandbox/conf.d"
+    printf '[[ "$_PROJECT_DIR" == "%s" ]] || return 0\nREADONLY_MOUNTS+=("%s" "%s")\nif [[ -f "%s" ]]; then EXTRA_WRITABLE_PATHS+=("%s" "%s"); fi\ntrue\n' \
+        "$_ml_proj" "$_lr_t/e1" "$_lr_t/e2" "$_lr_flag" "$_lr_t/e1" "$_lr_t/e2" > "$_lr_conf"
+    XDG_RUNTIME_DIR="$_lr_t/xdg" MOUNT_GUARD_INTERVAL=1 timeout 170 "$SANDBOX_EXEC" --backend bwrap --project-dir "$PROJECT_DIR" -- bash -c '
+        held=0
+        for i in $(seq 1 500); do
+            a=E; b=E
+            : > "$1/p" 2>/dev/null && a=W
+            : > "$2/p" 2>/dev/null && b=W
+            if [[ $b == W && $held == 0 ]]; then exec 9>>"$2/held"; held=1; fi
+            echo "$a$b" >> "$3"
+            sleep 0.3
+        done' _ "$_lr_t/e1" "$_lr_t/e2" "$_lr_log" >"$_lr_t/l6.out" 2>"$_lr_t/l6.err" &
+    _lr_l=$!
+    _lr_last() { tail -n1 "$_lr_log" 2>/dev/null; }
+    # Wait until the log's last line has been $1 for three samples (0.9 s).
+    _lr_settle() {
+        local want="$1" n=0 i
+        for i in $(seq 1 120); do
+            if [[ "$(_lr_last)" == "$want" ]]; then n=$((n + 1)); else n=0; fi
+            [[ $n -ge 3 ]] && return 0
+            sleep 0.3
+        done
+        return 1
+    }
+    _lr_reload() { XDG_RUNTIME_DIR="$_lr_t/xdg" MOUNT_GUARD_INTERVAL=1 timeout 60 "$SANDBOX_EXEC" reload --project "$_ml_proj" "$@" 2>&1; }
+    _lr_ok=true; _lr_why=""
+    _lr_fin() { _lr_ok=false; _lr_why+="$* | "; }
+    for _i in $(seq 1 100); do compgen -G "$_lr_t/xdg/agent-sandbox/sessions/*/ns" >/dev/null && break; sleep 0.2; done
+    _lr_settle EE || _lr_fin "initial state not EE (last=$(_lr_last))"
+    touch "$_lr_flag"
+    _lr_o="$(_lr_reload --dry-run)"; _lr_c=$?
+    sleep 1.5
+    if [[ $_lr_c -ne 0 || "$_lr_o" != *"writable bind"*"$_lr_t/e1"* || "$_lr_o" != *"$_lr_t/e2"* || "$(_lr_last)" != EE ]]; then
+        _lr_fin "dry-run rc=$_lr_c last=$(_lr_last) out=$_lr_o"
+    fi
+    _lr_o="$(_lr_reload)"; _lr_c=$?
+    _lr_settle WW || _lr_fin "add: not WW (last=$(_lr_last)) rc=$_lr_c out=$_lr_o"
+    [[ $_lr_c -eq 0 && "$_lr_o" == *"mounted  $_lr_t/e1"* && "$_lr_o" == *"now guarding the new set"* ]] \
+        || _lr_fin "add: rc=$_lr_c out=$_lr_o"
+    rm -f "$_lr_flag"
+    _lr_o="$(_lr_reload)"; _lr_c=$?
+    _lr_settle EW || _lr_fin "revoke: not EW (last=$(_lr_last)) rc=$_lr_c out=$_lr_o"
+    [[ $_lr_c -eq 3 && "$_lr_o" == *"revoked  $_lr_t/e1"* && "$_lr_o" == *"BUSY"*"$_lr_t/e2"* ]] \
+        || _lr_fin "revoke: rc=$_lr_c out=$_lr_o"
+    _lr_o="$(_lr_reload --force-detach)"; _lr_c=$?
+    _lr_settle EE || _lr_fin "force-detach: not EE (last=$(_lr_last)) rc=$_lr_c out=$_lr_o"
+    [[ $_lr_c -eq 0 && "$_lr_o" == *"detached although files are open"* ]] || _lr_fin "force-detach: rc=$_lr_c out=$_lr_o"
+    _lr_o="$(_lr_reload)"; _lr_c=$?
+    [[ $_lr_c -eq 0 && "$_lr_o" == *"Nothing to do"* ]] || _lr_fin "settled: rc=$_lr_c out=$_lr_o"
+    kill "$_lr_l" 2>/dev/null; wait "$_lr_l" 2>/dev/null
+    if $_lr_ok; then
+        pass "LR06: reload adds writable binds to a running sandbox, revokes them read-only, reports BUSY, and --force-detach detaches"
+    elif [[ ! -s "$_lr_log" ]]; then
+        skip "LR06: throwaway sandbox did not come up ($(head -c 300 "$_lr_t/l6.err"))"
+    else
+        fail "LR06: live reload end to end" "$_lr_why"
+    fi
+    unset -f _lr_last _lr_settle _lr_reload _lr_fin
+    rm -f "$_lr_conf"
+else
+    skip "LR05: needs bwrap with unprivileged user namespaces and python3"
+    skip "LR06: needs bwrap with unprivileged user namespaces and python3"
+fi
+unset _lr_out _lr_want _lr_t _lr_o _lr_c _lr_pidf _lr_res _lr_go _lr_l _lr_rec _lr_rec_ok _lr_r _lr_after _lr_flag _lr_log _lr_conf _lr_ok _lr_why
 # ── H01: Hardlink /etc/passwd into project dir ──
 local _hlink="$PROJECT_DIR/.test-passwd-hardlink-$$"
 if ln /etc/passwd "$_hlink" 2>/dev/null; then
@@ -7603,6 +8217,17 @@ if [[ -f "$SCRIPT_DIR/sandbox-tmux.conf" ]]; then
     pass "sandbox-tmux.conf present"
 else
     fail "sandbox-tmux.conf missing"
+fi
+# bin/tmux per-call logic (TERM fallback, binary selection), run on
+# the host against fake binaries.
+if [[ -f "$SCRIPT_DIR/tests/test_tmux_wrapper.sh" ]]; then
+    if _tw_out=$(bash "$SCRIPT_DIR/tests/test_tmux_wrapper.sh" 2>&1); then
+        pass "tmux wrapper: TERM fallback and binary selection (regression)"
+    else
+        fail "tmux wrapper: TERM fallback and binary selection (regression)" "$_tw_out"
+    fi
+else
+    skip "tests/test_tmux_wrapper.sh not present"
 fi
 
 # ── sandbox-notify ──────────────────────────────────────────────

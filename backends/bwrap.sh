@@ -841,6 +841,15 @@ backend_prepare() {
         BWRAP_ARGS+=(--ro-bind "$_MAIL_BLOCK_STUBS_DIR" "$_MAIL_BLOCK_STUBS_DIR")
     fi
 
+    # Live-session registry (sandbox-lib.sh §Live sessions). The default
+    # location under $XDG_RUNTIME_DIR is hidden by the `--tmpfs /run`
+    # above. A registry anywhere else (the $HOME fallback when there is no
+    # XDG_RUNTIME_DIR) would be visible, and with a writable $HOME writable:
+    # an empty tmpfs hides it. Placed late so no earlier bind shows it.
+    if [[ -n "${_SESS_BASE:-}" && -d "${_SESS_BASE:-}" && "${_SESS_BASE:-}" != /run/* ]]; then
+        BWRAP_ARGS+=(--tmpfs "$_SESS_BASE")
+    fi
+
 
     # Agent-specific environment exports (e.g., CLAUDE_CONFIG_DIR)
     for _agent_export in "${_AGENT_ENV_EXPORTS[@]}"; do

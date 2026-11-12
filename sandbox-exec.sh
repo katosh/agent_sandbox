@@ -12,6 +12,12 @@
 #                             at launch if they're still empty on exit.
 #   --help                    Show this help
 #
+# Subcommands (host side; first argument):
+#   sessions                  List live sandbox sessions
+#   reload [ID | --project DIR] [--dry-run] [--force-detach]
+#                             Apply a config change to a running bwrap
+#                             session (see `reload --help`)
+#
 # Examples:
 #   sandbox-exec.sh -- claude                        # Claude Code sandboxed
 #   sandbox-exec.sh -- bash                          # interactive shell
@@ -23,6 +29,10 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 PROJECT_DIR=""
 DRY_RUN=false
+# Internal (used by `reload`): load the config and build the mounts as a
+# launch would, write the desired mount state to this directory, exit.
+PLAN_OUT=""
+PLAN_CHAPERON_DIR=""
 BACKEND_OVERRIDE=""
 CLEANUP_MATERIALIZED_FLAG=""
 
@@ -43,14 +53,43 @@ usage() {
     echo "  --version                 Show version"
     echo "  --help                    Show this help"
     echo ""
+    echo "Subcommands:"
+    echo "  sessions                  List the live sandbox sessions of this user"
+    echo "  reload [ID | --project DIR] [--dry-run] [--force-detach]"
+    echo "                            Apply a config change to a running bwrap session"
+    echo "                            without restarting it (see: reload --help)"
+    echo ""
     echo "Examples:"
     echo "  sandbox-exec.sh -- claude              # Claude Code in sandbox"
     echo "  sandbox-exec.sh -- bash                # interactive shell"
     echo "  sandbox-exec.sh --backend landlock -- cmd  # force Landlock"
 }
 
+# Host-side subcommands. Only as the very first argument, so a program
+# of that name is still reachable after `--`. They never start a sandbox:
+# the library is loaded without its config phases (see the harness switch
+# in sandbox-lib.sh) and each subcommand re-runs the launch-time config
+# load in a child where it needs one.
+case "${1:-}" in
+    sessions|reload)
+        _SANDBOX_LIB_NO_INIT=1
+        # shellcheck source=sandbox-lib.sh
+        source "$SCRIPT_DIR/sandbox-lib.sh"
+        _sess_cli "$@" || exit $?
+        exit 0
+        ;;
+esac
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --plan-out)
+            PLAN_OUT="$2"
+            shift 2
+            ;;
+        --plan-chaperon-dir)
+            PLAN_CHAPERON_DIR="$2"
+            shift 2
+            ;;
         --project-dir)
             PROJECT_DIR="$2"
             shift 2
@@ -213,7 +252,9 @@ prepare_agent_configs "$PROJECT_DIR"
 # materializing anything, so a concurrent launch's
 # --cleanup-materialized never deletes a placeholder this sandbox is
 # about to mount over (see sandbox-lib.sh §Live-launch registry).
-_register_live_launch
+if [[ -z "$PLAN_OUT" ]]; then
+    _register_live_launch
+fi
 
 # Materialize BLOCKED_FILES placeholders, warn on each one we created,
 # and track them so the EXIT trap can optionally clean up post-exit.
@@ -238,7 +279,9 @@ fi
 # survives into this one. Fail closed. Runs before the per-launch /tmp
 # dirs below are created, so a refusal leaves nothing behind. See
 # sandbox-lib.sh §.sandbox-state/ for the threat model.
-_prepare_sandbox_state_dir "$PROJECT_DIR" "$SANDBOX_BACKEND" || exit 1
+if [[ -z "$PLAN_OUT" ]]; then
+    _prepare_sandbox_state_dir "$PROJECT_DIR" "$SANDBOX_BACKEND" || exit 1
+fi
 
 # ── Chaperon: create FIFO directory ───────────────────────────────
 # Create the FIFO directory BEFORE backend_prepare so backends can
@@ -326,7 +369,14 @@ _prune_stale_launch_dirs() {
 }
 _prune_stale_launch_dirs
 
-if [[ -x "$SCRIPT_DIR/chaperon/chaperon.sh" ]]; then
+if [[ -n "$PLAN_OUT" ]]; then
+    # Plan mode (reload): the running session's chaperon dir, so the
+    # backend builds the same bind list. Nothing is created or removed.
+    if [[ -n "$PLAN_CHAPERON_DIR" && "${PLAN_CHAPERON_DIR##*/}" == chaperon-* \
+          && -d "$PLAN_CHAPERON_DIR" && ! -L "$PLAN_CHAPERON_DIR" ]]; then
+        export _CHAPERON_FIFO_DIR="$PLAN_CHAPERON_DIR"
+    fi
+elif [[ -x "$SCRIPT_DIR/chaperon/chaperon.sh" ]]; then
     _CHAPERON_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chaperon-XXXXXX")"
     chmod 700 "$_CHAPERON_DIR"
     _tag_launch_dir "$_CHAPERON_DIR"
@@ -366,6 +416,15 @@ if [[ ${#_SANDBOX_CHILD_ENV[@]} -gt 0 ]]; then
     unset _child_env _env_entry _env_name _env_is_agent _agent_export _env_bin
 fi
 
+# Live-session registry directory: resolved (and created) before the
+# backend runs, because the bwrap backend masks it when it would be
+# visible inside the sandbox (sandbox-lib.sh §Live sessions).
+if [[ "$DRY_RUN" == true || -n "$PLAN_OUT" ]]; then
+    _sess_prepare_base nocreate
+else
+    _sess_prepare_base
+fi
+
 # Prepare sandbox (reads _CHAPERON_FIFO_DIR for bind-mounts)
 backend_prepare "$PROJECT_DIR"
 _tag_launch_dir "${_NETWORK_PROXY_DIR:-}"
@@ -383,6 +442,16 @@ if [[ -n "$_CHAPERON_DIR" ]] && ! _is_true "${PRIVATE_TMP:-true}" \
             echo "sandbox: WARNING — PRIVATE_TMP=false: this session's chaperon FIFO ($_CHAPERON_DIR) and helper sockets are in the shared host /tmp; other sandboxes run by the same user can reach them and submit Slurm jobs through this session's chaperon. Keep PRIVATE_TMP=true unless you need a shared /tmp." >&2
             ;;
     esac
+fi
+
+if [[ -n "$PLAN_OUT" ]]; then
+    # Reload's planning child: write the mounts and non-mount config this
+    # launch WOULD have, then clean up what backend_prepare staged.
+    _plan_rc=0
+    _sess_plan_dump "$PROJECT_DIR" "$PLAN_OUT" || _plan_rc=$?
+    backend_dry_run "$@" >/dev/null 2>&1 || true
+    [[ -n "${_NETWORK_PROXY_DIR:-}" ]] && rm -rf "$_NETWORK_PROXY_DIR"
+    exit "$_plan_rc"
 fi
 
 if [[ "$DRY_RUN" == true ]]; then
@@ -451,6 +520,10 @@ if [[ -n "${_NETWORK_PROXY_DIR:-}" ]]; then
     fi
 fi
 
+# Record this launch for `agent-sandbox sessions` / `reload` (the chaperon
+# removes the record when the session ends). Not fatal.
+_sess_register "$PROJECT_DIR" "$_CHAPERON_DIR" || true
+
 # Start chaperon in background.
 # stdout → /dev/null so the chaperon doesn't hold the parent's output
 # pipes open (otherwise $() subshells block until the chaperon exits).
@@ -498,6 +571,7 @@ if [[ -n "$_CHAPERON_DIR" ]]; then
     SLURM_SCOPE="$SLURM_SCOPE" \
     CHAPERON_LOG_LEVEL="$CHAPERON_LOG_LEVEL" \
     CHAPERON_LOG_RETAIN_DAYS="$CHAPERON_LOG_RETAIN_DAYS" \
+    CHAPERON_SESSION_DIR="${_SESS_DIR:-}" \
     SANDBOX_QUIET="$SANDBOX_QUIET" \
         "$SCRIPT_DIR/chaperon/chaperon.sh" \
         "$_CHAPERON_DIR" "$PROJECT_DIR" "$SCRIPT_DIR/sandbox-exec.sh" \
@@ -505,6 +579,8 @@ if [[ -n "$_CHAPERON_DIR" ]]; then
         ${_MAIL_BLOCK_STUBS_DIR:+"$_MAIL_BLOCK_STUBS_DIR"} \
         >/dev/null 2>"$_CHAPERON_DIR/chaperon.err" &
     _CHAPERON_PID=$!
+    _sess_set "chaperon_pid=$_CHAPERON_PID" \
+        "chaperon_start=$(_proc_starttime "$_CHAPERON_PID" 2>/dev/null)" 2>/dev/null || true
 fi
 
 # Clean up chaperon + proxy on exit — backend_exec does exec, so this
@@ -540,6 +616,7 @@ _sandbox_cleanup() {
     if [[ -n "${_MOUNT_GUARD_PID:-}" ]]; then
         kill "$_MOUNT_GUARD_PID" 2>/dev/null || true
     fi
+    _sess_remove
 }
 trap _sandbox_cleanup EXIT
 
