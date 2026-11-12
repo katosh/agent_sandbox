@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`filtered` network mode no longer kills the launch on hosts with a low
+  open-files limit.** In filtered mode pasta listens on every
+  non-excluded TCP and UDP port, about 65k sockets each. On a host whose
+  `RLIMIT_NOFILE` hard limit is below ~140000 (65536 on current GitHub
+  runners) pasta exited with `Couldn't listen on requested TCP ports` and
+  `sandbox-exec.sh` failed to start at all. The start-up probe now uses
+  the same full-range spec, so such a host degrades `filtered` and the
+  `NETWORK_FILTER_FALLBACK` policy applies, with the reason naming the
+  limit. Any other pasta start-up failure degrades the same way.
 - **`sbatch` of a batch script larger than 128 KiB.** Linux caps a single
   argv or environment string at `MAX_ARG_STRLEN` (128 KiB). The sbatch
   stub exported the script body, so every later exec in the stub failed

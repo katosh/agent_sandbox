@@ -9071,6 +9071,55 @@ else
     fail "Network filter: pasta forwarding probe test failed (rc=$?)"
 fi
 
+# Pasta start-up probe uses the full-range spec. In filtered mode pasta
+# listens on every non-excluded TCP and UDP port (~65k sockets each), so a
+# host whose open-files hard limit is too low (65536 on GitHub runners)
+# kills the launch with "Couldn't listen on requested TCP ports". The probe
+# must see that and degrade filtered (so the fallback policy applies)
+# instead of letting the launch fail. A pasta that fails for any other
+# reason must degrade too; a healthy one must not.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1 SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    set +e
+    _d="$(mktemp -d "${TMPDIR:-/tmp}/pasta-probe.XXXXXX")"
+    trap 'rm -rf "$_d"' EXIT
+    # Fake pasta: fails like the real one unless the spec is small.
+    cat >"$_d/pasta_nofile" <<'STUB'
+#!/usr/bin/env bash
+for _a in "$@"; do
+    if [[ "$_a" == "~25" ]]; then
+        echo "L4 socket: Too many open files" >&2
+        echo "Couldn't listen on requested TCP ports" >&2
+        exit 1
+    fi
+done
+exit 0
+STUB
+    printf '#!/usr/bin/env bash\necho "something else broke" >&2\nexit 3\n' >"$_d/pasta_weird"
+    printf '#!/usr/bin/env bash\necho "Cannot run AVX2 build, using non-AVX2 version" >&2\nexit 0\n' >"$_d/pasta_ok"
+    chmod 755 "$_d"/pasta_*
+    _NETWORK_HELPER_DEGRADED_REASON=""
+    _pasta_can_forward_outbound "$_d/pasta_nofile" \
+        && { echo "full-range listen failure not detected"; exit 1; }
+    [[ "$_NETWORK_HELPER_PROBE_RESULT" == degraded && "$_NETWORK_HELPER_DEGRADED_REASON" == *"nofile hard limit"* ]] \
+        || { echo "nofile case: result='$_NETWORK_HELPER_PROBE_RESULT' reason='$_NETWORK_HELPER_DEGRADED_REASON'"; exit 1; }
+    _NETWORK_HELPER_DEGRADED_REASON=""
+    _pasta_can_forward_outbound "$_d/pasta_weird" \
+        && { echo "generic start-up failure not detected"; exit 1; }
+    [[ "$_NETWORK_HELPER_DEGRADED_REASON" == *"something else broke"* ]] \
+        || { echo "weird case reason='$_NETWORK_HELPER_DEGRADED_REASON'"; exit 1; }
+    _pasta_can_forward_outbound "$_d/pasta_ok" \
+        || { echo "healthy pasta (rc 0, harmless stderr) wrongly degraded"; exit 1; }
+    [[ "$_NETWORK_HELPER_PROBE_RESULT" == ok ]] || { echo "healthy: result='$_NETWORK_HELPER_PROBE_RESULT'"; exit 1; }
+    exit 0
+); then
+    pass "Network filter: pasta probe degrades filtered when pasta cannot bind its full port range (low nofile) or fails to start"
+else
+    fail "Network filter: pasta full-range probe test failed"
+fi
+
 # Mode resolution failure paths exit the parent process via _network_filter_fail.
 # Exercise the strict-fails path in a subshell. Use landlock as the
 # deterministically-unsupported backend (landlock has no netns at all,

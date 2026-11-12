@@ -2047,8 +2047,26 @@ _pasta_can_forward_outbound() {
     # host config; the happy path exits in ~50ms. `|| true` is load-
     # bearing under `set -e` — we only care about the stderr text, not
     # pasta's exit code.
-    local _stderr
-    _stderr="$(timeout 5 "$_pasta" --foreground --quiet -- true 2>&1 1>/dev/null)" || true
+    #
+    # The probe uses a full-range port spec (`-T ~25 -U ~25`: every port
+    # but one) because that is what a real filtered launch asks pasta for:
+    # it listens on each non-excluded port, about 65k sockets per protocol.
+    # A host whose RLIMIT_NOFILE hard limit is below ~140000 (65536 on
+    # GitHub runners, 4096 on some login nodes) makes pasta die with
+    # "Couldn't listen on requested TCP ports", and a launch would fail
+    # outright, not fall back. Probing without the spec missed that.
+    local _stderr _rc=0
+    _stderr="$(timeout 10 "$_pasta" --foreground --quiet -T '~25' -U '~25' -- true 2>&1 1>/dev/null)" || _rc=$?
+    if (( _rc != 0 )) && [[ "$_stderr" == *"listen"* || "$_stderr" == *"Too many open files"* ]]; then
+        _NETWORK_HELPER_PROBE_RESULT="degraded"
+        _NETWORK_HELPER_DEGRADED_REASON="pasta cannot bind its full port range on this host (open-files hard limit is $(ulimit -Hn); filtered mode needs about 140000: pasta listens on every non-excluded TCP and UDP port). Workarounds: (a) admin raises the nofile hard limit (limits.conf / systemd LimitNOFILE) to >= 262144; (b) pin NETWORK_FILTER_MODE=proxied, 'isolated' or 'open' to make the choice explicit."
+        return 1
+    fi
+    if (( _rc != 0 )) && [[ "$_stderr" != *"forwarding only 127.0.0.1"* ]]; then
+        _NETWORK_HELPER_PROBE_RESULT="degraded"
+        _NETWORK_HELPER_DEGRADED_REASON="pasta failed its start-up probe (exit $_rc): $(printf '%s' "$_stderr" | grep -v 'AVX2' | head -n1 | cut -c1-200). filtered mode cannot launch on this host; pin NETWORK_FILTER_MODE=proxied, 'isolated' or 'open' to make the choice explicit."
+        return 1
+    fi
     if [[ "$_stderr" == *"forwarding only 127.0.0.1"* ]]; then
         _NETWORK_HELPER_PROBE_RESULT="degraded"
         _NETWORK_HELPER_DEGRADED_REASON="pasta started but degraded to loopback-only forwarding (kernel SO_BINDTODEVICE unavailable to unprivileged users on this host); filtered mode would silently leave the agent with no outbound. Workarounds: (a) admin runs 'setcap cap_net_raw+ep $_pasta' on a system-wide pasta binary; (b) upgrade to kernel >= 5.7 with the SO_BINDTODEVICE relaxation; (c) pin NETWORK_FILTER_MODE=open or 'isolated' to make the choice explicit."
