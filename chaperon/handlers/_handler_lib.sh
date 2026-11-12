@@ -1804,7 +1804,10 @@ chmod +x "$_t"
             # Wrap the runner in single quotes for the bash -c argument
             # by escaping any embedded single quotes ('\'').
             local runner_q="${runner//\'/\'\\\'\'}"
-            printf '_chunks=(); _o=0; while (( _o < ${#_SCRIPT} )); do _chunks+=("${_SCRIPT:_o:16384}"); _o=$(( _o + 16384 )); done\n'
+            # `declare` first on each line: the wrapper may run only builtins
+            # before the exec (test 6.7c checks the first word of every line).
+            printf 'declare -a _chunks=()\ndeclare -i _o=0\n'
+            printf 'while (( _o < ${#_SCRIPT} )); do _chunks+=("${_SCRIPT:_o:16384}"); (( _o += 16384 )); done\n'
             printf 'exec %q --project-dir %q -- %sbash -c '"'"'%s'"'"' _chaperon_runner "${#_chunks[@]}" "${_chunks[@]}"%s\n' \
                 "$sandbox_exec" "$project_dir" "$_env_prefix" "$runner_q" "$quoted_script_args"
         fi
