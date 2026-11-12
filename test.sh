@@ -5658,6 +5658,123 @@ _h67_chap_test() {
 _h67_chap_test
 unset -f _h67_chap_test
 
+# 6.7i2. Batch scripts larger than MAX_ARG_STRLEN. Linux caps a single
+# argv or environment string at 128 KiB. The sbatch stub exported the
+# script body, so every later exec failed with E2BIG ("mktemp: Argument
+# list too long", rc 127), and it handed the whole request (base64
+# script included, 4/3 of its size) to the FIFO writer as one argument,
+# which failed from about 96 KiB as "chaperon is not responding". On the
+# compute node, the non-shell wrapper passed the body to its runner as
+# one argument, so a large python/awk/... script failed at job start.
+_h67_mkscript() {  # <file> <bytes>: deterministic shell script of that size
+    { printf '#!/bin/bash\n'
+      awk -v n="$2" 'BEGIN { s = 12; i = 0; while (s < n) { l = sprintf("echo line %07d abcdefghijklmnopqrstuvwxyz0123456789\n", i++); s += length(l); printf "%s", l } }'
+    } | head -c "$2" > "$1"
+}
+_h67_oddscript() {  # <file> [shebang]: CR, invalid UTF-8, protocol keywords, a NUL byte
+    { printf '%s\n' "${2:-#!/bin/bash}"
+      printf 'echo "cr\r"\n'
+      printf "echo 'high \xff\xfe bad-utf8 \xc3\x28'\n"
+      printf 'END\nSCRIPT x\nRESP_FIFO /x\n'
+      printf 'echo "q\x27 \\\\ $(echo hi) \t tab"\n'
+      printf 'echo nul-here:\x00:after\n'
+    } > "$1"
+}
+
+# (a) The real stub against a fake chaperon that parses the request with
+# protocol.sh. Each script must arrive exactly as `$(cat file)` reads it
+# (the stub's capture): 200 KiB, a 64 KiB control, and odd bytes. A NUL
+# byte is dropped with a bash warning, as before (a bash variable cannot
+# hold one).
+_h67_big_stub() {
+    local _root="$_H67_DIR/big-stub" _f _fifo _rp _out _rc _exp _bad=0
+    mkdir -p "$_root"
+    _h67_mkscript "$_root/s200k.sh" 204800
+    _h67_mkscript "$_root/s064k.sh" 65536
+    _h67_oddscript "$_root/odd.sh"
+    for _f in s200k s064k odd; do
+        _fifo="$(mktemp -d "$_root/fifo-XXXXXX")"; chmod 700 "$_fifo"; mkfifo -m 600 "$_fifo/req"
+        (
+            source "$SCRIPT_DIR/chaperon/protocol.sh"
+            exec 3<>"$_fifo/req"
+            chaperon_read_request 3 || exit 1
+            printf '%s' "$REQ_SCRIPT" > "$_root/$_f.got"
+            exec 4>"$REQ_RESP_FIFO"
+            chaperon_send_response 4 0 "$(printf 'Submitted batch job 1\n' | chaperon_b64_encode)" ""
+        ) &
+        _rp=$!
+        _out="$(cd "$_root" && env -i PATH="$PATH" HOME="$_root" _CHAPERON_FIFO_DIR="$_fifo" \
+            timeout 60 bash "$SCRIPT_DIR/chaperon/stubs/sbatch" "./$_f.sh" 2>"$_root/$_f.err")"
+        _rc=$?
+        kill "$_rp" 2>/dev/null; wait "$_rp" 2>/dev/null
+        { _exp="$(cat "$_root/$_f.sh")"; } 2>/dev/null
+        if [[ $_rc -ne 0 || "$_out" != "Submitted batch job 1" ]] \
+           || ! cmp -s <(printf '%s' "$_exp") "$_root/$_f.got"; then
+            echo "$_f: rc=$_rc out=[$_out] err=[$(head -c 300 "$_root/$_f.err")]"
+            _bad=1
+        fi
+    done
+    return $_bad
+}
+if _h67_out="$(_h67_big_stub 2>&1)"; then
+    pass "sbatch stub sends a 200 KiB script, a 64 KiB control and odd bytes intact (no E2BIG; NUL dropped as before)"
+else
+    fail "sbatch stub: large or odd script not delivered intact" "$_h67_out"
+fi
+unset -f _h67_big_stub
+
+# (b) The real job wrapper, built by create_wrapped_script and run against
+# a stub sandbox-exec.sh that just executes its command. `/bin/cat` as the
+# interpreter takes the non-shell path and prints the materialised file
+# byte for byte: 200 KiB, a 64 KiB control, and odd bytes under a UTF-8
+# locale (grep without -a turned an invalid-UTF-8 line into "Binary file
+# (standard input) matches"). A 200 KiB awk program checks that the
+# positionals and the job's stdin (sbatch --input) still reach it.
+_h67_big_wrapper() {
+    local _T="$_H67_DIR/big-wrapper" _f _bad=0 _o
+    mkdir -p "$_T"
+    printf '#!/bin/bash\nshift 3\nexec "$@"\n' > "$_T/sbx"; chmod +x "$_T/sbx"
+    printf 'stdin-line-1\n' > "$_T/stdin.txt"
+    { printf '#!/bin/cat\n'; _h67_mkscript /dev/stdout 204800 | tail -c +13; } > "$_T/cat-200k"
+    { printf '#!/bin/cat\n'; _h67_mkscript /dev/stdout 65536 | tail -c +13; } > "$_T/cat-064k"
+    _h67_oddscript "$_T/cat-odd" '#!/bin/cat'
+    { printf '#!/usr/bin/awk -f\n'
+      printf '%s\n' 'BEGIN { getline l < "-"; print "awk-ran argv=" ARGV[1] "," ARGV[2] " stdin=" l; exit }'
+      _h67_mkscript /dev/stdout 204800 | tail -c +13 | sed 's/^/# /'
+    } > "$_T/awk-200k"
+    for _f in cat-200k cat-064k cat-odd awk-200k; do
+        (
+            export SANDBOX_BACKEND=landlock SANDBOX_QUIET=true LC_ALL=C.UTF-8
+            source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+            PROJECT_DIR="$_T"; REQ_ARGS=()
+            validate_sbatch_args 2>/dev/null || { echo "$_f: validate failed"; exit 1; }
+            { _body="$(cat "$_T/$_f")"; } 2>/dev/null
+            if [[ "$_f" == awk-* ]]; then
+                create_wrapped_script "$_T/sbx" "$_T" "$_body" "$_T/$_f.w" a1 'b 2' 2>/dev/null || { echo "$_f: create failed"; exit 1; }
+            else
+                create_wrapped_script "$_T/sbx" "$_T" "$_body" "$_T/$_f.w" 2>/dev/null || { echo "$_f: create failed"; exit 1; }
+            fi
+            printf '%s\n' "$_body" > "$_T/$_f.expected"
+        ) || { _bad=1; continue; }
+        (cd "$_T" && env -i PATH="$PATH" /bin/bash "$_T/$_f.w" < "$_T/stdin.txt" > "$_T/$_f.o" 2> "$_T/$_f.e")
+        _o=$?
+        if [[ "$_f" == awk-* ]]; then
+            [[ $_o -eq 0 && "$(cat "$_T/$_f.o")" == "awk-ran argv=a1,b 2 stdin=stdin-line-1" ]] \
+                || { echo "$_f: rc=$_o out=[$(head -c 200 "$_T/$_f.o")] err=[$(head -c 300 "$_T/$_f.e")]"; _bad=1; }
+        else
+            [[ $_o -eq 0 ]] && cmp -s "$_T/$_f.o" "$_T/$_f.expected" \
+                || { echo "$_f: rc=$_o err=[$(head -c 300 "$_T/$_f.e")] binary-lines=$(grep -c 'Binary file' "$_T/$_f.w")"; _bad=1; }
+        fi
+    done
+    return $_bad
+}
+if _h67_out="$(_h67_big_wrapper 2>&1)"; then
+    pass "job wrapper (non-shell): 200 KiB script runs, 64 KiB control and odd bytes materialised intact, argv and stdin kept"
+else
+    fail "job wrapper (non-shell): large or odd script broken" "$_h67_out"
+fi
+unset -f _h67_big_wrapper _h67_mkscript _h67_oddscript
+
 # 6.7j. Stale per-launch dirs (C8): a tagged dir whose owner process is
 # gone is pruned at launch; one whose owner is alive is kept.
 _h67_tmp="${TMPDIR:-/tmp}"

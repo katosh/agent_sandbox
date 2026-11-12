@@ -1524,8 +1524,12 @@ create_wrapped_script() {
     fi
 
     # Strip #SBATCH directives from script body — they're in the wrapper header.
+    # -a: a script with bytes that are invalid in the locale (latin-1 text
+    # under a UTF-8 locale) is "binary" to grep, which then drops every
+    # line from there on and prints "Binary file (standard input) matches"
+    # into the body instead.
     local script_body
-    script_body="$(printf '%s\n' "$script_content" | grep -vE '^[[:space:]]*#SBATCH' || true)"
+    script_body="$(printf '%s\n' "$script_content" | grep -a -vE '^[[:space:]]*#SBATCH' || true)"
 
     # Extract the interpreter from the shebang (default: sh, matching Slurm).
     # The wrapper pipes the script to the interpreter via stdin instead of
@@ -1780,19 +1784,29 @@ EOF
             # `set -e` so a prelude failure doesn't abort the user's
             # script — graceful degradation: no symlink, log only at
             # the staging path.
+            #
+            # The body reaches the runner as argv, in chunks of 16384
+            # characters (at most 64 KiB in any locale), preceded by
+            # their count. One argv string is capped at MAX_ARG_STRLEN
+            # (128 KiB), so passing it whole failed with E2BIG at job
+            # start for a larger script. stdin stays the job's own
+            # (sbatch --input). The bound is now ARG_MAX for the whole
+            # argv + environment (a quarter of the stack limit,
+            # typically 2 MiB).
             local runner=""
             [[ -n "$_slurm_link_prelude" ]] && runner="$_slurm_link_prelude"$'\n'
             runner+='set -e
 _t=$(mktemp /tmp/.chaperon-script-XXXXXX) || exit 1
 trap '"'"'rm -f "$_t"'"'"' EXIT
-printf '"'"'%s\n'"'"' "$1" > "$_t"
+_n=$1; shift
+{ while (( _n > 0 )); do printf '"'"'%s'"'"' "$1"; shift; _n=$(( _n - 1 )); done; printf '"'"'\n'"'"'; } > "$_t"
 chmod +x "$_t"
-shift
 "$_t" "$@"'
             # Wrap the runner in single quotes for the bash -c argument
             # by escaping any embedded single quotes ('\'').
             local runner_q="${runner//\'/\'\\\'\'}"
-            printf 'exec %q --project-dir %q -- %sbash -c '"'"'%s'"'"' _chaperon_runner "$_SCRIPT"%s\n' \
+            printf '_chunks=(); _o=0; while (( _o < ${#_SCRIPT} )); do _chunks+=("${_SCRIPT:_o:16384}"); _o=$(( _o + 16384 )); done\n'
+            printf 'exec %q --project-dir %q -- %sbash -c '"'"'%s'"'"' _chaperon_runner "${#_chunks[@]}" "${_chunks[@]}"%s\n' \
                 "$sandbox_exec" "$project_dir" "$_env_prefix" "$runner_q" "$quoted_script_args"
         fi
     } > "$output_file"

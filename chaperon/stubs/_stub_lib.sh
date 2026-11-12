@@ -13,7 +13,10 @@ source "$_STUB_DIR/../protocol.sh"
 # Send a request to the chaperon and print the response.
 # Usage: chaperon_call <command> [args...]
 #
-# If _CHAPERON_SCRIPT is set, it's sent as the SCRIPT field.
+# If _CHAPERON_SCRIPT is set, it's sent as the SCRIPT field. Callers set
+# it as a plain shell variable, never exported: Linux caps one argv or
+# environment string at MAX_ARG_STRLEN (128 KiB), so an exported script
+# above that makes every later exec fail with E2BIG.
 # If the global array _CHAPERON_SCRIPT_ARGS is set (non-empty), each
 # element is sent as a SCRIPT_ARG field (positional args for the
 # script). The array name is intentional — bash arrays cannot be
@@ -33,6 +36,9 @@ chaperon_call() {
     local has_script=false
     if [[ -n "${_CHAPERON_SCRIPT:-}" ]]; then
         has_script=true
+        # Keep the body out of the environment of the commands below
+        # (mktemp, base64, timeout, ...), in case a caller exported it.
+        export -n _CHAPERON_SCRIPT
     fi
 
     # Create a per-request response FIFO inside an atomically-created directory.
@@ -88,13 +94,21 @@ chaperon_call() {
     # The write (open+write+close) to the FIFO blocks if the chaperon is dead
     # because open() on a write-only FIFO waits for a reader. Use timeout to
     # detect this and fail fast with a diagnostic instead of hanging forever.
-    if ! timeout 5 bash -c '
+    #
+    # The message goes to the writer on stdin, never as an argument: it
+    # carries the base64 script (4/3 of its size), and one argv string
+    # is capped at MAX_ARG_STRLEN (128 KiB), so a script of about 96 KiB
+    # or more failed here as a misleading "not responding".
+    # The chaperon reads the request with `read`, so a large message takes
+    # a while to drain: allow 5 s plus 1 s per MiB of message.
+    local _wt=$(( 5 + ${#msg} / 1048576 ))
+    if ! { printf '%s\n' "$msg" 2>/dev/null; } | timeout "$_wt" bash -c '
         (
             flock 9
-            printf "%s\n" "$1" > "$2/req"
-        ) 9>"$2/req.lock"
-    ' -- "$msg" "$fifo_dir" 2>/dev/null; then
-        echo "error: chaperon is not responding (write to $fifo_dir/req timed out after 5s)" >&2
+            cat > "$1/req"
+        ) 9>"$1/req.lock"
+    ' -- "$fifo_dir" 2>/dev/null; then
+        echo "error: chaperon is not responding (write to $fifo_dir/req timed out after ${_wt}s)" >&2
         if [[ -f "$fifo_dir/chaperon.err" && -s "$fifo_dir/chaperon.err" ]]; then
             echo "chaperon.err:" >&2
             tail -5 "$fifo_dir/chaperon.err" >&2

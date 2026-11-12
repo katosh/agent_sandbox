@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`sbatch` of a batch script larger than 128 KiB.** Linux caps a single
+  argv or environment string at `MAX_ARG_STRLEN` (128 KiB). The sbatch
+  stub exported the script body, so every later exec in the stub failed
+  with E2BIG (`mktemp: Argument list too long`, rc 127), and it passed
+  the whole request (the base64 script, 4/3 of its size) to the FIFO
+  writer as one argument, which already failed from about 96 KiB as
+  "chaperon is not responding". The body now stays an unexported shell
+  variable, and the request reaches the writer on stdin, with a write
+  timeout of 5 s plus 1 s per MiB. On the compute node, the wrapper for
+  a non-shell interpreter (python, awk, ...) passed the body to its
+  runner as one argument too; it now passes chunks of at most 64 KiB,
+  so the bound is `ARG_MAX` for the whole argv (typically 2 MiB) and the
+  job's stdin is untouched. Shell scripts were already piped on stdin.
+- **Scripts with bytes that are invalid in the chaperon's locale** (for
+  example latin-1 text under a UTF-8 locale). The `#SBATCH` filter's
+  `grep` treated the script as binary, dropped every line from the first
+  such byte on, and wrote `Binary file (standard input) matches` into
+  the job instead. It now runs `grep -a`.
+
 ## [0.17.1] - 2026-11-02
 
 ### Changed
