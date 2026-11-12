@@ -207,6 +207,88 @@ dispatch_handler() {
     return $?
 }
 
+# ── Response FIFO ────────────────────────────────────────────────
+
+# Check REQ_RESP_FIFO before anything is written to it. Logs and
+# returns 1 on failure.
+_chaperon_resp_fifo_ok() {
+    # Validate RESP_FIFO: must be FIFO_DIR/resp-XXXXXX/fifo, no ".." components,
+    # not a symlink. The stub creates an atomic directory (mktemp -d) with a
+    # FIFO inside, so the expected structure is deterministic.
+    if [[ "$REQ_RESP_FIFO" != "$FIFO_DIR/"*/fifo ]] || [[ "$REQ_RESP_FIFO" == *".."* ]]; then
+        chaperon_log error "RESP_FIFO path validation failed: $(chaperon_log_escape "$REQ_RESP_FIFO")"
+        return 1
+    fi
+
+    # Reject symlinks: -p follows symlinks, so a symlink → FIFO would pass.
+    # A malicious process could race to replace the FIFO with a symlink
+    # pointing outside the FIFO directory to intercept the response.
+    #
+    # This is an early filter only. The load-bearing protection against
+    # the symlink-swap race is the O_NOFOLLOW + fstat(S_ISFIFO) open in
+    # the python3 writer below, because bash's `>` redirection follows
+    # symlinks at open time.
+    if [[ -L "$REQ_RESP_FIFO" ]] || [[ ! -p "$REQ_RESP_FIFO" ]]; then
+        chaperon_log error "RESP_FIFO is symlink or not a FIFO: $(chaperon_log_escape "$REQ_RESP_FIFO")"
+        return 1
+    fi
+    return 0
+}
+
+# Write a response to REQ_RESP_FIFO.
+# Usage: _chaperon_send_response <exit_code> <stdout_b64> <stderr_b64> <log_cmd>
+_chaperon_send_response() {
+    local _exit_code="$1" _stdout_b64="$2" _stderr_b64="$3" _log_cmd="$4"
+
+    # Validate exit code is numeric before sending
+    if [[ ! "$_exit_code" =~ ^[0-9]+$ ]]; then
+        _exit_code=1
+    fi
+
+    # Send response via python3 with O_NOFOLLOW + fstat(S_ISFIFO) verify.
+    #
+    # Bash's `exec {fd}>"$path"` follows symlinks at open time (O_WRONLY|
+    # O_CREAT|O_TRUNC), which lets a same-UID attacker inside the sandbox
+    # race the [[ -L ]] / [[ ! -p ]] check above: unlink the FIFO, drop
+    # a symlink → ~/.bashrc / ~/.ssh/authorized_keys, and the chaperon's
+    # open() truncates the target.
+    #
+    # python3's os.open(O_WRONLY | O_NOFOLLOW) returns ELOOP if the leaf
+    # is a symlink, and fstat+S_ISFIFO rejects a regular-file swap via
+    # any other race. No O_CREAT and no O_TRUNC: under any race, the
+    # chaperon cannot damage an unintended target. `timeout 10` protects
+    # against a dead stub that never reads.
+    local _write_rc=0
+    printf 'CHAPERON/1 RESULT\nEXIT %s\nSTDOUT %s\nSTDERR %s\nEND\n' \
+        "$_exit_code" "$_stdout_b64" "$_stderr_b64" \
+        | timeout 10 python3 -c '
+import os, stat, sys
+path = sys.argv[1]
+try:
+    fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
+except OSError:
+    sys.exit(1)
+try:
+    st = os.fstat(fd)
+    if not stat.S_ISFIFO(st.st_mode):
+        sys.exit(2)
+    data = sys.stdin.buffer.read()
+    while data:
+        n = os.write(fd, data)
+        data = data[n:]
+finally:
+    os.close(fd)
+' "$REQ_RESP_FIFO" 2>/dev/null || _write_rc=$?
+    if [[ "$_write_rc" -ne 0 ]]; then
+        case "$_write_rc" in
+            1) chaperon_log warn "response open failed (ELOOP / missing) for $_log_cmd: $(chaperon_log_escape "$REQ_RESP_FIFO")" ;;
+            2) chaperon_log warn "response target is not a FIFO after validation (race) for $_log_cmd: $(chaperon_log_escape "$REQ_RESP_FIFO")" ;;
+            124) chaperon_log warn "response write timed out for $_log_cmd" ;;
+            *) chaperon_log warn "response write failed (rc=$_write_rc) for $_log_cmd" ;;
+        esac
+    fi
+}
+
 # ── Main loop ────────────────────────────────────────────────────
 
 while true; do
@@ -244,36 +326,90 @@ while true; do
 
     # Read body lines with a timeout to prevent a malicious sender from
     # blocking the chaperon by sending a header but never sending END.
+    #
+    # A request is MALFORMED, and is dropped without running anything, if
+    # it is not a single intact message. The case that matters: a stub
+    # whose write times out while the chaperon is busy is killed partway
+    # through a message larger than the pipe buffer (64 KiB). The FIFO
+    # then holds a truncated request, and the next stub's message is
+    # appended to it. Without these checks the second request's lines
+    # were parsed into the first (its ARGs, CWD, SCRIPT and RESP_FIFO
+    # under the first's command, usually sbatch). Wherever the cut falls,
+    # the next message's header "CHAPERON/1 <cmd>" lands in a body line:
+    # on a line of its own, or glued to a cut keyword, payload or path.
+    #   - a body line containing "CHAPERON/1 " (a second header);
+    #   - an ARG/CWD/SCRIPT/SCRIPT_ARG payload outside the base64 alphabet;
+    #   - CWD, SCRIPT or RESP_FIFO given twice;
+    #   - no END before the body timeout (or EOF).
+    # On a malformed body the rest is still read up to END, so the next
+    # request starts on a clean header, and nothing more is decoded.
     _line=""
     _body_timeout=30
+    _malformed=""
+    _got_end=false
+    _n_cwd=0; _n_script=0; _n_resp=0
     while IFS= read -r -t "$_body_timeout" _line <&"$READ_FD"; do
+        if [[ "$_line" == END ]]; then
+            _got_end=true
+            break
+        fi
+        if [[ "$_line" == *"CHAPERON/1 "* ]]; then
+            _malformed="${_malformed:-a second request header inside the body}"
+        fi
         case "$_line" in
-            ARG\ *)
-                _encoded="${_line#ARG }"
-                REQ_ARGS+=("$(printf '%s' "$_encoded" | chaperon_b64_decode)")
-                ;;
-            CWD\ *)
-                _encoded="${_line#CWD }"
-                REQ_CWD="$(printf '%s' "$_encoded" | chaperon_b64_decode)"
-                ;;
-            SCRIPT\ *)
-                _encoded="${_line#SCRIPT }"
-                REQ_SCRIPT="$(printf '%s' "$_encoded" | chaperon_b64_decode)"
-                ;;
-            SCRIPT_ARG\ *)
-                _encoded="${_line#SCRIPT_ARG }"
-                REQ_SCRIPT_ARGS+=("$(printf '%s' "$_encoded" | chaperon_b64_decode)")
-                ;;
+            ARG\ *)        _encoded="${_line#ARG }" ;;
+            CWD\ *)        _encoded="${_line#CWD }";        (( ++_n_cwd )) ;;
+            SCRIPT\ *)     _encoded="${_line#SCRIPT }";     (( ++_n_script )) ;;
+            SCRIPT_ARG\ *) _encoded="${_line#SCRIPT_ARG }" ;;
             RESP_FIFO\ *)
+                # Keep the LAST one: when two messages were glued, it is
+                # the live stub's, and it is answered with an error below.
                 REQ_RESP_FIFO="${_line#RESP_FIFO }"
+                (( ++_n_resp ))
+                (( _n_resp > 1 )) && _malformed="${_malformed:-RESP_FIFO given twice}"
+                continue
                 ;;
-            END)
-                break
-                ;;
+            *)  continue ;;  # Unknown line: ignored (forward compat)
+        esac
+        if (( _n_cwd > 1 || _n_script > 1 )); then
+            _malformed="${_malformed:-CWD or SCRIPT given twice}"
+        fi
+        if ! chaperon_b64_valid "$_encoded"; then
+            _malformed="${_malformed:-a payload outside the base64 alphabet (${_line%% *} line)}"
+        fi
+        [[ -n "$_malformed" ]] && continue
+        # A failed decode (bad length or padding) is malformed too. It is
+        # checked here because under `set -e` a failed command substitution
+        # in a plain assignment would end the chaperon.
+        if ! _decoded="$(printf '%s' "$_encoded" | chaperon_b64_decode 2>/dev/null)"; then
+            _malformed="a payload that does not decode as base64 (${_line%% *} line)"
+            continue
+        fi
+        case "$_line" in
+            ARG\ *)        REQ_ARGS+=("$_decoded") ;;
+            CWD\ *)        REQ_CWD="$_decoded" ;;
+            SCRIPT\ *)     REQ_SCRIPT="$_decoded" ;;
+            SCRIPT_ARG\ *) REQ_SCRIPT_ARGS+=("$_decoded") ;;
         esac
     done
+    if [[ -z "$_malformed" ]] && ! "$_got_end"; then
+        _malformed="no END before the body timeout or EOF"
+    fi
 
     if [[ -z "$REQ_COMMAND" ]]; then
+        continue
+    fi
+
+    if [[ -n "$_malformed" ]]; then
+        chaperon_log error "dropped malformed request (command=$(chaperon_log_escape "$REQ_COMMAND")): ${_malformed}; nothing was run"
+        # Answer the stub that is waiting, if its RESP_FIFO checks out, so it
+        # fails at once with a reason instead of timing out.
+        if [[ -n "$REQ_RESP_FIFO" ]] && _chaperon_resp_fifo_ok; then
+            _chaperon_send_response 1 "" \
+                "$(printf 'error: the chaperon received a malformed request (%s) and dropped it without running anything; run the command again\n' \
+                    "$_malformed" | chaperon_b64_encode)" \
+                "dropped request"
+        fi
         continue
     fi
 
@@ -284,26 +420,7 @@ while true; do
         continue
     fi
 
-    # Validate RESP_FIFO: must be FIFO_DIR/resp-XXXXXX/fifo, no ".." components,
-    # not a symlink. The stub creates an atomic directory (mktemp -d) with a
-    # FIFO inside, so the expected structure is deterministic.
-    if [[ "$REQ_RESP_FIFO" != "$FIFO_DIR/"*/fifo ]] || [[ "$REQ_RESP_FIFO" == *".."* ]]; then
-        chaperon_log error "RESP_FIFO path validation failed: $(chaperon_log_escape "$REQ_RESP_FIFO")"
-        continue
-    fi
-
-    # Reject symlinks: -p follows symlinks, so a symlink → FIFO would pass.
-    # A malicious process could race to replace the FIFO with a symlink
-    # pointing outside the FIFO directory to intercept the response.
-    #
-    # This is an early filter only. The load-bearing protection against
-    # the symlink-swap race is the O_NOFOLLOW + fstat(S_ISFIFO) open in
-    # the python3 writer below, because bash's `>` redirection follows
-    # symlinks at open time.
-    if [[ -L "$REQ_RESP_FIFO" ]] || [[ ! -p "$REQ_RESP_FIFO" ]]; then
-        chaperon_log error "RESP_FIFO is symlink or not a FIFO: $(chaperon_log_escape "$REQ_RESP_FIFO")"
-        continue
-    fi
+    _chaperon_resp_fifo_ok || continue
 
     # Log full request details for audit trail. Every agent-controlled
     # field goes through chaperon_log_escape so each log call produces
@@ -355,53 +472,7 @@ while true; do
 
     rm -f "$_ch_stdout" "$_ch_stderr"
 
-    # Validate exit code is numeric before sending
-    if [[ ! "$_exit_code" =~ ^[0-9]+$ ]]; then
-        _exit_code=1
-    fi
-
-    # Send response via python3 with O_NOFOLLOW + fstat(S_ISFIFO) verify.
-    #
-    # Bash's `exec {fd}>"$path"` follows symlinks at open time (O_WRONLY|
-    # O_CREAT|O_TRUNC), which lets a same-UID attacker inside the sandbox
-    # race the [[ -L ]] / [[ ! -p ]] check above: unlink the FIFO, drop
-    # a symlink → ~/.bashrc / ~/.ssh/authorized_keys, and the chaperon's
-    # open() truncates the target.
-    #
-    # python3's os.open(O_WRONLY | O_NOFOLLOW) returns ELOOP if the leaf
-    # is a symlink, and fstat+S_ISFIFO rejects a regular-file swap via
-    # any other race. No O_CREAT and no O_TRUNC: under any race, the
-    # chaperon cannot damage an unintended target. `timeout 10` protects
-    # against a dead stub that never reads.
-    _write_rc=0
-    printf 'CHAPERON/1 RESULT\nEXIT %s\nSTDOUT %s\nSTDERR %s\nEND\n' \
-        "$_exit_code" "$_stdout_b64" "$_stderr_b64" \
-        | timeout 10 python3 -c '
-import os, stat, sys
-path = sys.argv[1]
-try:
-    fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
-except OSError:
-    sys.exit(1)
-try:
-    st = os.fstat(fd)
-    if not stat.S_ISFIFO(st.st_mode):
-        sys.exit(2)
-    data = sys.stdin.buffer.read()
-    while data:
-        n = os.write(fd, data)
-        data = data[n:]
-finally:
-    os.close(fd)
-' "$REQ_RESP_FIFO" 2>/dev/null || _write_rc=$?
-    if [[ "$_write_rc" -ne 0 ]]; then
-        case "$_write_rc" in
-            1) chaperon_log warn "response open failed (ELOOP / missing) for $_log_cmd: $(chaperon_log_escape "$REQ_RESP_FIFO")" ;;
-            2) chaperon_log warn "response target is not a FIFO after validation (race) for $_log_cmd: $(chaperon_log_escape "$REQ_RESP_FIFO")" ;;
-            124) chaperon_log warn "response write timed out for $_log_cmd" ;;
-            *) chaperon_log warn "response write failed (rc=$_write_rc) for $_log_cmd" ;;
-        esac
-    fi
+    _chaperon_send_response "$_exit_code" "$_stdout_b64" "$_stderr_b64" "$_log_cmd"
 done
 
 exit 0

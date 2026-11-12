@@ -26,6 +26,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the same full-range spec, so such a host degrades `filtered` and the
   `NETWORK_FILTER_FALLBACK` policy applies, with the reason naming the
   limit. Any other pasta start-up failure degrades the same way.
+
+- **A truncated chaperon request is no longer merged with the next one.**
+  The chaperon serves one request at a time. A stub whose write timed out
+  while it was busy was killed partway through a message larger than the
+  pipe buffer (64 KiB), and the next stub's message was appended to the
+  truncated line. The pair was parsed as one request, under the first
+  one's command (usually `sbatch`) with the second one's arguments, CWD
+  and response FIFO. A glued `SCRIPT` payload instead failed to decode,
+  which ended the chaperon (`set -e`), so every later Slurm command in
+  the session failed. The chaperon now drops a request whose body
+  contains a second `CHAPERON/1 ` header, has a base64 field that is
+  outside the alphabet or does not decode, repeats `CWD`/`SCRIPT`/
+  `RESP_FIFO`, or has no `END` before the body timeout. It runs nothing
+  for it, logs `dropped malformed request (...)`, and answers the waiting
+  stub with an error, so the stub fails at once with a reason.
 - **`sbatch` of a batch script larger than 128 KiB.** Linux caps a single
   argv or environment string at `MAX_ARG_STRLEN` (128 KiB). The sbatch
   stub exported the script body, so every later exec in the stub failed
