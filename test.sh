@@ -5789,7 +5789,7 @@ unset -f _h67_big_stub
 # (standard input) matches"). A 200 KiB awk program checks that the
 # positionals and the job's stdin (sbatch --input) still reach it.
 _h67_big_wrapper() {
-    local _T="$_H67_DIR/big-wrapper" _f _bad=0 _o
+    local _T="$_H67_DIR/big-wrapper" _f _bad=0 _o _loc
     mkdir -p "$_T"
     printf '#!/bin/bash\nshift 3\nexec "$@"\n' > "$_T/sbx"; chmod +x "$_T/sbx"
     printf 'stdin-line-1\n' > "$_T/stdin.txt"
@@ -5814,15 +5814,19 @@ _h67_big_wrapper() {
             fi
             printf '%s\n' "$_body" > "$_T/$_f.expected"
         ) || { _bad=1; continue; }
-        (cd "$_T" && env -i PATH="$PATH" /bin/bash "$_T/$_f.w" < "$_T/stdin.txt" > "$_T/$_f.o" 2> "$_T/$_f.e")
-        _o=$?
-        if [[ "$_f" == awk-* ]]; then
-            [[ $_o -eq 0 && "$(cat "$_T/$_f.o")" == "awk-ran argv=a1,b 2 stdin=stdin-line-1" ]] \
-                || { echo "$_f: rc=$_o out=[$(head -c 200 "$_T/$_f.o")] err=[$(head -c 300 "$_T/$_f.e")]"; _bad=1; }
-        else
-            [[ $_o -eq 0 ]] && cmp -s "$_T/$_f.o" "$_T/$_f.expected" \
-                || { echo "$_f: rc=$_o err=[$(head -c 300 "$_T/$_f.e")] binary-lines=$(grep -c 'Binary file' "$_T/$_f.w")"; _bad=1; }
-        fi
+        # The wrapper slices the body by CHARACTERS, so run it in the C
+        # locale and under a UTF-8 job locale too (invalid UTF-8 included).
+        for _loc in C C.UTF-8; do
+            (cd "$_T" && env -i PATH="$PATH" LC_ALL="$_loc" /bin/bash "$_T/$_f.w" < "$_T/stdin.txt" > "$_T/$_f.o" 2> "$_T/$_f.e")
+            _o=$?
+            if [[ "$_f" == awk-* ]]; then
+                [[ $_o -eq 0 && "$(cat "$_T/$_f.o")" == "awk-ran argv=a1,b 2 stdin=stdin-line-1" ]] \
+                    || { echo "$_f ($_loc): rc=$_o out=[$(head -c 200 "$_T/$_f.o")] err=[$(head -c 300 "$_T/$_f.e")]"; _bad=1; }
+            else
+                [[ $_o -eq 0 ]] && cmp -s "$_T/$_f.o" "$_T/$_f.expected" \
+                    || { echo "$_f ($_loc): rc=$_o err=[$(head -c 300 "$_T/$_f.e")] binary-lines=$(grep -c 'Binary file' "$_T/$_f.w")"; _bad=1; }
+            fi
+        done
     done
     return $_bad
 }
@@ -5832,6 +5836,97 @@ else
     fail "job wrapper (non-shell): large or odd script broken" "$_h67_out"
 fi
 unset -f _h67_big_wrapper _h67_mkscript _h67_oddscript
+
+# 6.7i3. A truncated request must not be merged with the next one. The
+# chaperon serves one request at a time; a stub whose write times out
+# while it is busy is killed partway through a message larger than the
+# pipe buffer, and the next stub's message is appended to the truncated
+# line. The chaperon parsed the pair as ONE request: the next stub's
+# lines landed in the first request (usually sbatch), and a glued SCRIPT
+# payload made `base64 -d` fail, which ends the chaperon under set -e.
+# Runs the real chaperon.sh (landlock, REAL_SBATCH a recorder) and the
+# real stubs:
+#   (A) cut mid-SCRIPT, then `sinfo`: dropped, sinfo gets an error;
+#   (B) cut at a line boundary, then `sinfo`: dropped the same way;
+#   (C) the next request is served normally, and REAL_SBATCH never ran;
+#   (D) a 200 KiB sbatch script through the real loop reaches REAL_SBATCH
+#       whole (its last line is in the wrapper);
+#   (E) with no chaperon reading, the stub fails within its write timeout.
+_h67_glue_test() {
+    local _root="$_H67_DIR/glue" _fifo _proj _pid _i _log _out _rc _bad=0 _b64cwd
+    mkdir -p "$_root/fifo" "$_root/proj" "$_root/xdg" "$_root/dead"
+    _fifo="$_root/fifo"; _proj="$_root/proj"
+    chmod 700 "$_fifo" "$_root/dead"; mkfifo -m 600 "$_fifo/req" "$_root/dead/req"
+    printf '#!/bin/bash\necho "ARGS:$*"\n' > "$_root/echo-args"; chmod +x "$_root/echo-args"
+    printf '#!/bin/bash\nfor a; do last="$a"; done\n[[ -f "${last:-}" ]] && cp "$last" %q\necho ran >> %q\necho "Submitted batch job 4242"\n' \
+        "$_root/wrapper.copy" "$_root/sbatch.calls" > "$_root/rec-sbatch"; chmod +x "$_root/rec-sbatch"
+    XDG_STATE_HOME="$_root/xdg" SANDBOX_BACKEND=landlock REAL_SINFO="$_root/echo-args" REAL_SBATCH="$_root/rec-sbatch" \
+        bash "$SCRIPT_DIR/chaperon/chaperon.sh" "$_fifo" "$_proj" /opt/sbx/sandbox-exec.sh \
+        >/dev/null 2>"$_root/chaperon.err" &
+    _pid=$!
+    for _i in $(seq 1 50); do
+        _log="$(ls "$_root/xdg/agent-sandbox/chaperon/"*.log 2>/dev/null | head -1)"
+        [[ -n "$_log" ]] && break
+        sleep 0.1
+    done
+    if [[ -z "$_log" ]]; then
+        kill "$_pid" 2>/dev/null; wait "$_pid" 2>/dev/null
+        echo "test chaperon did not start: $(cat "$_root/chaperon.err")"
+        return 1
+    fi
+    _stub() {  # <stub> [args...]: run a real stub from the project dir
+        (cd "$_proj" && _CHAPERON_FIFO_DIR="$_fifo" timeout 60 bash "$SCRIPT_DIR/chaperon/stubs/$1" "${@:2}" 2>&1)
+    }
+    _b64cwd="$(printf '%s' "$_proj" | base64 -w 0)"
+
+    # (A) A truncated sbatch request, cut inside its SCRIPT payload.
+    # `1<>` opens the FIFO read-write, which never blocks: on a broken
+    # chaperon that has exited, a plain `>` would wait for a reader forever.
+    printf 'CHAPERON/1 sbatch\nARG %s\nCWD %s\nSCRIPT %s' \
+        "$(printf '%s' --parsable | base64 -w 0)" "$_b64cwd" "$(head -c 3000 /dev/zero | base64 -w 0)" 1<> "$_fifo/req"
+    _out="$(_stub sinfo --version)"; _rc=$?
+    [[ $_rc -ne 0 && "$_out" == *"malformed request"* ]] \
+        || { echo "(A) glued mid-SCRIPT: rc=$_rc out=[$(head -c 300 <<< "$_out")]"; _bad=1; }
+
+    # (B) A truncated request cut at a line boundary (no SCRIPT, no END).
+    printf 'CHAPERON/1 sbatch\nARG %s\nCWD %s\n' "$(printf '%s' --parsable | base64 -w 0)" "$_b64cwd" 1<> "$_fifo/req"
+    _out="$(_stub sinfo --version)"; _rc=$?
+    [[ $_rc -ne 0 && "$_out" == *"malformed request"* ]] \
+        || { echo "(B) glued at a line boundary: rc=$_rc out=[$(head -c 300 <<< "$_out")]"; _bad=1; }
+
+    # (C) The next request is served, and nothing reached REAL_SBATCH.
+    _out="$(_stub sinfo --version)"; _rc=$?
+    [[ $_rc -eq 0 && "$_out" == *"ARGS:--version"* ]] \
+        || { echo "(C) following request: rc=$_rc out=[$(head -c 300 <<< "$_out")]"; _bad=1; }
+    [[ -e "$_root/sbatch.calls" ]] && { echo "(C) REAL_SBATCH ran for a dropped request"; _bad=1; }
+    [[ "$(grep -c 'dropped malformed request (command=sbatch)' "$_log")" -eq 2 ]] \
+        || { echo "(C) want 2 'dropped malformed request' log lines: $(grep -c 'dropped malformed' "$_log")"; _bad=1; }
+
+    # (D) A 200 KiB script through the real chaperon loop.
+    { printf '#!/bin/bash\n'
+      awk 'BEGIN { for (i = 0; i < 4000; i++) printf "echo line %07d abcdefghijklmnopqrstuvwxyz0123456789\n", i }'
+      printf 'echo last-line-marker\n'
+    } > "$_proj/big.sh"
+    _out="$(_stub sbatch big.sh)"; _rc=$?
+    [[ $_rc -eq 0 && "$_out" == *"Submitted batch job 4242"* ]] && grep -qx 'echo last-line-marker' "$_root/wrapper.copy" 2>/dev/null \
+        || { echo "(D) 200 KiB sbatch: rc=$_rc out=[$(head -c 300 <<< "$_out")] wrapper=$(wc -c < "$_root/wrapper.copy" 2>/dev/null)"; _bad=1; }
+
+    kill "$_pid" 2>/dev/null; wait "$_pid" 2>/dev/null
+
+    # (E) Nobody reads the request FIFO.
+    _out="$(cd "$_proj" && _CHAPERON_FIFO_DIR="$_root/dead" timeout 30 bash "$SCRIPT_DIR/chaperon/stubs/sinfo" --version 2>&1)"; _rc=$?
+    [[ $_rc -eq 127 && "$_out" == *"chaperon is not responding"* ]] \
+        || { echo "(E) dead chaperon: rc=$_rc out=[$(head -c 300 <<< "$_out")]"; _bad=1; }
+
+    unset -f _stub
+    return $_bad
+}
+if _h67_out="$(_h67_glue_test 2>&1)"; then
+    pass "chaperon drops a truncated request glued to the next one (mid-line and at a line boundary), serves the next, never runs it; 200 KiB sbatch via the real loop; dead chaperon fails fast"
+else
+    fail "chaperon: truncated/glued request handling" "$_h67_out"
+fi
+unset -f _h67_glue_test
 
 # 6.7j. Stale per-launch dirs (C8): a tagged dir whose owner process is
 # gone is pruned at launch; one whose owner is alive is kept.
