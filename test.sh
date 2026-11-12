@@ -6743,7 +6743,7 @@ if has_mount_ns; then
                 [[ -n "$m1$m2$m3" && "$m1$m2$m3" == 111 ]] && break
                 sleep 0.25
             done
-            [[ -n "$m1" ]] && { echo x > "$1" 2>/dev/null || echo "MASKED-FILE"; }
+            [[ -n "$m1" ]] && { { echo x > "$1"; } 2>/dev/null || echo "MASKED-FILE"; }
             [[ -n "$m2" ]] && { touch "$2/new" 2>/dev/null; [[ -e "$2/h2" ]] || echo "MASKED-DIR"; }
             [[ -n "$m3" ]] && echo "RO-STATE"
             true' _ "$_ml_secret" "$_ml_hid" "$_ml_go" "$_ml_ready" "$_ml_state" \
