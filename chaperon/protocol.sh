@@ -32,6 +32,14 @@ chaperon_b64_decode() {
     base64 -d
 }
 
+# True if $1 contains only the base64 alphabet (empty is allowed: an
+# empty argument encodes to nothing). A payload with anything else,
+# a space in particular, is not something chaperon_b64_encode wrote:
+# typically a truncated line with the next request glued onto it.
+chaperon_b64_valid() {
+    [[ "$1" =~ ^[A-Za-z0-9+/=]*$ ]]
+}
+
 # ── Request writing (used by stubs) ──────────────────────────────
 
 # Write a complete request to the chaperon FD.

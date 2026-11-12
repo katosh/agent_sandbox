@@ -136,6 +136,7 @@ END
 - **`base64 -w 0`**: single-line encoding prevents newline injection
 - **`IFS= read -r`**: prevents word splitting on read
 - **Unknown lines silently ignored**: forward compatibility — new fields can be added without breaking old readers
+- **One intact message per request**: the chaperon drops a request, runs nothing for it, logs `dropped malformed request (...)` and, when its `RESP_FIFO` passes the usual checks, answers the waiting stub with an error. It does this if the body contains a second `CHAPERON/1 ` header, a base64 field holds anything outside the base64 alphabet, `CWD`/`SCRIPT`/`RESP_FIFO` appears twice, or no `END` arrives before the body timeout. A stub killed partway through a large message (for example by its write timeout while the chaperon is busy) leaves a truncated line in the request FIFO, and the next message is appended to it. These checks keep that glued pair from being parsed as one request.
 - **No shell interpretation**: the chaperon never passes user data to `sh -c`, `eval`, or any form of shell expansion
 
 ## FIFO Design
