@@ -3172,19 +3172,30 @@ _mg_esc() {
 declare -A _MG_TOP_OPTS=() _MG_TOP_FS=() _MG_TOP_ID=()
 # _mg_read_mountinfo PID — index PID's mountinfo by mount point; for a
 # stacked mount point the last listed (topmost) entry wins.
+#
+# No here-strings and no $(cat): this runs every MOUNT_GUARD_INTERVAL for
+# the whole session, and bash < 5.1 backs each `<<<` with a temp file in
+# $TMPDIR (one per mountinfo line, created and unlinked on every pass).
+# Fields are single-space separated (spaces in paths are escaped \040).
 _mg_read_mountinfo() {
-    local _mi _line _mp _opts _fs _id _src="/proc/$1/mountinfo"
+    local _line _rest _mp _opts _fs _id _src="/proc/$1/mountinfo"
+    local -a _lines=()
     [[ "$1" == /* ]] && _src="$1"   # a mountinfo file (unit tests)
     _MG_TOP_OPTS=(); _MG_TOP_FS=(); _MG_TOP_ID=()
-    _mi="$(cat "$_src" 2>/dev/null)" || return 1
-    [[ -n "$_mi" ]] || return 1
-    while IFS= read -r _line; do
-        read -r _id _ _ _ _mp _opts _ <<< "$_line"
+    { mapfile -t _lines < "$_src"; } 2>/dev/null || return 1
+    (( ${#_lines[@]} )) || return 1
+    for _line in "${_lines[@]}"; do
+        [[ -n "$_line" ]] || continue
+        # id parent major:minor root MOUNTPOINT OPTIONS ...
+        _id="${_line%% *}"
+        _rest="${_line#* * * * }"
+        _mp="${_rest%% *}"
+        _rest="${_rest#* }"; _opts="${_rest%% *}"
         _fs="${_line#* - }"; _fs="${_fs%% *}"
         _MG_TOP_ID[$_mp]="$_id"
         _MG_TOP_OPTS[$_mp]="$_opts"
         _MG_TOP_FS[$_mp]="$_fs"
-    done <<< "$_mi"
+    done
 }
 
 # _mg_covering ESCAPED_PATH — deepest present mount point strictly above.

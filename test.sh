@@ -5203,6 +5203,36 @@ for _h67_case in "shell|landlock|#!/bin/bash" "prelude|bwrap|#!/bin/bash" "pytho
 done
 unset _h67_case _h67_name _h67_be _h67_sb
 
+# 6.7c2. The staging prelude runs clean and links RELATIVELY. It is a
+# `bash -c` string, so every error in it reads "environment: line N"
+# on bash 4.4. A backslash line continuation inside the generator's
+# `$(cat <<EOF …)` used to come out as `\ ` (an escaped space) on bash
+# 4.4: "environment: line 26:  : command not found" in every job log,
+# and the realpath result was discarded, so the link was always the
+# absolute staging path. Runs the real wrapper against a stub
+# sandbox-exec.sh that just executes its command.
+if _h67_out="$(
+    set -u
+    export SANDBOX_BACKEND=bwrap SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/chaperon/handlers/_handler_lib.sh"
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    mkdir -p "$_T/stage" "$_T/out"
+    printf '#!/bin/bash\nshift 3\nexec "$@"\n' > "$_T/sbx"; chmod +x "$_T/sbx"
+    PROJECT_DIR="$_T"; REQ_ARGS=()
+    validate_sbatch_args 2>/dev/null || { echo "validate failed"; exit 1; }
+    _USER_SLURM_OUTPUT="$_T/out/x_%j.log"; _STAGING_SLURM_OUTPUT="$_T/stage/x_%j.log"
+    _USER_SLURM_ERROR=""; _STAGING_SLURM_ERROR=""
+    create_wrapped_script "$_T/sbx" "$_T" $'#!/bin/bash\necho payload-ran' "$_T/w" 2>/dev/null || { echo "create failed"; exit 1; }
+    grep -qF 'agent-sandbox: link intended' "$_T/w" || { echo "no prelude in wrapper"; exit 1; }
+    cd "$_T" && env SLURM_JOB_ID=1234567 /bin/bash "$_T/w" > "$_T/o" 2> "$_T/e"
+    printf 'out=%s err=[%s] link=%s' "$(cat "$_T/o")" "$(cat "$_T/e")" "$(readlink "$_T/out/x_1234567.log")"
+)"; [[ "$_h67_out" == "out=payload-ran err=[] link=../stage/x_1234567.log" ]]; then
+    pass "job wrapper (prelude): runs without stderr noise and links the intended path relatively"
+else
+    fail "job wrapper (prelude): stderr noise or non-relative link" "$_h67_out"
+fi
+unset _h67_out
+
 # 6.7d. #SBATCH --export directives: rewritten (last one wins), denied
 # names fail the submission, and a CLI --export overrides them.
 if (
@@ -6801,6 +6831,31 @@ if [[ "$_ml_out" == "$_ml_want" ]]; then
 else
     fail "ML12: repair eligibility / ordering" "got: $_ml_out"
 fi
+# ML13. The mountinfo parser runs every MOUNT_GUARD_INTERVAL for the whole
+# session. Bash < 5.1 backs every here-string / here-document with a
+# temp file in $TMPDIR, so the parser must use neither (one temp file per
+# mountinfo line per pass otherwise). Also pins the field split on a line
+# with optional fields and an escaped space in the mount point.
+_ml_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    case "$(declare -f _mg_read_mountinfo)" in *'<<'*) echo -n "heredoc " ;; esac
+    printf '%s\n' "1 0 0:1 / / rw - tmpfs t rw" \
+        "7 1 8:1 /a\\040b /p\\040q rw,nosuid shared:5 master:2 - nfs s:/x rw" \
+        "8 1 8:1 / /p\\040q ro,relatime - ext4 /dev/d rw" > "$_T/mi"
+    _mg_read_mountinfo "$_T/mi" || echo -n "rc=$? "
+    for k in / '/p\040q'; do printf '%s=%s,%s,%s ' "$k" "${_MG_TOP_ID[$k]}" "${_MG_TOP_OPTS[$k]}" "${_MG_TOP_FS[$k]}"; done
+    : > "$_T/empty"; _mg_read_mountinfo "$_T/empty" && echo -n "empty-ok "
+    _mg_read_mountinfo "$_T/missing" 2>&1 && echo -n "missing-ok "
+)"
+_ml_want='/=1,rw,tmpfs /p\040q=8,ro,relatime,ext4 '
+if [[ "$_ml_out" == "$_ml_want" ]]; then
+    pass "ML13: mountinfo parser splits fields without here-strings (no \$TMPDIR temp file per line)"
+else
+    fail "ML13: mountinfo parser" "got: $_ml_out"
+fi
+
 # ── RB: lost writable binds are re-bound (MOUNT_GUARD_REBIND) ──
 # The project bind (and the read-only binds nested below it) can vanish
 # from a running sandbox together; the path then falls through to the

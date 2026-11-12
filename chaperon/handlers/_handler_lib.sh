@@ -1635,8 +1635,7 @@ _sandbox_link_slurm_output() {
         return 0
     fi
     local _rel
-    _rel="\$(realpath --relative-to="\$(dirname -- "\$_intended")" "\$_staging" 2>/dev/null)" \\
-        || _rel="\$_staging"
+    _rel="\$(realpath --relative-to="\$(dirname -- "\$_intended")" "\$_staging" 2>/dev/null)" || _rel="\$_staging"
     rm -f -- "\$_intended" 2>/dev/null
     if ! ln -s -- "\$_rel" "\$_intended" 2>/dev/null; then
         echo "sandbox: \$_stream-symlink to '\$_intended' failed; log lives at \$_staging" >&2
