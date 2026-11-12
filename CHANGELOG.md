@@ -30,13 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   unless the sandbox's user namespace is owned by the calling uid and
   is not the host's.
 - **Shell batch scripts no longer launch as `<shell> -s -- <args>`.** The
-  wrapper now writes the script (from stdin) to a private `mktemp` file
-  inside the sandbox, removed on exit, and runs `<shell> FILE <args>`, as
+  wrapper now writes the script (from stdin) to a private `mktemp -d` directory
+  inside the sandbox as `slurm_script` (the name slurmd gives its spool copy),
+  removed on exit, and runs `<shell> FILE <args>`, as
   non-shell interpreters already did. This avoids the script-on-stdin
   launch form that was suspected in a report of sbatch jobs with a 7.8 GB
   file argument stalling before the script starts; that stall was not
   reproduced, so this is not a confirmed fix for it. Side effects: `$0`
-  and `BASH_SOURCE` are the tmpfile path instead of the shell name, and
+  and `BASH_SOURCE` are `/tmp/.chaperon-XXXXXX/slurm_script` instead of the shell name, and
   the script's stdin is at EOF instead of the script text.
 
 ## [0.15.1] - 2026-10-11

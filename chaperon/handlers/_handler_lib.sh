@@ -1729,14 +1729,18 @@ EOF
             # reads it (7.8 GB h5ad, SIGKILL-proof).  Instead the runner
             # inside the sandbox writes the script (read from stdin, so no
             # ARG_MAX limit) to a private tmpfile and runs `<interp> FILE
-            # <args>`, the same shape as a normal script launch.  $0 is the
-            # tmpfile path.  The prelude (if any) runs first, before set -e,
+            # <args>`, the same shape as a normal script launch.  The file is
+            # named `slurm_script` inside a private dir, mirroring the copy
+            # slurmd runs (<spool>/jobN/slurm_script), so `basename $0` and
+            # `dirname $0` behave as under plain Slurm (the dir is private
+            # and temporary, like the spool dir).  The prelude (if any) runs first, before set -e,
             # so a prelude failure never aborts the user's script.
             local runner=""
             [[ -n "$_slurm_link_prelude" ]] && runner="$_slurm_link_prelude"$'\n'
             runner+='set -e
-_t=$(mktemp /tmp/.chaperon-script-XXXXXX) || exit 1
-trap '"'"'rm -f "$_t"'"'"' EXIT
+_d=$(mktemp -d /tmp/.chaperon-XXXXXX) || exit 1
+trap '"'"'rm -rf "$_d"'"'"' EXIT
+_t="$_d/slurm_script"
 cat > "$_t"
 '"$interp_clean"' "$_t" "$@"'
             local runner_q="${runner//\'/\'\\\'\'}"
