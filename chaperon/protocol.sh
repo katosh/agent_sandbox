@@ -37,7 +37,9 @@ chaperon_b64_decode() {
 # a space in particular, is not something chaperon_b64_encode wrote:
 # typically a truncated line with the next request glued onto it.
 chaperon_b64_valid() {
-    [[ "$1" =~ ^[A-Za-z0-9+/=]*$ ]]
+    # A glob, not a regex: bash's regex engine needs ~15 bytes of memory per
+    # input character, which for a multi-MB SCRIPT payload is hundreds of MB.
+    [[ "$1" != *[!A-Za-z0-9+/=]* ]]
 }
 
 # ── Request writing (used by stubs) ──────────────────────────────
