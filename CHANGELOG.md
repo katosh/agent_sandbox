@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`filtered` network mode: bwrap now gets its seccomp filter and seeded files.**
+  pasta closes every inherited file descriptor above 2 before it runs its
+  command, so the `--seccomp` fd (and the fds for seeded home files) that
+  the launcher opened were invalid in bwrap: every launch in filtered mode
+  failed with `bwrap: Can't read seccomp data: Bad file descriptor`. It
+  showed up in Slurm jobs, where the open-files limit is high enough for
+  pasta to start. The files are now opened by a small launcher that runs
+  inside pasta, which also removes them and unsets its own variables.
 - **`filtered` network mode no longer kills the launch on hosts with a low
   open-files limit.** In filtered mode pasta listens on every
   non-excluded TCP and UDP port, about 65k sockets each. On a host whose

@@ -9120,6 +9120,36 @@ else
     fail "Network filter: pasta full-range probe test failed"
 fi
 
+# filtered mode: pasta closes every inherited fd above 2 before it runs its
+# command, so bwrap's --seccomp / seeded-file fds opened by the launcher
+# arrived as "Bad file descriptor" and every filtered launch failed. The
+# fds must be opened by a launcher that runs inside pasta. A fake pasta
+# (closes fds >= 3, execs the command after `--`) reproduces the real one.
+if is_bwrap && has_mount_ns && command -v python3 >/dev/null 2>&1; then
+    _pf_dir="$(mktemp -d "${TMPDIR:-/tmp}/pasta-fd.XXXXXX")"
+    _TEST_TEMP_FILES+=("$_pf_dir/pasta")
+    cat >"$_pf_dir/pasta" <<'STUB'
+#!/usr/bin/env python3
+import os, sys
+a = sys.argv[1:]
+cmd = a[a.index("--") + 1:]
+os.closerange(3, 65536)
+os.execvp(cmd[0], cmd)
+STUB
+    chmod 755 "$_pf_dir/pasta"
+    _pf_out="$(PATH="$_pf_dir:$PATH" NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=strict \
+        timeout 60 "$SANDBOX_EXEC" --backend bwrap --project-dir "$PROJECT_DIR" -- \
+        bash -c 'echo LAUNCHED; grep "^Seccomp:" /proc/self/status' 2>&1)"
+    if [[ "$_pf_out" == *LAUNCHED* && "$_pf_out" == *$'Seccomp:\t2'* ]]; then
+        pass "filtered mode: seccomp filter and seeded files reach bwrap through pasta (fds reopened inside it)"
+    else
+        fail "filtered mode: launch through an fd-closing pasta failed" "$_pf_out"
+    fi
+    rm -rf "$_pf_dir"
+else
+    skip "filtered mode fd passing through pasta: bwrap with user namespaces and python3 needed"
+fi
+
 # Mode resolution failure paths exit the parent process via _network_filter_fail.
 # Exercise the strict-fails path in a subshell. Use landlock as the
 # deterministically-unsupported backend (landlock has no netns at all,
