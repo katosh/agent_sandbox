@@ -7043,9 +7043,12 @@ _rb_out="$(
     _mg_read_mountinfo "$_T/mi.childonly"
     _mg_repair_blocked 1 && printf '1=%s ' "$_MG_BLOCK" || printf '1=free '; echo
 )"
-_rb_want=$'2 1 0 \n/proj/child:degraded /proj:degraded :intact \n/proj/child:intact /proj:intact :intact \n0=above 1=free 2=free \n1=below '
+# A present child that can be re-created (here a read-only overlay) no
+# longer blocks its parent: the parent is bound again and the child is
+# restored on top (RB12, RB13); an unrepairable one still does (RB12).
+_rb_want=$'2 1 0 \n/proj/child:degraded /proj:degraded :intact \n/proj/child:intact /proj:intact :intact \n0=above 1=free 2=free \n1=free '
 if [[ "$_rb_out" == "$_rb_want" ]]; then
-    pass "RB02-RB04: parent-first order, lost-bind detection from mountinfo, blocked while a parent is missing or a child present"
+    pass "RB02-RB04: parent-first order, lost-bind detection from mountinfo, blocked while a parent is missing, not by a child that can be re-created"
 else
     fail "RB02-RB04: ordering / detection / blocking" "got: $_rb_out"
 fi
@@ -7390,6 +7393,149 @@ else
 fi
 unset -f _rb_up _rb_probe _rb_rows _rb_down _rb_guard_case
 unset _rb_sp _rb_pid _rb_u _rb_b _rb_lostn _rb_res _rb_x _rb_w
+
+# RB12. A mount that is in the table but under a newer mount (unit, from
+# synthetic mountinfo with ids and parents). The kernel layout that
+# matters: a read-only overlay restored onto the fall-through path while
+# its parent bind was gone (parent = the read-only mount above), then the
+# parent bound again (listed later). The overlay is hidden, though its
+# path is still "a mount point". Also: a visible child, a stacked
+# project mount and a hidden-at-arming layout must not count, and a
+# present child that cannot be re-created still blocks the parent.
+_rm_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    mkdir -p "$_T/par/proj/child" "$_T/h"
+    HOME="$_T/h"; BLOCKED_FILES=(); EXTRA_BLOCKED_PATHS=()
+    backend_mount_expectations() { printf '%s\n' "ro:same $_T/par" "rw:same $_T/par/proj" "ro:same $_T/par/proj/child" "rw $_T/par/proj/x"; }
+    _mount_guard_prepare "$_T/par/proj" || { echo "prepare failed"; exit 0; }
+    _ix() { for i in "${!_MG_PATH[@]}"; do [[ "${_MG_PATH[i]}" == "$_T/par$1" ]] && { echo "$i"; return; }; done; }
+    _P="$(_ix '')"; _J="$(_ix /proj)"; _C="$(_ix /proj/child)"; _X="$(_ix /proj/x)"
+    _mi() { # _mi ID PARENT MOUNTPOINT OPTS
+        printf '%s %s 8:1 / %s %s - ext4 /dev/x rw\n' "$1" "$2" "$3" "$4"; }
+    # misplaced: child (3, parent 2) listed before the new project bind (4)
+    { _mi 1 0 / rw; _mi 2 1 "$_T/par" ro,nosuid,nodev; _mi 3 2 "$_T/par/proj/child" ro,nosuid,nodev; _mi 4 2 "$_T/par/proj" rw,nosuid,nodev; } > "$_T/mi.hidden"
+    # normal: child sits on the project bind
+    { _mi 1 0 / rw; _mi 2 1 "$_T/par" ro,nosuid,nodev; _mi 4 2 "$_T/par/proj" rw,nosuid,nodev; _mi 5 4 "$_T/par/proj/child" ro,nosuid,nodev; } > "$_T/mi.ok"
+    # stacked project (ro below rw), child on the rw top
+    { _mi 1 0 / rw; _mi 2 1 "$_T/par" ro,nosuid,nodev; _mi 6 2 "$_T/par/proj" ro,nosuid,nodev; _mi 7 6 "$_T/par/proj" rw,nosuid,nodev; _mi 8 7 "$_T/par/proj/child" ro,nosuid,nodev; } > "$_T/mi.stack"
+    # parent lost, misplaced child present, and an unrepairable mount below
+    { _mi 1 0 / rw; _mi 2 1 "$_T/par" ro,nosuid,nodev; _mi 3 2 "$_T/par/proj/child" ro,nosuid,nodev; } > "$_T/mi.parentgone"
+    { _mi 1 0 / rw; _mi 2 1 "$_T/par" ro,nosuid,nodev; _mi 3 2 "$_T/par/proj/child" ro,nosuid,nodev; _mi 9 2 "$_T/par/proj/x" rw,nosuid,nodev; } > "$_T/mi.parentgone.x"
+    _h() { _mg_read_mountinfo "$_T/$1"; for i in "$_P" "$_J" "$_C"; do _mg_hidden "$i" && printf 'H:%s ' "${_MG_HIDER#$_T/par}" || printf '. '; done; echo; }
+    _h mi.hidden; _h mi.ok; _h mi.stack
+    declare -A _ever=()
+    for i in "${!_MG_PATH[@]}"; do _ever[$i]=1; done
+    _mg_read_mountinfo "$_T/mi.parentgone"
+    _mg_repair_blocked "$_J" && printf 'repairable-child:%s ' "$_MG_BLOCK" || printf 'repairable-child:free '
+    _mg_read_mountinfo "$_T/mi.parentgone.x"
+    _mg_repair_blocked "$_J" && printf 'unrepairable-child:%s ' "$_MG_BLOCK" || printf 'unrepairable-child:free '
+    echo
+    # the verdict of a hidden overlay: lost, and exposed when it falls through to a writable mount
+    _mg_read_mountinfo "$_T/mi.hidden"; _MG_POLICY[$_C]=1; _mg_fallthrough_verdict "$_C"; printf '%s|%s\n' "$_MG_VERDICT" "$_MG_WHAT"
+)"
+_rm_l1=$'. . H:/proj ' ; _rm_l2=$'. . . ' ; _rm_l4=$'repairable-child:free unrepairable-child:below '
+_rm_l5='EXPOSED|read-only overlay lost (it is still in the mount table but hidden under a newer mount); path now falls through to the WRITABLE ext4 mount at '
+if [[ "$_rm_out" == "$_rm_l1"$'\n'"$_rm_l2"$'\n'"$_rm_l2"$'\n'"$_rm_l4"$'\n'"$_rm_l5"* ]]; then
+    pass "RB12: a mount under a newer mount counts as lost (not a visible child, a stacked mount or arming order); only an unrepairable child still blocks its parent"
+else
+    fail "RB12: hidden-mount detection / blocking" "got: $_rm_out"
+fi
+unset _rm_l1 _rm_l2 _rm_l4 _rm_l5
+
+# RB13. End to end: the project's read-only child overlay is restored
+# onto the fall-through path while the project bind is missing (the two
+# invalidations the guard cannot tell apart), so the path is listed twice
+# over: the child under the next bind of the project. Before the fix the
+# project bind was refused for good ("an expected mount below it is still
+# present") and the project stayed read-only. The guard must now bind the
+# project again and put a fresh read-only overlay on top of the hidden one.
+# The loss and the misplaced child are made in one setns() so the guard
+# cannot see the state between them.
+_rb_helper="$SCRIPT_DIR/backends/mount-repair.py"
+if is_bwrap && command -v python3 >/dev/null 2>&1 && [[ -f "$_rb_helper" ]] \
+   && bwrap --ro-bind / / true >/dev/null 2>&1; then
+    _rm_t="$(mktemp -d)"; trap_rm_dir "$_rm_t"
+    _rm_par="$_rm_t/par"; _rm_dir="$_rm_par/proj"; _rm_child="$_rm_dir/child"
+    mkdir -p "$_rm_child" "$_rm_t/h" "$_rm_t/armed"
+    cat > "$_rm_t/probe.py" <<'RMPY'
+import ctypes, errno, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+pid, op, path, child = sys.argv[1], sys.argv[2], sys.argv[3], (sys.argv[4] if len(sys.argv) > 4 else '')
+for fd, t in [(os.open('/proc/%s/ns/user' % pid, os.O_RDONLY), 0x10000000), (os.open('/proc/%s/ns/mnt' % pid, os.O_RDONLY), 0x20000)]:
+    if libc.setns(fd, t) != 0:
+        sys.exit('setns: ' + os.strerror(ctypes.get_errno()))
+os.chdir('/')
+MS_RDONLY, MS_REMOUNT, MS_BIND, MS_NOSUID, MS_NODEV = 1, 32, 4096, 2, 4
+if op == 'misplace':
+    n = 0
+    while libc.umount2(path.encode(), 2) == 0:
+        n += 1
+    if n == 0:
+        sys.exit('nothing to detach')
+    c = child.encode()
+    if libc.mount(c, c, None, MS_BIND, None) != 0:
+        sys.exit('bind: ' + os.strerror(ctypes.get_errno()))
+    if libc.mount(c, c, None, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_NOSUID | MS_NODEV, None) != 0:
+        sys.exit('remount: ' + os.strerror(ctypes.get_errno()))
+else:
+    try:
+        fd = os.open(path + '/probe', os.O_CREAT | os.O_WRONLY, 0o600); os.close(fd); os.unlink(path + '/probe')
+        print('WRITE-OK')
+    except OSError as e:
+        print('WRITE-FAIL ' + errno.errorcode[e.errno])
+RMPY
+    bash -c 'bwrap --die-with-parent --unshare-pid --ro-bind / / --ro-bind "$1" "$1" --ro-bind "$2" "$2" --bind "$2" "$2" --ro-bind "$3" "$3" -- sleep 90 & wait' \
+        _ "$_rm_par" "$_rm_dir" "$_rm_child" 2>"$_rm_t/l.err" &
+    _rm_l=$!
+    (
+        export _SANDBOX_LIB_NO_INIT=1 _CHAPERON_FIFO_DIR="$_rm_t/armed"
+        source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+        set +euo pipefail
+        SANDBOX_DIR="$SCRIPT_DIR"; SANDBOX_BACKEND=bwrap; HOME="$_rm_t/h"; BLOCKED_FILES=(); EXTRA_BLOCKED_PATHS=()
+        MOUNT_GUARD=repair; MOUNT_GUARD_INTERVAL=1; MOUNT_GUARD_REBIND=true
+        backend_mount_expectations() { printf '%s\n' "ro:same $_rm_par" "ro:same $_rm_dir" "rw:same $_rm_dir" "ro:same $_rm_child"; }
+        _mount_guard_prepare "$_rm_dir" || exit 1
+        _rm_ns=""
+        for _i in $(seq 1 40); do _rm_ns="$(_mount_guard_find_target "$_rm_l" | cut -d' ' -f1)"; [[ -n "$_rm_ns" ]] && break; sleep 0.25; done
+        echo "$_rm_ns" > "$_rm_t/ns"
+        _mount_guard_run "$_rm_l"
+    ) >/dev/null 2>&1 &
+    _rm_g=$!
+    for _i in $(seq 1 60); do [[ -d "$_rm_t/armed/.mount-guard-armed" ]] && break; sleep 0.25; done
+    _rm_ns="$(cat "$_rm_t/ns" 2>/dev/null)"
+    _rm_probe() { python3 "$_rm_t/probe.py" "$_rm_ns" "$@" 2>&1; }
+    if [[ ! -d "$_rm_t/armed/.mount-guard-armed" || ! "$_rm_ns" =~ ^[0-9]+$ ]]; then
+        skip "RB13: throwaway bwrap namespace or guard did not come up"
+    else
+        _rm_before="$(_rm_probe write "$_rm_dir") / $(_rm_probe write "$_rm_child")"
+        _rm_det="$(_rm_probe misplace "$_rm_dir" "$_rm_child")"
+        _rm_lost="$(_rm_probe write "$_rm_dir")"
+        for _i in $(seq 1 40); do
+            [[ "$(_rm_probe write "$_rm_dir") / $(_rm_probe write "$_rm_child")" == "WRITE-OK / WRITE-FAIL EROFS" ]] && break
+            sleep 0.5
+        done
+        _rm_after="$(_rm_probe write "$_rm_dir") / $(_rm_probe write "$_rm_child")"
+        for _i in $(seq 1 20); do [[ "$(grep -c RESTORED "$_rm_t/l.err")" -ge 2 ]] && break; sleep 0.25; done
+        _rm_rep="$(cat "$_rm_t/l.err")"
+        if [[ "$_rm_before" != "WRITE-OK / WRITE-FAIL EROFS" ]]; then
+            fail "RB13: test namespace not as expected before the loss" "$_rm_before"
+        elif [[ -n "$_rm_det" || "$_rm_lost" != "WRITE-FAIL EROFS" ]]; then
+            fail "RB13: simulated loss did not make the project read-only" "det=$_rm_det lost=$_rm_lost"
+        elif [[ "$_rm_after" == "WRITE-OK / WRITE-FAIL EROFS" && "$_rm_rep" == *"$_rm_dir "*RESTORED* \
+                && "$_rm_rep" == *"$_rm_child "*RESTORED* && "$_rm_rep" != *"would be hidden"* ]]; then
+            pass "RB13: a child restored onto the fall-through path no longer blocks the project bind: both come back (project writable, child read-only on top)"
+        else
+            fail "RB13: misplaced child blocks the project bind" "after=$_rm_after report=$_rm_rep"
+        fi
+    fi
+    pkill -P "$_rm_l" 2>/dev/null; kill "$_rm_l" "$_rm_g" 2>/dev/null; wait "$_rm_l" "$_rm_g" 2>/dev/null
+    unset -f _rm_probe
+else
+    skip "RB13: needs bwrap with unprivileged user namespaces and python3"
+fi
+unset _rm_out _rm_want _rm_t _rm_par _rm_dir _rm_child _rm_l _rm_g _rm_ns _rm_before _rm_det _rm_lost _rm_after _rm_rep
 
 unset _rb_out _rb_want _rb_flags _rb_ino _rb_r1 _rb_r2 _rb_r3 _rb_c1 _rb_c2 _rb_c3 _rb_t _rb_par _rb_dir _rb_child \
       _rb_l _rb_g _rb_ns _rb_before _rb_mode _rb_id _rb_det _rb_lost _rb_after _rb_odir _rb_ochild _rb_rep _rb_helper

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Mount guard: a child restored onto the fall-through path no longer
+  blocks the project bind for hours (#94).** With `MOUNT_GUARD=repair`
+  and `MOUNT_GUARD_REBIND=true`, two dentry invalidations of the project
+  within about a second could make the guard restore the read-only
+  `.sandbox-state` overlay while the project bind was gone again, so it
+  was mounted on the read-only parent. From then on the project bind was
+  refused ("an expected mount below it is still present and would be
+  hidden") on every pass, and the project stayed read-only until the
+  sandbox ended (5.5 h on NFS). A present mount below that the guard can
+  re-create no longer blocks the bind; one it cannot re-create still
+  does. Binding the project again hides the misplaced overlay, which the
+  mount table still lists, so the guard now treats a mount that sits
+  under a newer mount on an ancestor path as lost and restores it on top
+  in the same pass (reported as `protection LOST ... and RESTORED`). A
+  mount that was already under a newer one when the sandbox started, or
+  before a reload, is not a loss.
+
 ## [0.17.2] - 2026-11-13
 
 ### Changed
