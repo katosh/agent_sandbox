@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.3] - 2026-11-13
+
 ### Fixed
 
 - **Mount guard: a child restored onto the fall-through path no longer
