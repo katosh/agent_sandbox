@@ -3187,9 +3187,10 @@ _mg_esc() {
     printf '%s' "$_s"
 }
 
-declare -A _MG_TOP_OPTS=() _MG_TOP_FS=() _MG_TOP_ID=()
+declare -A _MG_TOP_OPTS=() _MG_TOP_FS=() _MG_TOP_ID=() _MG_ID_PAR=()
 # _mg_read_mountinfo PID — index PID's mountinfo by mount point; for a
-# stacked mount point the last listed (topmost) entry wins.
+# stacked mount point the last listed (topmost) entry wins. _MG_ID_PAR
+# maps every mount id to its parent's id (the mount tree, for _mg_hidden).
 #
 # No here-strings and no $(cat): this runs every MOUNT_GUARD_INTERVAL for
 # the whole session, and bash < 5.1 backs each `<<<` with a temp file in
@@ -3199,13 +3200,14 @@ _mg_read_mountinfo() {
     local _line _rest _mp _opts _fs _id _src="/proc/$1/mountinfo"
     local -a _lines=()
     [[ "$1" == /* ]] && _src="$1"   # a mountinfo file (unit tests)
-    _MG_TOP_OPTS=(); _MG_TOP_FS=(); _MG_TOP_ID=()
+    _MG_TOP_OPTS=(); _MG_TOP_FS=(); _MG_TOP_ID=(); _MG_ID_PAR=()
     { mapfile -t _lines < "$_src"; } 2>/dev/null || return 1
     (( ${#_lines[@]} )) || return 1
     for _line in "${_lines[@]}"; do
         [[ -n "$_line" ]] || continue
         # id parent major:minor root MOUNTPOINT OPTIONS ...
         _id="${_line%% *}"
+        _rest="${_line#* }"; _MG_ID_PAR[$_id]="${_rest%% *}"
         _rest="${_line#* * * * }"
         _mp="${_rest%% *}"
         _rest="${_rest#* }"; _opts="${_rest%% *}"
@@ -3222,6 +3224,39 @@ _mg_covering() {
     while [[ "$_p" != "/" ]]; do
         _p="${_p%/*}"; [[ -n "$_p" ]] || _p="/"
         if [[ -n "${_MG_TOP_FS[$_p]+x}" ]]; then printf '%s' "$_p"; return 0; fi
+    done
+    return 1
+}
+
+# _mg_hidden INDEX — true when the topmost mount at expectation INDEX's
+# path is in the table but cannot be reached: a mount that was made later
+# sits on an ancestor path and is not one of its own ancestors, so path
+# resolution goes through that newer mount and never meets it. This is
+# what happens to a read-only overlay that was mounted onto the
+# fall-through path while its parent bind was missing, once the parent
+# is bound again. Sets _MG_HIDER to the covering mount point. A mount
+# that is merely stacked under another one at the same path is not
+# hidden by this rule (only mounts on strict ancestors count).
+_MG_HIDER=""
+_mg_hidden() {
+    local _mp="${_MG_ESC[$1]}" _id _par _n=0 _r="" _c
+    local -A _chain=()
+    _MG_HIDER=""
+    _id="${_MG_TOP_ID[$_mp]:-}"
+    [[ -n "$_id" ]] || return 1
+    _par="${_MG_ID_PAR[$_id]:-}"
+    while [[ -n "$_par" && -z "${_chain[$_par]+x}" ]] && (( _n++ < 4096 )); do
+        _chain[$_par]=1; _par="${_MG_ID_PAR[$_par]:-}"
+    done
+    # every mount point on the way down to the path must be on the chain
+    # (the root's own entry has no mount point above it)
+    [[ "$_mp" != / && -n "${_MG_TOP_FS[/]+x}" && -z "${_chain[${_MG_TOP_ID[/]}]+x}" ]] && { _MG_HIDER=/; return 0; }
+    local _rest="${_mp#/}" _part
+    while [[ "$_rest" == */* ]]; do
+        _part="${_rest%%/*}"; _rest="${_rest#*/}"; _r="$_r/$_part"
+        if [[ -n "${_MG_TOP_FS[$_r]+x}" && -z "${_chain[${_MG_TOP_ID[$_r]}]+x}" ]]; then
+            _MG_HIDER="$_r"; return 0
+        fi
     done
     return 1
 }
@@ -3406,15 +3441,22 @@ _mg_depth() { local _s="${1//[^\/]/}"; printf '%s' "${#_s}"; }
 # _ever (the expectations seen at arming) of _mount_guard_run, which is
 # in scope by bash's dynamic scoping. Returns 0 when blocked, with
 # _MG_BLOCK = "above" (an ancestor is still missing: wait, its own repair
-# comes first) or "below" (an expected mount below is present and would
-# be hidden: refuse).
+# comes first) or "below" (an expected mount below is present, cannot be
+# re-created, and would be hidden: refuse).
+#
+# A present mount below that CAN be re-created does not block: binding
+# INDEX again hides it, and the same parent-first pass then restores it
+# on top (_mg_hidden sees it as lost). That is what unsticks a child
+# that was restored onto the fall-through path while its parent was
+# missing; refusing here would leave the parent missing for good.
 _MG_BLOCK=""
 _mg_repair_blocked() {
     local _p="${_MG_PATH[$1]}" _j _q
     _MG_BLOCK=""
     for _j in "${!_MG_PATH[@]}"; do
         _q="${_MG_PATH[_j]}"
-        if [[ "$_q" == "$_p"/* && -n "${_MG_TOP_FS[${_MG_ESC[_j]}]+x}" ]]; then
+        if [[ "$_q" == "$_p"/* && -n "${_MG_TOP_FS[${_MG_ESC[_j]}]+x}" \
+              && -z "${_MG_HOW[_j]:-}" ]]; then
             _MG_BLOCK=below; return 0
         fi
         if [[ "$_p" == "$_q"/* && -n "${_ever[$_j]:-}" && -z "${_MG_TOP_FS[${_MG_ESC[_j]}]+x}" ]]; then
@@ -3442,6 +3484,15 @@ _mg_evaluate() {
         fi
         return 0
     fi
+    _mg_fallthrough_verdict "$_i"
+}
+
+# _mg_fallthrough_verdict INDEX — the verdict for expectation INDEX whose
+# own mount cannot be reached (gone, or hidden: see _mg_hidden): the path
+# shows the deepest mount above it. Sets _MG_VERDICT and _MG_WHAT.
+_mg_fallthrough_verdict() {
+    local _i="$1" _mp _cov _covfs _covopts _kind
+    _mp="${_MG_ESC[_i]}"; _kind="${_MG_KIND[_i]}"
     _cov="$(_mg_covering "$_mp")" || _cov="/"
     _covfs="${_MG_TOP_FS[$_cov]:-}"; _covopts="${_MG_TOP_OPTS[$_cov]:-}"
     case "$_kind" in
@@ -3449,6 +3500,7 @@ _mg_evaluate() {
         ro)   _MG_WHAT="read-only overlay lost" ;;
         *)    _MG_WHAT="mask lost" ;;
     esac
+    [[ -n "${_MG_TOP_FS[$_mp]+x}" ]] && _MG_WHAT="${_MG_WHAT} (it is still in the mount table but hidden under a newer mount)"
     _MG_WHAT="$_MG_WHAT; path now falls through to the $(_mg_is_ro "$_covopts" && echo read-only || echo WRITABLE) ${_covfs:-?} mount at $(printf '%b' "${_cov//\\/\\0}")"
     # Exposed: a protective mount (mask, or read-only overlay now under a
     # writable mount) on a policy path, falling through to host data.
@@ -3519,6 +3571,17 @@ _mount_guard_notify() {
     fi
 }
 
+# _mg_baseline_hidden — record which guarded expectations are hidden
+# under a newer mount in the table last read (_base_hid); in the dynamic
+# scope of _mount_guard_run.
+_mg_baseline_hidden() {
+    local _i
+    _base_hid=()
+    for _i in "${_guarded[@]}"; do
+        if _mg_hidden "$_i"; then _base_hid[$_i]=1; fi
+    done
+}
+
 # _mg_reload_state — adopt the session's new expectation set (written by
 # `agent-sandbox reload` to $_SESS_DIR/state.tsv) and re-arm on it. Runs
 # in the dynamic scope of _mount_guard_run and rebuilds its bookkeeping
@@ -3527,11 +3590,12 @@ _mount_guard_notify() {
 # a mount that never existed).
 _mg_reload_state() {
     local _sf="${_SESS_DIR:-}/state.tsv" _i _p _e _gen
-    local -A _o_opts=() _o_ro=()
+    local -A _o_opts=() _o_ro=() _o_hid=()
     [[ -n "${_SESS_DIR:-}" && -r "$_sf" ]] || return 0
     for _i in "${_guarded[@]}"; do
         _p="${_MG_PATH[_i]}"
         _o_opts["$_p"]="${_base_opts[$_i]:-}"; _o_ro["$_p"]="${_base_ro[_i]:-0}"
+        _o_hid["$_p"]="${_base_hid[$_i]:-0}"
     done
     _mg_load_state "$_sf" guard || return 0
     _mg_read_mountinfo "$_target" || return 0
@@ -3555,6 +3619,18 @@ _mg_reload_state() {
         mapfile -t _d < <(printf '%s\n' "${_sorted[@]}" | sort -n -s -k1,1)
         _guarded=(); for _i in "${_d[@]}"; do _guarded+=("${_i#* }"); done
     fi
+    # Hidden baseline: what was hidden before the reload stays what it
+    # was (a mount stuck under a newer one is still a loss afterwards);
+    # an expectation the reload added is judged on the table as it is now.
+    _base_hid=()
+    for _i in "${_guarded[@]}"; do
+        _p="${_MG_PATH[_i]}"
+        if [[ -n "${_o_hid[$_p]+x}" ]]; then
+            [[ "${_o_hid[$_p]}" == 1 ]] && _base_hid[$_i]=1
+        elif _mg_hidden "$_i"; then
+            _base_hid[$_i]=1
+        fi
+    done
     _gen="$(cat "${_SESS_DIR}/state.gen" 2>/dev/null)" || _gen=""
     [[ -z "$_gen" ]] || _sess_publish guard.ack "$_gen"
     return 0
@@ -3572,7 +3648,7 @@ _mount_guard_run() {
     # so a loss that happens while the table is still settling is caught
     # too (it was present in an earlier poll).
     local -a _guarded=() _base_ro=()
-    local -A _ever=() _base_opts=()
+    local -A _ever=() _base_opts=() _base_hid=()
     local _i _stable=0 _nseen=0
     while (( _tries < 240 && _stable < 2 )); do
         _tries=$((_tries + 1))
@@ -3598,6 +3674,10 @@ _mount_guard_run() {
         sleep 0.25
     done
     [[ -n "$_target" ]] && (( ${#_guarded[@]} )) || return 0
+    # A mount that is already under a newer mount now (the layout puts a
+    # bind over it, on purpose) is not a loss: only a mount that becomes
+    # hidden later is. The last poll's table is the settled one.
+    _mg_baseline_hidden
     _tstart="$(_proc_starttime "$_target")" || return 0
     _ns="$(readlink "/proc/$_target/ns/mnt" 2>/dev/null)" || return 0
     # Parents before children: shallow paths first (stable within a depth).
@@ -3615,7 +3695,7 @@ _mount_guard_run() {
     # (sandbox-lib.sh §Live sessions).
     _sess_publish ns "$_target ${_ns//[^0-9]/} $_tstart"
     local -A _reported=() _repfail=() _nextt=() _delay=()
-    local _mp _verdict _what _p _k _nsino="${_ns//[^0-9]/}" _rrc _gone _pre _retry _d
+    local _mp _verdict _what _p _k _nsino="${_ns//[^0-9]/}" _rrc _gone _pre _retry _d _hid
     # repair is a bwrap feature (firejail's namespaces are root-owned and
     # cannot be entered unprivileged): elsewhere it behaves as warn.
     local _mg_note=""
@@ -3648,12 +3728,17 @@ _mount_guard_run() {
             _mp="${_MG_ESC[_i]}"
             [[ -z "${_reported[$_i]:-}" ]] || continue
             _mg_evaluate "$_i" "${_base_ro[_i]}"
-            _verdict="$_MG_VERDICT"; _what="$_MG_WHAT"
+            _verdict="$_MG_VERDICT"; _what="$_MG_WHAT"; _hid=""
+            if [[ -z "$_verdict" && "${_base_hid[_i]:-0}" != 1 ]] && _mg_hidden "$_i"; then
+                # Present in the table but under a newer mount: lost.
+                _mg_fallthrough_verdict "$_i"
+                _verdict="$_MG_VERDICT"; _what="$_MG_WHAT"; _hid=1
+            fi
             [[ -n "$_verdict" ]] || continue
             if [[ "$_mode" == repair ]]; then
                 # Only a mount that is gone can be re-created (a read-only
                 # mount turned writable cannot happen from outside).
-                _gone=""; [[ -z "${_MG_TOP_FS[$_mp]+x}" ]] && _gone=1
+                _gone=""; [[ -z "${_MG_TOP_FS[$_mp]+x}" || -n "$_hid" ]] && _gone=1
                 [[ "${_MG_HOW[_i]}" == rw && "${_base_ro[_i]}" != 1 ]] && _mg_is_ro "${_MG_TOP_OPTS[$_mp]:-}" && _gone=1
                 _rrc=2; _MG_REPAIR_ERR="the mount is still there but no longer read-only"
                 _pre="${_MG_TOP_ID[$_mp]:-}"
