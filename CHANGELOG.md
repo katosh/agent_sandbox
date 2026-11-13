@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.4] - 2026-11-13
+
 ### Fixed
 
 - **Home binds are mounted parents first (#96).** With a tmpfs home, all
