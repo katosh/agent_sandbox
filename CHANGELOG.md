@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Test LR06 (live reload) no longer races the mount guard's start-up.** It
+  reloaded as soon as the session's `ns` file existed, but the guard
+  writes `guard.pid` a moment later, so on a loaded CI runner the reload
+  correctly said "Mount guard: not running" and the test failed. It now
+  waits for both. No product change.
 - **`filtered` network mode: bwrap now gets its seccomp filter and seeded files.**
   pasta closes every inherited file descriptor above 2 before it runs its
   command, so the `--seccomp` fd (and the fds for seeded home files) that
