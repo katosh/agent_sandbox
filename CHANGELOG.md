@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-11-13
+
+### Changed
+
+- **Shell batch scripts no longer launch as `<shell> -s -- <args>`.** The
+  wrapper now writes the script (from stdin) to a private `mktemp -d` directory
+  inside the sandbox as `slurm_script` (the name slurmd gives its spool copy),
+  removed on exit, and runs `<shell> FILE <args>`, as
+  non-shell interpreters already did. This avoids the script-on-stdin
+  launch form that was suspected in a report of sbatch jobs with a 7.8 GB
+  file argument stalling before the script starts; that stall was not
+  reproduced, so this is not a confirmed fix for it. Side effects: `$0`
+  and `BASH_SOURCE` are `/tmp/.chaperon-XXXXXX/slurm_script` instead of the shell name, and
+  the script's stdin is at EOF instead of the script text.
+
 ### Fixed
 
 - **Test LR06 (live reload) no longer races the mount guard's start-up.** It
@@ -31,7 +46,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the same full-range spec, so such a host degrades `filtered` and the
   `NETWORK_FILTER_FALLBACK` policy applies, with the reason naming the
   limit. Any other pasta start-up failure degrades the same way.
-
 - **A truncated chaperon request is no longer merged with the next one.**
   The chaperon serves one request at a time. A stub whose write timed out
   while it was busy was killed partway through a message larger than the
@@ -182,16 +196,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   overlay also works on kernels older than 5.12, and it now refuses
   unless the sandbox's user namespace is owned by the calling uid and
   is not the host's.
-- **Shell batch scripts no longer launch as `<shell> -s -- <args>`.** The
-  wrapper now writes the script (from stdin) to a private `mktemp -d` directory
-  inside the sandbox as `slurm_script` (the name slurmd gives its spool copy),
-  removed on exit, and runs `<shell> FILE <args>`, as
-  non-shell interpreters already did. This avoids the script-on-stdin
-  launch form that was suspected in a report of sbatch jobs with a 7.8 GB
-  file argument stalling before the script starts; that stall was not
-  reproduced, so this is not a confirmed fix for it. Side effects: `$0`
-  and `BASH_SOURCE` are `/tmp/.chaperon-XXXXXX/slurm_script` instead of the shell name, and
-  the script's stdin is at EOF instead of the script text.
 
 ## [0.15.1] - 2026-10-11
 
