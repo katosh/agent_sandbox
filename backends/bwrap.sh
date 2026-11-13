@@ -948,9 +948,19 @@ backend_exec() {
         _is_blocked_by_pattern "$_name" && { unset "$_name" 2>/dev/null || true; } || true
     done < <(env)
 
+    # filtered mode: pasta closes every inherited fd above 2 before it
+    # starts its command, so fds opened here would reach bwrap as "Bad file
+    # descriptor" (`bwrap: Can't read seccomp data`). The files are then
+    # opened by a small launcher that runs INSIDE pasta (see below).
+    local _via_pasta=0
+    if [[ "${_NETWORK_FILTER_BWRAP_PENDING:-0}" == "1" \
+          && -n "${_NETWORK_FILTER_HELPER:-}" ]]; then
+        _via_pasta=1
+    fi
+
     # Open seccomp FD now (after sandbox-exec.sh's FD cleanup) and
     # replace the placeholder with the actual FD number.
-    if [[ -n "${_SECCOMP_TMPFILE:-}" && -f "${_SECCOMP_TMPFILE:-}" ]]; then
+    if (( ! _via_pasta )) && [[ -n "${_SECCOMP_TMPFILE:-}" && -f "${_SECCOMP_TMPFILE:-}" ]]; then
         local _seccomp_fd
         exec {_seccomp_fd}<"$_SECCOMP_TMPFILE"
         rm -f "$_SECCOMP_TMPFILE"
@@ -962,7 +972,7 @@ backend_exec() {
     # the sandbox's tmpfs HOME. We rm the staged temp file as soon as
     # the FD is open — the inode persists for the FD's lifetime, and
     # bwrap inherits the FD across exec.
-    if [[ ${#_SEED_TMPFILES[@]} -gt 0 ]]; then
+    if (( ! _via_pasta )) && [[ ${#_SEED_TMPFILES[@]} -gt 0 ]]; then
         local _i _seed_fd
         for ((_i=0; _i<${#_SEED_TMPFILES[@]}; _i++)); do
             exec {_seed_fd}<"${_SEED_TMPFILES[$_i]}"
@@ -1009,8 +1019,35 @@ backend_exec() {
         if [[ -n "${_NETWORK_FILTER_PASTA_UDP_SPEC:-}" ]]; then
             _pasta_args+=(-U "$_NETWORK_FILTER_PASTA_UDP_SPEC")
         fi
+        # The launcher runs inside pasta, opens the seccomp and seed files
+        # there (fds do not survive pasta), swaps the __*_FD__ placeholders
+        # for the fd numbers, removes the staged files and execs bwrap.
+        # The paths travel in variables that the launcher unsets before
+        # bwrap (and so the sandbox) can see them.
+        local _launcher='_f=${_ASB_SECCOMP_FILE:-}; _s=${_ASB_SEED_FILES:-}
+unset _ASB_SECCOMP_FILE _ASB_SEED_FILES
+a=("$@")
+if [[ -n $_f ]]; then
+    exec {_sfd}<"$_f" || exit 1
+    rm -f "$_f"
+    a=("${a[@]/__SECCOMP_FD__/$_sfd}")
+fi
+_i=0
+while IFS= read -r _p; do
+    [[ -n $_p ]] || continue
+    exec {_sd}<"$_p" || exit 1
+    rm -f "$_p"
+    a=("${a[@]/__SEED_FD_${_i}__/$_sd}")
+    _i=$(( _i + 1 ))
+done <<<"$_s"
+exec "${a[@]}"'
+        local _seed_list=""
+        if [[ ${#_SEED_TMPFILES[@]} -gt 0 ]]; then
+            _seed_list="$(printf '%s\n' "${_SEED_TMPFILES[@]}")"
+        fi
+        _ASB_SECCOMP_FILE="${_SECCOMP_TMPFILE:-}" _ASB_SEED_FILES="$_seed_list" \
         _exec_or_run_sandbox "$_pasta" "${_pasta_args[@]}" -- \
-            "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
+            bash -c "$_launcher" _asb_launcher "$BWRAP" "${BWRAP_ARGS[@]}" -- "$@"
         exit $?
     fi
 

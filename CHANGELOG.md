@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`filtered` network mode: bwrap now gets its seccomp filter and seeded files.**
+  pasta closes every inherited file descriptor above 2 before it runs its
+  command, so the `--seccomp` fd (and the fds for seeded home files) that
+  the launcher opened were invalid in bwrap: every launch in filtered mode
+  failed with `bwrap: Can't read seccomp data: Bad file descriptor`. It
+  showed up in Slurm jobs, where the open-files limit is high enough for
+  pasta to start. The files are now opened by a small launcher that runs
+  inside pasta, which also removes them and unsets its own variables.
+- **`filtered` network mode no longer kills the launch on hosts with a low
+  open-files limit.** In filtered mode pasta listens on every
+  non-excluded TCP and UDP port, about 65k sockets each. On a host whose
+  `RLIMIT_NOFILE` hard limit is below ~140000 (65536 on current GitHub
+  runners) pasta exited with `Couldn't listen on requested TCP ports` and
+  `sandbox-exec.sh` failed to start at all. The start-up probe now uses
+  the same full-range spec, so such a host degrades `filtered` and the
+  `NETWORK_FILTER_FALLBACK` policy applies, with the reason naming the
+  limit. Any other pasta start-up failure degrades the same way.
+
 - **A truncated chaperon request is no longer merged with the next one.**
   The chaperon serves one request at a time. A stub whose write timed out
   while it was busy was killed partway through a message larger than the

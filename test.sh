@@ -5874,6 +5874,13 @@ _h67_glue_test() {
         echo "test chaperon did not start: $(cat "$_root/chaperon.err")"
         return 1
     fi
+    # Hold the request FIFO open read-write for the whole test. A FIFO
+    # drops its buffered bytes when the last descriptor closes, so a
+    # truncated request written by (A)/(B) before the chaperon had opened
+    # its read end (the log appears first) vanished, and the glue was never
+    # seen (CI: "(A) rc=0 out=[ARGS:--version]", one drop logged instead of 2).
+    local _hold
+    exec {_hold}<>"$_fifo/req"
     _stub() {  # <stub> [args...]: run a real stub from the project dir
         (cd "$_proj" && _CHAPERON_FIFO_DIR="$_fifo" timeout 60 bash "$SCRIPT_DIR/chaperon/stubs/$1" "${@:2}" 2>&1)
     }
@@ -5912,6 +5919,7 @@ _h67_glue_test() {
         || { echo "(D) 200 KiB sbatch: rc=$_rc out=[$(head -c 300 <<< "$_out")] wrapper=$(wc -c < "$_root/wrapper.copy" 2>/dev/null)"; _bad=1; }
 
     kill "$_pid" 2>/dev/null; wait "$_pid" 2>/dev/null
+    exec {_hold}>&-
 
     # (E) Nobody reads the request FIFO.
     _out="$(cd "$_proj" && _CHAPERON_FIFO_DIR="$_root/dead" timeout 30 bash "$SCRIPT_DIR/chaperon/stubs/sinfo" --version 2>&1)"; _rc=$?
@@ -6838,7 +6846,7 @@ if has_mount_ns; then
                 [[ -n "$m1$m2$m3" && "$m1$m2$m3" == 111 ]] && break
                 sleep 0.25
             done
-            [[ -n "$m1" ]] && { echo x > "$1" 2>/dev/null || echo "MASKED-FILE"; }
+            [[ -n "$m1" ]] && { { echo x > "$1"; } 2>/dev/null || echo "MASKED-FILE"; }
             [[ -n "$m2" ]] && { touch "$2/new" 2>/dev/null; [[ -e "$2/h2" ]] || echo "MASKED-DIR"; }
             [[ -n "$m3" ]] && echo "RO-STATE"
             true' _ "$_ml_secret" "$_ml_hid" "$_ml_go" "$_ml_ready" "$_ml_state" \
@@ -9164,6 +9172,85 @@ STUB
     pass "Network filter: pasta forwarding probe gates filtered when helper degrades to loopback-only"
 else
     fail "Network filter: pasta forwarding probe test failed (rc=$?)"
+fi
+
+# Pasta start-up probe uses the full-range spec. In filtered mode pasta
+# listens on every non-excluded TCP and UDP port (~65k sockets each), so a
+# host whose open-files hard limit is too low (65536 on GitHub runners)
+# kills the launch with "Couldn't listen on requested TCP ports". The probe
+# must see that and degrade filtered (so the fallback policy applies)
+# instead of letting the launch fail. A pasta that fails for any other
+# reason must degrade too; a healthy one must not.
+if (
+    set -uo pipefail
+    export _SANDBOX_LIB_NO_INIT=1 SANDBOX_QUIET=true
+    source "$SCRIPT_DIR/sandbox-lib.sh"
+    set +e
+    _d="$(mktemp -d "${TMPDIR:-/tmp}/pasta-probe.XXXXXX")"
+    trap 'rm -rf "$_d"' EXIT
+    # Fake pasta: fails like the real one unless the spec is small.
+    cat >"$_d/pasta_nofile" <<'STUB'
+#!/usr/bin/env bash
+for _a in "$@"; do
+    if [[ "$_a" == "~25" ]]; then
+        echo "L4 socket: Too many open files" >&2
+        echo "Couldn't listen on requested TCP ports" >&2
+        exit 1
+    fi
+done
+exit 0
+STUB
+    printf '#!/usr/bin/env bash\necho "something else broke" >&2\nexit 3\n' >"$_d/pasta_weird"
+    printf '#!/usr/bin/env bash\necho "Cannot run AVX2 build, using non-AVX2 version" >&2\nexit 0\n' >"$_d/pasta_ok"
+    chmod 755 "$_d"/pasta_*
+    _NETWORK_HELPER_DEGRADED_REASON=""
+    _pasta_can_forward_outbound "$_d/pasta_nofile" \
+        && { echo "full-range listen failure not detected"; exit 1; }
+    [[ "$_NETWORK_HELPER_PROBE_RESULT" == degraded && "$_NETWORK_HELPER_DEGRADED_REASON" == *"nofile hard limit"* ]] \
+        || { echo "nofile case: result='$_NETWORK_HELPER_PROBE_RESULT' reason='$_NETWORK_HELPER_DEGRADED_REASON'"; exit 1; }
+    _NETWORK_HELPER_DEGRADED_REASON=""
+    _pasta_can_forward_outbound "$_d/pasta_weird" \
+        && { echo "generic start-up failure not detected"; exit 1; }
+    [[ "$_NETWORK_HELPER_DEGRADED_REASON" == *"something else broke"* ]] \
+        || { echo "weird case reason='$_NETWORK_HELPER_DEGRADED_REASON'"; exit 1; }
+    _pasta_can_forward_outbound "$_d/pasta_ok" \
+        || { echo "healthy pasta (rc 0, harmless stderr) wrongly degraded"; exit 1; }
+    [[ "$_NETWORK_HELPER_PROBE_RESULT" == ok ]] || { echo "healthy: result='$_NETWORK_HELPER_PROBE_RESULT'"; exit 1; }
+    exit 0
+); then
+    pass "Network filter: pasta probe degrades filtered when pasta cannot bind its full port range (low nofile) or fails to start"
+else
+    fail "Network filter: pasta full-range probe test failed"
+fi
+
+# filtered mode: pasta closes every inherited fd above 2 before it runs its
+# command, so bwrap's --seccomp / seeded-file fds opened by the launcher
+# arrived as "Bad file descriptor" and every filtered launch failed. The
+# fds must be opened by a launcher that runs inside pasta. A fake pasta
+# (closes fds >= 3, execs the command after `--`) reproduces the real one.
+if is_bwrap && has_mount_ns && command -v python3 >/dev/null 2>&1; then
+    _pf_dir="$(mktemp -d "${TMPDIR:-/tmp}/pasta-fd.XXXXXX")"
+    _TEST_TEMP_FILES+=("$_pf_dir/pasta")
+    cat >"$_pf_dir/pasta" <<'STUB'
+#!/usr/bin/env python3
+import os, sys
+a = sys.argv[1:]
+cmd = a[a.index("--") + 1:]
+os.closerange(3, 65536)
+os.execvp(cmd[0], cmd)
+STUB
+    chmod 755 "$_pf_dir/pasta"
+    _pf_out="$(PATH="$_pf_dir:$PATH" NETWORK_FILTER_MODE=filtered NETWORK_FILTER_FALLBACK=strict \
+        timeout 60 "$SANDBOX_EXEC" --backend bwrap --project-dir "$PROJECT_DIR" -- \
+        bash -c 'echo LAUNCHED; grep "^Seccomp:" /proc/self/status' 2>&1)"
+    if [[ "$_pf_out" == *LAUNCHED* && "$_pf_out" == *$'Seccomp:\t2'* ]]; then
+        pass "filtered mode: seccomp filter and seeded files reach bwrap through pasta (fds reopened inside it)"
+    else
+        fail "filtered mode: launch through an fd-closing pasta failed" "$_pf_out"
+    fi
+    rm -rf "$_pf_dir"
+else
+    skip "filtered mode fd passing through pasta: bwrap with user namespaces and python3 needed"
 fi
 
 # Mode resolution failure paths exit the parent process via _network_filter_fail.
