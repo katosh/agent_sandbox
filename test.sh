@@ -7444,6 +7444,65 @@ else
 fi
 unset _rm_l1 _rm_l2 _rm_l4 _rm_l5
 
+# RB14. A mount that the layout itself puts under a newer one at start is
+# not a loss: _base_hid exempts it. The lookup used a bare `_i` as key of
+# the associative _base_hid, which never matched, so every such mount
+# (".cache/claude" under a writable ".cache") was reported as LOST at
+# the guard's first pass. Unit-style, on a mountinfo fixture.
+_rb14_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    mkdir -p "$_T/par/proj/child" "$_T/h"
+    HOME="$_T/h"; BLOCKED_FILES=(); EXTRA_BLOCKED_PATHS=()
+    backend_mount_expectations() { printf '%s\n' "ro:same $_T/par" "rw:same $_T/par/proj" "ro:same $_T/par/proj/child"; }
+    _mount_guard_prepare "$_T/par/proj" || { echo "prepare failed"; exit 0; }
+    for i in "${!_MG_PATH[@]}"; do [[ "${_MG_PATH[i]}" == "$_T/par/proj/child" ]] && _C="$i"; done
+    _mi() { printf '%s %s 8:1 / %s %s - ext4 /dev/x rw\n' "$1" "$2" "$3" "$4"; }
+    { _mi 1 0 / rw; _mi 2 1 "$_T/par" ro,nosuid,nodev; _mi 3 2 "$_T/par/proj/child" ro,nosuid,nodev; _mi 4 2 "$_T/par/proj" rw,nosuid,nodev; } > "$_T/mi.hidden"
+    _mg_read_mountinfo "$_T/mi.hidden"
+    declare -A _base_hid=()
+    _mg_newly_hidden "$_C" && printf 'fresh:lost ' || printf 'fresh:ok '
+    _base_hid[$_C]=1
+    _mg_newly_hidden "$_C" && printf 'at-start:lost' || printf 'at-start:ok'
+)"
+if [[ "$_rb14_out" == "fresh:lost at-start:ok" ]]; then
+    pass "RB14: a mount hidden by the layout at start is exempt; one hidden later is lost"
+else
+    fail "RB14: at-start hidden exemption" "got: $_rb14_out"
+fi
+unset _rb14_out
+
+# HB01. HOME_READONLY / HOME_WRITABLE binds are emitted parents first, so
+# a narrower entry lands on top of its parent: a read-only child of a
+# writable dir (".cache/claude" under ".cache") stays read-only, and file
+# binds inside a listed dir (".ssh/x.pem" with ".ssh") are not covered by
+# it. Ties keep the old order (read-only list, then writable): a path in
+# both lists ends writable. Seeded entries are skipped. Host-side unit
+# test of the arg builder in a throwaway fake HOME.
+_hb01_out="$(
+    _T="$(mktemp -d)"; trap 'rm -rf "$_T"' EXIT
+    HOME="$_T"
+    mkdir -p "$HOME/.cache/claude" "$HOME/.ssh" "$HOME/both" "$HOME/seed"
+    : > "$HOME/.ssh/x.pem"; : > "$HOME/seed/f"
+    source "$SCRIPT_DIR/backends/bwrap.sh" 2>/dev/null
+    HOME_READONLY=(".cache/claude" ".ssh/x.pem" ".ssh" "both" "seed/f" "missing")
+    HOME_WRITABLE=(".cache" "both")
+    HOME_SEEDED_FILES=("seed/f")
+    BWRAP_ARGS=()
+    _bwrap_home_list_binds
+    for ((k=0; k<${#BWRAP_ARGS[@]}; k+=3)); do
+        printf '%s:%s ' "${BWRAP_ARGS[k]}" "${BWRAP_ARGS[k+1]#$HOME/}"
+    done
+)"
+_hb01_exp="--ro-bind:.ssh --ro-bind:both --bind:.cache --bind:both --ro-bind:.cache/claude --ro-bind:.ssh/x.pem "
+if [[ "$_hb01_out" == "$_hb01_exp" ]]; then
+    pass "HB01: home binds are emitted parents first (read-only child of a writable dir stays on top)"
+else
+    fail "HB01: home bind order" "got: $_hb01_out | want: $_hb01_exp"
+fi
+unset _hb01_out _hb01_exp
+
 # RB13. End to end: the project's read-only child overlay is restored
 # onto the fall-through path while the project bind is missing (the two
 # invalidations the guard cannot tell apart), so the path is listed twice

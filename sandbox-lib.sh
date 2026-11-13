@@ -3571,6 +3571,16 @@ _mount_guard_notify() {
     fi
 }
 
+# _mg_newly_hidden INDEX — true when expectation INDEX is under a newer
+# mount now (_mg_hidden) and was not already at arming (_base_hid, in the
+# dynamic scope of _mount_guard_run). _base_hid is associative, so the
+# key must be "$1": a bare name as subscript is not evaluated and looked
+# up the literal key, which made every mount hidden by the layout at
+# start (".cache/claude" under ".cache") count as lost.
+_mg_newly_hidden() {
+    [[ "${_base_hid[$1]:-0}" != 1 ]] && _mg_hidden "$1"
+}
+
 # _mg_baseline_hidden — record which guarded expectations are hidden
 # under a newer mount in the table last read (_base_hid); in the dynamic
 # scope of _mount_guard_run.
@@ -3729,7 +3739,7 @@ _mount_guard_run() {
             [[ -z "${_reported[$_i]:-}" ]] || continue
             _mg_evaluate "$_i" "${_base_ro[_i]}"
             _verdict="$_MG_VERDICT"; _what="$_MG_WHAT"; _hid=""
-            if [[ -z "$_verdict" && "${_base_hid[_i]:-0}" != 1 ]] && _mg_hidden "$_i"; then
+            if [[ -z "$_verdict" ]] && _mg_newly_hidden "$_i"; then
                 # Present in the table but under a newer mount: lost.
                 _mg_fallthrough_verdict "$_i"
                 _verdict="$_MG_VERDICT"; _what="$_MG_WHAT"; _hid=1

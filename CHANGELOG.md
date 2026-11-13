@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Home binds are mounted parents first (#96).** With a tmpfs home, all
+  `HOME_READONLY` entries were bound and then all `HOME_WRITABLE`
+  entries, in list order. A later bind on an ancestor covers the mounts
+  below it, so a read-only child of a writable dir (`.cache/claude`
+  under `.cache`) was in fact writable, and file binds listed before
+  their directory (`.ssh/cert.pem` before `.ssh`) were covered by it.
+  The binds are now sorted by path depth, keeping list order within a
+  depth (a path in both lists still ends up writable). A read-only
+  child of a writable dir is now read-only, as configured.
+- **Mount guard: a mount hidden by the layout at start is no longer
+  reported as lost (#96).** 0.17.3's exemption looked up `_base_hid`
+  with a bare subscript; the array is associative, so the key never
+  matched and every such mount was reported as `protection LOST` or
+  `degraded; restart it` on the guard's first pass, in every session
+  and Slurm job.
+
 ## [0.17.3] - 2026-11-13
 
 ### Fixed

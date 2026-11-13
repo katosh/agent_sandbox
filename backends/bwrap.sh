@@ -175,6 +175,45 @@ $_stderr_indented
 
 # ── Backend interface ────────────────────────────────────────────
 
+# _bwrap_home_list_binds — append the HOME_READONLY (--ro-bind) and
+# HOME_WRITABLE (--bind) entries that exist to BWRAP_ARGS, parents before
+# children. bwrap applies mounts in argument order and a later bind on an
+# ancestor path covers an earlier one below it, so emitting the two lists
+# one after the other let a writable parent (".cache") hide a read-only
+# child (".cache/claude") and a directory (".ssh") hide file binds inside
+# it: the narrower entry silently stopped applying. Sorting by path depth
+# puts every entry on top of its parent; at equal depth the old order is
+# kept (read-only list first, then writable, each in list order), so the
+# same path in both lists still ends up writable. Entries that are also
+# HOME_SEEDED_FILES are skipped (the seeded copy wins).
+_bwrap_home_list_binds() {
+    local _subdir _s _seeded _rec _seq=0 _depth _p
+    local -a _recs=() _sorted=()
+    for _subdir in "${HOME_READONLY[@]}"; do
+        _seeded=false
+        for _s in "${HOME_SEEDED_FILES[@]}"; do
+            [[ "$_subdir" == "$_s" ]] && { _seeded=true; break; }
+        done
+        $_seeded && continue
+        [[ -e "$HOME/$_subdir" ]] || continue
+        _p="${_subdir%/}"; _depth="${_p//[^\/]/}"
+        _recs+=("${#_depth}"$'\t'"$_seq"$'\t'"--ro-bind"$'\t'"$HOME/$_subdir")
+        _seq=$((_seq + 1))
+    done
+    for _subdir in "${HOME_WRITABLE[@]}"; do
+        [[ -e "$HOME/$_subdir" ]] || continue
+        _p="${_subdir%/}"; _depth="${_p//[^\/]/}"
+        _recs+=("${#_depth}"$'\t'"$_seq"$'\t'"--bind"$'\t'"$HOME/$_subdir")
+        _seq=$((_seq + 1))
+    done
+    (( ${#_recs[@]} )) || return 0
+    mapfile -t _sorted < <(printf '%s\n' "${_recs[@]}" | sort -t $'\t' -k1,1n -k2,2n)
+    for _rec in "${_sorted[@]}"; do
+        _rec="${_rec#*$'\t'}"; _rec="${_rec#*$'\t'}"
+        BWRAP_ARGS+=("${_rec%%$'\t'*}" "${_rec#*$'\t'}" "${_rec#*$'\t'}")
+    done
+}
+
 backend_available() {
     if _probe_bwrap; then
         return 0
@@ -430,27 +469,7 @@ backend_prepare() {
             _seed_idx=$((_seed_idx + 1))
         done
 
-        for subdir in "${HOME_READONLY[@]}"; do
-            # Skip entries that are also seeded — the seed wins, and a
-            # following --ro-bind would clobber the writable copy.
-            local _is_seeded=false
-            local _s
-            for _s in "${HOME_SEEDED_FILES[@]}"; do
-                [[ "$subdir" == "$_s" ]] && { _is_seeded=true; break; }
-            done
-            $_is_seeded && continue
-            local full_path="$HOME/$subdir"
-            if [[ -e "$full_path" ]]; then
-                BWRAP_ARGS+=(--ro-bind "$full_path" "$full_path")
-            fi
-        done
-
-        for subdir in "${HOME_WRITABLE[@]}"; do
-            local full_path="$HOME/$subdir"
-            if [[ -e "$full_path" ]]; then
-                BWRAP_ARGS+=(--bind "$full_path" "$full_path")
-            fi
-        done
+        _bwrap_home_list_binds
     else
         # read/write: bind real HOME, then hide credential dirs
         if [[ "${HOME_ACCESS}" == "read" ]]; then
