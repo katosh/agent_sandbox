@@ -5874,6 +5874,13 @@ _h67_glue_test() {
         echo "test chaperon did not start: $(cat "$_root/chaperon.err")"
         return 1
     fi
+    # Hold the request FIFO open read-write for the whole test. A FIFO
+    # drops its buffered bytes when the last descriptor closes, so a
+    # truncated request written by (A)/(B) before the chaperon had opened
+    # its read end (the log appears first) vanished, and the glue was never
+    # seen (CI: "(A) rc=0 out=[ARGS:--version]", one drop logged instead of 2).
+    local _hold
+    exec {_hold}<>"$_fifo/req"
     _stub() {  # <stub> [args...]: run a real stub from the project dir
         (cd "$_proj" && _CHAPERON_FIFO_DIR="$_fifo" timeout 60 bash "$SCRIPT_DIR/chaperon/stubs/$1" "${@:2}" 2>&1)
     }
@@ -5912,6 +5919,7 @@ _h67_glue_test() {
         || { echo "(D) 200 KiB sbatch: rc=$_rc out=[$(head -c 300 <<< "$_out")] wrapper=$(wc -c < "$_root/wrapper.copy" 2>/dev/null)"; _bad=1; }
 
     kill "$_pid" 2>/dev/null; wait "$_pid" 2>/dev/null
+    exec {_hold}>&-
 
     # (E) Nobody reads the request FIFO.
     _out="$(cd "$_proj" && _CHAPERON_FIFO_DIR="$_root/dead" timeout 30 bash "$SCRIPT_DIR/chaperon/stubs/sinfo" --version 2>&1)"; _rc=$?
