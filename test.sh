@@ -7695,7 +7695,14 @@ if is_bwrap && command -v python3 >/dev/null 2>&1 && [[ -f "$SCRIPT_DIR/backends
     _lr_reload() { XDG_RUNTIME_DIR="$_lr_t/xdg" MOUNT_GUARD_INTERVAL=1 timeout 60 "$SANDBOX_EXEC" reload --project "$_ml_proj" "$@" 2>&1; }
     _lr_ok=true; _lr_why=""
     _lr_fin() { _lr_ok=false; _lr_why+="$* | "; }
-    for _i in $(seq 1 100); do compgen -G "$_lr_t/xdg/agent-sandbox/sessions/*/ns" >/dev/null && break; sleep 0.2; done
+    # The guard writes guard.pid a moment after the session's ns file. A reload
+    # in that gap rightly reports "Mount guard: not running" (CI: LR06 "add:
+    # rc=0 out=... not running for this session"), so wait for both.
+    for _i in $(seq 1 100); do
+        compgen -G "$_lr_t/xdg/agent-sandbox/sessions/*/ns" >/dev/null \
+            && compgen -G "$_lr_t/xdg/agent-sandbox/sessions/*/guard.pid" >/dev/null && break
+        sleep 0.2
+    done
     _lr_settle EE || _lr_fin "initial state not EE (last=$(_lr_last))"
     touch "$_lr_flag"
     _lr_o="$(_lr_reload --dry-run)"; _lr_c=$?
