@@ -92,6 +92,7 @@ Without an admin baseline, `~/.config/agent-sandbox/sandbox.conf` is the only co
 | [`MOUNT_GUARD`](#mount_guard) | scalar | **harden-only** when set by the admin (off < warn < repair < kill) | `repair` |
 | [`MOUNT_GUARD_INTERVAL`](#mount_guard) | scalar | no | `5` (seconds) |
 | [`MOUNT_GUARD_REBIND`](#mount_guard) | scalar | no | `true` |
+| [`CODEX_INNER_SANDBOX`](#codex_inner_sandbox) | scalar | no | `auto` |
 | [`SANDBOX_QUIET`](#sandbox_quiet) | scalar | no | `false` |
 | [`NETWORK_FILTER_MODE`](#network_filter_mode) | scalar | **harden-only** (user can only request equal or stricter) | `filtered` |
 | [`NETWORK_FILTER_FALLBACK`](#network_filter_fallback) | scalar | **harden-only** | `open` |
@@ -772,6 +773,28 @@ ENABLED_AGENTS=("claude")              # solo-claude profile
 ```
 
 Adding support for a new tool: drop in `agents/<name>/{config.conf,overlay.sh,agent.md}`, then add `"<name>"` to this list. See `agents/claude/config.conf` for the schema.
+
+### `CODEX_INNER_SANDBOX`
+
+**Type** scalar · **Admin-enforced** no · **Default** `auto` · **Values** `auto` | `landlock` | `off` | `keep`
+
+Codex runs every command in a bubblewrap sandbox of its own. That sandbox cannot start inside agent-sandbox: bubblewrap needs `mount(2)` and `pivot_root(2)`, which the seccomp filter denies on purpose, and firejail blocks user namespaces. Without this setting every command Codex runs in its default modes fails with `bwrap: Failed to make / slave: Operation not permitted`. Nesting is not supported; instead the `codex` overlay edits the **sandbox-private copy** of `config.toml` (`~/.codex/sandbox-config/config.toml`). Your real `~/.codex/config.toml` is never touched.
+
+| Value | What the overlay does |
+|---|---|
+| `auto` | `bwrap` or `firejail` backend on a kernel with Landlock (5.13+): `landlock`. Otherwise (no Landlock, or the `landlock` backend): `off`. Any other backend: `keep`. |
+| `landlock` | Adds `[features] use_legacy_landlock = true`. Codex then uses its Landlock sandbox, which needs no `mount(2)`, so it keeps its own restrictions (for example no writes outside its working directory) on top of this sandbox. |
+| `off` | Sets `sandbox_mode = "danger-full-access"` at the top level, and in every `[profiles.NAME]` table that sets its own `sandbox_mode` (a profile would win over the top level). Codex runs commands without a sandbox of its own. |
+| `keep` | Leaves `config.toml` as you wrote it. |
+
+With `off`, Codex's own restrictions stop applying: its network block, and the read-only `.git` and `.codex` inside its workspace. agent-sandbox's confinement (filesystem, credential masking, seccomp, network filter) is unchanged and was the only thing confining Codex's commands in practice, since Codex's own sandbox could not start. Your `approval_policy` is not touched. Measured with Codex 0.115: the `landlock` mode works under `bwrap` and `firejail`; under the `landlock` backend neither of Codex's modes can start commands, hence `off`.
+
+The private copy outlives a launch (it is kept while it is newer than your real file, because Codex rewrites it, for example for project trust decisions) and launches on other backends and hosts share it. So every edit is marked, and every launch first undoes the edits of earlier launches and then applies its own: an added key has a `# agent-sandbox: ... (added)` comment above it, and a replaced value keeps its original text at the end of the line after `# agent-sandbox-orig:`. A launch never inherits another launch's choice (a job on a node without Landlock does not leave `sandbox_mode` behind for your login node), `keep` restores the file exactly, and repeating a mode changes nothing. A `config.toml` the editor will not touch is left alone, with a warning that names the reason: a `sandbox_mode` value that spans several lines, a top-level `features` key that is not a `[features]` table, or a file that is not valid TOML. A `-c sandbox_mode=...` flag, or a project-level Codex config, still wins over this setting.
+
+```bash
+CODEX_INNER_SANDBOX=keep    # I know what I am doing: leave Codex's config alone
+CODEX_INNER_SANDBOX=off     # never use Codex's own sandbox
+```
 
 ### `SUPPRESS_AGENT_WARNINGS`
 

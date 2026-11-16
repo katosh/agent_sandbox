@@ -39,6 +39,17 @@ ENABLED_AGENTS=("claude")
 
 **Silencing warnings:** set `SUPPRESS_AGENT_WARNINGS=("claude")` in `sandbox.conf` to silence one agent, or `SUPPRESS_AGENT_WARNINGS=("all")` to silence every agent.
 
+### Codex and its own sandbox
+
+Codex wraps every command in a bubblewrap sandbox of its own. That cannot work inside agent-sandbox (`bwrap: Failed to make / slave: Operation not permitted`): nested bubblewrap needs `mount(2)` and `pivot_root(2)`, and the seccomp filter denies the mount family on purpose. Loosening it for nesting would remove the layer that guards against user-namespace plus mount kernel bugs, and Codex's own sandbox adds little on top of this one, so nesting is not supported.
+
+Instead, the `codex` overlay edits the sandbox-private copy of `config.toml` (never your real one), controlled by [`CODEX_INNER_SANDBOX`](../configure.md#codex_inner_sandbox):
+
+- **`landlock`** (the `auto` choice on `bwrap` and `firejail` when the kernel has Landlock, 5.13+) turns on `features.use_legacy_landlock`. Codex keeps its own sandbox, using Landlock, which needs no `mount(2)`.
+- **`off`** (the `auto` choice on older kernels and on the `landlock` backend) sets `sandbox_mode = "danger-full-access"`. Codex then runs commands without a sandbox of its own and relies on agent-sandbox, which is unchanged.
+
+If you see the `bwrap` error above, check that the `codex` agent is in `ENABLED_AGENTS` (the overlay only runs for enabled agents) and that `CODEX_INNER_SANDBOX` is not `keep`. A `-c sandbox_mode=...` flag you pass to `codex` yourself, or a project-level Codex config, overrides the overlay.
+
 ### Adding support for a new agent
 
 To add a tool not on the list above, drop a profile into `agents/<name>/` and add `"<name>"` to `ENABLED_AGENTS`. The recipe:

@@ -2654,6 +2654,191 @@ if command -v python3 &>/dev/null; then
     else
         fail "Agent overlay regression" "$(printf '%s; ' "${_ovl_bad[@]}")"
     fi
+
+    # ── CX: Codex's own sandbox (CODEX_INNER_SANDBOX) ────────────────
+    # Codex wraps every command in a bubblewrap sandbox of its own, which
+    # cannot start inside this sandbox ("bwrap: Failed to make / slave").
+    # The overlay edits the sandbox-private copy of config.toml so Codex
+    # uses its Landlock sandbox (host has Landlock) or none at all.
+    # CX01-CX03 the editor (agents/codex/inner-sandbox.py), CX04 the mode
+    # choice, CX05-CX07 the overlay end to end.
+    _cx_ed() {  # _cx_ed MODE — edit stdin; prints "rc=N" after the output
+        python3 -I "$SCRIPT_DIR/agents/codex/inner-sandbox.py" "$1" 2>/dev/null; printf 'rc=%s' "$?"
+    }
+    _cx_bad=()
+    _cx_ma='# agent-sandbox: Codex'"'"'s own sandbox cannot start inside agent-sandbox (added)'
+    _cx_ml='# agent-sandbox: Codex'"'"'s own bubblewrap sandbox cannot start inside agent-sandbox; its Landlock sandbox can (added'
+    # off: no key -> inserted above the first table; an existing key and the
+    # profile keys that would override it -> replaced, the original kept at the
+    # end of the line; empty file
+    _cx_got="$(printf 'model = "m"\n\n[t]\nx = 1\n' | _cx_ed off)"
+    [[ "$_cx_got" == $'model = "m"\n\n'"$_cx_ma"$'\nsandbox_mode = "danger-full-access"\n[t]\nx = 1\nrc=0' ]] || _cx_bad+=("off/insert: $_cx_got")
+    _cx_got="$(printf 'sandbox_mode = "workspace-write"  # tight\n[p.x]\nsandbox_mode = "read-only"\n[profiles.a]\nsandbox_mode = "read-only" # c\n[profiles."b c"]\nmodel = "z"\n' | _cx_ed off)"
+    [[ "$_cx_got" == $'sandbox_mode = "danger-full-access" # agent-sandbox-orig: "workspace-write"  # tight\n[p.x]\nsandbox_mode = "read-only"\n[profiles.a]\nsandbox_mode = "danger-full-access" # agent-sandbox-orig: "read-only" # c\n[profiles."b c"]\nmodel = "z"\nrc=0' ]] || _cx_bad+=("off/replace: $_cx_got")
+    _cx_got="$(printf '' | _cx_ed off)"
+    [[ "$_cx_got" == "$_cx_ma"$'\nsandbox_mode = "danger-full-access"\nrc=0' ]] || _cx_bad+=("off/empty: $_cx_got")
+    # a value that already is the target is not touched
+    _cx_got="$(printf 'sandbox_mode = "danger-full-access"\n' | _cx_ed off)"
+    [[ "$_cx_got" == $'sandbox_mode = "danger-full-access"\nrc=0' ]] || _cx_bad+=("off/already: $_cx_got")
+    # header-looking text inside a multi-line string or array is not a header
+    _cx_got="$(printf 'n = """\n[features]\nsandbox_mode = "read-only"\n"""\na = [\n  ["b"],\n]\n[t]\nx = 1\n' | _cx_ed off)"
+    [[ "$_cx_got" == $'n = """\n[features]\nsandbox_mode = "read-only"\n"""\na = [\n  ["b"],\n]\n'"$_cx_ma"$'\nsandbox_mode = "danger-full-access"\n[t]\nx = 1\nrc=0' ]] || _cx_bad+=("off/tricky: $_cx_got")
+    # a value on several lines is not touched: output unchanged, rc 3
+    _cx_got="$(printf 'sandbox_mode = """\nworkspace-write"""\n' | _cx_ed off)"
+    [[ "$_cx_got" == $'sandbox_mode = """\nworkspace-write"""\nrc=3' ]] || _cx_bad+=("off/multiline: $_cx_got")
+    # landlock: [features] appended, key added to / fixed in an existing table
+    _cx_got="$(printf 'model = "m"\n[t]\nx = 1\n' | _cx_ed landlock)"
+    [[ "$_cx_got" == $'model = "m"\n[t]\nx = 1\n'"$_cx_ml"$' table)\n[features]\nuse_legacy_landlock = true\nrc=0' ]] || _cx_bad+=("landlock/append: $_cx_got")
+    _cx_got="$(printf '[features]\nfoo = true\n[o]\na = 1\n' | _cx_ed landlock)"
+    [[ "$_cx_got" == $'[features]\n'"$_cx_ml"$')\nuse_legacy_landlock = true\nfoo = true\n[o]\na = 1\nrc=0' ]] || _cx_bad+=("landlock/insert: $_cx_got")
+    _cx_got="$(printf '[features]\nuse_legacy_landlock = false # off\n' | _cx_ed landlock)"
+    [[ "$_cx_got" == $'[features]\nuse_legacy_landlock = true # agent-sandbox-orig: false # off\nrc=0' ]] || _cx_bad+=("landlock/replace: $_cx_got")
+    # top-level dotted/inline features cannot take a [features] table: refuse
+    _cx_got="$(printf 'features.foo = true\n[o]\na = 1\n' | _cx_ed landlock)"
+    [[ "$_cx_got" == $'features.foo = true\n[o]\na = 1\nrc=3' ]] || _cx_bad+=("landlock/dotted: $_cx_got")
+    # CRLF files keep CRLF on every line the edit adds
+    _cx_got="$(printf 'model = "m"\r\n[t]\r\nx = 1\r\n' | python3 -I "$SCRIPT_DIR/agents/codex/inner-sandbox.py" off 2>/dev/null | tr -d '\r' | wc -l)"
+    _cx_crlf="$(printf 'model = "m"\r\n[t]\r\nx = 1\r\n' | python3 -I "$SCRIPT_DIR/agents/codex/inner-sandbox.py" off 2>/dev/null | grep -c $'\r$')"
+    [[ "$_cx_crlf" == "$_cx_got" ]] || _cx_bad+=("CRLF: $_cx_crlf of $_cx_got lines end in CR")
+    # the real parser (Python 3.11+) agrees on what the edits mean
+    if python3 -c 'import tomllib' 2>/dev/null; then
+        _cx_got="$(printf 'model = "m"\n[profiles.a]\nsandbox_mode = "read-only"\n[t]\nx = 1\n' | python3 -I "$SCRIPT_DIR/agents/codex/inner-sandbox.py" off 2>/dev/null \
+            | python3 -c 'import sys,tomllib; d=tomllib.loads(sys.stdin.read()); print(d["sandbox_mode"], d["profiles"]["a"]["sandbox_mode"], d["t"]["x"], d["model"])')"
+        [[ "$_cx_got" == "danger-full-access danger-full-access 1 m" ]] || _cx_bad+=("tomllib view: $_cx_got")
+        # invalid TOML is left alone and reported (rc 3); keep says nothing
+        _cx_got="$(printf 'model = "unterminated\n[a\n' | _cx_ed off)"
+        [[ "$_cx_got" == $'model = "unterminated\n[a\nrc=3' ]] || _cx_bad+=("invalid toml: $_cx_got")
+        _cx_got="$(printf 'model = "unterminated\n[a\n' | _cx_ed keep)"
+        [[ "$_cx_got" == $'model = "unterminated\n[a\nrc=0' ]] || _cx_bad+=("keep on invalid toml: $_cx_got")
+    fi
+    if [[ ${#_cx_bad[@]} -eq 0 ]]; then
+        pass "CX01: Codex config editor: sandbox_mode / [features] edits are placed, replaced and refused correctly (strings, arrays, profiles, CRLF)"
+    else
+        fail "CX01: Codex config editor" "$(printf '%s | ' "${_cx_bad[@]}")"
+    fi
+
+    # CX02. The private copy outlives a launch and is shared by launches on
+    # other backends and hosts, so an edit must never leak into the next
+    # one: `keep` gives the original back byte for byte, a mode switch
+    # leaves nothing of the old mode, and a mode twice is a no-op. Checked
+    # on shapes that differ in how the edit is placed (replace, insert,
+    # append, no final newline, CRLF, profiles, an existing [features]).
+    _cx_bad=()
+    _cx_ed2() { python3 -I "$SCRIPT_DIR/agents/codex/inner-sandbox.py" "$1" 2>/dev/null; echo .; }   # keeps trailing newlines
+    for _cx_in in '' 'x = 1' 'x = 1\n' '# c\n' 'model = "m"\n[t]\nx = 1' 'model = "m"\n\n[t]\nx = 1\n' \
+                  'sandbox_mode = "workspace-write"  # tight\n[t]\nx = 1\n' 'profile = "s"\n[profiles.s]\nsandbox_mode = "read-only"\n' \
+                  '[features]\nfoo = true\nuse_legacy_landlock = false # off\n' '[features]\nfoo = true' 'a=1\r\n[t]\r\nb=2\r\n'; do
+        _cx_o="$(printf "$_cx_in" | _cx_ed2 off)"; _cx_o="${_cx_o%.}"
+        _cx_l="$(printf "$_cx_in" | _cx_ed2 landlock)"; _cx_l="${_cx_l%.}"
+        _cx_orig="$(printf "$_cx_in"; echo .)"; _cx_orig="${_cx_orig%.}"
+        for _cx_pair in "off:$_cx_o" "landlock:$_cx_l"; do
+            _cx_m="${_cx_pair%%:*}"; _cx_x="${_cx_pair#*:}"
+            [[ "$(printf '%s' "$_cx_x" | _cx_ed2 keep)" == "$_cx_orig". ]] || _cx_bad+=("$_cx_m then keep is not the original: $_cx_in")
+            [[ "$(printf '%s' "$_cx_x" | _cx_ed2 "$_cx_m")" == "$_cx_x". ]] || _cx_bad+=("$_cx_m twice is not a no-op: $_cx_in")
+        done
+        [[ "$(printf '%s' "$_cx_o" | _cx_ed2 landlock)" == "$_cx_l". ]] || _cx_bad+=("off then landlock leaves residue: $_cx_in")
+        [[ "$(printf '%s' "$_cx_l" | _cx_ed2 off)" == "$_cx_o". ]] || _cx_bad+=("landlock then off leaves residue: $_cx_in")
+        [[ "$(printf "$_cx_in" | _cx_ed2 keep)" == "$_cx_orig". ]] || _cx_bad+=("keep changed an untouched file: $_cx_in")
+    done
+    unset -f _cx_ed2
+    if [[ ${#_cx_bad[@]} -eq 0 ]]; then
+        pass "CX02: Codex config edits are reversible: keep restores the original, no residue across mode switches, a mode twice is a no-op"
+    else
+        fail "CX02: Codex config edits not reversible" "$(printf '%s | ' "${_cx_bad[@]}")"
+    fi
+    _cx_bad=()
+
+    # CX04. Which way auto goes, by backend and Landlock. The Landlock mode
+    # was measured to work under bwrap and firejail only; under the
+    # landlock backend nothing nests, so auto switches Codex's sandbox off.
+    _cx_got="$(
+        export SANDBOX_DIR="$SCRIPT_DIR"
+        source "$SCRIPT_DIR/agents/overlay-lib.sh"; source "$SCRIPT_DIR/agents/codex/overlay.sh"
+        for _b in bwrap firejail landlock ""; do
+            for _ll in yes no; do
+                if [[ $_ll == yes ]]; then _codex_host_has_landlock() { return 0; }; else _codex_host_has_landlock() { return 1; }; fi
+                printf '%s/%s=%s ' "${_b:-none}" "$_ll" "$(SANDBOX_BACKEND=$_b CODEX_INNER_SANDBOX=auto _codex_inner_sandbox_mode)"
+            done
+        done
+        for _k in keep off landlock; do printf 'explicit-%s=%s ' "$_k" "$(SANDBOX_BACKEND=bwrap CODEX_INNER_SANDBOX=$_k _codex_inner_sandbox_mode)"; done
+        _codex_host_has_landlock() { return 0; }    # an unknown value means auto
+        printf 'unset=%s bogus=%s' "$(SANDBOX_BACKEND=landlock; unset CODEX_INNER_SANDBOX; _codex_inner_sandbox_mode)" "$(SANDBOX_BACKEND=bwrap CODEX_INNER_SANDBOX=bogus _codex_inner_sandbox_mode 2>/dev/null)"
+    )"
+    _cx_want='bwrap/yes=landlock bwrap/no=off firejail/yes=landlock firejail/no=off landlock/yes=off landlock/no=off none/yes=keep none/no=keep explicit-keep=keep explicit-off=off explicit-landlock=landlock unset=off bogus=landlock'
+    if [[ "$_cx_got" == "$_cx_want" ]]; then
+        pass "CX04: CODEX_INNER_SANDBOX=auto: Landlock on bwrap/firejail when the host has it, otherwise off; unknown backend keeps; explicit values win"
+    else
+        fail "CX04: Codex inner-sandbox mode choice" "got: $_cx_got"
+    fi
+
+    # CX05-CX07. The overlay end to end, on a fake HOME. The real
+    # ~/.codex/config.toml is never edited; the private copy is edited once
+    # per launch, kept when Codex rewrote it, and redone when it is refreshed.
+    _cx_bad=()
+    _h="$_ovl_base/cx"; _ovl_fresh "$_h"
+    printf 'model = "x"\n\n[projects."/p"]\ntrust_level = "trusted"\n' > "$_h/.codex/config.toml"
+    _cx_real="$(cat "$_h/.codex/config.toml")"
+    _cx_cp="$_h/.codex/sandbox-config/config.toml"
+    SANDBOX_BACKEND=bwrap CODEX_INNER_SANDBOX=off _ovl_run codex "$_h" >/dev/null
+    grep -qx 'sandbox_mode = "danger-full-access"' "$_cx_cp" && grep -qx 'model = "x"' "$_cx_cp" \
+        && grep -qx 'trust_level = "trusted"' "$_cx_cp" || _cx_bad+=("off: copy not edited as expected")
+    [[ "$(cat "$_h/.codex/config.toml")" == "$_cx_real" ]] || _cx_bad+=("real ~/.codex/config.toml was changed")
+    [[ -f "$_cx_cp" && ! -L "$_cx_cp" && "$(stat -c %a "$_cx_cp")" == 600 ]] || _cx_bad+=("copy is not a private regular file (0600)")
+    _cx_one="$(cat "$_cx_cp")"
+    SANDBOX_BACKEND=bwrap CODEX_INNER_SANDBOX=off _ovl_run codex "$_h" >/dev/null
+    [[ "$(cat "$_cx_cp")" == "$_cx_one" ]] || _cx_bad+=("second launch changed the copy")
+    # Codex rewrote its copy (a trust decision): kept, still one edit
+    printf '\n[projects."/q"]\ntrust_level = "trusted"\n' >> "$_cx_cp"
+    SANDBOX_BACKEND=bwrap CODEX_INNER_SANDBOX=off _ovl_run codex "$_h" >/dev/null
+    [[ "$(grep -c '^sandbox_mode' "$_cx_cp")" == 1 ]] && grep -q '"/q"' "$_cx_cp" || _cx_bad+=("fresher copy: edit lost or doubled, or Codex's change dropped")
+    # the user edits the real file: the copy is refreshed from it and edited again
+    printf 'model = "new"\n' > "$_h/.codex/config.toml"; touch -d 'now + 1 minute' "$_h/.codex/config.toml"
+    SANDBOX_BACKEND=bwrap CODEX_INNER_SANDBOX=off _ovl_run codex "$_h" >/dev/null
+    grep -qx 'model = "new"' "$_cx_cp" && grep -qx 'sandbox_mode = "danger-full-access"' "$_cx_cp" && ! grep -q '"/q"' "$_cx_cp" \
+        || _cx_bad+=("refresh from the real file: not re-edited")
+    # One private copy, launches on different backends and modes in turn
+    # (a login node, then a job on a node without Landlock, then the user
+    # switches to keep): nothing of an earlier launch may be left behind.
+    _h="$_ovl_base/cx-shared"; _ovl_fresh "$_h"
+    printf 'model = "x"\nsandbox_mode = "workspace-write"  # mine\n\n[projects."/p"]\ntrust_level = "trusted"\n' > "$_h/.codex/config.toml"
+    _cx_real="$(cat "$_h/.codex/config.toml")"; _cx_cp="$_h/.codex/sandbox-config/config.toml"
+    SANDBOX_BACKEND=landlock CODEX_INNER_SANDBOX=auto _ovl_run codex "$_h" >/dev/null
+    grep -qx 'sandbox_mode = "danger-full-access" # agent-sandbox-orig: "workspace-write"  # mine' "$_cx_cp" && ! grep -q use_legacy_landlock "$_cx_cp" \
+        || _cx_bad+=("shared: landlock backend did not switch the sandbox off")
+    SANDBOX_BACKEND=bwrap CODEX_INNER_SANDBOX=landlock _ovl_run codex "$_h" >/dev/null
+    grep -qx 'use_legacy_landlock = true' "$_cx_cp" && grep -qx 'sandbox_mode = "workspace-write"  # mine' "$_cx_cp" \
+        && ! grep -q danger-full-access "$_cx_cp" || _cx_bad+=("shared: the earlier launch's sandbox_mode edit was inherited")
+    SANDBOX_BACKEND=bwrap CODEX_INNER_SANDBOX=keep _ovl_run codex "$_h" >/dev/null
+    [[ "$(cat "$_cx_cp")" == "$_cx_real" ]] || _cx_bad+=("shared: keep did not restore the copy")
+    # landlock mode, keep, and no config.toml at all
+    _h="$_ovl_base/cx-ll"; _ovl_fresh "$_h"; echo 'model = "x"' > "$_h/.codex/config.toml"
+    SANDBOX_BACKEND=firejail CODEX_INNER_SANDBOX=landlock _ovl_run codex "$_h" >/dev/null
+    grep -qx '\[features\]' "$_h/.codex/sandbox-config/config.toml" && grep -qx 'use_legacy_landlock = true' "$_h/.codex/sandbox-config/config.toml" \
+        && ! grep -q sandbox_mode "$_h/.codex/sandbox-config/config.toml" || _cx_bad+=("landlock mode")
+    _h="$_ovl_base/cx-keep"; _ovl_fresh "$_h"; echo 'model = "x"' > "$_h/.codex/config.toml"
+    SANDBOX_BACKEND=bwrap CODEX_INNER_SANDBOX=keep _ovl_run codex "$_h" >/dev/null
+    [[ "$(cat "$_h/.codex/sandbox-config/config.toml")" == 'model = "x"' ]] || _cx_bad+=("keep: copy changed")
+    _h="$_ovl_base/cx-none"; _ovl_fresh "$_h"
+    SANDBOX_BACKEND=landlock CODEX_INNER_SANDBOX=auto _ovl_run codex "$_h" >/dev/null
+    grep -qx 'sandbox_mode = "danger-full-access"' "$_h/.codex/sandbox-config/config.toml" || _cx_bad+=("no config.toml: not created with the edit")
+    # a config the editor will not touch: copy untouched, reason reported
+    if python3 -c 'import tomllib' 2>/dev/null; then
+        _h="$_ovl_base/cx-bad"; _ovl_fresh "$_h"; printf 'model = "unterminated\n' > "$_h/.codex/config.toml"
+        _cx_out="$(SANDBOX_BACKEND=bwrap CODEX_INNER_SANDBOX=off _ovl_run codex "$_h")"
+        [[ "$_cx_out" == *"config.toml not adjusted"* && "$(cat "$_h/.codex/sandbox-config/config.toml")" == 'model = "unterminated' ]] \
+            || _cx_bad+=("invalid TOML: not left alone and reported ($_cx_out)")
+    fi
+    # a planted symlink to a secret never reaches the copy through the edit
+    _h="$_ovl_base/cx-leak"; _ovl_fresh "$_h"; ln -s "$_h/.ssh/id_rsa" "$_h/.codex/config.toml"
+    SANDBOX_BACKEND=bwrap CODEX_INNER_SANDBOX=off _ovl_run codex "$_h" >/dev/null
+    grep -qs SECRET-KEY "$_h/.codex/sandbox-config/config.toml" && _cx_bad+=("secret copied into the Codex config copy")
+    if [[ ${#_cx_bad[@]} -eq 0 ]]; then
+        pass "CX05: Codex overlay edits only the private config copy: once per launch, Codex's own changes kept, redone on refresh; landlock/keep/none/invalid/symlink cases"
+    else
+        fail "CX05: Codex overlay inner-sandbox edit" "$(printf '%s | ' "${_cx_bad[@]}")"
+    fi
+    unset -f _cx_ed
+    unset _cx_bad _cx_ma _cx_ml _cx_got _cx_m _cx_in _cx_o _cx_l _cx_x _cx_pair _cx_orig _cx_crlf _cx_want _cx_real _cx_cp _cx_one _cx_out
     unset -f _ovl_run _ovl_fresh _ovl_plant_tmp _ovl_escaped
 else
     skip "Agent overlay symlink tests: python3 not available"
