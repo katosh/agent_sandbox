@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Codex's own sandbox no longer breaks every command (#87).** Codex runs
+  each command in a bubblewrap sandbox of its own, which cannot start
+  inside agent-sandbox: the seccomp filter denies `mount(2)` and
+  `pivot_root(2)` on purpose, firejail blocks user namespaces, so in
+  Codex's default modes every command failed with `bwrap: Failed to make
+  / slave: Operation not permitted`. The `codex` overlay now edits the
+  sandbox-private copy of `config.toml` (never `~/.codex/config.toml`),
+  controlled by the new `CODEX_INNER_SANDBOX` (`auto` | `landlock` | `off`
+  | `keep`). `auto` turns on Codex's Landlock sandbox
+  (`features.use_legacy_landlock`) under bwrap and firejail on a kernel
+  with Landlock, which keeps Codex's own restrictions; otherwise, and
+  under the landlock backend, it sets `sandbox_mode =
+  "danger-full-access"`, so Codex relies on this sandbox alone. Nothing in
+  the seccomp filter changed. The copy is shared by launches on other
+  backends and hosts, so every edit is marked and each launch first undoes
+  the edits of earlier ones: no launch inherits another's choice, `keep`
+  restores the file byte for byte, and Codex's own changes to the copy are
+  kept. A file the editor cannot edit safely (a multi-line `sandbox_mode`,
+  a top-level `features` key, invalid TOML) is left alone with a warning.
+  See `docs/reference/agents.md`.
+
 ## [0.17.4] - 2026-11-13
 
 ### Fixed

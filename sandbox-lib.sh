@@ -554,6 +554,19 @@ MOUNT_GUARD_INTERVAL=5
 # (see §Mount guard in sandbox-lib.sh). false = report such losses only.
 MOUNT_GUARD_REBIND=true
 
+# Codex's own sandbox (agents/codex/overlay.sh). Codex runs every command in
+# a bubblewrap sandbox of its own, which cannot start inside this sandbox
+# (no mount(2) under seccomp). The overlay adjusts the sandbox-private copy
+# of ~/.codex/config.toml, never the real file:
+#   auto     (default) Codex's Landlock sandbox where the host has Landlock
+#            (kernel 5.13+) and the backend is bwrap or firejail, otherwise
+#            sandbox_mode = "danger-full-access" (Codex's sandbox off)
+#   landlock features.use_legacy_landlock = true
+#   off      sandbox_mode = "danger-full-access"
+#   keep     leave config.toml as the user wrote it
+# Codex is then confined by this sandbox alone, which is unchanged.
+CODEX_INNER_SANDBOX=auto
+
 # Landlock ABI floor (landlock backend only). Empty means "use the
 # helper's defaults" — see backends/landlock-sandbox.py
 # DEFAULT_REQUIRED_ABI (currently 3) and the --hard-requirement flag
@@ -932,6 +945,7 @@ _CONFIG_SCALARS=(
     CHAPERON_LOG_LEVEL CHAPERON_LOG_RETAIN_DAYS
     LANDLOCK_REQUIRED_ABI LANDLOCK_HARD_REQUIREMENT
     MOUNT_GUARD MOUNT_GUARD_INTERVAL MOUNT_GUARD_REBIND
+    CODEX_INNER_SANDBOX
 )
 # Enforced arrays: user cannot remove admin-set entries (only add).
 # Consumed by _enforce_admin_policy (via _restore_enforced_array): every
