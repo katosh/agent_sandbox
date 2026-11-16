@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agent-sandbox reload` no longer reports a running mount guard as "not
+  running".** The guard published `"$BASHPID $(_proc_starttime "$BASHPID")"`;
+  inside `$(...)` the second `$BASHPID` is the pid of that command
+  substitution's own subshell, whose start time is a clock tick later than
+  the guard's whenever the host is busy. The reload then found the recorded
+  start time did not match, did not signal the guard, and said "Mount
+  guard: not running for this session; the new set is not watched": the
+  reload itself worked but the new mounts were left unguarded. The start
+  time of the guard's own pid is published now. This is also why the
+  live-reload test (LR06) failed on CI about once in three runs.
+
 ## [0.17.4] - 2026-11-13
 
 ### Fixed

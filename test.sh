@@ -7790,6 +7790,31 @@ else
     fail "LR04: state files / env diff" "got: $_lr_out"
 fi
 
+# LR04c. The guard publishes the start time of ITS OWN process. It used to
+# write "$BASHPID $(_proc_starttime "$BASHPID")", and inside $(...) the
+# second $BASHPID is the pid of the command substitution's subshell, whose
+# start time is a clock tick later than the guard's whenever the host is
+# busy. `agent-sandbox reload` then saw a start time that did not match the
+# process, and reported "Mount guard: not running for this session" (CI:
+# LR06 failed about one run in three under load). Deterministic here: a
+# stub records which pid it is asked about, and it must be the one published.
+_lr_out="$(
+    export _SANDBOX_LIB_NO_INIT=1
+    source "$SCRIPT_DIR/sandbox-lib.sh" 2>/dev/null
+    set +e
+    _sess_publish() { printf '%s' "$2"; }
+    _proc_starttime() { printf 'START-OF-%s' "$1"; }
+    _mount_guard_prepare() { return 1; }    # end the watcher right after it published
+    _mount_guard_main /nonexistent $$
+)"
+_lr_pid="${_lr_out%% *}"
+if [[ "$_lr_pid" =~ ^[0-9]+$ && "$_lr_out" == "$_lr_pid START-OF-$_lr_pid" ]]; then
+    pass "LR04c: guard.pid carries the start time of the guard's own process, not of a subshell"
+else
+    fail "LR04c: guard.pid start time belongs to another process" "published: '$_lr_out'"
+fi
+unset _lr_out _lr_pid
+
 # LR04b. The guard pauses while a reload applies (marker = reloader pid +
 # start time, stale once that process is gone); only bwrap sessions are
 # registered (landlock/firejail cannot hide the registry from the agent).

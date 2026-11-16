@@ -3833,7 +3833,13 @@ _mount_guard_main() {
       # process that runs the loop (not the wrapper subshell around it).
       _MG_RELOAD=""
       trap '_MG_RELOAD=1' USR1
-      _sess_publish guard.pid "$BASHPID $(_proc_starttime "$BASHPID")"
+      # $BASHPID is copied first: inside $(...) it is the pid of that
+      # command substitution's own subshell, whose start time can be a
+      # clock tick later than ours under load. The reload then found the
+      # recorded start time did not match and reported the guard as not
+      # running ("Mount guard: not running for this session").
+      _mg_self=$BASHPID
+      _sess_publish guard.pid "$_mg_self $(_proc_starttime "$_mg_self")"
       _mount_guard_prepare "$1" || exit 0
       _mount_guard_run "$2"
       _sess_guard_exit "$2" )
